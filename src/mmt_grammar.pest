@@ -1,0 +1,37 @@
+alpha = { 'a'..'z' | 'A'..'Z' }
+digit = { '0'..'9' }
+
+ident = { (alpha | digit)+ }
+
+ident_list = _{ !digit ~ ident ~ (" " ~ ident)+ }
+
+model_library <- model+
+model <- 'model' name ':' args '->' args '{' definitions? equations '}'
+args <- arg (',' arg)*
+arg <- name 'in' domain
+definitions <- 'let' definition (',' definition)* 'in'
+definition <-  domain_definition / variable_definition
+domain_definition <- name 'in' range
+variable_definition <- name ':' domain '->' domain
+range <- '[' real ',' real ']' ('^' integer)?
+domain <- constant_domain / real_domain / ident
+constant_domain <- '1'
+real_domain <- 'R' ('^' dimension)?
+dimension <- integer / 'n'
+equations <- equation (',' equation)*
+equation <- expression '=' expression
+call <- ident '(' expression (',' expression)* ')'
+sequence <- real ':' real ':' real
+derivative <- 'd' ident '/' 'd' ident
+expression <- sign term (term_op term)*
+term       <- factor (factor_op factor)*
+factor     <-  sum_squared_error / sequence / derivative / call / ident / real / integer / '(' expression ')'
+sum_squared_error <- 'sum_squared_error' '(' expression ',' expression ',' expression ')'
+sign       <- < [-+]? >
+term_op    <- < [-+] >
+factor_op  <- < [*/^] >
+ident      <- < name ('.' name)* >
+name      <- < [a-z] [a-z0-9_]* >
+integer    <- < [0-9]+ >
+real       <- < [0-9]+'.'[0-9]+ > / integer
+%whitespace <- [ \t\r\n]*

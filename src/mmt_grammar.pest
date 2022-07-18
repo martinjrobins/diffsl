@@ -5,17 +5,19 @@ ident = { (alpha | digit)+ }
 
 ident_list = _{ !digit ~ ident ~ (" " ~ ident)+ }
 
-model_library <- model+
-model <- 'model' name ':' arg* '{' statement* '}'
-arg <- dependentVar / independentVar
-  dependentVar <- name '(' name (',' name )*')'
-  independentVar <- name 'in' domain
+model_library <- (model)+
+model <- ('model' / 'function') name '(' arg (',' arg)* ')' '{' statement* '}'
+definition <- 'let' name '=' expression 
+
+arg <- independentVar / dependentVar
+  dependentVar <- name '(' name (',' name )* ')'
+  independentVar <- name '->' domain
   domain <- range / domainName
   range <- '[' real '...' real ']'
-  statement <- definition / subModel / equation
-  definition <- 'define' ( dependentVar / equation )
-  subModel <- 'use' name '{' substitution* '}'
-  substitution <- expression '=>' expression
+  statement <- definition / subModel / rateEquation / equation / return
+  return <- 'return' expression
+  subModel <- 'use' call
+  rateEquation <- 'dot' '(' name ')' '=' expression
   equation <- expression '=' expression
   expression <- sign term (term_op term)*
   term       <- factor (factor_op factor)*
@@ -24,8 +26,9 @@ arg <- dependentVar / independentVar
   term_op    <- < [-+] >
   factor_op  <- < [*/^] >
   name      <- < [a-z] [a-zA-Z0-9_]* >
-  domainName      <- < [A-Z] [a-zA-Z0-9_]* >
-  call <- name '(' expression (',' expression)* ')'
+  domainName <- < [A-Z] [a-zA-Z0-9_]* >
+  call <- name '(' callArg (',' callArg )* ')'
+  callArg <- name '=' expression / expression
   integer    <- < [0-9]+ >
   real       <- < [0-9]+'.'[0-9]+ > / integer
   %whitespace <- [ \t\r\n]*

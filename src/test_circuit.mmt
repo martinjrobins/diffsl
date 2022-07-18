@@ -1,0 +1,33 @@
+model capacitor: i(t) v(t) c in NonNegative {
+    i = c * dot(v)
+}
+
+model resistor: i(t) v(t) r in NonNegative {
+    v = i * r
+}
+
+model inductor: i(t) v(t) l in NonNegative {
+    v = l * dot(i)
+}
+
+model kirchoff_current: i1(t) i2(t) i3(t) {
+    i1 = i2 + i3
+}
+
+model circuit: i1(t) i2(t) i3(t) v2(t) {
+    define inputVoltage = sin(t) 
+    use resistor {
+        v => inputVoltage - v2
+    }
+    use resistor {
+        v => v2
+    }
+    use capacitor {
+        v => inputVoltage - v2
+    }
+    use kirchoff_current {
+        i1 => i1
+        i2 => i2
+        i3 => i3
+    }
+}

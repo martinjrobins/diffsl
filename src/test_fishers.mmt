@@ -1,0 +1,37 @@
+model diffusion: 
+    x in Omega 
+    d in NonNegative 
+    y(t, x) 
+{
+    dot(y) = d * div(grad(y, x), x)
+}
+    
+model logistic_growth: 
+    r in NonNegative
+    k in NonNegative
+    u(t) 
+{
+    dot(u) = r * u * (1 - u / k)
+}
+  
+model fishers: 
+    x in [0 ... 1]
+    t in [0 ... 10]
+    y(t, x)
+{
+    define y_diffusion(t, x)
+    define y_growth(t, x)
+    use diffusion {
+        y => y 
+        x => x
+        d => 1
+        dot(y) => dot(y_diffusion)
+    }
+    use logistic_growth {
+        u => y 
+        k => 1 
+        r => 1 
+        dot(u) => dot(y_growth)
+    }
+    dot(y) = dot(y_diffusion) + dot(y_growth)
+}

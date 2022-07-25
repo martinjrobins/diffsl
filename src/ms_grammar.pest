@@ -1,5 +1,5 @@
 main       = { SOI ~ model+ ~ EOI }
-model      = { "model" ~ name ~ "(" ~ unknown ~ ("," ~ unknown)* ~ ")" ~ "{" ~ statement* ~ "}" }
+model      = { "model" ~ name ~ "(" ~ unknown? ~ ("," ~ unknown)* ~ ")" ~ "{" ~ statement* ~ "}" }
 definition = { "let" ~ name ~ "=" ~ expression } 
 unknown    = { name ~ dependents? ~ codomain? }
 dependents = { "(" ~ name ~ ("," ~ name )* ~ ")" }

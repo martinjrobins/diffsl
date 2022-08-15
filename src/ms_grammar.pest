@@ -14,7 +14,7 @@ expression = { sign ~ term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }
 factor     = { call | name | real | integer | "(" ~ expression ~ ")" }
 call       = { name ~ "(" ~ call_arg ~ ("," ~ call_arg )* ~ ")" }
-call_arg   = { name ~ "=" ~ expression | expression }
+call_arg   = { name ~ "=" ~ expression }
 sign       = @{ ("-"|"+")? }
 term_op    = @{ "-"|"+" }
 factor_op  = @{ "*"|"/" }

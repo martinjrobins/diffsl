@@ -75,46 +75,47 @@ pub enum Ast {
     Name(String),
 }
 
-#[derive(Clone, Copy)]
-struct Env<'a> {
-    models: Vec<&'a str>,
-    vars: Vec<&'a str>,
-    domains: Vec<&'a str>,
+pub fn print_ast(ast: &Ast) {
+    match ast {
+        Ast::Model { name, unknowns, statements } => {
+            println!("Model ({})", name)
+            println!("Unknowns ({})", name)
+        },
+
+    }
 }
 
 //sign       = @{ ("-"|"+")? }
 //factor_op  = @{ "*"|"/" }
-fn parse_sign(pair: Pair<Rule>) -> char {
+pub fn parse_sign(pair: Pair<Rule>) -> char {
     *pair.into_inner().next().unwrap().as_str().chars().collect::<Vec<char>>().first().unwrap()
 }
 
 //name       = @{ 'a'..'z' ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
 //domain_name = @{ 'A'..'Z' ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
-fn parse_name(pair: Pair<Rule>) -> String {
+pub fn parse_name(pair: Pair<Rule>) -> String {
     pair.into_inner().next().unwrap().as_str().to_string()
 }
 
-fn parse_value<'a>(pair: Pair<Rule>, env: Env<'a>) -> Ast {
-    let mut inner = pair.into_inner();
-    let parse_value_env = |pair| parse_value(pair, env);
+pub fn parse_value<'a>(pair: Pair<Rule>) -> Ast {
     match pair.as_rule() {
         // name       = @{ 'a'..'z' ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
         // domain_name = @{ 'A'..'Z' ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
-        Rule::name | Rule::domain_name => Ast::Name(inner.next().unwrap().as_str().to_string()),
+        Rule::name | Rule::domain_name => Ast::Name(pair.into_inner().next().unwrap().as_str().to_string()),
 
         // integer    = @{ ('0'..'9')+ }
         // real       = @{ ( ('0'..'9')+ ~ "." ~ ('0'..'9')+ ) | integer }
-        Rule::integer | Rule::real => Ast::Name(inner.next().unwrap().as_str().parse().unwrap()),
+        Rule::integer | Rule::real => Ast::Name(pair.into_inner().next().unwrap().as_str().parse().unwrap()),
 
         // model = { "model" ~ name ~ "(" ~ unknown? ~ ("," ~ unknown)* ~ ")" ~ "{" ~ statement* ~ "}" }
         Rule::model => {
+            let mut inner = pair.into_inner();
             let name = parse_name(inner.next().unwrap());
-            let unknowns = inner
+            let unknowns = inner.by_ref()
                 .take_while(|pair| pair.as_rule() == Rule::unknown)
-                .map(parse_value_env)
+                .map(parse_value)
                 .collect();
-            let statements = inner.map(parse_value_env).collect();
-            env.models.push(&name);
+            let statements = inner.map(parse_value).collect();
             Ast::Model {
                 name,
                 unknowns,
@@ -123,26 +124,30 @@ fn parse_value<'a>(pair: Pair<Rule>, env: Env<'a>) -> Ast {
         }
         // definition = { "let" ~ name ~ "=" ~ expression }
         Rule::definition => {
+            let mut inner = pair.into_inner();
             let name = parse_name(inner.next().unwrap());
-            let rhs = Box::new(parse_value_env(inner.next().unwrap()));
-            env.vars.push(&name);
+            let rhs = Box::new(parse_value(inner.next().unwrap()));
             Ast::Definition { name, rhs }
         }
 
         // range      = { "[" ~ real ~ "..." ~ real ~ "]" }
-        Rule::range => Ast::Range {
-            lower: inner.next().unwrap().as_str().parse().unwrap(),
-            upper: inner.next().unwrap().as_str().parse().unwrap(),
+        Rule::range => {
+            let mut inner = pair.into_inner();
+            Ast::Range {
+                lower: inner.next().unwrap().as_str().parse().unwrap(),
+                upper: inner.next().unwrap().as_str().parse().unwrap(),
+            }
         },
 
         // domain     = { range | domain_name }
-        Rule::domain => parse_value_env(inner.next().unwrap()),
+        Rule::domain => parse_value(pair.into_inner().next().unwrap()),
 
         // codomain   = { "->" ~ domain }
-        Rule::codomain => parse_value_env(inner.next().unwrap()),
+        Rule::codomain => parse_value(pair.into_inner().next().unwrap()),
 
         //unknown    = { name ~ dependents? ~ codomain? }
         Rule::unknown => {
+            let mut inner = pair.into_inner();
             let name = parse_name(inner.next().unwrap());
             //dependents = { "(" ~ name ~ ("," ~ name )* ~ ")" }
             let dependents = if inner.peek().unwrap().as_rule() == Rule::dependents {
@@ -156,7 +161,7 @@ fn parse_value<'a>(pair: Pair<Rule>, env: Env<'a>) -> Ast {
                 Vec::new()
             };
             let codomain = if inner.peek().is_some() {
-                Some(Box::new(parse_value_env(inner.next().unwrap())))
+                Some(Box::new(parse_value(inner.next().unwrap())))
             } else {
                 None
             };
@@ -167,74 +172,80 @@ fn parse_value<'a>(pair: Pair<Rule>, env: Env<'a>) -> Ast {
             }
         }
         //statement  = { definition | submodel | rate_equation | equation }
-        Rule::statement => parse_value_env(pair.into_inner().next().unwrap()),
-
-        // definition = { "let" ~ name ~ "=" ~ expression }
-        Rule::definition => Ast::Definition {
-            name: parse_name(inner.next().unwrap()),
-            rhs: Box::new(parse_value_env(inner.next().unwrap())),
-        },
+        Rule::statement => parse_value(pair.into_inner().next().unwrap()),
 
         //call_arg   = { name ~ "=" ~ expression }
-        Rule::call_arg => Ast::CallArg {
-            name: parse_name(inner.next().unwrap()),
-            expression: Box::new(parse_value_env(inner.next().unwrap())),
+        Rule::call_arg => {
+            let mut inner = pair.into_inner();
+            Ast::CallArg {
+                name: parse_name(inner.next().unwrap()),
+                expression: Box::new(parse_value(inner.next().unwrap())),
+            }
         },
 
         //call       = { name ~ "(" ~ call_arg ~ ("," ~ call_arg )* ~ ")" }
-        Rule::call => Ast::Call {
-            fn_name: parse_name(inner.next().unwrap()),
-            args: inner
-                .next()
-                .unwrap()
-                .into_inner()
-                .map(parse_value_env)
-                .collect(),
+        Rule::call => {
+            let mut inner = pair.into_inner();
+            Ast::Call {
+                fn_name: parse_name(inner.next().unwrap()),
+                args: inner
+                    .next()
+                    .unwrap()
+                    .into_inner()
+                    .map(parse_value)
+                    .collect(),
+            }
         },
 
         //submodel   = { "use" ~ call ~ ("as" ~ name)? }
         Rule::submodel => {
             // TODO: is there a better way of destructuring this?
-            let submodel_name: String = "".to_string();
-            let submodel_args: Vec<Ast> = Vec::new();
-            if let Ast::Call { fn_name, args } = parse_value_env(inner.next().unwrap()) {
-                submodel_name = fn_name;
-                submodel_args = args
-            } else {
-                unreachable!()
-            };
+            let mut inner = pair.into_inner();
+            let submodel = 
+                if let Ast::Call { fn_name, args } = parse_value(inner.next().unwrap()) {
+                    (fn_name, args)
+                } else {
+                    unreachable!()
+                };
             let local_name = parse_name(inner.next().unwrap());
             Ast::Submodel {
-                name: submodel_name,
+                name: submodel.0,
                 local_name,
-                args: submodel_args,
+                args: submodel.1
             }
         }
 
         //rate_equation = { "dot" ~ "(" ~ name ~ ")" ~ "+=" ~ expression }
-        Rule::rate_equation => Ast::RateEquation {
-            name: parse_name(inner.next().unwrap()),
-            rhs: Box::new(parse_value_env(inner.next().unwrap())),
+        Rule::rate_equation => {
+            let mut inner = pair.into_inner();
+            Ast::RateEquation {
+                name: parse_name(inner.next().unwrap()),
+                rhs: Box::new(parse_value(inner.next().unwrap())),
+            }
         },
 
         //equation   = { expression ~ "=" ~ expression }
-        Rule::equation => Ast::Equation {
-            lhs: Box::new(parse_value_env(inner.next().unwrap())),
-            rhs: Box::new(parse_value_env(inner.next().unwrap())),
+        Rule::equation => {
+            let mut inner = pair.into_inner();
+            Ast::Equation {
+                lhs: Box::new(parse_value(inner.next().unwrap())),
+                rhs: Box::new(parse_value(inner.next().unwrap())),
+            }
         },
 
         //expression = { sign ~ term ~ (term_op ~ term)* }
         Rule::expression => {
+            let mut inner = pair.into_inner();
             let sign = if inner.peek().unwrap().as_rule() == Rule::sign {
                 Some(parse_sign(inner.next().unwrap()))
             } else {
                 None
             };
-            let head_term = parse_value_env(inner.next().unwrap());
+            let mut head_term = parse_value(inner.next().unwrap());
             while inner.peek().is_some() {
                 //term_op    = @{ "-"|"+" }
                 let term_op = parse_sign(inner.next().unwrap());
-                let rhs_term = parse_value_env(inner.next().unwrap());
+                let rhs_term = parse_value(inner.next().unwrap());
                 head_term = Ast::Binop {
                     op: term_op,
                     left: Box::new(head_term),
@@ -253,10 +264,11 @@ fn parse_value<'a>(pair: Pair<Rule>, env: Env<'a>) -> Ast {
 
         //term       = { factor ~ (factor_op ~ factor)* }
         Rule::term => {
-            let head_factor = parse_value_env(inner.next().unwrap());
+            let mut inner = pair.into_inner();
+            let mut head_factor = parse_value(inner.next().unwrap());
             while inner.peek().is_some() {
                 let factor_op = parse_sign(inner.next().unwrap());
-                let rhs_factor = parse_value_env(inner.next().unwrap());
+                let rhs_factor = parse_value(inner.next().unwrap());
                 head_factor = Ast::Binop {
                     op: factor_op,
                     left: Box::new(head_factor),
@@ -269,14 +281,9 @@ fn parse_value<'a>(pair: Pair<Rule>, env: Env<'a>) -> Ast {
     }
 }
 
-fn parse_string(text: &str) -> Result<Ast, Error<Rule>> {
+pub fn parse_string(text: &str) -> Result<Ast, Error<Rule>> {
     let main = MsParser::parse(Rule::main, &text)?.next().unwrap();
-    let env = Env {
-        models: Vec::new(),
-        vars: Vec::new(),
-        domains: Vec::new(),
-    };
-    let ast = parse_value(main, env);
+    let ast = parse_value(main);
     return Ok(ast);
 }
 

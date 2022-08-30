@@ -10,12 +10,14 @@ use crate::pest::Parser;
 use pest::error::Error;
 use pest::iterators::Pair;
 
+use std::fmt;
+
 #[derive(Debug)]
 pub enum Ast {
     Model {
         name: String,
-        unknowns: Vec<Ast>,
-        statements: Vec<Ast>,
+        unknowns: Vec<Box<Ast>>,
+        statements: Vec<Box<Ast>>,
     },
     Unknown {
         name: String,
@@ -75,47 +77,99 @@ pub enum Ast {
     Name(String),
 }
 
-pub fn print_ast(ast: &Ast) {
+pub fn expr_to_string(ast: &Ast) -> String {
     match ast {
-        Ast::Model { name, unknowns, statements } => {
-            println!("Model ({})", name)
-            println!("Unknowns ({})", name)
-        },
+        Ast::Binop { op, left, right } => {
+            format!("{} {} {}", expr_to_string(left), op, expr_to_string(right))
+        }
+        Ast::Monop { op, child } => format!("{} {}", op, expr_to_string(child)),
+        Ast::Name(value) => value.to_string(),
+        Ast::Number(value) => value.to_string(),
+        _ => unreachable!(),
+    }
+}
 
+impl fmt::Display for Ast {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Ast::Model {
+                name,
+                unknowns,
+                statements,
+            } => {
+                write!(f, "Model {} {:#?} {:#?}", name, unknowns, statements)
+            }
+            Ast::Name(name) => write!(f, "Name({})", name),
+            Ast::Number(num) => write!(f, "Number({})", num),
+            Ast::Unknown {
+                name,
+                dependents,
+                codomain,
+            } => write!(
+                f,
+                "Unknown ({})({:#?}) -> {:#?}",
+                name, dependents, codomain
+            ),
+            Ast::Range { lower, upper } => write!(f, "({}, {})", lower, upper),
+            Ast::Equation { lhs, rhs } => {
+                write!(f, "{} = {}", expr_to_string(lhs), expr_to_string(rhs))
+            }
+            Ast::RateEquation { name, rhs } => write!(f, "dot({}) = {}", name, expr_to_string(rhs)),
+            Ast::Submodel {
+                name,
+                local_name,
+                args,
+            } => write!(f, "Submodel {} {:#?} as {}", name, args, local_name),
+            _ => unreachable!(),
+        }
     }
 }
 
 //sign       = @{ ("-"|"+")? }
 //factor_op  = @{ "*"|"/" }
 pub fn parse_sign(pair: Pair<Rule>) -> char {
-    *pair.into_inner().next().unwrap().as_str().chars().collect::<Vec<char>>().first().unwrap()
+    *pair
+        .into_inner()
+        .next()
+        .unwrap()
+        .as_str()
+        .chars()
+        .collect::<Vec<char>>()
+        .first()
+        .unwrap()
 }
 
 //name       = @{ 'a'..'z' ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
 //domain_name = @{ 'A'..'Z' ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
 pub fn parse_name(pair: Pair<Rule>) -> String {
-    pair.into_inner().next().unwrap().as_str().to_string()
+    pair.as_str().to_string()
 }
 
 pub fn parse_value<'a>(pair: Pair<Rule>) -> Ast {
     match pair.as_rule() {
         // name       = @{ 'a'..'z' ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
         // domain_name = @{ 'A'..'Z' ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
-        Rule::name | Rule::domain_name => Ast::Name(pair.into_inner().next().unwrap().as_str().to_string()),
+        Rule::name | Rule::domain_name => {
+            Ast::Name(pair.into_inner().next().unwrap().as_str().to_string())
+        }
 
         // integer    = @{ ('0'..'9')+ }
         // real       = @{ ( ('0'..'9')+ ~ "." ~ ('0'..'9')+ ) | integer }
-        Rule::integer | Rule::real => Ast::Name(pair.into_inner().next().unwrap().as_str().parse().unwrap()),
+        Rule::integer | Rule::real => {
+            Ast::Name(pair.into_inner().next().unwrap().as_str().parse().unwrap())
+        }
 
         // model = { "model" ~ name ~ "(" ~ unknown? ~ ("," ~ unknown)* ~ ")" ~ "{" ~ statement* ~ "}" }
         Rule::model => {
             let mut inner = pair.into_inner();
             let name = parse_name(inner.next().unwrap());
-            let unknowns = inner.by_ref()
+            let unknowns = inner
+                .by_ref()
                 .take_while(|pair| pair.as_rule() == Rule::unknown)
                 .map(parse_value)
+                .map(Box::new)
                 .collect();
-            let statements = inner.map(parse_value).collect();
+            let statements = inner.map(parse_value).map(Box::new).collect();
             Ast::Model {
                 name,
                 unknowns,
@@ -137,7 +191,7 @@ pub fn parse_value<'a>(pair: Pair<Rule>) -> Ast {
                 lower: inner.next().unwrap().as_str().parse().unwrap(),
                 upper: inner.next().unwrap().as_str().parse().unwrap(),
             }
-        },
+        }
 
         // domain     = { range | domain_name }
         Rule::domain => parse_value(pair.into_inner().next().unwrap()),
@@ -151,12 +205,7 @@ pub fn parse_value<'a>(pair: Pair<Rule>) -> Ast {
             let name = parse_name(inner.next().unwrap());
             //dependents = { "(" ~ name ~ ("," ~ name )* ~ ")" }
             let dependents = if inner.peek().unwrap().as_rule() == Rule::dependents {
-                inner
-                    .next()
-                    .unwrap()
-                    .into_inner()
-                    .map(parse_name)
-                    .collect()
+                inner.next().unwrap().into_inner().map(parse_name).collect()
             } else {
                 Vec::new()
             };
@@ -181,7 +230,7 @@ pub fn parse_value<'a>(pair: Pair<Rule>) -> Ast {
                 name: parse_name(inner.next().unwrap()),
                 expression: Box::new(parse_value(inner.next().unwrap())),
             }
-        },
+        }
 
         //call       = { name ~ "(" ~ call_arg ~ ("," ~ call_arg )* ~ ")" }
         Rule::call => {
@@ -195,23 +244,22 @@ pub fn parse_value<'a>(pair: Pair<Rule>) -> Ast {
                     .map(parse_value)
                     .collect(),
             }
-        },
+        }
 
         //submodel   = { "use" ~ call ~ ("as" ~ name)? }
         Rule::submodel => {
             // TODO: is there a better way of destructuring this?
             let mut inner = pair.into_inner();
-            let submodel = 
-                if let Ast::Call { fn_name, args } = parse_value(inner.next().unwrap()) {
-                    (fn_name, args)
-                } else {
-                    unreachable!()
-                };
+            let submodel = if let Ast::Call { fn_name, args } = parse_value(inner.next().unwrap()) {
+                (fn_name, args)
+            } else {
+                unreachable!()
+            };
             let local_name = parse_name(inner.next().unwrap());
             Ast::Submodel {
                 name: submodel.0,
                 local_name,
-                args: submodel.1
+                args: submodel.1,
             }
         }
 
@@ -222,7 +270,7 @@ pub fn parse_value<'a>(pair: Pair<Rule>) -> Ast {
                 name: parse_name(inner.next().unwrap()),
                 rhs: Box::new(parse_value(inner.next().unwrap())),
             }
-        },
+        }
 
         //equation   = { expression ~ "=" ~ expression }
         Rule::equation => {
@@ -231,7 +279,7 @@ pub fn parse_value<'a>(pair: Pair<Rule>) -> Ast {
                 lhs: Box::new(parse_value(inner.next().unwrap())),
                 rhs: Box::new(parse_value(inner.next().unwrap())),
             }
-        },
+        }
 
         //expression = { sign ~ term ~ (term_op ~ term)* }
         Rule::expression => {
@@ -277,20 +325,25 @@ pub fn parse_value<'a>(pair: Pair<Rule>) -> Ast {
             }
             head_factor
         }
-        _ => unreachable!(),
+        _ => unreachable!("{:?}", pair.to_string()),
     }
 }
 
-pub fn parse_string(text: &str) -> Result<Ast, Error<Rule>> {
+pub fn parse_string(text: &str) -> Result<Vec<Ast>, Error<Rule>> {
     let main = MsParser::parse(Rule::main, &text)?.next().unwrap();
-    let ast = parse_value(main);
-    return Ok(ast);
+    let models = main
+        .into_inner()
+        .take_while(|pair| pair.as_rule() != Rule::EOI)
+        .map(parse_value)
+        .collect();
+    return Ok(models);
 }
 
 #[cfg(test)]
 mod tests {
     use crate::parse_string;
     use crate::pest::Parser;
+    use crate::Ast;
     use crate::MsParser;
     use crate::Rule;
     use std::fs;
@@ -304,7 +357,8 @@ mod tests {
         for filename in MS_FILENAMES {
             let unparsed_file =
                 fs::read_to_string(BASE_DIR.to_owned() + "/" + filename).expect("cannot read file");
-            let _list = MsParser::parse(Rule::main, &unparsed_file).expect("unsuccessful parse");
+            let _list = MsParser::parse(Rule::main, &unparsed_file)
+                .unwrap_or_else(|e| panic!("unsuccessful parse ({}) {}", filename, e));
         }
     }
 
@@ -313,9 +367,8 @@ mod tests {
         const TEXT: &str = "model test() {}";
         let models = parse_string(TEXT).unwrap();
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].name, "test");
-        assert_eq!(models[0].equations.len(), 0);
-        assert_eq!(models[0].variables.len(), 0);
-        assert_eq!(models[0].submodels.len(), 0);
+        assert!(
+            matches!(&models[0], Ast::Model { name, unknowns, statements } if name == "test" && unknowns.is_empty() && statements.is_empty()),
+        );
     }
 }

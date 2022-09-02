@@ -8,7 +8,7 @@ domain     = { range | domain_name }
 range      = { "[" ~ real ~ "..." ~ real ~ "]" }
 statement  = { definition | submodel | rate_equation | equation }
 submodel   = { "use" ~ call ~ ("as" ~ name)? }
-rate_equation = { "dot" ~ "(" ~ name ~ ")" ~ "+=" ~ expression }
+rate_equation = { "dot" ~ "(" ~ name ~ ")" ~ ("+=" | "=") ~ expression }
 equation   = { expression ~ "=" ~ expression }
 expression = { sign? ~ term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }

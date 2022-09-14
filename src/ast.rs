@@ -1,37 +1,40 @@
 use std::fmt;
+use std::rc::Rc;
+use crate::semantic::ModelInfo;
 
 #[derive(Debug)]
-pub enum Ast {
+pub enum AstKind<'a> {
     Model {
-        name: String,
-        unknowns: Vec<Box<Ast>>,
-        statements: Vec<Box<Ast>>,
+        name: &'a str,
+        unknowns: Vec<Rc<Ast<'a>>>,
+        statements: Vec<Rc<Ast<'a>>>,
+        info: Option<ModelInfo<'a>>,
     },
     Unknown {
-        name: String,
-        dependents: Vec<String>,
-        codomain: Option<Box<Ast>>,
+        name: &'a str,
+        dependents: Vec<&'a str>,
+        codomain: Option<Rc<Ast<'a>>>,
     },
 
     Definition {
-        name: String,
-        rhs: Box<Ast>,
+        name: &'a str,
+        rhs: Rc<Ast<'a>>,
     },
 
     Submodel {
-        name: String,
-        local_name: String,
-        args: Vec<Ast>,
+        name: &'a str,
+        local_name: &'a str,
+        args: Vec<Ast<'a>>,
     },
 
     Equation {
-        lhs: Box<Ast>,
-        rhs: Box<Ast>,
+        lhs: Rc<Ast<'a>>,
+        rhs: Rc<Ast<'a>>,
     },
 
     RateEquation {
-        name: String,
-        rhs: Box<Ast>,
+        name: &'a str,
+        rhs: Rc<Ast<'a>>,
     },
 
     Range {
@@ -41,55 +44,64 @@ pub enum Ast {
 
     Binop {
         op: char,
-        left: Box<Ast>,
-        right: Box<Ast>,
+        left: Rc<Ast<'a>>,
+        right: Rc<Ast<'a>>,
     },
 
     Monop {
         op: char,
-        child: Box<Ast>,
+        child: Rc<Ast<'a>>,
     },
 
     Call {
-        fn_name: String,
-        args: Vec<Ast>,
+        fn_name: &'a str,
+        args: Vec<Ast<'a>>,
     },
 
     CallArg {
-        name: Option<String>,
-        expression: Box<Ast>,
+        name: Option<&'a str>,
+        expression: Rc<Ast<'a>>,
     },
 
     Number(f64),
 
-    Name(String),
+    Name(&'a str),
 }
 
-pub fn expr_to_string(ast: &Ast) -> String {
-    match ast {
-        Ast::Binop { op, left, right } => {
-            format!("{} {} {}", expr_to_string(left), op, expr_to_string(right))
+
+#[derive(Debug)]
+pub struct Ast<'a> {
+    pub kind: AstKind<'a>,
+    pub pos_start: usize,
+    pub pos_end: usize,
+}
+
+fn expr_to_string(ast: &Ast) -> String {
+    match ast.kind {
+        AstKind::Binop { op, left, right } => {
+            format!("{} {} {}", expr_to_string(left.as_ref()), op, expr_to_string(right.as_ref()))
         }
-        Ast::Monop { op, child } => format!("{} {}", op, expr_to_string(child)),
-        Ast::Name(value) => value.to_string(),
-        Ast::Number(value) => value.to_string(),
+        AstKind::Name(value) => value.to_string(),
+        AstKind::Monop { op, child } => format!("{} {}", op, expr_to_string(child.as_ref())),
+        AstKind::Number(value) => value.to_string(),
         _ => unreachable!(),
     }
 }
 
-impl fmt::Display for Ast {
+impl<'a> fmt::Display for Ast<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Ast::Model {
+        match self.kind {
+            AstKind::Model {
                 name,
                 unknowns,
                 statements,
+                info,
             } => {
                 write!(f, "Model {} {:#?} {:#?}", name, unknowns, statements)
             }
-            Ast::Name(name) => write!(f, "Name({})", name),
-            Ast::Number(num) => write!(f, "Number({})", num),
-            Ast::Unknown {
+            AstKind::Name(name) => write!(f, "Name({})", name),
+            AstKind::Number(num) => write!(f, "Number({})", num),
+            AstKind::Unknown {
                 name,
                 dependents,
                 codomain,
@@ -98,12 +110,12 @@ impl fmt::Display for Ast {
                 "Unknown ({})({:#?}) -> {:#?}",
                 name, dependents, codomain
             ),
-            Ast::Range { lower, upper } => write!(f, "({}, {})", lower, upper),
-            Ast::Equation { lhs, rhs } => {
-                write!(f, "{} = {}", expr_to_string(lhs), expr_to_string(rhs))
+            AstKind::Range { lower, upper } => write!(f, "({}, {})", lower, upper),
+            AstKind::Equation { lhs, rhs } => {
+                write!(f, "{} = {}", expr_to_string(lhs.as_ref()), expr_to_string(rhs.as_ref()))
             }
-            Ast::RateEquation { name, rhs } => write!(f, "dot({}) = {}", name, expr_to_string(rhs)),
-            Ast::Submodel {
+            AstKind::RateEquation { name, rhs } => write!(f, "dot({}) = {}", name, expr_to_string(rhs.as_ref())),
+            AstKind::Submodel {
                 name,
                 local_name,
                 args,

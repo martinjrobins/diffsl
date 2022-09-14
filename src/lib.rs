@@ -8,6 +8,7 @@ struct MsParser;
 
 pub mod parser;
 pub mod ast;
+pub mod semantic;
 
 #[cfg(test)]
 mod tests {

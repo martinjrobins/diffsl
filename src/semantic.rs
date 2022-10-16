@@ -191,4 +191,18 @@ mod tests {
         assert_eq!(model_infos[1].output.len(), 1);
         assert!(model_infos[1].output[0].text.contains("resistorr") == true);
     }
+    #[test]
+    fn variable_name_not_found() {
+        let text = "
+        model resistor( i(t), v(t), r -> NonNegative) {
+            v = i * doesnotexist
+        }
+        ";
+        let models = parse_string(text).unwrap();
+        let model_infos = semantic_pass(&models);
+        assert_eq!(model_infos.len(), 1);
+        assert_eq!(model_infos[0].variables.len(), 3);
+        assert_eq!(model_infos[0].output.len(), 1);
+        assert!(model_infos[0].output[0].text.contains("doesnotexist") == true);
+    }
 }

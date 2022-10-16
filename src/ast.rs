@@ -1,24 +1,22 @@
 use std::fmt;
-use std::rc::Rc;
-use crate::semantic::ModelInfo;
+use std::boxed::Box;
 
 #[derive(Debug)]
 pub enum AstKind<'a> {
     Model {
         name: &'a str,
-        unknowns: Vec<Rc<Ast<'a>>>,
-        statements: Vec<Rc<Ast<'a>>>,
-        info: Option<ModelInfo<'a>>,
+        unknowns: Vec<Box<Ast<'a>>>,
+        statements: Vec<Box<Ast<'a>>>,
     },
     Unknown {
         name: &'a str,
         dependents: Vec<&'a str>,
-        codomain: Option<Rc<Ast<'a>>>,
+        codomain: Option<Box<Ast<'a>>>,
     },
 
     Definition {
         name: &'a str,
-        rhs: Rc<Ast<'a>>,
+        rhs: Box<Ast<'a>>,
     },
 
     Submodel {
@@ -28,13 +26,13 @@ pub enum AstKind<'a> {
     },
 
     Equation {
-        lhs: Rc<Ast<'a>>,
-        rhs: Rc<Ast<'a>>,
+        lhs: Box<Ast<'a>>,
+        rhs: Box<Ast<'a>>,
     },
 
     RateEquation {
         name: &'a str,
-        rhs: Rc<Ast<'a>>,
+        rhs: Box<Ast<'a>>,
     },
 
     Range {
@@ -44,13 +42,13 @@ pub enum AstKind<'a> {
 
     Binop {
         op: char,
-        left: Rc<Ast<'a>>,
-        right: Rc<Ast<'a>>,
+        left: Box<Ast<'a>>,
+        right: Box<Ast<'a>>,
     },
 
     Monop {
         op: char,
-        child: Rc<Ast<'a>>,
+        child: Box<Ast<'a>>,
     },
 
     Call {
@@ -60,7 +58,7 @@ pub enum AstKind<'a> {
 
     CallArg {
         name: Option<&'a str>,
-        expression: Rc<Ast<'a>>,
+        expression: Box<Ast<'a>>,
     },
 
     Number(f64),
@@ -70,14 +68,19 @@ pub enum AstKind<'a> {
 
 
 #[derive(Debug)]
-pub struct Ast<'a> {
-    pub kind: AstKind<'a>,
+pub struct StringSpan {
     pub pos_start: usize,
     pub pos_end: usize,
 }
 
+#[derive(Debug)]
+pub struct Ast<'a> {
+    pub kind: AstKind<'a>,
+    pub span: StringSpan,
+}
+
 fn expr_to_string(ast: &Ast) -> String {
-    match ast.kind {
+    match &ast.kind {
         AstKind::Binop { op, left, right } => {
             format!("{} {} {}", expr_to_string(left.as_ref()), op, expr_to_string(right.as_ref()))
         }
@@ -90,12 +93,11 @@ fn expr_to_string(ast: &Ast) -> String {
 
 impl<'a> fmt::Display for Ast<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self.kind {
+        match &self.kind {
             AstKind::Model {
                 name,
                 unknowns,
                 statements,
-                info,
             } => {
                 write!(f, "Model {} {:#?} {:#?}", name, unknowns, statements)
             }

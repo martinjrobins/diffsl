@@ -7,6 +7,7 @@ use pest::error::Error;
 use pest::iterators::Pair;
 use std::boxed::Box;
 
+use crate::ast;
 use crate::ast::Ast;
 use crate::ast::AstKind;
 
@@ -58,11 +59,11 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             }
             let statements = inner.map(parse_value).map(Box::new).collect();
             Ast {
-                kind: AstKind::Model {
+                kind: AstKind::Model(ast::Model {
                     name,
                     unknowns,
                     statements,
-                },
+                }),
                 span,
             }
         }
@@ -72,7 +73,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             let name = parse_name(inner.next().unwrap());
             let rhs = Box::new(parse_value(inner.next().unwrap()));
             Ast {
-                kind: AstKind::Definition { name, rhs },
+                kind: AstKind::Definition(ast::Definition { name, rhs }),
                 span,
             }
         }
@@ -81,10 +82,10 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         Rule::range => {
             let mut inner = pair.into_inner();
             Ast {
-                kind: AstKind::Range {
+                kind: AstKind::Range(ast::Range {
                     lower: inner.next().unwrap().as_str().parse().unwrap(),
                     upper: inner.next().unwrap().as_str().parse().unwrap(),
-                },
+                }),
                 span,
             }
         }
@@ -111,11 +112,11 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                 None
             };
             Ast {
-                kind: AstKind::Unknown {
+                kind: AstKind::Unknown(ast::Unknown {
                     name,
                     dependents,
                     codomain,
-                },
+                }),
                 span,
             }
         }
@@ -131,10 +132,10 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                 None
             };
             Ast {
-                kind: AstKind::CallArg {
+                kind: AstKind::CallArg(ast::CallArg {
                     name,
                     expression: Box::new(parse_value(inner.next().unwrap())),
-                },
+                }),
                 span,
             }
         }
@@ -143,10 +144,10 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         Rule::call => {
             let mut inner = pair.into_inner();
             Ast {
-                kind: AstKind::Call {
+                kind: AstKind::Call(ast::Call {
                     fn_name: parse_name(inner.next().unwrap()),
-                    args: inner.map(parse_value).collect(),
-                },
+                    args: inner.map(parse_value).map(Box::new).collect(),
+                }),
                 span,
             }
         }
@@ -156,7 +157,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             // TODO: is there a better way of destructuring this?
             let mut inner = pair.into_inner();
             let (name, args) = if let Ast {
-                kind: AstKind::Call { fn_name, args },
+                kind: AstKind::Call(ast::Call { fn_name, args }),
                 span: _,
             } = parse_value(inner.next().unwrap())
             {
@@ -170,11 +171,11 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                 name.clone()
             };
             Ast {
-                kind: AstKind::Submodel {
+                kind: AstKind::Submodel(ast::Submodel {
                     name,
                     local_name,
                     args,
-                },
+                }),
                 span,
             }
         }
@@ -183,10 +184,10 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         Rule::rate_equation => {
             let mut inner = pair.into_inner();
             Ast {
-                kind: AstKind::RateEquation {
+                kind: AstKind::RateEquation(ast::RateEquation {
                     name: parse_name(inner.next().unwrap()),
                     rhs: Box::new(parse_value(inner.next().unwrap())),
-                },
+                }),
                 span,
             }
         }
@@ -195,10 +196,10 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         Rule::equation => {
             let mut inner = pair.into_inner();
             Ast {
-                kind: AstKind::Equation {
+                kind: AstKind::Equation(ast::Equation {
                     lhs: Box::new(parse_value(inner.next().unwrap())),
                     rhs: Box::new(parse_value(inner.next().unwrap())),
-                },
+                }),
                 span,
             }
         }
@@ -221,20 +222,20 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                     pos_end: rhs_term.span.pos_end,
                 };
                 head_term = Ast {
-                    kind: AstKind::Binop {
+                    kind: AstKind::Binop(ast::Binop {
                         op: term_op,
                         left: Box::new(head_term),
                         right: Box::new(rhs_term),
-                    },
+                    }),
                     span: subspan,
                 };
             }
             if sign.is_some() {
                 Ast {
-                    kind: AstKind::Monop {
+                    kind: AstKind::Monop(ast::Monop {
                         op: sign.unwrap(),
                         child: Box::new(head_term),
-                    },
+                    }),
                     span,
                 }
             } else {
@@ -254,11 +255,11 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                     pos_end: rhs_factor.span.pos_end,
                 };
                 head_factor = Ast {
-                    kind: AstKind::Binop {
+                    kind: AstKind::Binop(ast::Binop {
                         op: factor_op,
                         left: Box::new(head_factor),
                         right: Box::new(rhs_factor),
-                    },
+                    }),
                     span: subspan,
                 };
             }
@@ -272,12 +273,21 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
     }
 }
 
-pub fn parse_string(text: &str) -> Result<Vec<Ast>, Error<Rule>> {
+fn ast_to_model(node: Ast) -> ast::Model {
+    if let AstKind::Model(model) = node.kind {
+        model
+    } else {
+        unreachable!()
+    }
+}
+
+pub fn parse_string(text: &str) -> Result<Vec<ast::Model>, Error<Rule>> {
     let main = MsParser::parse(Rule::main, &text)?.next().unwrap();
     let models = main
         .into_inner()
         .take_while(|pair| pair.as_rule() != Rule::EOI)
         .map(parse_value)
+        .map(ast_to_model)
         .collect();
     return Ok(models);
 }
@@ -292,18 +302,9 @@ mod tests {
         const TEXT: &str = "model test() {}";
         let models = parse_string(TEXT).unwrap();
         assert_eq!(models.len(), 1);
-        if let AstKind::Model {
-            name,
-            unknowns,
-            statements,
-        } = &models[0].kind
-        {
-            assert_eq!(*name, "test");
-            assert!(unknowns.is_empty());
-            assert!(statements.is_empty());
-        } else {
-            panic!("should be of kind AstKind::Model");
-        }
+        assert_eq!(models[0].name, "test");
+        assert!(models[0].unknowns.is_empty());
+        assert!(models[0].statements.is_empty());
     }
 
     #[test]
@@ -319,59 +320,35 @@ mod tests {
         let models = parse_string(text).unwrap();
         assert_eq!(models.len(), 2);
 
-        if let AstKind::Model {
-            name,
-            unknowns,
-            statements,
-        } = &models[0].kind
-        {
-            assert_eq!(*name, "capacitor");
-            assert_eq!(unknowns.len(), 3);
-            if let AstKind::Unknown {
-                name,
-                dependents,
-                codomain,
-            } = &unknowns[0].kind
-            {
-                assert_eq!(*name, "i");
-                assert_eq!(dependents.len(), 1);
-                assert!(codomain.is_none());
-            } else {
-                panic!("should be unknown");
-            }
-            if let AstKind::Unknown {
-                name,
-                dependents,
-                codomain,
-            } = &unknowns[1].kind
-            {
-                assert_eq!(*name, "v");
-                assert_eq!(dependents.len(), 1);
-                assert!(codomain.is_none());
-            } else {
-                panic!("should be unknown");
-            }
-            if let AstKind::Unknown {
-                name,
-                dependents,
-                codomain,
-            } = &unknowns[2].kind
-            {
-                assert_eq!(*name, "c");
-                assert_eq!(dependents.len(), 0);
-                assert!(codomain.is_some());
-            } else {
-                panic!("should be unknown");
-            }
-            assert_eq!(statements.len(), 1);
-            if let AstKind::Equation { lhs, rhs } = &statements[0].kind {
-                assert!(matches!(lhs.kind, AstKind::Name(name) if name == "i"));
-                assert!(matches!(rhs.kind, AstKind::Binop{op, left: _, right: _} if op == '*'));
-            } else {
-                assert!(false, "not an equation")
-            }
+        assert_eq!(models[0].name, "capacitor");
+        assert_eq!(models[0].unknowns.len(), 3);
+        if let AstKind::Unknown(unknown) = models[0].unknowns[0].kind {
+            assert_eq!(unknown.name, "i");
+            assert_eq!(unknown.dependents.len(), 1);
+            assert!(unknown.codomain.is_none());
         } else {
-            assert!(false, "not a model");
+            panic!("should be unknown");
+        }
+        if let AstKind::Unknown(unknown) = models[0].unknowns[1].kind {
+            assert_eq!(unknown.name, "v");
+            assert_eq!(unknown.dependents.len(), 1);
+            assert!(unknown.codomain.is_none());
+        } else {
+            panic!("should be unknown");
+        }
+        if let AstKind::Unknown(unknown) = models[0].unknowns[2].kind {
+            assert_eq!(unknown.name, "c");
+            assert_eq!(unknown.dependents.len(), 0);
+            assert!(unknown.codomain.is_some());
+        } else {
+            panic!("should be unknown");
+        }
+        assert_eq!(models[0].statements.len(), 1);
+        if let AstKind::Equation(eqn) = models[0].statements[0].kind {
+            assert!(matches!(eqn.lhs.kind, AstKind::Name(name) if name == "i"));
+            assert!(matches!(eqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*'));
+        } else {
+            assert!(false, "not an equation")
         }
     }
 
@@ -385,23 +362,14 @@ mod tests {
         let models = parse_string(text).unwrap();
         assert_eq!(models.len(), 1);
 
-        if let AstKind::Model {
-            name,
-            unknowns,
-            statements,
-        } = &models[0].kind
-        {
-            assert_eq!(*name, "diffusion");
-            assert_eq!(unknowns.len(), 3);
-            assert_eq!(statements.len(), 1);
-            if let AstKind::RateEquation { name, rhs } = &statements[0].kind {
-                assert_eq!(*name, "y");
-                assert!(matches!(rhs.kind, AstKind::Binop{op, left: _, right: _} if op == '*'));
-            } else {
-                assert!(false, "not a rate equation")
-            }
+        assert_eq!(models[0].name, "diffusion");
+        assert_eq!(models[0].unknowns.len(), 3);
+        assert_eq!(models[0].statements.len(), 1);
+        if let AstKind::RateEquation(reqn) = models[0].statements[0].kind {
+            assert_eq!(reqn.name, "y");
+            assert!(matches!(reqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*'));
         } else {
-            assert!(false, "not a model");
+            assert!(false, "not a rate equation")
         }
     }
 
@@ -419,45 +387,31 @@ mod tests {
         let models = parse_string(text).unwrap();
         assert_eq!(models.len(), 2);
 
-        if let AstKind::Model {
-            name,
-            unknowns,
-            statements,
-        } = &models[1].kind
-        {
-            assert_eq!(*name, "circuit");
-            assert_eq!(unknowns.len(), 3);
-            assert_eq!(statements.len(), 2);
-            if let AstKind::Definition { name, rhs } = &statements[0].kind {
-                assert_eq!(*name, "inputVoltage");
+        assert_eq!(models[0].name, "circuit");
+        assert_eq!(models[0].unknowns.len(), 3);
+        assert_eq!(models[0].statements.len(), 2);
+        if let AstKind::Definition(dfn) = models[0].statements[0].kind {
+            assert_eq!(dfn.name, "inputVoltage");
+            assert!(
+                matches!(dfn.rhs.kind, AstKind::Call(call) if call.fn_name == "sin" && call.args.len() == 1)
+            );
+        } else {
+            assert!(false, "not an definition")
+        }
+        if let AstKind::Submodel(submodel) = models[0].statements[1].kind {
+            assert_eq!(submodel.name, "resistor");
+            assert_eq!(submodel.local_name, "resistor");
+            assert_eq!(submodel.args.len(), 1);
+            if let AstKind::CallArg(arg) = submodel.args[0].kind {
+                assert_eq!(arg.name.unwrap(), "v");
                 assert!(
-                    matches!(&rhs.kind, AstKind::Call{fn_name, args} if *fn_name == "sin" && args.len() == 1)
+                    matches!(arg.expression.kind, AstKind::Name(name) if name == "inputVoltage")
                 );
             } else {
-                assert!(false, "not an definition")
-            }
-            if let AstKind::Submodel {
-                name,
-                local_name,
-                args,
-            } = &statements[1].kind
-            {
-                assert_eq!(*name, "resistor");
-                assert_eq!(*local_name, "resistor");
-                assert_eq!(args.len(), 1);
-                if let AstKind::CallArg { name, expression } = &args[0].kind {
-                    assert_eq!(name.unwrap(), "v");
-                    assert!(
-                        matches!(expression.kind, AstKind::Name(name) if name == "inputVoltage")
-                    );
-                } else {
-                    unreachable!("not a call arg")
-                }
-            } else {
-                assert!(false, "not an definition")
+                unreachable!("not a call arg")
             }
         } else {
-            assert!(false, "not a model");
+            assert!(false, "not an definition")
         }
     }
 }

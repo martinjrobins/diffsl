@@ -2,7 +2,6 @@ use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::ast;
 use std::boxed::Box;
-use std::intrinsics::unreachable;
 use std::collections::HashMap;
 use pest::Span;
 
@@ -54,26 +53,26 @@ impl<'s, 'a> Variable<'s, 'a> {
 #[derive(Debug)]
 pub struct ModelInfo<'s, 'a> {
     variables: Vec<Variable<'s, 'a>>,
-    eqns: Vec<Ast<'a>>,
+    stmts: Vec<Ast<'a>>,
     output: Vec<Output<'s, 'a>>,
 }
 
 fn info_from_model<'s, 'a>(model: &'a ast::Model<'s>) -> ModelInfo<'s, 'a> {
     ModelInfo {
         output: Vec::new(),
-        eqns: Vec::new(),
+        stmts: Vec::new(),
         variables: Variable::new_from_vec(model.unknowns.as_slice()),
     }
 }
 
-pub fn builder_index<'s, 'a>(index: int, models: &'a Vec<ast::Model<'s>>) -> Vec<ModelInfo<'s, 'a>> {
+pub fn builder_index<'s, 'a>(index: usize, models: &'a Vec<ast::Model<'s>>) -> Vec<ModelInfo<'s, 'a>> {
     let mut ret: Vec<ModelInfo> = models.iter().map(info_from_model).collect();
     // split vector of models into [left, this_model, right]
     // then combine left and right into other_models = [left, right]
     let (left, right_inclusive) = models.split_at(index);
     if let Some((this_model, right)) = right_inclusive.split_first() {
         let other_models = left.iter().chain(right.iter());
-        let info = &mut ret[i];
+        let info = &mut ret[index];
         builder(this_model, other_models, info);
     } else {
         unreachable!()
@@ -109,7 +108,7 @@ fn builder<'s, 'a, 'mi, I>(model: &'a ast::Model<'s>, models: I, info: &'mi mut 
 where
     I: Iterator<Item = &'a ast::Model<'s>> + Clone,
 {
-    for stmt in model.statements {
+    for stmt in model.statements.into_iter() {
         match stmt.kind {
             AstKind::Submodel(submodel) => {
                 // find name in models
@@ -127,16 +126,16 @@ where
             AstKind::Equation(eqn) => {
                 examine_expression(&eqn.lhs, info);
                 examine_expression(&eqn.rhs, info);
-                info.eqns.push(stmt.clone());
+                info.stmts.push(*stmt.clone());
             }
             AstKind::RateEquation(reqn) => {
                 // check name exists
                 examine_expression(&reqn.rhs, info);
-                info.eqns.push(stmt.clone());
+                info.stmts.push(*stmt.clone());
             }
             AstKind::Definition(dfn) => {
-                info.variables.push(Variable::new(stmt));
-                info.eqns.push(stmt.clone());
+                info.variables.push(Variable::new(&stmt));
+                info.stmts.push(*stmt.clone());
             },
             _ => (),
         }
@@ -144,9 +143,9 @@ where
 }
 
 
-fn add_submodel_equations<'s, 'a, 'mi>(model: &'a ast::Model<'s>,  model_call: &'a ast::Submodel<'s>, info: &'mi mut ModelInfo<'s, 'a>) {
-    let mut found_kwarg = false;
+fn find_replacements<'s, 'a, 'mi>(model: &'a ast::Model<'s>,  model_call: &'a ast::Submodel<'s>, info: &'mi mut ModelInfo<'s, 'a>) -> HashMap<&'s str, Box<Ast<'s>>> {
     let mut replacements = HashMap::new();
+    let mut found_kwarg = false;
 
     // find all the replacements specified in the call arguments
     for (i, arg) in model_call.args.iter().enumerate() {
@@ -166,7 +165,6 @@ fn add_submodel_equations<'s, 'a, 'mi>(model: &'a ast::Model<'s>,  model_call: &
                         ast_node: arg,
                     });
                 }
-
             } else {
                 if found_kwarg {
                     info.output.push(Output {
@@ -183,11 +181,20 @@ fn add_submodel_equations<'s, 'a, 'mi>(model: &'a ast::Model<'s>,  model_call: &
             };
         }
     }
+    replacements
+}
+
+fn add_submodel_equations<'s, 'a, 'mi>(model: &'a ast::Model<'s>,  model_call: &'a ast::Submodel<'s>, info: &'mi mut ModelInfo<'s, 'a>) {
+    let replacements = find_replacements(model, model_call, info);
+    // go through the model equations and add them to info, applying the replacements
+    for stmt in model.statements {
+        info.stmts.push((*stmt).clone().subst(replacements));
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser::parse_string, semantic::semantic_pass};
+    use crate::{parser::parse_string, builder::builder_index};
 
     #[test]
     fn submodel_name_not_found() {

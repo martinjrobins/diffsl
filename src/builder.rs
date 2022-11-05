@@ -65,7 +65,15 @@ fn info_from_model<'s, 'a>(model: &'a ast::Model<'s>) -> ModelInfo<'s, 'a> {
     }
 }
 
-pub fn builder_index<'s, 'a>(index: usize, models: &'a Vec<ast::Model<'s>>) -> Vec<ModelInfo<'s, 'a>> {
+pub fn build_model<'s, 'a>(name: &'s str, models: &Vec<&'a ast::Model<'s>>) -> Option<ModelInfo<'s, 'a>> {
+    match models.iter().position(|v| v.name == name) {
+        Some(i) => {
+
+        },
+        None => None,
+    }
+
+    let model_info = info_from_model(model);
     let mut ret: Vec<ModelInfo> = models.iter().map(info_from_model).collect();
     // split vector of models into [left, this_model, right]
     // then combine left and right into other_models = [left, right]
@@ -188,7 +196,7 @@ fn add_submodel_equations<'s, 'a, 'mi>(model: &'a ast::Model<'s>,  model_call: &
     let replacements = find_replacements(model, model_call, info);
     // go through the model equations and add them to info, applying the replacements
     for stmt in model.statements {
-        info.stmts.push((*stmt).clone().subst(replacements));
+        info.stmts.push((*stmt).clone_and_subst(replacements));
     }
 }
 

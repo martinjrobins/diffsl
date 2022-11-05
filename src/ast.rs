@@ -1,6 +1,7 @@
 use std::boxed::Box;
 use std::collections::HashMap;
 use std::fmt;
+use std::mem::replace;
 
 #[derive(Debug, Clone)]
 pub struct Unknown<'a> {
@@ -13,12 +14,6 @@ pub struct Unknown<'a> {
 pub struct Definition<'a> {
     pub name: &'a str,
     pub rhs: Box<Ast<'a>>,
-}
-
-impl<'a> Definition<'a> {
-    pub fn subst(self: Self, replacements: HashMap<&'a str, Box<Ast<'a>>>) -> Self {
-        self
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -35,22 +30,10 @@ pub struct Equation<'a> {
     pub rhs: Box<Ast<'a>>,
 }
 
-impl<'a> Equation<'a> {
-    pub fn subst(self: Self, replacements: HashMap<&'a str, Box<Ast<'a>>>) -> Self {
-        self
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct RateEquation<'a> {
     pub name: &'a str,
     pub rhs: Box<Ast<'a>>,
-}
-
-impl<'a> RateEquation<'a> {
-    pub fn subst(self: Self, replacements: HashMap<&'a str, Box<Ast<'a>>>) -> Self {
-        self
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -109,25 +92,97 @@ pub enum AstKind<'a> {
 }
 
 impl<'a> AstKind<'a> {
-    pub fn subst(self: Self, replacements: HashMap<&'a str, Box<Ast<'a>>>) -> Self {
+    pub fn clone_and_subst(
+        self: Self,
+        replacements: HashMap<&'a str, Box<Ast<'a>>>,
+    ) -> (Self, Option<Box<Ast<'a>>>) {
         match self {
-            AstKind::Definition(dfn) => AstKind::Definition(dfn.subst(replacements)),
-            AstKind::Equation(eqn) => AstKind::Equation(eqn.subst(replacements)),
-            AstKind::RateEquation(reqn) => AstKind::RateEquation(reqn.subst(replacements)),
-            AstKind::Binop(binop) => binop.subst(replacements),
-            AstKind::Monop(_) => todo!(),
-            AstKind::Call(_) => todo!(),
-            AstKind::CallArg(_) => todo!(),
-            AstKind::Number(_) => todo!(),
-            AstKind::Name(_) => todo!(),
-            AstKind::Model(_) => todo!(),
-            AstKind::Unknown(_) => todo!(),
-            AstKind::Submodel(_) => todo!(),
-            AstKind::Range(_) => todo!(),
+            AstKind::Definition(dfn) => (
+                AstKind::Definition(Definition {
+                    name: dfn.name.clone(),
+                    rhs: Box::new(dfn.rhs.clone_and_subst(replacements)),
+                }),
+                None,
+            ),
+            AstKind::Equation(eqn) => (
+                AstKind::Equation(Equation {
+                    lhs: Box::new(eqn.lhs.clone_and_subst(replacements)),
+                    rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
+                }),
+                None,
+            ),
+            AstKind::RateEquation(eqn) => (
+                AstKind::RateEquation(RateEquation {
+                    name: eqn.name.clone(),
+                    rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
+                }),
+                None,
+            ),
+            AstKind::Binop(binop) => (
+                AstKind::Binop(Binop {
+                    op: binop.op.clone(),
+                    left: Box::new(binop.left.clone_and_subst(replacements)),
+                    right: Box::new(binop.left.clone_and_subst(replacements)),
+                }),
+                None,
+            ),
+            AstKind::Monop(binop) => (
+                AstKind::Monop(Monop {
+                    op: binop.op.clone(),
+                    child: Box::new(binop.child.clone_and_subst(replacements)),
+                }),
+                None,
+            ),
+            AstKind::Call(call) => (
+                AstKind::Call(Call {
+                    fn_name: call.fn_name.clone(),
+                    args: call
+                        .args
+                        .into_iter()
+                        .map(|m| m.clone_and_subst(replacements))
+                        .collect(),
+                }),
+                None,
+            ),
+            AstKind::CallArg(arg) => (
+                AstKind::CallArg(CallArg {
+                    name: arg.name.clone(),
+                    expression: Box::new(arg.expression.clone_and_subst(replacements)),
+                }),
+                None,
+            ),
+            AstKind::Number(num) => (AstKind::Number(num), None),
+            AstKind::Name(name) => match replacements.get(name) {
+                Some(&x) => (x.kind, Some(x)),
+                None => (AstKind::Name(name), None),
+            },
+            AstKind::Model(m) => (
+                AstKind::Model(m.clone()),
+                None,
+            ),
+            AstKind::Unknown(unknown) => (
+                AstKind::Unknown(unknown.clone()),
+                None,
+            )
+            AstKind::Submodel(submodel) => (
+                AstKind::Submodel(Submodel{ 
+                    name: submodel.name.clone(), 
+                    local_name: submodel.local_name.clone(), 
+                    args: submodel
+                        .args
+                        .into_iter()
+                        .map(|m| m.clone_and_subst(replacements))
+                        .collect(),
+                }),
+                None,
+            ),
+            AstKind::Range(range) => (
+                AstKind::Range(range.clone()),
+                None,
+            ),
         }
     }
 }
- 
 
 #[derive(Debug, Clone)]
 pub struct StringSpan {
@@ -142,9 +197,12 @@ pub struct Ast<'a> {
 }
 
 impl<'a> Ast<'a> {
-    pub fn subst(self: Self, replacements: HashMap<&'a str, Box<Ast<'a>>>) -> Self {
-        self.kind = self.kind.subst(replacements);
-        self
+    pub fn clone_and_subst(&self, replacements: HashMap<&'a str, Box<Ast<'a>>>) -> Self {
+        let (cloned_kind, repl) = self.kind.clone_and_subst(replacements);
+        Ast {
+            kind: cloned_kind,
+            span: self.span.clone(),
+        }
     }
 }
 

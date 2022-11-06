@@ -195,7 +195,7 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{builder::ModelInfo, parser::parse_string, ast::Model};
+    use crate::{builder::ModelInfo, parser::parse_string, ast::Model, ast::AstKind};
 
     #[test]
     fn submodel_name_not_found() {
@@ -215,6 +215,34 @@ mod tests {
         assert_eq!(model_info.stmts.len(), 1);
         assert_eq!(model_info.output.len(), 1);
         assert!(model_info.output[0].text.contains("resistorr") == true);
+    }
+    #[test]
+    fn submodel_replacements() {
+        let text = "
+        model resistor( i(t), v(t), r -> NonNegative) {
+            v = i * r
+        }
+        model circuit(i1(t), i2(t), i3(t)) {
+            let inputVoltage = sin(t) 
+            use resistor(v = inputVoltage)
+        }
+        ";
+        let models = parse_string(text).unwrap();
+        let models_ref: Vec<&Model> = models.iter().collect();
+        let model_info = ModelInfo::build("circuit", &models_ref).unwrap();
+        assert_eq!(model_info.variables.len(), 4);
+        assert_eq!(model_info.stmts.len(), 2);
+        if let AstKind::Equation(eqn) = &model_info.stmts[1].kind {
+            assert!(
+                matches!(&eqn.lhs.kind, AstKind::Name(name) if *name == "inputVoltage")
+            );
+            assert!(
+                matches!(&eqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*')
+            );
+        } else {
+            assert!(false, "not an equation")
+        }
+        assert_eq!(model_info.output.len(), 0);
     }
     #[test]
     fn variable_name_not_found() {

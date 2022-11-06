@@ -1,9 +1,9 @@
+use crate::ast;
 use crate::ast::Ast;
 use crate::ast::AstKind;
-use crate::ast;
+use pest::Span;
 use std::boxed::Box;
 use std::collections::HashMap;
-use pest::Span;
 
 #[derive(Debug)]
 pub struct Output<'s, 'a> {
@@ -19,7 +19,6 @@ impl<'s, 'a> Output<'s, 'a> {
         format!("Line {}, Column {}: Error: {}", line, col, self.text)
     }
 }
- 
 
 #[derive(Debug)]
 pub struct Variable<'s, 'a> {
@@ -36,7 +35,7 @@ impl<'s, 'a> Variable<'s, 'a> {
         ret
     }
     pub fn new(node: &'a Box<Ast<'s>>) -> Variable<'s, 'a> {
-        match node.kind {
+        match &node.kind {
             AstKind::Unknown(unknown) => Variable {
                 name: unknown.name,
                 ast_node: node,
@@ -52,157 +51,151 @@ impl<'s, 'a> Variable<'s, 'a> {
 
 #[derive(Debug)]
 pub struct ModelInfo<'s, 'a> {
+    name: &'s str,
     variables: Vec<Variable<'s, 'a>>,
     stmts: Vec<Ast<'a>>,
     output: Vec<Output<'s, 'a>>,
 }
 
-fn info_from_model<'s, 'a>(model: &'a ast::Model<'s>) -> ModelInfo<'s, 'a> {
-    ModelInfo {
-        output: Vec::new(),
-        stmts: Vec::new(),
-        variables: Variable::new_from_vec(model.unknowns.as_slice()),
-    }
-}
-
-pub fn build_model<'s, 'a>(name: &'s str, models: &Vec<&'a ast::Model<'s>>) -> Option<ModelInfo<'s, 'a>> {
-    match models.iter().position(|v| v.name == name) {
-        Some(i) => {
-
-        },
-        None => None,
-    }
-
-    let model_info = info_from_model(model);
-    let mut ret: Vec<ModelInfo> = models.iter().map(info_from_model).collect();
-    // split vector of models into [left, this_model, right]
-    // then combine left and right into other_models = [left, right]
-    let (left, right_inclusive) = models.split_at(index);
-    if let Some((this_model, right)) = right_inclusive.split_first() {
-        let other_models = left.iter().chain(right.iter());
-        let info = &mut ret[index];
-        builder(this_model, other_models, info);
-    } else {
-        unreachable!()
-    }
-    ret
-}
-
-fn examine_expression<'s, 'a, 'mi>(expr: &'a Box<Ast<'s>>, info: &'mi mut ModelInfo<'s, 'a>) {
-    match &expr.kind {
-        AstKind::Name(name) => {
-            // check name exists
-            if info.variables.iter().find(|v| v.name == *name).is_none() {
-                info.output.push(Output {
-                    text: format!("name {} not found", name),
-                    ast_node: expr,
-                })
+impl<'s, 'a> ModelInfo<'s, 'a> {
+    pub fn build(
+        name: &'s str,
+        models: &Vec<&'a ast::Model<'s>>,
+    ) -> Option<Self> {
+        match models.iter().position(|v| v.name == name) {
+            Some(i) => {
+                let other_models = [&models[..i], &models[i..]].concat();
+                Some(Self::builder(models[i], &other_models))
             }
+            None => None,
         }
-        AstKind::Binop(binop) => {
-            examine_expression(&binop.left, info);
-            examine_expression(&binop.right, info);
-        }
-        AstKind::Monop(monop) => {
-            examine_expression(&monop.child, info);
-        }
-        _ => (),
     }
-}
 
-
-
-fn builder<'s, 'a, 'mi, I>(model: &'a ast::Model<'s>, models: I, info: &'mi mut ModelInfo<'s, 'a>)
-where
-    I: Iterator<Item = &'a ast::Model<'s>> + Clone,
-{
-    for stmt in model.statements.into_iter() {
-        match stmt.kind {
-            AstKind::Submodel(submodel) => {
-                // find name in models
-                let model_match = models.find(|m| m.name == submodel.name);
-                if model_match.is_none() {
-                    info.output.push(Output {
-                        text: format!("Submodel name {} not found", submodel.name),
-                        ast_node: &stmt,
-                    })
-                } else {
-                    add_submodel_equations(model_match.unwrap(), &submodel, info);
+    fn builder(
+        model: &'a ast::Model<'s>,
+        models: &Vec<&'a ast::Model<'s>>,
+    ) -> Self {
+        let mut info = Self {
+            name: model.name,
+            output: Vec::new(),
+            stmts: Vec::new(),
+            variables: Variable::new_from_vec(model.unknowns.as_slice()),
+        };
+        for stmt in model.statements.iter() {
+            match &stmt.kind {
+                AstKind::Submodel(submodel_call) => {
+                    // find name in models
+                    let mut submodel = match Self::build(submodel_call.name, models) {
+                        Some(x) => x,
+                        None => {
+                            info.output.push(Output {
+                                text: format!("Submodel name {} not found", submodel_call.name),
+                                ast_node: &stmt,
+                            });
+                            continue;
+                        }
+                    };
+                    info.add_submodel(&mut submodel, &submodel_call);
                 }
-                // check all unknowns are in call args
+                AstKind::Equation(eqn) => {
+                    info.check_expr(&eqn.lhs);
+                    info.check_expr(&eqn.rhs);
+                    info.stmts.push(*stmt.clone());
+                }
+                AstKind::RateEquation(reqn) => {
+                    // check name exists
+                    info.check_expr(&reqn.rhs);
+                    info.stmts.push(*stmt.clone());
+                }
+                AstKind::Definition(_) => {
+                    info.variables.push(Variable::new(&stmt));
+                    info.stmts.push(*stmt.clone());
+                }
+                _ => (),
             }
-            AstKind::Equation(eqn) => {
-                examine_expression(&eqn.lhs, info);
-                examine_expression(&eqn.rhs, info);
-                info.stmts.push(*stmt.clone());
-            }
-            AstKind::RateEquation(reqn) => {
+        }
+        info
+    }
+
+    fn add_submodel<'mi>(
+        &mut self,
+        submodel: &'mi mut ModelInfo<'s, 'a>,
+        submodel_call: &'a ast::Submodel<'s>,
+    ) {
+        let replacements = self.find_replacements(submodel, submodel_call);
+        self.output.append(&mut submodel.output);
+        for stmt in &submodel.stmts {
+            self.stmts.push(stmt.clone_and_subst(&replacements));
+        }
+    }
+
+    fn check_expr(& mut self, expr: &'a Box<Ast<'s>>) {
+        match &expr.kind {
+            AstKind::Name(name) => {
                 // check name exists
-                examine_expression(&reqn.rhs, info);
-                info.stmts.push(*stmt.clone());
+                if self.variables.iter().find(|v| v.name == *name).is_none() {
+                    self.output.push(Output {
+                        text: format!("name {} not found", name),
+                        ast_node: expr,
+                    })
+                }
             }
-            AstKind::Definition(dfn) => {
-                info.variables.push(Variable::new(&stmt));
-                info.stmts.push(*stmt.clone());
-            },
+            AstKind::Binop(binop) => {
+                self.check_expr(&binop.left);
+                self.check_expr(&binop.right);
+            }
+            AstKind::Monop(monop) => {
+                self.check_expr(&monop.child);
+            }
             _ => (),
         }
     }
-}
+    fn find_replacements<'mi>(
+        & mut self,
+        submodel: &'mi ModelInfo<'s, 'a>,
+        submodel_call: &'a ast::Submodel<'s>,
+    ) -> HashMap<&'s str, &'a Box<Ast<'s>>> {
+        let mut replacements = HashMap::new();
+        let mut found_kwarg = false;
 
-
-fn find_replacements<'s, 'a, 'mi>(model: &'a ast::Model<'s>,  model_call: &'a ast::Submodel<'s>, info: &'mi mut ModelInfo<'s, 'a>) -> HashMap<&'s str, Box<Ast<'s>>> {
-    let mut replacements = HashMap::new();
-    let mut found_kwarg = false;
-
-    // find all the replacements specified in the call arguments
-    for (i, arg) in model_call.args.iter().enumerate() {
-        if let AstKind::CallArg(call_arg) = arg.kind {
-            if let Some(name) = call_arg.name {
-                found_kwarg = true;
-                let find_unknown = model.unknowns.into_iter().map(|u| {
-                    match u.kind { 
-                        AstKind::Unknown(unknown) => unknown,
-                        _ => unreachable!()
-                    }}).find(|u| u.name == name);
-                if let Some(unknown) = find_unknown {
-                    replacements.insert(name, call_arg.expression);
+        // find all the replacements specified in the call arguments
+        for (i, arg) in submodel_call.args.iter().enumerate() {
+            if let AstKind::CallArg(call_arg) = &arg.kind {
+                if let Some(name) = call_arg.name {
+                    found_kwarg = true;
+                    if let Some(_) = submodel.variables.iter().find(|v| v.name == name) {
+                        replacements.insert(name, &call_arg.expression);
+                    } else {
+                        self.output.push(Output {
+                            text: format!(
+                                "Cannot find unknown {} in model {}",
+                                name, submodel.name
+                            ),
+                            ast_node: arg,
+                        });
+                    }
                 } else {
-                    info.output.push(Output {
-                        text: format!("Cannot find unknown {} in model {}", name, model.name),
-                        ast_node: arg,
-                    });
-                }
-            } else {
-                if found_kwarg {
-                    info.output.push(Output {
-                        text: format!("positional argument found after keyword argument"),
-                        ast_node: arg,
-                    })
-                }
-                let unknown = if let AstKind::Unknown(unknown) = model.unknowns[i].kind {
-                    unknown
-                } else {
-                    unreachable!()
+                    if found_kwarg {
+                        self.output.push(Output {
+                            text: format!("positional argument found after keyword argument"),
+                            ast_node: arg,
+                        });
+                    }
+                    replacements.insert(submodel.variables[i].name, &call_arg.expression);
                 };
-                replacements.insert(unknown.name, call_arg.expression);
-            };
+            }
         }
+        replacements
     }
-    replacements
 }
 
-fn add_submodel_equations<'s, 'a, 'mi>(model: &'a ast::Model<'s>,  model_call: &'a ast::Submodel<'s>, info: &'mi mut ModelInfo<'s, 'a>) {
-    let replacements = find_replacements(model, model_call, info);
-    // go through the model equations and add them to info, applying the replacements
-    for stmt in model.statements {
-        info.stmts.push((*stmt).clone_and_subst(replacements));
-    }
-}
+
+
+
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser::parse_string, builder::builder_index};
+    use crate::{builder::ModelInfo, parser::parse_string, ast::Model};
 
     #[test]
     fn submodel_name_not_found() {
@@ -216,13 +209,12 @@ mod tests {
         }
         ";
         let models = parse_string(text).unwrap();
-        let model_infos = semantic_pass(&models);
-        assert_eq!(model_infos.len(), 2);
-        assert_eq!(model_infos[0].variables.len(), 3);
-        assert_eq!(model_infos[0].output.len(), 0);
-        assert_eq!(model_infos[1].variables.len(), 4);
-        assert_eq!(model_infos[1].output.len(), 1);
-        assert!(model_infos[1].output[0].text.contains("resistorr") == true);
+        let models_ref: Vec<&Model> = models.iter().collect();
+        let model_info = ModelInfo::build("circuit", &models_ref).unwrap();
+        assert_eq!(model_info.variables.len(), 4);
+        assert_eq!(model_info.stmts.len(), 1);
+        assert_eq!(model_info.output.len(), 1);
+        assert!(model_info.output[0].text.contains("resistorr") == true);
     }
     #[test]
     fn variable_name_not_found() {
@@ -232,10 +224,10 @@ mod tests {
         }
         ";
         let models = parse_string(text).unwrap();
-        let model_infos = semantic_pass(&models);
-        assert_eq!(model_infos.len(), 1);
-        assert_eq!(model_infos[0].variables.len(), 3);
-        assert_eq!(model_infos[0].output.len(), 1);
-        assert!(model_infos[0].output[0].text.contains("doesnotexist") == true);
+        let models_ref: Vec<&Model> = models.iter().collect();
+        let model_info = ModelInfo::build("resistor", &models_ref).unwrap();
+        assert_eq!(model_info.variables.len(), 3);
+        assert_eq!(model_info.output.len(), 1);
+        assert!(model_info.output[0].text.contains("doesnotexist") == true);
     }
 }

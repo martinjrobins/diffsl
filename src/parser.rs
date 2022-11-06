@@ -322,21 +322,21 @@ mod tests {
 
         assert_eq!(models[0].name, "capacitor");
         assert_eq!(models[0].unknowns.len(), 3);
-        if let AstKind::Unknown(unknown) = models[0].unknowns[0].kind {
+        if let AstKind::Unknown(unknown) = &models[0].unknowns[0].kind {
             assert_eq!(unknown.name, "i");
             assert_eq!(unknown.dependents.len(), 1);
             assert!(unknown.codomain.is_none());
         } else {
             panic!("should be unknown");
         }
-        if let AstKind::Unknown(unknown) = models[0].unknowns[1].kind {
+        if let AstKind::Unknown(unknown) = &models[0].unknowns[1].kind {
             assert_eq!(unknown.name, "v");
             assert_eq!(unknown.dependents.len(), 1);
             assert!(unknown.codomain.is_none());
         } else {
             panic!("should be unknown");
         }
-        if let AstKind::Unknown(unknown) = models[0].unknowns[2].kind {
+        if let AstKind::Unknown(unknown) = &models[0].unknowns[2].kind {
             assert_eq!(unknown.name, "c");
             assert_eq!(unknown.dependents.len(), 0);
             assert!(unknown.codomain.is_some());
@@ -344,9 +344,9 @@ mod tests {
             panic!("should be unknown");
         }
         assert_eq!(models[0].statements.len(), 1);
-        if let AstKind::Equation(eqn) = models[0].statements[0].kind {
+        if let AstKind::Equation(eqn) = &models[0].statements[0].kind {
             assert!(matches!(eqn.lhs.kind, AstKind::Name(name) if name == "i"));
-            assert!(matches!(eqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*'));
+            assert!(matches!(&eqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*'));
         } else {
             assert!(false, "not an equation")
         }
@@ -365,9 +365,9 @@ mod tests {
         assert_eq!(models[0].name, "diffusion");
         assert_eq!(models[0].unknowns.len(), 3);
         assert_eq!(models[0].statements.len(), 1);
-        if let AstKind::RateEquation(reqn) = models[0].statements[0].kind {
+        if let AstKind::RateEquation(reqn) = &models[0].statements[0].kind {
             assert_eq!(reqn.name, "y");
-            assert!(matches!(reqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*'));
+            assert!(matches!(&reqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*'));
         } else {
             assert!(false, "not a rate equation")
         }
@@ -387,22 +387,22 @@ mod tests {
         let models = parse_string(text).unwrap();
         assert_eq!(models.len(), 2);
 
-        assert_eq!(models[0].name, "circuit");
-        assert_eq!(models[0].unknowns.len(), 3);
-        assert_eq!(models[0].statements.len(), 2);
-        if let AstKind::Definition(dfn) = models[0].statements[0].kind {
+        assert_eq!(models[1].name, "circuit");
+        assert_eq!(models[1].unknowns.len(), 3);
+        assert_eq!(models[1].statements.len(), 2);
+        if let AstKind::Definition(dfn) = &models[1].statements[0].kind {
             assert_eq!(dfn.name, "inputVoltage");
             assert!(
-                matches!(dfn.rhs.kind, AstKind::Call(call) if call.fn_name == "sin" && call.args.len() == 1)
+                matches!(&dfn.rhs.kind, AstKind::Call(call) if call.fn_name == "sin" && call.args.len() == 1)
             );
         } else {
             assert!(false, "not an definition")
         }
-        if let AstKind::Submodel(submodel) = models[0].statements[1].kind {
+        if let AstKind::Submodel(submodel) = &models[1].statements[1].kind {
             assert_eq!(submodel.name, "resistor");
             assert_eq!(submodel.local_name, "resistor");
             assert_eq!(submodel.args.len(), 1);
-            if let AstKind::CallArg(arg) = submodel.args[0].kind {
+            if let AstKind::CallArg(arg) = &submodel.args[0].kind {
                 assert_eq!(arg.name.unwrap(), "v");
                 assert!(
                     matches!(arg.expression.kind, AstKind::Name(name) if name == "inputVoltage")

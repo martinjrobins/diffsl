@@ -1,7 +1,6 @@
 use std::boxed::Box;
 use std::collections::HashMap;
 use std::fmt;
-use std::mem::replace;
 
 #[derive(Debug, Clone)]
 pub struct Unknown<'a> {
@@ -92,96 +91,7 @@ pub enum AstKind<'a> {
 }
 
 impl<'a> AstKind<'a> {
-    pub fn clone_and_subst(
-        self: Self,
-        replacements: HashMap<&'a str, Box<Ast<'a>>>,
-    ) -> (Self, Option<Box<Ast<'a>>>) {
-        match self {
-            AstKind::Definition(dfn) => (
-                AstKind::Definition(Definition {
-                    name: dfn.name.clone(),
-                    rhs: Box::new(dfn.rhs.clone_and_subst(replacements)),
-                }),
-                None,
-            ),
-            AstKind::Equation(eqn) => (
-                AstKind::Equation(Equation {
-                    lhs: Box::new(eqn.lhs.clone_and_subst(replacements)),
-                    rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
-                }),
-                None,
-            ),
-            AstKind::RateEquation(eqn) => (
-                AstKind::RateEquation(RateEquation {
-                    name: eqn.name.clone(),
-                    rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
-                }),
-                None,
-            ),
-            AstKind::Binop(binop) => (
-                AstKind::Binop(Binop {
-                    op: binop.op.clone(),
-                    left: Box::new(binop.left.clone_and_subst(replacements)),
-                    right: Box::new(binop.left.clone_and_subst(replacements)),
-                }),
-                None,
-            ),
-            AstKind::Monop(binop) => (
-                AstKind::Monop(Monop {
-                    op: binop.op.clone(),
-                    child: Box::new(binop.child.clone_and_subst(replacements)),
-                }),
-                None,
-            ),
-            AstKind::Call(call) => (
-                AstKind::Call(Call {
-                    fn_name: call.fn_name.clone(),
-                    args: call
-                        .args
-                        .into_iter()
-                        .map(|m| m.clone_and_subst(replacements))
-                        .collect(),
-                }),
-                None,
-            ),
-            AstKind::CallArg(arg) => (
-                AstKind::CallArg(CallArg {
-                    name: arg.name.clone(),
-                    expression: Box::new(arg.expression.clone_and_subst(replacements)),
-                }),
-                None,
-            ),
-            AstKind::Number(num) => (AstKind::Number(num), None),
-            AstKind::Name(name) => match replacements.get(name) {
-                Some(&x) => (x.kind, Some(x)),
-                None => (AstKind::Name(name), None),
-            },
-            AstKind::Model(m) => (
-                AstKind::Model(m.clone()),
-                None,
-            ),
-            AstKind::Unknown(unknown) => (
-                AstKind::Unknown(unknown.clone()),
-                None,
-            )
-            AstKind::Submodel(submodel) => (
-                AstKind::Submodel(Submodel{ 
-                    name: submodel.name.clone(), 
-                    local_name: submodel.local_name.clone(), 
-                    args: submodel
-                        .args
-                        .into_iter()
-                        .map(|m| m.clone_and_subst(replacements))
-                        .collect(),
-                }),
-                None,
-            ),
-            AstKind::Range(range) => (
-                AstKind::Range(range.clone()),
-                None,
-            ),
-        }
-    }
+    
 }
 
 #[derive(Debug, Clone)]
@@ -197,8 +107,71 @@ pub struct Ast<'a> {
 }
 
 impl<'a> Ast<'a> {
-    pub fn clone_and_subst(&self, replacements: HashMap<&'a str, Box<Ast<'a>>>) -> Self {
-        let (cloned_kind, repl) = self.kind.clone_and_subst(replacements);
+    pub fn clone_and_subst<'b>(&self, replacements: &HashMap<&'a str, &'b Box<Ast<'a>>>) -> Self {
+        let cloned_kind = match &self.kind {
+            AstKind::Definition(dfn) => 
+                AstKind::Definition(Definition {
+                    name: dfn.name.clone(),
+                    rhs: Box::new(dfn.rhs.clone_and_subst(replacements)),
+                }),
+            AstKind::Equation(eqn) => 
+                AstKind::Equation(Equation {
+                    lhs: Box::new(eqn.lhs.clone_and_subst(replacements)),
+                    rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
+                }),
+            AstKind::RateEquation(eqn) =>
+                AstKind::RateEquation(RateEquation {
+                    name: eqn.name.clone(),
+                    rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
+                }),
+            AstKind::Binop(binop) =>
+                AstKind::Binop(Binop {
+                    op: binop.op.clone(),
+                    left: Box::new(binop.left.clone_and_subst(replacements)),
+                    right: Box::new(binop.left.clone_and_subst(replacements)),
+                }),
+            AstKind::Monop(binop) => 
+                AstKind::Monop(Monop {
+                    op: binop.op.clone(),
+                    child: Box::new(binop.child.clone_and_subst(replacements)),
+                }),
+            AstKind::Call(call) => 
+                AstKind::Call(Call {
+                    fn_name: call.fn_name.clone(),
+                    args: call
+                        .args
+                        .iter()
+                        .map(|m| Box::new(m.clone_and_subst(replacements)))
+                        .collect(),
+                }),
+            AstKind::CallArg(arg) => 
+                AstKind::CallArg(CallArg {
+                    name: arg.name.clone(),
+                    expression: Box::new(arg.expression.clone_and_subst(replacements)),
+                }),
+            AstKind::Number(num) => AstKind::Number(*num),
+            AstKind::Name(name) => if let Some(x) = replacements.get(name) {
+                x.kind.clone()
+            } else {
+                AstKind::Name(name)
+            },
+            AstKind::Model(m) =>
+                AstKind::Model(m.clone()),
+            AstKind::Unknown(unknown) => 
+                AstKind::Unknown(unknown.clone()),
+            AstKind::Submodel(submodel) => 
+                AstKind::Submodel(Submodel{ 
+                    name: submodel.name.clone(), 
+                    local_name: submodel.local_name.clone(), 
+                    args: submodel
+                        .args
+                        .iter()
+                        .map(|m| Box::new(m.clone_and_subst(replacements)))
+                        .collect(),
+                }),
+            AstKind::Range(range) => 
+                AstKind::Range(range.clone()),
+        };
         Ast {
             kind: cloned_kind,
             span: self.span.clone(),

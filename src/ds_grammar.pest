@@ -1,0 +1,16 @@
+main       = { SOI ~ array ~ EOI }
+array      = { name ~ "{" ~ expression* ~ "}" }
+expression = { sign? ~ term ~ (term_op ~ term)* }
+term       = { factor ~ (factor_op ~ factor)* }
+factor     = { var | real | integer | "(" ~ expression ~ ")" }
+var        = { name ~ ( "[" ~ index ~ "]" )? }
+sign       = @{ ("-"|"+") }
+term_op    = @{ "-"|"+" }
+factor_op  = @{ "*"|"/" }
+name       = @{ ( 'a'..'z' | 'A'..'Z' ) ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
+integer    = @{ ('0'..'9')+ }
+real       = @{ ( ('0'..'9')+ ~ "." ~ ('0'..'9')+ ) | integer }
+WHITESPACE = _{ " " | NEWLINE | "\t" }
+COMMENT    = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+

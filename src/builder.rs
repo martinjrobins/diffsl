@@ -20,10 +20,13 @@ impl<'s, 'a> Output<'s, 'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Variable<'s, 'a> {
-    name: &'s str,
-    ast_node: &'a Box<Ast<'s>>,
+    pub name: &'s str,
+    pub dim: usize,
+    pub state: bool,
+    pub constant: bool,
+    pub ast_node: &'a Box<Ast<'s>>,
 }
 
 impl<'s, 'a> Variable<'s, 'a> {
@@ -36,14 +39,26 @@ impl<'s, 'a> Variable<'s, 'a> {
     }
     pub fn new(node: &'a Box<Ast<'s>>) -> Variable<'s, 'a> {
         match &node.kind {
-            AstKind::Unknown(unknown) => Variable {
-                name: unknown.name,
-                ast_node: node,
-            },
-            AstKind::Definition(dfn) => Variable {
-                name: dfn.name,
-                ast_node: node,
-            },
+            AstKind::Unknown(unknown) => {
+                let time_dependent = unknown.dependents.iter().any(|d| *d == "t");
+                Variable {
+                    name: unknown.name,
+                    ast_node: node,
+                    dim: 1,
+                    state: time_dependent,
+                    constant: !time_dependent,
+                }
+            }
+            AstKind::Definition(dfn) => {
+                let time_dependent = dfn.rhs.depends_on("t");
+                Variable {
+                    name: dfn.name,
+                    ast_node: node,
+                    dim: 1,
+                    state: false, 
+                    constant: !time_dependent, 
+                }
+            }
             _ => panic!("Cannot create variable from {}", node),
         }
     }
@@ -51,10 +66,10 @@ impl<'s, 'a> Variable<'s, 'a> {
 
 #[derive(Debug)]
 pub struct ModelInfo<'s, 'a> {
-    name: &'s str,
-    variables: Vec<Variable<'s, 'a>>,
-    stmts: Vec<Ast<'a>>,
-    output: Vec<Output<'s, 'a>>,
+    pub name: &'s str,
+    pub variables: Vec<Variable<'s, 'a>>,
+    pub stmts: Vec<Ast<'a>>,
+    pub output: Vec<Output<'s, 'a>>,
 }
 
 impl<'s, 'a> ModelInfo<'s, 'a> {
@@ -79,8 +94,23 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
             name: model.name,
             output: Vec::new(),
             stmts: Vec::new(),
-            variables: Variable::new_from_vec(model.unknowns.as_slice()),
+            variables: Vec::with_capacity(model.unknowns.len()),
         };
+
+        let reserved = ["u", "dudt", "t", "F", "G", "input"];
+        // create variables from unknowns
+        for node in model.unknowns.iter() {
+            // check its not in list of reserved names
+            let var = Variable::new(node);
+            if reserved.contains(&var.name) {
+                info.output.push(Output {
+                    text: format!("Name {} is reserved", var.name),
+                    ast_node: var.ast_node,
+                });
+            }
+            info.variables.push(var);
+        }
+
         for stmt in model.statements.iter() {
             match &stmt.kind {
                 AstKind::Submodel(submodel_call) => {
@@ -108,7 +138,14 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
                     info.stmts.push(*stmt.clone());
                 }
                 AstKind::Definition(_) => {
-                    info.variables.push(Variable::new(&stmt));
+                    let var = Variable::new(&stmt);
+                    if reserved.contains(&var.name) {
+                        info.output.push(Output {
+                            text: format!("Name {} is reserved", var.name),
+                            ast_node: var.ast_node,
+                        });
+                    }
+                    info.variables.push(var);
                     info.stmts.push(*stmt.clone());
                 }
                 _ => (),

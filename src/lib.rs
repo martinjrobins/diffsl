@@ -9,6 +9,7 @@ struct MsParser;
 pub mod parser;
 pub mod ast;
 pub mod builder;
+pub mod discretise;
 
 #[cfg(test)]
 mod tests {

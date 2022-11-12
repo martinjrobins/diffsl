@@ -74,6 +74,12 @@ pub struct Model<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct Index<'a> {
+    pub name: &'a str,
+    pub index: usize,
+}
+
+#[derive(Debug, Clone)]
 pub enum AstKind<'a> {
     Model(Model<'a>),
     Unknown(Unknown<'a>),
@@ -84,17 +90,16 @@ pub enum AstKind<'a> {
     Range(Range),
     Binop(Binop<'a>),
     Monop(Monop<'a>),
+    Index(Index<'a>),
     Call(Call<'a>),
     CallArg(CallArg<'a>),
     Number(f64),
     Name(&'a str),
 }
 
-impl<'a> AstKind<'a> {
-    
-}
+impl<'a> AstKind<'a> {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct StringSpan {
     pub pos_start: usize,
     pub pos_end: usize,
@@ -109,90 +114,80 @@ pub struct Ast<'a> {
 impl<'a> Ast<'a> {
     pub fn clone_and_subst<'b>(&self, replacements: &HashMap<&'a str, &'b Box<Ast<'a>>>) -> Self {
         let cloned_kind = match &self.kind {
-            AstKind::Definition(dfn) => 
-                AstKind::Definition(Definition {
-                    name: dfn.name.clone(),
-                    rhs: Box::new(dfn.rhs.clone_and_subst(replacements)),
-                }),
-            AstKind::Equation(eqn) => 
-                AstKind::Equation(Equation {
-                    lhs: Box::new(eqn.lhs.clone_and_subst(replacements)),
-                    rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
-                }),
-            AstKind::RateEquation(eqn) =>
-                AstKind::RateEquation(RateEquation {
-                    name: eqn.name.clone(),
-                    rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
-                }),
-            AstKind::Binop(binop) =>
-                AstKind::Binop(Binop {
-                    op: binop.op.clone(),
-                    left: Box::new(binop.left.clone_and_subst(replacements)),
-                    right: Box::new(binop.left.clone_and_subst(replacements)),
-                }),
-            AstKind::Monop(binop) => 
-                AstKind::Monop(Monop {
-                    op: binop.op.clone(),
-                    child: Box::new(binop.child.clone_and_subst(replacements)),
-                }),
-            AstKind::Call(call) => 
-                AstKind::Call(Call {
-                    fn_name: call.fn_name.clone(),
-                    args: call
-                        .args
-                        .iter()
-                        .map(|m| Box::new(m.clone_and_subst(replacements)))
-                        .collect(),
-                }),
-            AstKind::CallArg(arg) => 
-                AstKind::CallArg(CallArg {
-                    name: arg.name.clone(),
-                    expression: Box::new(arg.expression.clone_and_subst(replacements)),
-                }),
+            AstKind::Definition(dfn) => AstKind::Definition(Definition {
+                name: dfn.name.clone(),
+                rhs: Box::new(dfn.rhs.clone_and_subst(replacements)),
+            }),
+            AstKind::Equation(eqn) => AstKind::Equation(Equation {
+                lhs: Box::new(eqn.lhs.clone_and_subst(replacements)),
+                rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
+            }),
+            AstKind::RateEquation(eqn) => AstKind::RateEquation(RateEquation {
+                name: eqn.name.clone(),
+                rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
+            }),
+            AstKind::Binop(binop) => AstKind::Binop(Binop {
+                op: binop.op.clone(),
+                left: Box::new(binop.left.clone_and_subst(replacements)),
+                right: Box::new(binop.right.clone_and_subst(replacements)),
+            }),
+            AstKind::Monop(binop) => AstKind::Monop(Monop {
+                op: binop.op.clone(),
+                child: Box::new(binop.child.clone_and_subst(replacements)),
+            }),
+            AstKind::Call(call) => AstKind::Call(Call {
+                fn_name: call.fn_name.clone(),
+                args: call
+                    .args
+                    .iter()
+                    .map(|m| Box::new(m.clone_and_subst(replacements)))
+                    .collect(),
+            }),
+            AstKind::CallArg(arg) => AstKind::CallArg(CallArg {
+                name: arg.name.clone(),
+                expression: Box::new(arg.expression.clone_and_subst(replacements)),
+            }),
             AstKind::Number(num) => AstKind::Number(*num),
-            AstKind::Name(name) => if let Some(x) = replacements.get(name) {
-                x.kind.clone()
-            } else {
-                AstKind::Name(name)
-            },
-            AstKind::Model(m) =>
-                AstKind::Model(m.clone()),
-            AstKind::Unknown(unknown) => 
-                AstKind::Unknown(unknown.clone()),
-            AstKind::Submodel(submodel) => 
-                AstKind::Submodel(Submodel{ 
-                    name: submodel.name.clone(), 
-                    local_name: submodel.local_name.clone(), 
-                    args: submodel
-                        .args
-                        .iter()
-                        .map(|m| Box::new(m.clone_and_subst(replacements)))
-                        .collect(),
-                }),
-            AstKind::Range(range) => 
-                AstKind::Range(range.clone()),
+            AstKind::Name(name) => {
+                if let Some(x) = replacements.get(name) {
+                    x.kind.clone()
+                } else {
+                    AstKind::Name(name)
+                }
+            }
+            AstKind::Model(m) => AstKind::Model(m.clone()),
+            AstKind::Unknown(unknown) => AstKind::Unknown(unknown.clone()),
+            AstKind::Submodel(submodel) => AstKind::Submodel(Submodel {
+                name: submodel.name.clone(),
+                local_name: submodel.local_name.clone(),
+                args: submodel
+                    .args
+                    .iter()
+                    .map(|m| Box::new(m.clone_and_subst(replacements)))
+                    .collect(),
+            }),
+            AstKind::Range(range) => AstKind::Range(range.clone()),
+            AstKind::Index(index) => AstKind::Index(index.clone()),
         };
         Ast {
             kind: cloned_kind,
             span: self.span.clone(),
         }
     }
-}
 
-fn expr_to_string(ast: &Ast) -> String {
-    match &ast.kind {
-        AstKind::Binop(binop) => {
-            format!(
-                "{} {} {}",
-                expr_to_string(binop.left.as_ref()),
-                binop.op,
-                expr_to_string(binop.right.as_ref())
-            )
+    pub fn depends_on(&self, name: &str) -> bool {
+        match &self.kind {
+            AstKind::Equation(eqn) => eqn.lhs.depends_on(name) | eqn.rhs.depends_on(name),
+            AstKind::RateEquation(eqn) => (eqn.name == name) | eqn.rhs.depends_on(name),
+            AstKind::Binop(binop) => binop.left.depends_on(name) | binop.right.depends_on(name),
+            AstKind::Monop(monop) => monop.child.depends_on(name),
+            AstKind::Call(call) => call.args.iter().any(|c| c.depends_on(name)),
+            AstKind::CallArg(arg) => arg.expression.depends_on(name),
+            AstKind::Number(_) => false,
+            AstKind::Name(found_name) => *found_name == name,
+            AstKind::Index(index) => index.name == name,
+            _ => false,
         }
-        AstKind::Name(value) => value.to_string(),
-        AstKind::Monop(monop) => format!("{} {}", monop.op, expr_to_string(monop.child.as_ref())),
-        AstKind::Number(value) => value.to_string(),
-        _ => unreachable!(),
     }
 }
 
@@ -206,8 +201,8 @@ impl<'a> fmt::Display for Ast<'a> {
                     model.name, model.unknowns, model.statements
                 )
             }
-            AstKind::Name(name) => write!(f, "Name({})", name),
-            AstKind::Number(num) => write!(f, "Number({})", num),
+            AstKind::Name(name) => write!(f, "{}", name),
+            AstKind::Number(num) => write!(f, "{}", num),
             AstKind::Unknown(unknown) => write!(
                 f,
                 "Unknown ({})({:#?}) -> {:#?}",
@@ -215,27 +210,42 @@ impl<'a> fmt::Display for Ast<'a> {
             ),
             AstKind::Range(range) => write!(f, "({}, {})", range.lower, range.upper),
             AstKind::Equation(eqn) => {
-                write!(
-                    f,
-                    "{} = {}",
-                    expr_to_string(eqn.lhs.as_ref()),
-                    expr_to_string(eqn.rhs.as_ref())
-                )
+                write!(f, "{} = {}", eqn.lhs.to_string(), eqn.rhs.to_string(),)
             }
             AstKind::RateEquation(reqn) => {
-                write!(
-                    f,
-                    "dot({}) = {}",
-                    reqn.name,
-                    expr_to_string(reqn.rhs.as_ref())
-                )
+                write!(f, "dot({}) = {}", reqn.name, reqn.rhs.to_string())
             }
             AstKind::Submodel(submodel) => write!(
                 f,
                 "Submodel {} {:#?} as {}",
                 submodel.name, submodel.args, submodel.local_name
             ),
-            _ => unreachable!(),
+            AstKind::Binop(binop) => {
+                write!(
+                    f,
+                    "{} {} {}",
+                    binop.left.to_string(),
+                    binop.op,
+                    binop.right.to_string(),
+                )
+            }
+            AstKind::Monop(monop) => write!(f, "{} {}", monop.op, monop.child.to_string()),
+            AstKind::Call(call) => {
+                let arg_strs: Vec<String> = call.args.iter().map(|arg| arg.to_string()).collect();
+                write!(f, "{}({})", call.fn_name, arg_strs.join(", "))
+            },
+            AstKind::CallArg(arg) => {
+                match arg.name {
+                    Some(name) => write!(f, "{} = {}", name, arg.expression.to_string()),
+                    None => write!(f, "{}", arg.expression.to_string()),
+                }
+            },
+            AstKind::Definition(dfn) => {
+                write!(f, "{} = {}", dfn.name, dfn.rhs.to_string(),)
+            },
+            AstKind::Index(index) => {
+                write!(f, "{}[{}]", index.name, index.index)
+            },
         }
     }
 }

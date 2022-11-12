@@ -1,5 +1,5 @@
 main       = { SOI ~ array ~ EOI }
-array      = { name ~ "{" ~ expression* ~ "}" }
+array      = { name ~ "{" ~ expression ~ ("," ~ expression)* ~ "}" }
 expression = { sign? ~ term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }
 factor     = { var | real | integer | "(" ~ expression ~ ")" }

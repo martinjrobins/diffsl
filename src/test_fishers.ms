@@ -13,4 +13,5 @@ model fishers(
 ) {
     use diffusion(x=x, d=1, y=y)
     use logistic_growth(r=1, k=1, u=y)
+    y(x, 0) = 0
 }

@@ -86,7 +86,6 @@ impl<'s, 'a> DiscreteModel<'s, 'a> {
         let (states, _defns): (Vec<_>, Vec<_>) = time_varying
             .into_iter()
             .partition(|v| v.state);
-
         let n_states = states.iter().fold(0, |s, v| s + v.dim);
         let (state_eqns, dfn_eqns) : (Vec<_>, Vec<_>) = model.stmts.into_iter().partition(DiscreteModel::is_state_eqn);
         let (f_elmts, g_elmts) = state_eqns 
@@ -119,7 +118,7 @@ impl<'s, 'a> DiscreteModel<'s, 'a> {
 
 #[cfg(test)]
 mod tests {
-use crate::{ast::Model, parser::parse_string, discretise::DiscreteModel, builder::ModelInfo};
+use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo};
 
     #[test]
     fn test_circuit_model() {
@@ -127,17 +126,22 @@ use crate::{ast::Model, parser::parse_string, discretise::DiscreteModel, builder
         model resistor( i(t), v(t), r -> NonNegative) {
             v = i * r
         }
-        model circuit(i1(t), i2(t), i3(t)) {
+        model circuit(i(t)) {
             let inputVoltage = sin(t) 
             use resistor(v = inputVoltage)
         }
         ";
         let models = parse_string(text).unwrap();
-        let models_ref: Vec<&Model> = models.iter().collect();
-        let model_info = ModelInfo::build("circuit", &models_ref).unwrap();
-        println!("{:#?}", model_info);
+        let model_info = ModelInfo::build("circuit", &models).unwrap();
+        assert_eq!(model_info.output.len(), 0);
         let discrete = DiscreteModel::from(model_info);
-        println!("{:?}", discrete);
+        assert_eq!(discrete.arrays.len(), 3);
+        assert_eq!(discrete.arrays[0].name, "inputVoltage");
+        assert_eq!(discrete.arrays[0].elmts.len(), 1);
+        assert_eq!(discrete.arrays[1].name, "F");
+        assert_eq!(discrete.arrays[1].elmts.len(), 1);
+        assert_eq!(discrete.arrays[2].name, "G");
+        assert_eq!(discrete.arrays[2].elmts.len(), 1);
         println!("{}", discrete);
     }
 }

@@ -12,7 +12,7 @@ rate_equation = { "dot" ~ "(" ~ name ~ ")" ~ ("+=" | "=") ~ expression }
 equation   = { expression ~ "=" ~ expression }
 expression = { sign? ~ term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }
-factor     = { call | name | real | integer | "(" ~ expression ~ ")" }
+factor     = { call | real | integer | name | "(" ~ expression ~ ")" }
 call       = { name ~ "(" ~ call_arg ~ ("," ~ call_arg )* ~ ")" }
 call_arg   = { (name ~ "=")? ~ expression }
 sign       = @{ ("-"|"+") }

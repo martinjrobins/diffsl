@@ -45,7 +45,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         // integer    = @{ ('0'..'9')+ }
         // real       = @{ ( ('0'..'9')+ ~ "." ~ ('0'..'9')+ ) | integer }
         Rule::integer | Rule::real => Ast {
-            kind: AstKind::Name(pair.as_str()),
+            kind: AstKind::Number(pair.as_str().parse().unwrap()),
             span,
         },
 
@@ -199,6 +199,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                 kind: AstKind::Equation(ast::Equation {
                     lhs: Box::new(parse_value(inner.next().unwrap())),
                     rhs: Box::new(parse_value(inner.next().unwrap())),
+                    initial_condition_for: None,
                 }),
                 span,
             }
@@ -273,34 +274,36 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
     }
 }
 
-fn ast_to_model(node: Ast) -> ast::Model {
-    if let AstKind::Model(model) = node.kind {
-        model
-    } else {
-        unreachable!()
-    }
-}
 
-pub fn parse_string(text: &str) -> Result<Vec<ast::Model>, Error<Rule>> {
+
+pub fn parse_string(text: &str) -> Result<Vec<Box<Ast>>, Error<Rule>> {
     let main = MsParser::parse(Rule::main, &text)?.next().unwrap();
-    let models = main
+    let ast_nodes= main
         .into_inner()
         .take_while(|pair| pair.as_rule() != Rule::EOI)
         .map(parse_value)
-        .map(ast_to_model)
+        .map(Box::new)
         .collect();
-    return Ok(models);
+    return Ok(ast_nodes);
 }
 
 #[cfg(test)]
 mod tests {
     use super::parse_string;
-    use crate::ast::AstKind;
+    use crate::{ast::AstKind, ast::Model, ast::Ast};
+
+    fn ast_to_model(node: Box<Ast>) -> Model {
+        if let AstKind::Model(model) = node.kind {
+            model
+        } else {
+            unreachable!()
+        }
+    }
 
     #[test]
     fn empty_model() {
         const TEXT: &str = "model test() {}";
-        let models = parse_string(TEXT).unwrap();
+        let models: Vec<Model> = parse_string(TEXT).unwrap().into_iter().map(ast_to_model).collect();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, "test");
         assert!(models[0].unknowns.is_empty());
@@ -317,7 +320,7 @@ mod tests {
             v = i * r
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models: Vec<Model> = parse_string(text).unwrap().into_iter().map(ast_to_model).collect();
         assert_eq!(models.len(), 2);
 
         assert_eq!(models[0].name, "capacitor");
@@ -359,7 +362,7 @@ mod tests {
             dot(y) = d * div(grad(y, x), x) 
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models: Vec<Model> = parse_string(text).unwrap().into_iter().map(ast_to_model).collect();
         assert_eq!(models.len(), 1);
 
         assert_eq!(models[0].name, "diffusion");
@@ -384,7 +387,7 @@ mod tests {
             use resistor(v = inputVoltage)
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models: Vec<Model> = parse_string(text).unwrap().into_iter().map(ast_to_model).collect();
         assert_eq!(models.len(), 2);
 
         assert_eq!(models[1].name, "circuit");

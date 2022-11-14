@@ -2,7 +2,6 @@ use std::boxed::Box;
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::hash::Hash;
 use std::ops::Add;
 
 #[derive(Debug, Clone)]
@@ -222,7 +221,7 @@ impl<'a> Ast<'a> {
                 monop.child.collect_deps(deps);
             }
             AstKind::Call(call) => {
-                for c in call.args {
+                for c in &call.args {
                     c.collect_deps(deps);
                 }
             }

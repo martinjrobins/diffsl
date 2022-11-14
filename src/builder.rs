@@ -31,7 +31,9 @@ pub struct Dependent<'s> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Variable<'s, 'a> {
+pub struct Variable<'s, 'a> 
+    where 'a: 's
+{
     pub name: &'s str,
     pub dim: usize,
     pub state: bool,
@@ -56,10 +58,23 @@ impl<'s, 'a> Variable<'s, 'a> {
                         num_bcs: 0,
                     })
                     .collect();
-                let bounds = match unknown.codomain {
-                    Some(r) => match r.kind {
+                let bounds = match &unknown.codomain {
+                    Some(r) => match &r.kind {
                         AstKind::Range(r) => (r.lower, r.upper),
-                        AstKind::Name(_) => todo!(),
+                        AstKind::Name(name) => {
+                            match *name {
+                                "NonNegative" => (0.0, f64::INFINITY),
+                                "R" => (-f64::INFINITY, f64::INFINITY),
+                                _ => {
+                                    info.output.push(Output {
+                                        text: format!("Unknown domain {}", name),
+                                        ast_node: node,
+                                    });
+                                    (-f64::INFINITY, f64::INFINITY)
+                                }
+                            }
+
+                        },
                         _ => unreachable!(),
                     },
                     None => (if is_time { 0.0 } else { -f64::INFINITY }, f64::INFINITY),
@@ -85,7 +100,7 @@ impl<'s, 'a> Variable<'s, 'a> {
                         num_bcs: 0,
                     })
                     .collect();
-                let bounds = (-f64::INFINITY , f64::INFINITY);
+                let bounds = (-f64::INFINITY, f64::INFINITY);
                 Variable {
                     name: dfn.name,
                     ast_node: node,
@@ -120,26 +135,41 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
         match model_refs.iter().position(|v| v.name == name) {
             Some(i) => {
                 let other_models = [&model_refs[..i], &model_refs[i..]].concat();
-                let other_asts= [&ast_refs[..i], &ast_refs[i..]].concat();
-                let mut model_info = Self::builder(&ast[i], model_refs[i], &other_models, &other_asts);
+                let other_asts = [&ast_refs[..i], &ast_refs[i..]].concat();
+                let mut model_info =
+                    Self::builder(&ast[i], model_refs[i], &other_models, &other_asts);
                 model_info.check_model();
                 Ok(model_info)
             }
             None => Err(format!("Model name {} not found", name)),
         }
     }
-    fn build_submodel(name: &'s str, models: &Vec<&'a ast::Model<'s>>, asts: &Vec<&'a Box<Ast<'s>>>) -> Option<Self> {
+    fn build_submodel(
+        name: &'s str,
+        models: &Vec<&'a ast::Model<'s>>,
+        asts: &Vec<&'a Box<Ast<'s>>>,
+    ) -> Option<Self> {
         match models.iter().position(|v| v.name == name) {
             Some(i) => {
                 let other_models = [&models[..i], &models[i..]].concat();
-                let other_asts= [&asts[..i], &asts[i..]].concat();
-                Some(Self::builder(asts[i], models[i], &other_models, &other_asts))
+                let other_asts = [&asts[..i], &asts[i..]].concat();
+                Some(Self::builder(
+                    asts[i],
+                    models[i],
+                    &other_models,
+                    &other_asts,
+                ))
             }
             None => None,
         }
     }
 
-    fn builder(ast: &'a Box<Ast<'s>>, model: &'a ast::Model<'s>, models: &Vec<&'a ast::Model<'s>>, asts: &Vec<&'a Box<Ast<'s>>>) -> Self {
+    fn builder(
+        ast: &'a Box<Ast<'s>>,
+        model: &'a ast::Model<'s>,
+        models: &Vec<&'a ast::Model<'s>>,
+        asts: &Vec<&'a Box<Ast<'s>>>,
+    ) -> Self {
         let mut info = Self {
             name: model.name,
             output: Vec::new(),
@@ -183,7 +213,8 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
             match &stmt.kind {
                 AstKind::Submodel(submodel_call) => {
                     // find name in models
-                    let mut submodel = match Self::build_submodel(submodel_call.name, models, asts) {
+                    let mut submodel = match Self::build_submodel(submodel_call.name, models, asts)
+                    {
                         Some(x) => x,
                         None => {
                             info.output.push(Output {
@@ -201,10 +232,19 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
                     //  - that variable has a dependent t,
                     //  - there is a number equal to the lower bound of time in the argument corresponding to time
                     let mut is_ic = false;
+
                     if let AstKind::Call(Call { fn_name, args }) = &eqn.lhs.kind {
                         if let Some(v) = info.variables.iter().find(|v| v.name == *fn_name) {
-                            if let Some(t_index) = v.dependents.iter().position(|d| *d == "t") {
-                                if let AstKind::Number(value) = args[t_index] {}
+                            if let Some(t_index) = v.dependents.iter().position(|d| d.name == "t") {
+                                let time = match info.variables.iter().find(|v| v.name == "t") {
+                                    Some(t) => t,
+                                    None => unreachable!(),
+                                };
+                                if let AstKind::Number(value) = args[t_index].kind {
+                                    if value == time.bounds.0 {
+                                        is_ic = true;
+                                    }
+                                }
                             }
                         }
                     }
@@ -217,8 +257,8 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
                 }
                 AstKind::RateEquation(reqn) => {
                     // check name exists and variable depends on time
-                    match info.variables.iter().find(|v| v.name == reqn.name) {
-                        Some(v) => match v.dependents.iter().find(|d| d.name == "t") {
+                    match info.variables.iter_mut().find(|v| v.name == reqn.name) {
+                        Some(v) => match v.dependents.iter_mut().find(|d| d.name == "t") {
                             Some(d) => d.max_derivative = max(d.max_derivative, 1),
                             None => info.output.push(Output {
                                 text: format!(
@@ -237,7 +277,7 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
                     info.stmts.push(*stmt.clone());
                 }
                 AstKind::Definition(_) => {
-                    let var = Variable::new(&stmt);
+                    let var = Variable::new(&stmt, &mut info);
                     if reserved.contains(&var.name) {
                         info.output.push(Output {
                             text: format!("Name {} is reserved", var.name),
@@ -279,7 +319,7 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
                     "Model is underdetermined, only {} equations for {} unknowns",
                     n_eqns, n_unknowns
                 ),
-                self.ast_node,
+                ast_node: self.ast_node,
             });
         } else if n_eqns > n_unknowns {
             self.output.push(Output {
@@ -287,7 +327,7 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
                     "Model is overdetermined, only {} equations for {} unknowns",
                     n_eqns, n_unknowns
                 ),
-                self.ast_node,
+                ast_node: self.ast_node,
             });
         }
         // check that variables with derivatives have the right number of boundary conditions
@@ -312,7 +352,27 @@ impl<'s, 'a> ModelInfo<'s, 'a> {
             AstKind::Monop(monop) => {
                 self.check_expr(&monop.child);
             }
-            _ => (),
+            AstKind::Call(call) => {
+                // check name in allowed functions
+                let functions = ["sin"];
+                if !functions.contains(&call.fn_name) {
+                    if let Some(_) = self.variables.iter().find(|v| v.name == call.fn_name) {
+                        self.output.push(Output {
+                            text: format!("Invalid use of variable {}, please use \"{}\" by itself without referring to dependent variables", call.fn_name, call.fn_name),
+                            ast_node: expr,
+                        })
+                    } else {
+                        self.output.push(Output {
+                            text: format!("Function or variable {} not found", call.fn_name),
+                            ast_node: expr,
+                        })
+                    }
+                }
+                for arg in &call.args {
+                    self.check_expr(arg);
+                }
+            }
+            _ => unreachable!(),
         }
     }
     fn find_replacements<'mi>(

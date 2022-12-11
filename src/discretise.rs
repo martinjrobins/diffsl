@@ -21,17 +21,14 @@ impl<'s> fmt::Display for Array<'s> {
 
 #[derive(Debug)]
 // F(t, u, u_dot) = G(t, u)
-pub struct DiscreteModel<'s, 'a>
-where
-    'a: 's,
-{
+pub struct DiscreteModel<'s> {
     pub arrays: Vec<Array<'s>>,
-    pub inputs: Vec<Variable<'s, 'a>>,
-    pub states: Vec<Variable<'s, 'a>>,
+    pub inputs: Vec<Variable<'s>>,
+    pub states: Vec<Variable<'s>>,
     pub n_states: usize,
 }
 
-impl<'s, 'a> fmt::Display for DiscreteModel<'s, 'a> {
+impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.arrays.iter().fold(Ok(()), |result, array| {
             result.and_then(|_| writeln!(f, "{}", array))
@@ -39,7 +36,7 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s, 'a> {
     }
 }
 
-impl<'s, 'a> DiscreteModel<'s, 'a> {
+impl<'s> DiscreteModel<'s> {
     fn is_state_eqn(stmt: &Ast) -> bool {
         match stmt.kind {
             AstKind::RateEquation(_) | AstKind::Equation(_) => true,
@@ -78,7 +75,7 @@ impl<'s, 'a> DiscreteModel<'s, 'a> {
             panic!("var should be a definition")
         }
     }
-    pub fn from(model: ModelInfo<'s, 'a>) -> DiscreteModel<'s, 'a> {
+    pub fn from(model: ModelInfo<'s>) -> DiscreteModel<'s> {
         let (inputs, time_varying): (Vec<_>, Vec<_>) = model
             .variables
             .into_iter()

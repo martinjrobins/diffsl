@@ -4,10 +4,12 @@ use crate::ast::AstKind;
 use crate::ast::Call;
 use crate::ast::Model;
 use crate::ast::StringSpan;
+use crate::ast::Unknown;
 use pest::Span;
 use std::boxed::Box;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::ptr::null;
 use std::rc::Rc;
 use std::rc::Weak;
 
@@ -99,7 +101,7 @@ impl<'s> Variable<'s> {
                 Variable {
                     name: dfn.name,
                     dim: 1,
-                    dependents,
+                    dependents: Vec::new(),
                     bounds,
                     equation: Some(*dfn.rhs),
                     time_index,
@@ -114,13 +116,31 @@ impl<'s> Variable<'s> {
 #[derive(Debug)]
 pub struct ModelInfo<'s> {
     pub name: &'s str,
-    pub variables: HashMap<&'s str, <Rc<Variable<'s>>>,
+    pub variables: HashMap<&'s str, Rc<Variable<'s>>>,
     pub time: Weak<Variable<'s>>,
     pub stmts: Vec<Ast<'s>>,
     pub output: Vec<Output>,
 }
 
 impl<'s> ModelInfo<'s> {
+    pub fn new(name: &'s str) -> ModelInfo<'s> {
+        let time = Rc::new(Variable {
+            name: "t",
+            dim: 1,
+            bounds: (0.0, f64::INFINITY),
+            equation: None,
+            dependents: Vec::new(),
+            time_index: None,
+            init_conditions: Vec::new(),
+        });
+        Self {
+            name,
+            output: Vec::new(),
+            stmts: Vec::new(),
+            variables: HashMap::from([(time.name, time)]),
+            time: Rc::downgrade(&time),
+        }
+    }
     pub fn build(name: &'s str, ast: Vec<Box<Ast<'s>>>) -> Result<Self, String> {
         let model_refs: Vec<&Model> = ast.iter().filter_map(|n| AstKind::model(&n.kind)).collect();
         let ast_refs: Vec<&Box<Ast>> = ast.iter().collect();
@@ -181,7 +201,27 @@ impl<'s> ModelInfo<'s> {
                         }
                     }
                 }
-                AstKind::RateEquation(reqn) => {}
+                AstKind::RateEquation(reqn) => {
+                    match self.variables.get(reqn.name) {
+                        Some(v) => {
+                            if v.is_state() && v.is_time_dependent() {
+                                v.equation = reqn.rhs;
+                            } else {
+                                info.output.push(Output::new(
+                                    format!(
+                                        "Rate equation invalid: variable {} does not depend on time",
+                                        v.name
+                                    ),
+                                    stmt.span,
+                                ));
+                            }
+                        }
+                        None => info.output.push(Output::new(
+                            format!("name {} not found", reqn.name),
+                            stmt.span,
+                        )),
+                    }
+                }
                 AstKind::Definition(_) => {}
                 _ => (),
             }
@@ -194,36 +234,37 @@ impl<'s> ModelInfo<'s> {
         models: &Vec<&ast::Model<'s>>,
         asts: &Vec<&Box<Ast<'s>>>,
     ) -> Self {
-        let mut info = Self {
-            name: model.name,
-            output: Vec::new(),
-            stmts: Vec::new(),
-            variables: HashMap::new(),
-            time: Variable {
-                name: "t",
-                dim: 1,
-                bounds: (0.0, f64::INFINITY),
-                equation: None,
-                dependents: Vec::new(),
-                time_index: None,
-                init_conditions: Vec::new(),
-            },
-        };
-
+        
+        let info = Self::new(model.name);
         let reserved = ["u", "dudt", "t", "F", "G", "input"];
         // create variables from unknowns
         for node in model.unknowns.iter() {
+
+            let var = Rc::new(Variable::new(node, &mut info));
+
             // check its not in list of reserved names
-            let var = Variable::new(node, &mut info);
             if var.name == "t" {
-                info.time = var;
+                info.time = Rc::downgrade(&var);
             } else if reserved.contains(&var.name) {
                 info.output.push(Output::new(
                     format!("Name {} is reserved", var.name),
-                    var.ast_node.span,
+                    node.span,
                 ));
             } else {
-                info.variables.insert(var);
+                info.variables.insert(var.name, var);
+            }
+        }
+        // set dependents
+        for node in model.unknowns.iter() {
+            if let AstKind::Unknown(u) = node.kind {
+                if let Some(var) = info.variables.get(u.name) {
+                    for dep in u.dependents {
+                        if let Some(dep_var) = info.variables.get(dep) {
+                            var.dependents.push(Rc::downgrade(&dep_var));
+                        }
+                    }
+
+                }
             }
         }
         for stmt in model.statements.iter() {
@@ -250,61 +291,24 @@ impl<'s> ModelInfo<'s> {
                     //  - there is a number equal to the lower bound of time in the argument corresponding to time
                     let mut is_ic = false;
                     info.check_expr(&eqn.rhs);
+                    info.check_expr(&eqn.lhs);
                     info.stmts.push(*stmt.clone());
-                    if let AstKind::Call(Call { fn_name, args }) = &eqn.lhs.kind {
-                        if let Some(v) = info.variables.iter().find(|v| v.name == *fn_name) {
-                            if let Some(t_index) = v.dependents.iter().position(|d| d.name == "t") {
-                                let time = match info.variables.iter().find(|v| v.name == "t") {
-                                    Some(t) => t,
-                                    None => unreachable!(),
-                                };
-                                if let AstKind::Number(value) = args[t_index].kind {
-                                    if value == time.bounds.0 {
-                                        is_ic = true;
-                                        v.init_cond = eqn.rhs;
-                                        v.dependents[t_index].num_bcs += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if !is_ic {
-                        info.check_expr(&eqn.lhs);
-                    }
                 }
                 AstKind::RateEquation(reqn) => {
                     // check name exists and variable is state and nonconstant
                     info.check_expr(&reqn.rhs);
                     info.stmts.push(*stmt.clone());
-                    match info.variables.iter_mut().find(|v| v.name == reqn.name) {
-                        Some(v) => {
-                            if v.state && !v.constant {
-                                v.rate_eqn = info.stmts.pop();
-                            } else {
-                                info.output.push(Output::new(
-                                    format!(
-                                        "Rate equation invalid: variable {} does not depend on time",
-                                        v.name
-                                    ),
-                                    stmt.span,
-                                ));
-                            }
-                        }
-                        None => info.output.push(Output::new(
-                            format!("name {} not found", reqn.name),
-                            stmt.span,
-                        )),
-                    }
+                    
                 }
                 AstKind::Definition(_) => {
                     let var = Variable::new(&stmt, &mut info);
                     if reserved.contains(&var.name) {
                         info.output.push(Output::new(
                             format!("Name {} is reserved", var.name),
-                            var.ast_node.span,
+                            stmt.span,
                         ));
                     }
-                    info.variables.push(var);
+                    info.variables.insert(var.name, Rc::new(var));
                     info.stmts.push(*stmt.clone());
                 }
                 _ => (),

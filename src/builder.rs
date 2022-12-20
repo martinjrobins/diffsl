@@ -2,6 +2,7 @@ use crate::ast;
 use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::ast::Call;
+use crate::ast::Equation;
 use crate::ast::Model;
 use crate::ast::StringSpan;
 use pest::Span;
@@ -37,9 +38,11 @@ impl Output {
 }
 
 #[derive(Debug)]
-pub enum BoundaryCondition<'s> {
-    Neumann(Ast<'s>),
-    Dirichlet(Ast<'s>),
+pub struct BoundaryCondition<'s> {
+    pub variable: Rc<RefCell<Variable<'s>>>,
+    pub location: f64,
+    pub equation: Ast<'s>,
+    pub is_dirichlet:  bool,
 }
 
 #[derive(Debug)]
@@ -48,10 +51,10 @@ pub struct Variable<'s> {
     pub dim: usize,
     pub bounds: (f64, f64),
     pub equation: Option<Ast<'s>>,
+    pub expression: Option<Ast<'s>>,
     pub dependents: Vec<Rc<RefCell<Variable<'s>>>>,
     pub time_index: Option<usize>,
     pub init_conditions: Vec<BoundaryCondition<'s>>,
-    pub is_definition: bool,
 }
 
 impl<'a> fmt::Display for Variable<'a> {
@@ -73,11 +76,11 @@ impl<'s> Variable<'s> {
     pub fn is_independent(&self) -> bool {
         self.dependents.is_empty()
     }
-    pub fn is_state(&self) -> bool {
-        !self.is_definition && !self.is_independent()
-    }
     pub fn is_definition(&self) -> bool {
-        self.is_definition
+        self.expression.is_some()
+    }
+    pub fn is_state(&self) -> bool {
+        !self.is_definition() && !self.is_independent()
     }
     pub fn has_equation(&self) -> bool {
         self.equation.is_some()
@@ -87,6 +90,17 @@ impl<'s> Variable<'s> {
     }
     pub fn is_time(&self) -> bool {
         return self.name == "t";
+    }
+    pub fn is_algebraic(&self) -> Option<bool> {
+        if let Some(eqn) = &self.equation {
+            match &eqn.kind {
+                AstKind::Equation(_) => Some(true),
+                AstKind::RateEquation(_) => Some(false),
+                _ => None,
+            }
+        } else {
+            None
+        }
     }
     pub fn is_dependent_on_state(&self) -> bool {
         if self.is_definition() {
@@ -125,8 +139,8 @@ impl<'s> Variable<'s> {
                     dependents: Vec::new(),
                     bounds,
                     equation: None,
+                    expression: None,
                     init_conditions: Vec::new(),
-                    is_definition: false,
                 }
             }
             AstKind::Definition(dfn) => {
@@ -139,10 +153,10 @@ impl<'s> Variable<'s> {
                     dim: 1,
                     dependents: Vec::new(),
                     bounds,
-                    equation: Some(dfn.rhs.as_ref().clone()),
+                    equation: None,
+                    expression: Some(dfn.rhs.as_ref().clone()),
                     time_index,
                     init_conditions: Vec::new(),
-                    is_definition: true,
                 }
             }
             _ => panic!("Cannot create variable from {}", node),
@@ -168,10 +182,10 @@ impl<'s> ModelInfo<'s> {
             dim: 1,
             bounds: (0.0, f64::INFINITY),
             equation: None,
+            expression: None,
             dependents: Vec::new(),
             time_index: None,
             init_conditions: Vec::new(),
-            is_definition: false,
         }));
         Self {
             name,
@@ -211,24 +225,31 @@ impl<'s> ModelInfo<'s> {
         }
     }
 
-    fn allocate_stmt<'a>(&'a mut self, stmt: Ast<'s>) -> Option<ast::Equation<'s>> {
-        match stmt.kind {
+
+    fn allocate_stmt<'a>(&'a mut self, stmt: Ast<'s>) -> Option<Ast<'s>> {
+        //TODO use if-let chaining
+        let bc_opt = match &stmt.kind {
             AstKind::Equation(eqn) => {
                 // its an dirichlet initial condition if:
                 //  - the lhs is a call with a name equal to one of the variables,
                 //  - that variable has a dependent t,
                 //  - there is a number equal to the lower bound of time in the argument corresponding to time
-                let mut is_ic = false;
                 if let AstKind::Call(Call { fn_name, args }) = &eqn.lhs.kind {
                     if let Some(v_cell) = self.variables.get(fn_name) {
-                        let mut v = v_cell.borrow_mut();
+                        let v = v_cell.borrow();
                         if let Some(time_index) = v.time_index {
                             if let AstKind::CallArg(call_arg) = &args[time_index].kind {
                                 if let AstKind::Number(value) = call_arg.expression.kind {
                                     if value == self.time.borrow().bounds.0 {
-                                        is_ic = true;
-                                        v.init_conditions
-                                            .push(BoundaryCondition::Dirichlet(*eqn.rhs.clone()))
+                                        Some((
+                                            v_cell.clone(),
+                                            BoundaryCondition{
+                                                    variable: self.time.clone(),
+                                                    location: value,
+                                                    equation: *eqn.rhs.clone(),
+                                                    is_dirichlet: true,
+                                            }
+                                        ))
                                     } else {
                                         self.output.push(Output::new(
                                             format!(
@@ -237,24 +258,27 @@ impl<'s> ModelInfo<'s> {
                                             ),
                                             args[time_index].span,
                                         ));
+                                        None
                                     }
-                                }
-                            }
-                        }
-                    }
-                }
-                if !is_ic {
-                    Some(eqn)
-                } else {
-                    None
-                }
-            }
+                                } else { None }
+                            } else { None }
+                        } else { None }
+                    } else { None }
+                } else { None }
+            },
+            _ => None,
+        };
+        if let Some((v_cell, bc)) = bc_opt {
+            v_cell.borrow_mut().init_conditions.push(bc);
+            return None;
+        }
+        let allocated_to = match &stmt.kind {
             AstKind::RateEquation(reqn) => {
                 match self.variables.get(reqn.name) {
                     Some(v_c) => {
-                        let mut v = v_c.borrow_mut();
+                        let v = v_c.borrow();
                         if v.is_state() && v.is_time_dependent() {
-                            v.equation = Some(*reqn.rhs.clone());
+                            Some(v_c.clone())
                         } else {
                             self.output.push(Output::new(
                                 format!(
@@ -263,24 +287,34 @@ impl<'s> ModelInfo<'s> {
                                 ),
                                 stmt.span,
                             ));
+                            None
                         }
                     }
-                    None => self.output.push(Output::new(
-                        format!("name {} not found", reqn.name),
-                        stmt.span,
-                    )),
+                    None => {
+                        self.output.push(Output::new(
+                            format!("name {} not found", reqn.name),
+                            stmt.span,
+                        ));
+                        None
+                    }
                 }
-                None
-            }
-            _ => panic!("Should be only equations and rate_equations here"),
-        }   
+            },
+            _ => None,
+        };
+        if let Some(v_cell) = allocated_to {
+            v_cell.borrow_mut().equation = Some(stmt);
+            None
+        } else {
+            Some(stmt)
+        }
     }
     fn allocate_stmts(&mut self, ast: &Box<Ast<'s>>) {
         
         // move stmts out of self so we can move them
         let mut stmts: Vec<Ast<'s>> = Vec::new();
         std::mem::swap(& mut self.stmts, & mut stmts);
-        let unallocated_eqns: Vec<ast::Equation> = stmts.into_iter().filter_map(|stmt| self.allocate_stmt(stmt)).collect();
+        let unallocated_eqns: Vec<Ast> = stmts.into_iter().filter_map(|stmt| self.allocate_stmt(stmt)).collect();
+
 
 
         let unallocated_state_vars: Vec<Rc<RefCell<Variable>>> = self.variables.iter()
@@ -305,22 +339,29 @@ impl<'s> ModelInfo<'s> {
             ));
         } else {
             for (eqn, state_var) in zip(unallocated_eqns, unallocated_state_vars) {
-                state_var.borrow_mut().equation = Some(*eqn.rhs);
+                state_var.borrow_mut().equation = Some(eqn);
             }
         }
 
-        // check all state variables have an initial condition
-        for (_, v) in self.variables.iter() {
-            if v.borrow().is_state() && !v.borrow().has_initial_condition() {
-                self.output.push(Output::new(
-                    format!("{} does not have an inital condition", v.borrow()),
-                    ast.span,
-                ));
+        for (_, v_cell) in self.variables.iter() {
+            // check all non-algebraic state variables have an initial condition
+            let v = v_cell.borrow();
+            if v.is_state() && v.has_equation() {
+                if !v.is_algebraic().unwrap() && !v.has_initial_condition() {
+                    self.output.push(Output::new(
+                        format!("{} does not have an inital condition", v),
+                        ast.span,
+                    ));
+                }
+                // check algebraic variables do not have initial conditions 
+                if v.is_algebraic().unwrap() && v.has_initial_condition() {
+                    self.output.push(Output::new(
+                        format!("overdetermined initial condition, algebraic variable {} should not have an initial condition", v),
+                        v.init_conditions[0].equation.span,
+                    ));
+                }
             }
-
         }
-
-
     }
 
     fn builder(
@@ -583,7 +624,7 @@ impl<'s> ModelInfo<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ast::AstKind, builder::ModelInfo, parser::parse_string};
+    use crate::{builder::ModelInfo, parser::parse_string};
 
     #[test]
     fn simple_circuit() {
@@ -594,7 +635,6 @@ mod tests {
         model circuit(i(t)) {
             let inputVoltage = sin(t) 
             use resistor(v = inputVoltage)
-            i(0) = 1
         }
         ";
         let models = parse_string(text).unwrap();
@@ -657,7 +697,6 @@ mod tests {
         model circuit(i(t)) {
             let inputVoltage = sin(t) 
             use resistorr(v = inputVoltage)
-            i(0) = 1
         }
         ";
         let models = parse_string(text).unwrap();
@@ -676,7 +715,6 @@ mod tests {
         model circuit(i(t)) {
             let inputVoltage = sin(t) 
             use resistor(v = inputVoltage)
-            i(0) = 1
         }
         ";
         let models = parse_string(text).unwrap();
@@ -689,8 +727,6 @@ mod tests {
         let text = "
         model resistor( i(t), v(t), r -> NonNegative) {
             v = i * doesnotexist
-            v(0) = 0
-            i(0) = 0
         }
         ";
         let models = parse_string(text).unwrap();
@@ -699,5 +735,18 @@ mod tests {
         assert_eq!(model_info.output.len(), 2);
         assert!(model_info.output[0].text.contains("doesnotexist") == true);
         assert!(model_info.output[1].text.contains("underdetermined") == true);
+    }
+    #[test]
+    fn alg_variable_with_ic() {
+        let text = "
+        model resistor(i(t)) {
+            0 = i 
+            i(0) = 1
+        }
+        ";
+        let models = parse_string(text).unwrap();
+        let model_info = ModelInfo::build("resistor", &models).unwrap();
+        assert_eq!(model_info.output.len(), 1);
+        assert!(model_info.output[0].text.contains("overdetermined initial condition") == true);
     }
 }

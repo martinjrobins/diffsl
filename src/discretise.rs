@@ -64,20 +64,13 @@ impl<'s> DiscreteModel<'s> {
             Ast { kind: g_astkind, span: eqn.span },
         )
     }
-    fn dfn_to_array(dfn: &Rc<RefCell<Variable<'s>>>) -> Array<'s> {
-        let eqn = if let Some(eqn) = &dfn.borrow().equation {
-            eqn.clone()
-        } else {
-            panic!("definition var should have an equation")
-        };
-        if let AstKind::Definition(defn) = eqn.kind {
-            Array {
-                name: defn.name,
-                elmts: vec![*defn.rhs],
-            }
-        } else {
-            panic!("equation for var should be a definition")
+    fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Array<'s> {
+        let defn = defn_cell.borrow();
+        Array {
+            name: defn.name,
+            elmts: vec![defn.expression.as_ref().unwrap().clone()],
         }
+        
     }
     pub fn from(model: ModelInfo<'s>) -> DiscreteModel<'s> {
         let (_inputs, time_varying): (Vec<_>, Vec<_>) = model

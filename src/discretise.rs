@@ -136,5 +136,19 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo}
         assert_eq!(discrete.arrays[2].elmts.len(), 1);
         println!("{}", discrete);
     }
+     #[test]
+    fn rate_equation() {
+        let text = "
+        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t) ) { 
+            dot(y) = r * y * (1 - y / k)
+            y(0) = 1.0
+        }
+        ";
+        let models = parse_string(text).unwrap();
+        let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
+        assert_eq!(model_info.output.len(), 0);
+        let discrete = DiscreteModel::from(model_info);
+        println!("{}", discrete);
+    }
 }
  

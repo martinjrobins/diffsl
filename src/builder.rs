@@ -4,14 +4,13 @@ use crate::ast::AstKind;
 use crate::ast::Call;
 use crate::ast::Model;
 use crate::ast::StringSpan;
-use crate::ast::Unknown;
 use pest::Span;
 use std::boxed::Box;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::hash::Hash;
-use std::ptr::null;
+use std::fmt;
+use std::iter::zip;
 use std::rc::Rc;
-use std::rc::Weak;
 
 #[derive(Debug)]
 pub struct Output {
@@ -49,17 +48,53 @@ pub struct Variable<'s> {
     pub dim: usize,
     pub bounds: (f64, f64),
     pub equation: Option<Ast<'s>>,
-    pub dependents: Vec<Weak<Variable<'s>>>,
+    pub dependents: Vec<Rc<RefCell<Variable<'s>>>>,
     pub time_index: Option<usize>,
     pub init_conditions: Vec<BoundaryCondition<'s>>,
+    pub is_definition: bool,
 }
+
+impl<'a> fmt::Display for Variable<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let deps_disp: Vec<_> = self.dependents.iter().map(|dep| dep.borrow().name).collect();
+        if deps_disp.len() > 0 {
+            write!(f, "{}({})", self.name, deps_disp.join(","))
+        } else {
+            write!(f, "{}", self.name)
+        }
+    }
+}
+
 
 impl<'s> Variable<'s> {
     pub fn is_time_dependent(&self) -> bool {
         self.time_index.is_some()
     }
+    pub fn is_independent(&self) -> bool {
+        self.dependents.is_empty()
+    }
     pub fn is_state(&self) -> bool {
+        !self.is_definition && !self.is_independent()
+    }
+    pub fn is_definition(&self) -> bool {
+        self.is_definition
+    }
+    pub fn has_equation(&self) -> bool {
         self.equation.is_some()
+    }
+    pub fn has_initial_condition(&self) -> bool {
+        self.init_conditions.len() > 0
+    }
+    pub fn is_time(&self) -> bool {
+        return self.name == "t";
+    }
+    pub fn is_dependent_on_state(&self) -> bool {
+        if self.is_definition() {
+            self.dependents.iter().any(|dep|  dep.borrow().is_state())
+        } else {
+            self.is_state()
+        }
+
     }
     pub fn new(node: &Box<Ast<'s>>, info: &mut ModelInfo<'s>) -> Variable<'s> {
         match &node.kind {
@@ -91,6 +126,7 @@ impl<'s> Variable<'s> {
                     bounds,
                     equation: None,
                     init_conditions: Vec::new(),
+                    is_definition: false,
                 }
             }
             AstKind::Definition(dfn) => {
@@ -103,9 +139,10 @@ impl<'s> Variable<'s> {
                     dim: 1,
                     dependents: Vec::new(),
                     bounds,
-                    equation: Some(*dfn.rhs),
+                    equation: Some(dfn.rhs.as_ref().clone()),
                     time_index,
                     init_conditions: Vec::new(),
+                    is_definition: true,
                 }
             }
             _ => panic!("Cannot create variable from {}", node),
@@ -116,42 +153,43 @@ impl<'s> Variable<'s> {
 #[derive(Debug)]
 pub struct ModelInfo<'s> {
     pub name: &'s str,
-    pub variables: HashMap<&'s str, Rc<Variable<'s>>>,
-    pub time: Weak<Variable<'s>>,
+    pub unknowns: Vec<Rc<RefCell<Variable<'s>>>>,
+    pub variables: HashMap<&'s str, Rc<RefCell<Variable<'s>>>>,
+    pub time: Rc<RefCell<Variable<'s>>>,
     pub stmts: Vec<Ast<'s>>,
     pub output: Vec<Output>,
 }
 
 impl<'s> ModelInfo<'s> {
     pub fn new(name: &'s str) -> ModelInfo<'s> {
-        let time = Rc::new(Variable {
-            name: "t",
+        let t_name = "t";
+        let time = Rc::new(RefCell::new(Variable {
+            name: t_name,
             dim: 1,
             bounds: (0.0, f64::INFINITY),
             equation: None,
             dependents: Vec::new(),
             time_index: None,
             init_conditions: Vec::new(),
-        });
+            is_definition: false,
+        }));
         Self {
             name,
             output: Vec::new(),
+            unknowns: Vec::new(),
             stmts: Vec::new(),
-            variables: HashMap::from([(time.name, time)]),
-            time: Rc::downgrade(&time),
+            variables: HashMap::from([(t_name, time.clone())]),
+            time: time.clone(),
         }
     }
-    pub fn build(name: &'s str, ast: Vec<Box<Ast<'s>>>) -> Result<Self, String> {
+    pub fn build(name: &'s str, ast: &'s Vec<Box<Ast<'s>>>) -> Result<Self, String> {
         let model_refs: Vec<&Model> = ast.iter().filter_map(|n| AstKind::model(&n.kind)).collect();
-        let ast_refs: Vec<&Box<Ast>> = ast.iter().collect();
         match model_refs.iter().position(|v| v.name == name) {
             Some(i) => {
                 let other_models = [&model_refs[..i], &model_refs[i..]].concat();
-                let other_asts = [&ast_refs[..i], &ast_refs[i..]].concat();
                 let mut model_info =
-                    Self::builder(&ast[i], model_refs[i], &other_models, &other_asts);
-                model_info.allocate_stmts();
-                model_info.check_model();
+                    Self::builder(model_refs[i], &other_models);
+                model_info.allocate_stmts(&ast[i]);
                 Ok(model_info)
             }
             None => Err(format!("Model name {} not found", name)),
@@ -160,107 +198,168 @@ impl<'s> ModelInfo<'s> {
     fn build_submodel(
         name: &'s str,
         models: &Vec<&ast::Model<'s>>,
-        asts: &Vec<&Box<Ast<'s>>>,
     ) -> Option<Self> {
         match models.iter().position(|v| v.name == name) {
             Some(i) => {
                 let other_models = [&models[..i], &models[i..]].concat();
-                let other_asts = [&asts[..i], &asts[i..]].concat();
                 Some(Self::builder(
-                    asts[i],
                     models[i],
                     &other_models,
-                    &other_asts,
                 ))
             }
             None => None,
         }
     }
 
-    fn allocate_stmts(&mut self) {
-        for stmt in self.stmts {
-            match &stmt.kind {
-                AstKind::Submodel(submodel_call) => panic!("Should be no submodels here"),
-                AstKind::Equation(eqn) => {
-                    // its an dirichlet initial condition if:
-                    //  - the lhs is a call with a name equal to one of the variables,
-                    //  - that variable has a dependent t,
-                    //  - there is a number equal to the lower bound of time in the argument corresponding to time
-                    let mut is_ic = false;
-                    if let AstKind::Call(Call { fn_name, args }) = &eqn.lhs.kind {
-                        if let Some(v) = self.variables.get(fn_name) {
-                            if let Some(time_index) = v.time_index {
-                                if let AstKind::Number(value) = args[time_index].kind {
-                                    if value == self.time.bounds.0 {
+    fn allocate_stmt<'a>(&'a mut self, stmt: Ast<'s>) -> Option<ast::Equation<'s>> {
+        match stmt.kind {
+            AstKind::Equation(eqn) => {
+                // its an dirichlet initial condition if:
+                //  - the lhs is a call with a name equal to one of the variables,
+                //  - that variable has a dependent t,
+                //  - there is a number equal to the lower bound of time in the argument corresponding to time
+                let mut is_ic = false;
+                if let AstKind::Call(Call { fn_name, args }) = &eqn.lhs.kind {
+                    if let Some(v_cell) = self.variables.get(fn_name) {
+                        let mut v = v_cell.borrow_mut();
+                        if let Some(time_index) = v.time_index {
+                            if let AstKind::CallArg(call_arg) = &args[time_index].kind {
+                                if let AstKind::Number(value) = call_arg.expression.kind {
+                                    if value == self.time.borrow().bounds.0 {
                                         is_ic = true;
                                         v.init_conditions
-                                            .push(BoundaryCondition::Dirichlet(*eqn.rhs))
+                                            .push(BoundaryCondition::Dirichlet(*eqn.rhs.clone()))
+                                    } else {
+                                        self.output.push(Output::new(
+                                            format!(
+                                                "Did you mean to set an initial condition here? equation should be {}({}) = ...",
+                                                fn_name, self.time.borrow().bounds.0, 
+                                            ),
+                                            args[time_index].span,
+                                        ));
                                     }
                                 }
                             }
                         }
                     }
                 }
-                AstKind::RateEquation(reqn) => {
-                    match self.variables.get(reqn.name) {
-                        Some(v) => {
-                            if v.is_state() && v.is_time_dependent() {
-                                v.equation = reqn.rhs;
-                            } else {
-                                info.output.push(Output::new(
-                                    format!(
-                                        "Rate equation invalid: variable {} does not depend on time",
-                                        v.name
-                                    ),
-                                    stmt.span,
-                                ));
-                            }
-                        }
-                        None => info.output.push(Output::new(
-                            format!("name {} not found", reqn.name),
-                            stmt.span,
-                        )),
-                    }
+                if !is_ic {
+                    Some(eqn)
+                } else {
+                    None
                 }
-                AstKind::Definition(_) => {}
-                _ => (),
+            }
+            AstKind::RateEquation(reqn) => {
+                match self.variables.get(reqn.name) {
+                    Some(v_c) => {
+                        let mut v = v_c.borrow_mut();
+                        if v.is_state() && v.is_time_dependent() {
+                            v.equation = Some(*reqn.rhs.clone());
+                        } else {
+                            self.output.push(Output::new(
+                                format!(
+                                    "Rate equation invalid: variable {} does not depend on time",
+                                    v.name
+                                ),
+                                stmt.span,
+                            ));
+                        }
+                    }
+                    None => self.output.push(Output::new(
+                        format!("name {} not found", reqn.name),
+                        stmt.span,
+                    )),
+                }
+                None
+            }
+            _ => panic!("Should be only equations and rate_equations here"),
+        }   
+    }
+    fn allocate_stmts(&mut self, ast: &Box<Ast<'s>>) {
+        
+        // move stmts out of self so we can move them
+        let mut stmts: Vec<Ast<'s>> = Vec::new();
+        std::mem::swap(& mut self.stmts, & mut stmts);
+        let unallocated_eqns: Vec<ast::Equation> = stmts.into_iter().filter_map(|stmt| self.allocate_stmt(stmt)).collect();
+
+
+        let unallocated_state_vars: Vec<Rc<RefCell<Variable>>> = self.variables.iter()
+            .filter_map(|(_name, v)| if v.borrow().is_state() && !v.borrow().has_equation() { Some(v.clone()) } else { None })
+            .collect();
+        if unallocated_eqns.len() != unallocated_state_vars.len() {
+            let msg = if unallocated_state_vars.len() > unallocated_eqns.len() {
+                "Model is underdetermined"
+            } else {
+                "Model is overdetermined"
+            };
+            let unallocated_eqns_disp: Vec<String> = unallocated_eqns.iter().map(|eqn| eqn.to_string()).collect();
+            let unallocated_state_vars_disp: Vec<String> = unallocated_state_vars.iter().map(|var| var.borrow().to_string()).collect();
+            self.output.push(Output::new(
+                format!(
+                    "{}, {} equations for {} unknowns. Equations are: [{}]. Unknowns are: [{}]",
+                    msg,
+                    unallocated_eqns.len(), unallocated_state_vars.len(),
+                    unallocated_eqns_disp.join(", "), unallocated_state_vars_disp.join(", ")
+                ),
+                ast.span,
+            ));
+        } else {
+            for (eqn, state_var) in zip(unallocated_eqns, unallocated_state_vars) {
+                state_var.borrow_mut().equation = Some(*eqn.rhs);
             }
         }
+
+        // check all state variables have an initial condition
+        for (_, v) in self.variables.iter() {
+            if v.borrow().is_state() && !v.borrow().has_initial_condition() {
+                self.output.push(Output::new(
+                    format!("{} does not have an inital condition", v.borrow()),
+                    ast.span,
+                ));
+            }
+
+        }
+
+
     }
 
     fn builder(
-        ast: &Box<Ast<'s>>,
         model: &ast::Model<'s>,
         models: &Vec<&ast::Model<'s>>,
-        asts: &Vec<&Box<Ast<'s>>>,
     ) -> Self {
         
-        let info = Self::new(model.name);
+        let mut info = Self::new(model.name);
         let reserved = ["u", "dudt", "t", "F", "G", "input"];
         // create variables from unknowns
         for node in model.unknowns.iter() {
 
-            let var = Rc::new(Variable::new(node, &mut info));
+            let var_cell = Rc::new(RefCell::new(Variable::new(node, &mut info)));
+            let var = var_cell.borrow();
+            info.unknowns.push(var_cell.clone());
 
             // check its not in list of reserved names
             if var.name == "t" {
-                info.time = Rc::downgrade(&var);
+                info.time = var_cell.clone();
             } else if reserved.contains(&var.name) {
                 info.output.push(Output::new(
                     format!("Name {} is reserved", var.name),
                     node.span,
                 ));
             } else {
-                info.variables.insert(var.name, var);
+                info.variables.insert(var.name, var_cell.clone());
             }
         }
         // set dependents
         for node in model.unknowns.iter() {
-            if let AstKind::Unknown(u) = node.kind {
+            if let AstKind::Unknown(u) = &node.kind {
                 if let Some(var) = info.variables.get(u.name) {
-                    for dep in u.dependents {
+                    for dep in u.dependents.iter() {
                         if let Some(dep_var) = info.variables.get(dep) {
-                            var.dependents.push(Rc::downgrade(&dep_var));
+                            let mut var_mut = var.borrow_mut();
+                            if dep_var.borrow().is_time() {
+                                var_mut.time_index = Some(var_mut.dependents.len());
+                            }
+                            var_mut.dependents.push(dep_var.clone());
                         }
                     }
 
@@ -271,7 +370,7 @@ impl<'s> ModelInfo<'s> {
             match &stmt.kind {
                 AstKind::Submodel(submodel_call) => {
                     // find name in models
-                    let mut submodel = match Self::build_submodel(submodel_call.name, models, asts)
+                    let mut submodel = match Self::build_submodel(submodel_call.name, models)
                     {
                         Some(x) => x,
                         None => {
@@ -289,7 +388,6 @@ impl<'s> ModelInfo<'s> {
                     //  - the lhs is a call with a name equal to one of the variables,
                     //  - that variable has a dependent t,
                     //  - there is a number equal to the lower bound of time in the argument corresponding to time
-                    let mut is_ic = false;
                     info.check_expr(&eqn.rhs);
                     info.check_expr(&eqn.lhs);
                     info.stmts.push(*stmt.clone());
@@ -300,16 +398,17 @@ impl<'s> ModelInfo<'s> {
                     info.stmts.push(*stmt.clone());
                     
                 }
-                AstKind::Definition(_) => {
-                    let var = Variable::new(&stmt, &mut info);
+                AstKind::Definition(dfn) => {
+                    let var_cell = Rc::new(RefCell::new(Variable::new(&stmt, &mut info)));
+                    let var = var_cell.borrow();
                     if reserved.contains(&var.name) {
                         info.output.push(Output::new(
                             format!("Name {} is reserved", var.name),
                             stmt.span,
                         ));
                     }
-                    info.variables.insert(var.name, Rc::new(var));
-                    info.stmts.push(*stmt.clone());
+                    info.variables.insert(var.name, var_cell.clone());
+                    info.check_expr(&dfn.rhs);
                 }
                 _ => (),
             }
@@ -322,47 +421,38 @@ impl<'s> ModelInfo<'s> {
         submodel: & mut ModelInfo<'s>,
         submodel_call: & ast::Submodel<'s>,
     ) {
-        let replacements = self.find_replacements(submodel, submodel_call);
         self.output.append(&mut submodel.output);
+        let replacements = self.find_replacements(submodel, submodel_call);
+
+        // add all the stmts with replacement
         for stmt in &submodel.stmts {
             self.stmts.push(stmt.clone_and_subst(&replacements));
         }
-    }
 
-    fn check_model(&mut self) {
-        // check number of equations and unknowns
-        let n_eqns = self
-            .stmts
-            .iter()
-            .filter(|s| matches!(s.kind, AstKind::Equation(_)))
-            .count();
-        let n_unknowns = self.variables.iter().filter(|v| v.state).count();
-        if n_eqns < n_unknowns {
-            self.output.push(Output::new(
-                format!(
-                    "Model is underdetermined, only {} equations for {} unknowns",
-                    n_eqns, n_unknowns
-                ),
-                self.ast_node.span,
-            ));
-        } else if n_eqns > n_unknowns {
-            self.output.push(Output::new(
-                format!(
-                    "Model is overdetermined, only {} equations for {} unknowns",
-                    n_eqns, n_unknowns
-                ),
-                self.ast_node.span,
-            ));
+        // add all the definitions with replacement
+        for (name, var_cell) in &submodel.variables {
+            let var_cell = var_cell.clone();
+            if !var_cell.borrow().is_definition() {
+                continue;
+            }
+            // apply replacements to equation
+            {
+                let mut var = var_cell.borrow_mut(); 
+                if let Some(eqn) = &var.equation {
+                    var.equation = Some(eqn.clone_and_subst(&replacements));
+
+                }
+            }
+            self.variables.insert(name, var_cell);
         }
-        // check that variables with derivatives have the right number of boundary conditions
-        todo!()
     }
 
     fn check_expr(&mut self, expr: & Box<Ast<'s>>) {
+        let test = &expr.kind;
         match &expr.kind {
             AstKind::Name(name) => {
                 // check name exists
-                if self.variables.iter().find(|v| v.name == *name).is_none() {
+                if self.variables.iter().find(|(var_name, _)| *var_name == name).is_none() {
                     self.output.push(Output::new(
                         format!("name {} not found", name),
                         expr.span,
@@ -379,31 +469,84 @@ impl<'s> ModelInfo<'s> {
             AstKind::Call(call) => {
                 // check name in allowed functions
                 let functions = ["sin"];
-                if !functions.contains(&call.fn_name) {
-                    if let Some(_) = self.variables.iter().find(|v| v.name == call.fn_name) {
+                if functions.contains(&call.fn_name) {
+                    // built in functions all have 1 arg
+                    // built in functions should have no keyword args
+                    if call.args.len() != 1 {
                         self.output.push(Output::new(
-                            format!("Invalid use of variable {}, please use \"{}\" by itself without referring to dependent variables", call.fn_name, call.fn_name),
+                            format!("incorrect number of given arguments ({} instead of {}) for function {}", call.args.len(), 1, call.fn_name),
                             expr.span,
-                        ))
-                    } else {
-                        self.output.push(Output::new(
-                            format!("Function or variable {} not found", call.fn_name),
-                            expr.span,
-                        ))
+                        ));
                     }
+                    for arg in call.args.iter() {
+                        if let AstKind::CallArg(call_arg) = &arg.kind {
+                            if let Some(_) = call_arg.name {
+                                self.output.push(Output::new(
+                                    format!("keyword args not allowed for built-in funcitons"),
+                                    arg.span,
+                                ));
+                            }
+                        } else {
+                            panic!("all args should be CallArgs")
+                        }
+                    }
+                } else if let Some((_, var_cell)) = self.variables.iter().find(|(_name, var)| var.borrow().name == call.fn_name) {
+                    // variable call, check we've got all the right call args
+                    let var = var_cell.borrow();
+                    if var.dependents.len() != call.args.len() {
+                        self.output.push(Output::new(
+                            format!("incorrect number of arguments ({}) for dependent variable {}", call.args.len(), var),
+                            expr.span,
+                        ));
+                    }
+                    let mut has_kwarg = false;
+                    for arg in call.args.iter() {
+                        if let AstKind::CallArg(call_arg) = &arg.kind {
+                            if let Some(name) = call_arg.name {
+                                has_kwarg = true;
+                                if var.dependents.iter().all(|v| v.borrow().name != name) {
+                                    self.output.push(Output::new(
+                                        format!("named arg {} does not exist in variable {}", name, var),
+                                        arg.span,
+                                    ));
+                                }
+                            } else {
+                                if has_kwarg {
+                                    self.output.push(Output::new(
+                                        format!("indexed call arg found after named arg"),
+                                        arg.span,
+                                    ));
+                                }
+                            }
+                        } else {
+                            panic!("all args should be CallArgs")
+                        }
+
+                    }
+                } else {
+                    self.output.push(Output::new(
+                        format!("Function or variable {} not found", call.fn_name),
+                        expr.span,
+                    ));
                 }
+
+                // check args
                 for arg in &call.args {
                     self.check_expr(arg);
                 }
+            },
+            AstKind::CallArg(arg) => {
+                self.check_expr(&arg.expression);
             }
+            AstKind::Number(_) => (),
             _ => unreachable!(),
         }
     }
-    fn find_replacements(
+    fn find_replacements<'a>(
         &mut self,
         submodel: & ModelInfo<'s>,
-        submodel_call: &ast::Submodel<'s>,
-    ) -> HashMap<&'s str, &Box<Ast<'s>>> {
+        submodel_call: &'a ast::Submodel<'s>
+    ) -> HashMap<&'s str, &'a Box<Ast<'s>>> {
         let mut replacements = HashMap::new();
         let mut found_kwarg = false;
 
@@ -412,7 +555,7 @@ impl<'s> ModelInfo<'s> {
             if let AstKind::CallArg(call_arg) = &arg.kind {
                 if let Some(name) = call_arg.name {
                     found_kwarg = true;
-                    if let Some(_) = submodel.variables.iter().find(|v| v.name == name) {
+                    if let Some(_) = submodel.variables.iter().find(|(name, var)| var.borrow().name == **name) {
                         replacements.insert(name, &call_arg.expression);
                     } else {
                         self.output.push(Output::new(
@@ -430,7 +573,7 @@ impl<'s> ModelInfo<'s> {
                             arg.span,
                         ));
                     }
-                    replacements.insert(submodel.variables[i].name, &call_arg.expression);
+                    replacements.insert(submodel.unknowns[i].borrow().name, &call_arg.expression);
                 };
             }
         }
@@ -451,13 +594,42 @@ mod tests {
         model circuit(i(t)) {
             let inputVoltage = sin(t) 
             use resistor(v = inputVoltage)
+            i(0) = 1
         }
         ";
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
-        assert_eq!(model_info.variables.len(), 2);
-        assert_eq!(model_info.stmts.len(), 2);
+        assert_eq!(model_info.variables.len(), 3);
+        assert!(model_info.variables.get("i").is_some());
+        assert!(model_info.variables.get("t").is_some());
+        assert_eq!(model_info.stmts.len(), 0);
         assert_eq!(model_info.output.len(), 0);
+    }
+    #[test]
+    fn rate_equation() {
+        let text = "
+        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t) ) { 
+            dot(y) = r * y * (1 - y / k)
+            y(0) = 1.0
+        }
+        ";
+        let models = parse_string(text).unwrap();
+        let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
+        assert_eq!(model_info.variables.len(), 4);
+        assert_eq!(model_info.output.len(), 0);
+    }
+    #[test]
+    fn init_cond_wrong_lower_bound() {
+        let text = "
+        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t) ) { 
+            dot(y) = r * y * (1 - y / k)
+            y(1) = 1.0
+        }
+        ";
+        let models = parse_string(text).unwrap();
+        let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
+        assert!(model_info.output.len() > 0);
+        assert!(model_info.output.iter().any(|o| o.as_error_message(text).contains("Did you mean to set an initial condition")));
     }
     #[test]
     fn missing_initial_condition() {
@@ -468,12 +640,13 @@ mod tests {
         ";
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
-        assert_eq!(model_info.variables.len(), 3);
-        assert_eq!(model_info.stmts.len(), 1);
+        assert_eq!(model_info.variables.len(), 4);
+        assert_eq!(model_info.stmts.len(), 0);
         for o in model_info.output.iter() {
             println!("{}", o.as_error_message(text));
         }
         assert_eq!(model_info.output.len(), 1);
+        assert!(model_info.output[0].as_error_message(text).contains("does not have an inital condition"));
     }
     #[test]
     fn submodel_name_not_found() {
@@ -484,12 +657,12 @@ mod tests {
         model circuit(i(t)) {
             let inputVoltage = sin(t) 
             use resistorr(v = inputVoltage)
+            i(0) = 1
         }
         ";
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
-        assert_eq!(model_info.variables.len(), 2);
-        assert_eq!(model_info.stmts.len(), 1);
+        assert_eq!(model_info.variables.len(), 3);
         assert_eq!(model_info.output.len(), 2);
         assert!(model_info.output[0].text.contains("resistorr") == true);
         assert!(model_info.output[1].text.contains("underdetermined") == true);
@@ -500,39 +673,29 @@ mod tests {
         model resistor( i(t), v(t), r -> NonNegative) {
             v = i * r
         }
-        model circuit(i1(t), i2(t), i3(t)) {
+        model circuit(i(t)) {
             let inputVoltage = sin(t) 
             use resistor(v = inputVoltage)
+            i(0) = 1
         }
         ";
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
-        assert_eq!(model_info.variables.len(), 4);
-        assert_eq!(model_info.stmts.len(), 2);
-        if let AstKind::Equation(eqn) = &model_info.stmts[1].kind {
-            assert!(matches!(&eqn.lhs.kind, AstKind::Name(name) if *name == "inputVoltage"));
-            assert!(matches!(&eqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*'));
-        } else {
-            assert!(false, "not an equation")
-        }
-        assert_eq!(model_info.output.len(), 1);
-        assert!(
-            model_info.output[0]
-                .text
-                .contains("Model is underdetermined")
-                == true
-        );
+        assert_eq!(model_info.variables.len(), 3);
+        assert_eq!(model_info.output.len(), 0);
     }
     #[test]
     fn variable_name_not_found() {
         let text = "
         model resistor( i(t), v(t), r -> NonNegative) {
             v = i * doesnotexist
+            v(0) = 0
+            i(0) = 0
         }
         ";
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("resistor", &models).unwrap();
-        assert_eq!(model_info.variables.len(), 3);
+        assert_eq!(model_info.variables.len(), 4);
         assert_eq!(model_info.output.len(), 2);
         assert!(model_info.output[0].text.contains("doesnotexist") == true);
         assert!(model_info.output[1].text.contains("underdetermined") == true);

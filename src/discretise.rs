@@ -1,4 +1,7 @@
+use core::panic;
+use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::ast::Binop;
@@ -23,8 +26,6 @@ impl<'s> fmt::Display for Array<'s> {
 // F(t, u, u_dot) = G(t, u)
 pub struct DiscreteModel<'s> {
     pub arrays: Vec<Array<'s>>,
-    pub inputs: Vec<Variable<'s>>,
-    pub states: Vec<Variable<'s>>,
     pub n_states: usize,
 }
 
@@ -37,15 +38,13 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
 }
 
 impl<'s> DiscreteModel<'s> {
-    fn is_state_eqn(stmt: &Ast) -> bool {
-        match stmt.kind {
-            AstKind::RateEquation(_) | AstKind::Equation(_) => true,
-            _ => false,
-        }
-    }
-    fn state_eqn_to_elmt(stmt: Ast<'s>) -> (Ast<'s>, Ast<'s>) {
-        let span = stmt.span;
-        let (f_astkind, g_astkind) = match stmt.kind {
+    fn state_to_elmt(state: &Rc<RefCell<Variable<'s>>>) -> (Ast<'s>, Ast<'s>) {
+        let eqn = if let Some(eqn) = &state.borrow().equation {
+            eqn.clone()
+        } else {
+            panic!("state var should have an equation")
+        };
+        let (f_astkind, g_astkind) = match eqn.kind {
             AstKind::RateEquation(eqn) => (
                 AstKind::Name("dudt"),
                 eqn.rhs.kind,
@@ -58,40 +57,45 @@ impl<'s> DiscreteModel<'s> {
                     right: eqn.lhs,
                 }),
             ),
-            _ => unreachable!(),
+            _ => panic!("equation for state var should be rate eqn or standard eqn"),
         };
         (
-            Ast { kind: f_astkind, span },
-            Ast { kind: g_astkind, span },
+            Ast { kind: f_astkind, span: eqn.span },
+            Ast { kind: g_astkind, span: eqn.span },
         )
     }
-    fn dfn_eqn_to_array(stmt: Ast<'s>) -> Array<'s> {
-        if let AstKind::Definition(defn) = stmt.kind {
+    fn dfn_to_array(dfn: &Rc<RefCell<Variable<'s>>>) -> Array<'s> {
+        let eqn = if let Some(eqn) = &dfn.borrow().equation {
+            eqn.clone()
+        } else {
+            panic!("definition var should have an equation")
+        };
+        if let AstKind::Definition(defn) = eqn.kind {
             Array {
                 name: defn.name,
                 elmts: vec![*defn.rhs],
             }
         } else {
-            panic!("var should be a definition")
+            panic!("equation for var should be a definition")
         }
     }
     pub fn from(model: ModelInfo<'s>) -> DiscreteModel<'s> {
-        let (inputs, time_varying): (Vec<_>, Vec<_>) = model
+        let (_inputs, time_varying): (Vec<_>, Vec<_>) = model
             .variables
             .into_iter()
-            .partition(|v| v.constant);
-        let (states, _defns): (Vec<_>, Vec<_>) = time_varying
+            .map(|(_name, var)| var)
+            .partition(|var| !var.borrow().is_time_dependent());
+        let (states, defns): (Vec<_>, Vec<_>) = time_varying
             .into_iter()
-            .partition(|v| v.state);
-        let n_states = states.iter().fold(0, |s, v| s + v.dim);
-        let (state_eqns, dfn_eqns) : (Vec<_>, Vec<_>) = model.stmts.into_iter().partition(DiscreteModel::is_state_eqn);
-        let (f_elmts, g_elmts) = state_eqns 
-            .into_iter()
-            .map(DiscreteModel::state_eqn_to_elmt)
+            .partition(|v| v.borrow().is_state());
+        let n_states = states.iter().fold(0, |s, v| s + v.borrow().dim);
+        let (f_elmts, g_elmts) = states 
+            .iter()
+            .map(DiscreteModel::state_to_elmt)
             .unzip();
-        let mut arrays: Vec<Array> = dfn_eqns 
-            .into_iter()
-            .map(DiscreteModel::dfn_eqn_to_array)
+        let mut arrays: Vec<Array> = defns 
+            .iter()
+            .map(DiscreteModel::dfn_to_array)
             .collect();
         arrays.push(Array {
             name: "F",
@@ -103,8 +107,6 @@ impl<'s> DiscreteModel<'s> {
         });
         DiscreteModel {
             arrays,
-            inputs,
-            states,
             n_states,
         }
     }

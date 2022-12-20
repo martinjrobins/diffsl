@@ -32,6 +32,12 @@ pub struct Equation<'a> {
     pub initial_condition_for: Option<&'a str>,
 }
 
+impl<'a> fmt::Display for Equation<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} = {}", self.lhs.to_string(), self.rhs.to_string(),)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RateEquation<'a> {
     pub name: &'a str,
@@ -263,7 +269,7 @@ impl<'a> fmt::Display for Ast<'a> {
             ),
             AstKind::Range(range) => write!(f, "({}, {})", range.lower, range.upper),
             AstKind::Equation(eqn) => {
-                write!(f, "{} = {}", eqn.lhs.to_string(), eqn.rhs.to_string(),)
+                write!(f, "{}", eqn)
             }
             AstKind::RateEquation(reqn) => {
                 write!(f, "dot({}) = {}", reqn.name, reqn.rhs.to_string())

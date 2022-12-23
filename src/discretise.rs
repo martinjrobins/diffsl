@@ -2,44 +2,71 @@ use core::panic;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
+use pest::state;
+
 use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::ast::Binop;
+use crate::ast::StringSpan;
 use crate::builder::ModelInfo;
 use crate::builder::Variable;
 
 #[derive(Debug)]
 // F(t, u, u_dot) = G(t, u)
 pub struct Array<'s> {
-    pub name: &'s str,
-    pub elmts: Vec<Ast<'s>>,
+    name: &'s str,
+    elmts: Vec<Ast<'s>>,
 }
 
 impl<'s> fmt::Display for Array<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let elmts_str: Vec<String> = self.elmts.iter().map(|e| e.to_string()).collect();
-        write!(f, "{} {{\n  {}\n}}", self.name, elmts_str.join(",\n"))
+        write!(f, "{} {{\n  {}\n}}", self.name, elmts_str.join("\n  "))
+    }
+}
+
+#[derive(Debug)]
+// the p[i] in F(t, p, u, u_dot) = G(t, p, u)
+pub struct Input<'s> {
+    name: &'s str,
+    dim: usize,
+    bounds: (f64, f64),
+}
+
+impl<'s> fmt::Display for Input<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.dim > 1 {
+            write!(f, "{}^{}", self.name, self.dim)
+        } else {
+            write!(f, "{}", self.name)
+        }.and_then(|_|
+            write!(f, " -> [{}, {}]", self.bounds.0, self.bounds.1)
+        )
     }
 }
 
 #[derive(Debug)]
 // F(t, u, u_dot) = G(t, u)
 pub struct DiscreteModel<'s> {
-    pub arrays: Vec<Array<'s>>,
-    pub n_states: usize,
+    arrays: Vec<Array<'s>>,
+    n_states: usize,
+    inputs: Vec<Input<'s>>,
 }
 
 impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.arrays.iter().fold(Ok(()), |result, array| {
+        let inputs_str: Vec<String> = self.inputs.iter().map(|i| i.to_string()).collect();
+        let mut result = write!(f, "in {{\n  {}\n}}\n", inputs_str.join("\n  "));
+        self.arrays.iter().fold(result, |result, array| {
             result.and_then(|_| writeln!(f, "{}", array))
         })
     }
 }
 
 impl<'s> DiscreteModel<'s> {
-    fn state_to_elmt(state: &Rc<RefCell<Variable<'s>>>) -> (Ast<'s>, Ast<'s>) {
-        let eqn = if let Some(eqn) = &state.borrow().equation {
+    fn state_to_elmt(state_cell: &Rc<RefCell<Variable<'s>>>) -> ((Ast<'s>, Ast<'s>), Ast<'s>) {
+        let state = state_cell.borrow();
+        let eqn = if let Some(eqn) = &state.equation {
             eqn.clone()
         } else {
             panic!("state var should have an equation")
@@ -60,8 +87,9 @@ impl<'s> DiscreteModel<'s> {
             _ => panic!("equation for state var should be rate eqn or standard eqn"),
         };
         (
-            Ast { kind: f_astkind, span: eqn.span },
-            Ast { kind: g_astkind, span: eqn.span },
+            (Ast { kind: f_astkind, span: eqn.span },
+            Ast { kind: g_astkind, span: eqn.span }),
+            state.init_conditions[0].equation.clone(),
         )
     }
     fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Array<'s> {
@@ -72,24 +100,56 @@ impl<'s> DiscreteModel<'s> {
         }
         
     }
+    fn state_to_input(input_cell: &Rc<RefCell<Variable<'s>>>) -> Input<'s> {
+        let input = input_cell.borrow();
+        assert!(input.is_independent());
+        assert!(!input.is_time_dependent());
+        Input {
+            name: input.name,
+            dim: input.dim,
+            bounds: input.bounds,
+        }
+    }
+    fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> Ast<'s> {
+        let output = output_cell.borrow();
+        if output.is_definition() {
+            output.expression.as_ref().unwrap().clone()
+        } else {
+            Ast {
+                kind: AstKind::Name((output.name)),
+                span: StringSpan{pos_start: 0, pos_end: 0},
+            }
+        }
+    }
     pub fn from(model: ModelInfo<'s>) -> DiscreteModel<'s> {
-        let (_inputs, time_varying): (Vec<_>, Vec<_>) = model
+        let (inputs, time_varying): (Vec<_>, Vec<_>) = model
             .variables
             .into_iter()
             .map(|(_name, var)| var)
             .partition(|var| !var.borrow().is_time_dependent());
+        let out_array = Array {
+            name: "out",
+            elmts: time_varying.iter().map(DiscreteModel::output_to_elmt).collect(),
+        };
         let (states, defns): (Vec<_>, Vec<_>) = time_varying
             .into_iter()
             .partition(|v| v.borrow().is_state());
         let n_states = states.iter().fold(0, |s, v| s + v.borrow().dim);
-        let (f_elmts, g_elmts) = states 
+        let ((f_elmts, g_elmts), u0_elmts) = states 
             .iter()
             .map(DiscreteModel::state_to_elmt)
             .unzip();
-        let mut arrays: Vec<Array> = defns 
+        let inputs: Vec<Input> = inputs.iter().map(DiscreteModel::state_to_input).collect();
+        let mut arrays: Vec<Array> = Vec::new(); 
+        arrays.extend(
+            defns 
             .iter()
             .map(DiscreteModel::dfn_to_array)
-            .collect();
+        );
+        arrays.push(Array {
+            name: "u0",
+            elmts: u0_elmts,
+        });
         arrays.push(Array {
             name: "F",
             elmts: f_elmts,
@@ -98,7 +158,9 @@ impl<'s> DiscreteModel<'s> {
             name: "G",
             elmts: g_elmts,
         });
+        arrays.push(out_array);
         DiscreteModel {
+            inputs,
             arrays,
             n_states,
         }

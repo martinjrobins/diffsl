@@ -2,7 +2,6 @@ use crate::ast;
 use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::ast::Call;
-use crate::ast::Equation;
 use crate::ast::Model;
 use crate::ast::StringSpan;
 use pest::Span;

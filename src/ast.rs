@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Add;
 
+use pest::pratt_parser::Op;
+
 #[derive(Debug, Clone)]
 pub struct Unknown<'a> {
     pub name: &'a str,
@@ -29,7 +31,6 @@ pub struct Submodel<'a> {
 pub struct Equation<'a> {
     pub lhs: Box<Ast<'a>>,
     pub rhs: Box<Ast<'a>>,
-    pub initial_condition_for: Option<&'a str>,
 }
 
 impl<'a> fmt::Display for Equation<'a> {
@@ -49,6 +50,8 @@ pub struct Range {
     pub lower: f64,
     pub upper: f64,
 }
+
+
 
 #[derive(Debug, Clone)]
 pub struct Binop<'a> {
@@ -84,8 +87,14 @@ pub struct Model<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Index<'a> {
-    pub name: &'a str,
-    pub index: usize,
+    pub left: Box<Ast<'a>>,
+    pub right: Box<Ast<'a>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Slice<'a> {
+    pub lower: Box<Ast<'a>>,
+    pub upper: Box<Ast<'a>>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,10 +108,12 @@ pub enum AstKind<'a> {
     Range(Range),
     Binop(Binop<'a>),
     Monop(Monop<'a>),
-    Index(Index<'a>),
     Call(Call<'a>),
     CallArg(CallArg<'a>),
+    Index(Index<'a>),
+    Slice(Slice<'a>),
     Number(f64),
+    Integer(i64),
     Name(&'a str),
 }
 
@@ -112,6 +123,24 @@ impl<'a> AstKind<'a> {
             AstKind::Model(m) => Some(m),
             _ => None,
         }
+    }
+    pub fn new_binop(op: char, left: Ast, right: Ast) -> Self {
+        AstKind::Binop(Binop{ op, left: Box::new(left), right: Box::new(right)})
+    }
+    pub fn new_dot(child: Ast) -> Self {
+        AstKind::Call(Call { fn_name: "dot", args: vec![Box::new(child)] })
+    }
+    pub fn new_index(left: Ast, right: Ast) -> Self {
+        AstKind::Index(Index{left: Box::new(left), right: Box::new(right)})
+    }
+    pub fn new_name(name: &'a str) -> Self {
+        AstKind::Name(name)
+    }
+    pub fn new_int(num: i64) -> Self {
+        AstKind::Integer(num)
+    }
+    pub fn new_num(num: f64) -> Self {
+        AstKind::Number(num)
     }
 }
 
@@ -135,10 +164,11 @@ impl Add for StringSpan {
 #[derive(Debug, Clone)]
 pub struct Ast<'a> {
     pub kind: AstKind<'a>,
-    pub span: StringSpan,
+    pub span: Option<StringSpan>,
 }
 
 impl<'a> Ast<'a> {
+    
     pub fn clone_and_subst<'b>(&self, replacements: &HashMap<&'a str, &'b Box<Ast<'a>>>) -> Self {
         let cloned_kind = match &self.kind {
             AstKind::Definition(dfn) => AstKind::Definition(Definition {
@@ -148,7 +178,6 @@ impl<'a> Ast<'a> {
             AstKind::Equation(eqn) => AstKind::Equation(Equation {
                 lhs: Box::new(eqn.lhs.clone_and_subst(replacements)),
                 rhs: Box::new(eqn.rhs.clone_and_subst(replacements)),
-                initial_condition_for: eqn.initial_condition_for.clone(),
             }),
             AstKind::RateEquation(eqn) => AstKind::RateEquation(RateEquation {
                 name: eqn.name.clone(),
@@ -158,6 +187,14 @@ impl<'a> Ast<'a> {
                 op: binop.op.clone(),
                 left: Box::new(binop.left.clone_and_subst(replacements)),
                 right: Box::new(binop.right.clone_and_subst(replacements)),
+            }),
+            AstKind::Index(binop) => AstKind::Index(Index {
+                left: Box::new(binop.left.clone_and_subst(replacements)),
+                right: Box::new(binop.right.clone_and_subst(replacements)),
+            }),
+            AstKind::Slice(slice) => AstKind::Slice(Slice {
+                lower: Box::new(slice.lower.clone_and_subst(replacements)),
+                upper: Box::new(slice.upper.clone_and_subst(replacements)),
             }),
             AstKind::Monop(binop) => AstKind::Monop(Monop {
                 op: binop.op.clone(),
@@ -176,6 +213,7 @@ impl<'a> Ast<'a> {
                 expression: Box::new(arg.expression.clone_and_subst(replacements)),
             }),
             AstKind::Number(num) => AstKind::Number(*num),
+            AstKind::Integer(num) => AstKind::Integer(*num),
             AstKind::Name(name) => {
                 if let Some(x) = replacements.get(name) {
                     x.kind.clone()
@@ -195,7 +233,6 @@ impl<'a> Ast<'a> {
                     .collect(),
             }),
             AstKind::Range(range) => AstKind::Range(range.clone()),
-            AstKind::Index(index) => AstKind::Index(index.clone()),
         };
         Ast {
             kind: cloned_kind,
@@ -238,9 +275,15 @@ impl<'a> Ast<'a> {
                 deps.insert(found_name);
             }
             AstKind::Index(index) => {
-                deps.insert(index.name);
+                index.left.collect_deps(deps);
+                index.right.collect_deps(deps);
+            },
+            AstKind::Slice(slice) => {
+                slice.lower.collect_deps(deps);
+                slice.upper.collect_deps(deps);
             },
             AstKind::Number(_) => (),
+            AstKind::Integer(_) => (),
             AstKind::Model(_) => (),
             AstKind::Unknown(_) => (),
             AstKind::Definition(_) => (),
@@ -262,6 +305,7 @@ impl<'a> fmt::Display for Ast<'a> {
             }
             AstKind::Name(name) => write!(f, "{}", name),
             AstKind::Number(num) => write!(f, "{}", num),
+            AstKind::Integer(num) => write!(f, "{}", num),
             AstKind::Unknown(unknown) => write!(
                 f,
                 "Unknown ({})({:#?}) -> {:#?}",
@@ -301,8 +345,12 @@ impl<'a> fmt::Display for Ast<'a> {
                 write!(f, "{} = {}", dfn.name, dfn.rhs.to_string(),)
             }
             AstKind::Index(index) => {
-                write!(f, "{}[{}]", index.name, index.index)
+                write!(f, "{}[{}]", index.left.to_string(), index.right.to_string())
             }
+            AstKind::Slice(slice) => {
+                write!(f, "{}:{}", slice.lower.to_string(), slice.upper.to_string())
+            }
+
         }
     }
 }

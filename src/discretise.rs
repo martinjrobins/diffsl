@@ -66,29 +66,25 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
 impl<'s> DiscreteModel<'s> {
     fn state_to_elmt(state_cell: &Rc<RefCell<Variable<'s>>>) -> ((Ast<'s>, Ast<'s>), Ast<'s>) {
         let state = state_cell.borrow();
-        let eqn = if let Some(eqn) = &state.equation {
+        let ast_eqn = if let Some(eqn) = &state.equation {
             eqn.clone()
         } else {
             panic!("state var should have an equation")
         };
         let (f_astkind, g_astkind) = match eqn.kind {
             AstKind::RateEquation(eqn) => (
-                AstKind::Name("dudt"),
+                AstKind::new_dot(Ast{ kind: AstKind::new_name(state.name), span: ast_eqn.span }),
                 eqn.rhs.kind,
             ),
             AstKind::Equation(eqn) => (
-                AstKind::Number(0.0),
-                AstKind::Binop(Binop {
-                    op: '-',
-                    left: eqn.rhs,
-                    right: eqn.lhs,
-                }),
+                AstKind::new_num(0.0),
+                AstKind::new_binop('-', *eqn.rhs, *eqn.lhs),
             ),
             _ => panic!("equation for state var should be rate eqn or standard eqn"),
         };
         (
-            (Ast { kind: f_astkind, span: eqn.span },
-            Ast { kind: g_astkind, span: eqn.span }),
+            (Ast { kind: f_astkind, span: ast_eqn.span },
+            Ast { kind: g_astkind, span: ast_eqn.span }),
             state.init_conditions[0].equation.clone(),
         )
     }
@@ -116,8 +112,12 @@ impl<'s> DiscreteModel<'s> {
             output.expression.as_ref().unwrap().clone()
         } else {
             Ast {
-                kind: AstKind::Name((output.name)),
-                span: StringSpan{pos_start: 0, pos_end: 0},
+                kind: AstKind::new_name(output.name),
+                span: if output.is_definition() { 
+                    output.expression.unwrap().span 
+                } else if output.has_equation() { 
+                    output.equation.unwrap().span 
+                } else { None } 
             }
         }
     }
@@ -134,7 +134,10 @@ impl<'s> DiscreteModel<'s> {
         let (states, defns): (Vec<_>, Vec<_>) = time_varying
             .into_iter()
             .partition(|v| v.borrow().is_state());
-        let n_states = states.iter().fold(0, |s, v| s + v.borrow().dim);
+        let (start_indices, end_indices): (Vec<usize>, Vec<usize>) = states.iter().scan((0, 0), |s, v|  { 
+            *s = (s.1, s.1 + v.borrow().dim); Some(*s) 
+        }).unzip();
+        let n_states = end_indices.last();
         let ((f_elmts, g_elmts), u0_elmts) = states 
             .iter()
             .map(DiscreteModel::state_to_elmt)

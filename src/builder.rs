@@ -15,13 +15,13 @@ use std::rc::Rc;
 #[derive(Debug)]
 pub struct Output {
     pub text: String,
-    pub source_ref: StringSpan,
+    pub source_ref: Option<StringSpan>,
     pub secondary_txts: Vec<String>,
     pub secondary_refs: Vec<StringSpan>,
 }
 
 impl Output {
-    pub fn new(text: String, span: StringSpan) -> Self {
+    pub fn new(text: String, span: Option<StringSpan>) -> Self {
         Self {
             text: text,
             source_ref: span,
@@ -30,9 +30,13 @@ impl Output {
         }
     }
     pub fn as_error_message(self: &Output, input: &str) -> String {
-        let span = Span::new(input, self.source_ref.pos_start, self.source_ref.pos_end);
-        let (line, col) = span.as_ref().unwrap().start_pos().line_col();
-        format!("Line {}, Column {}: Error: {}", line, col, self.text)
+        if let Some(source_ref) = self.source_ref {
+            let span = Span::new(input, source_ref.pos_start, source_ref.pos_end);
+            let (line, col) = span.as_ref().unwrap().start_pos().line_col();
+            format!("Line {}, Column {}: Error: {}", line, col, self.text)
+        } else {
+            format!("Error: {}", self.text)
+        }
     }
 }
 

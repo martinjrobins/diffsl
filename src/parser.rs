@@ -30,10 +30,10 @@ fn parse_name(pair: Pair<Rule>) -> &str {
 }
 
 fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
-    let span = StringSpan {
+    let span = Some(StringSpan {
         pos_start: pair.as_span().start(),
         pos_end: pair.as_span().end(),
-    };
+    });
     match pair.as_rule() {
         // name       = @{ 'a'..'z' ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
         // domain_name = @{ 'A'..'Z' ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
@@ -199,7 +199,6 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                 kind: AstKind::Equation(ast::Equation {
                     lhs: Box::new(parse_value(inner.next().unwrap())),
                     rhs: Box::new(parse_value(inner.next().unwrap())),
-                    initial_condition_for: None,
                 }),
                 span,
             }
@@ -218,10 +217,10 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                 //term_op    = @{ "-"|"+" }
                 let term_op = parse_sign(inner.next().unwrap());
                 let rhs_term = parse_value(inner.next().unwrap());
-                let subspan = StringSpan {
-                    pos_start: head_term.span.pos_start,
-                    pos_end: rhs_term.span.pos_end,
-                };
+                let subspan = Some(StringSpan {
+                    pos_start: head_term.span.unwrap().pos_start,
+                    pos_end: rhs_term.span.unwrap().pos_end,
+                });
                 head_term = Ast {
                     kind: AstKind::Binop(ast::Binop {
                         op: term_op,
@@ -251,10 +250,10 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             while inner.peek().is_some() {
                 let factor_op = parse_sign(inner.next().unwrap());
                 let rhs_factor = parse_value(inner.next().unwrap());
-                let subspan = StringSpan {
-                    pos_start: head_factor.span.pos_start,
-                    pos_end: rhs_factor.span.pos_end,
-                };
+                let subspan = Some(StringSpan {
+                    pos_start: head_factor.span.unwrap().pos_start,
+                    pos_end: rhs_factor.span.unwrap().pos_end,
+                });
                 head_factor = Ast {
                     kind: AstKind::Binop(ast::Binop {
                         op: factor_op,

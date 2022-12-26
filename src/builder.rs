@@ -147,9 +147,6 @@ impl<'s> Variable<'s> {
                 }
             }
             AstKind::Definition(dfn) => {
-                let deps = dfn.rhs.get_dependents();
-                let dependents: Vec<&str> = deps.into_iter().collect();
-                let time_index = dependents.iter().position(|d| *d == "t");
                 let bounds = (-f64::INFINITY, f64::INFINITY);
                 Variable {
                     name: dfn.name,
@@ -158,7 +155,7 @@ impl<'s> Variable<'s> {
                     bounds,
                     equation: None,
                     expression: Some(dfn.rhs.as_ref().clone()),
-                    time_index,
+                    time_index: None,
                     init_conditions: Vec::new(),
                 }
             }
@@ -366,6 +363,18 @@ impl<'s> ModelInfo<'s> {
             }
         }
     }
+    
+
+    fn set_dependents(&self, var: & mut Variable<'s>, deps: &Vec<&'s str>) {
+        for dep in deps {
+            if let Some(dep_var) = self.variables.get(dep) {
+                if dep_var.borrow().is_time() {
+                    var.time_index = Some(var.dependents.len());
+                }
+                var.dependents.push(dep_var.clone());
+            }
+        }
+    }
 
     fn builder(
         model: &ast::Model<'s>,
@@ -397,16 +406,7 @@ impl<'s> ModelInfo<'s> {
         for node in model.unknowns.iter() {
             if let AstKind::Unknown(u) = &node.kind {
                 if let Some(var) = info.variables.get(u.name) {
-                    for dep in u.dependents.iter() {
-                        if let Some(dep_var) = info.variables.get(dep) {
-                            let mut var_mut = var.borrow_mut();
-                            if dep_var.borrow().is_time() {
-                                var_mut.time_index = Some(var_mut.dependents.len());
-                            }
-                            var_mut.dependents.push(dep_var.clone());
-                        }
-                    }
-
+                    info.set_dependents(& mut var.borrow_mut(), &u.dependents);
                 }
             }
         }
@@ -444,13 +444,17 @@ impl<'s> ModelInfo<'s> {
                 }
                 AstKind::Definition(dfn) => {
                     let var_cell = Rc::new(RefCell::new(Variable::new(&stmt, &mut info)));
-                    let var = var_cell.borrow();
+                    let mut var = var_cell.borrow_mut();
                     if reserved.contains(&var.name) {
                         info.output.push(Output::new(
                             format!("Name {} is reserved", var.name),
                             stmt.span,
                         ));
                     }
+                    let deps = dfn.rhs.get_dependents();
+                    let dependents: Vec<&str> = deps.into_iter().collect();
+                    var.time_index = dependents.iter().position(|d| *d == "t");
+                    info.set_dependents(& mut var, &dependents);
                     info.variables.insert(var.name, var_cell.clone());
                     info.check_expr(&dfn.rhs);
                 }

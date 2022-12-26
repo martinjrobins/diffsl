@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Add;
 
-use pest::pratt_parser::Op;
 
 #[derive(Debug, Clone)]
 pub struct Unknown<'a> {
@@ -51,7 +50,11 @@ pub struct Range {
     pub upper: f64,
 }
 
-
+#[derive(Debug, Clone)]
+pub struct IntRange {
+    pub lower: usize,
+    pub upper: usize,
+}
 
 #[derive(Debug, Clone)]
 pub struct Binop<'a> {
@@ -106,6 +109,7 @@ pub enum AstKind<'a> {
     Equation(Equation<'a>),
     RateEquation(RateEquation<'a>),
     Range(Range),
+    IntRange(IntRange),
     Binop(Binop<'a>),
     Monop(Monop<'a>),
     Call(Call<'a>),
@@ -124,13 +128,13 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
-    pub fn new_binop(op: char, left: Ast, right: Ast) -> Self {
+    pub fn new_binop(op: char, left: Ast<'a>, right: Ast<'a>) -> Self {
         AstKind::Binop(Binop{ op, left: Box::new(left), right: Box::new(right)})
     }
-    pub fn new_dot(child: Ast) -> Self {
+    pub fn new_dot(child: Ast<'a>) -> Self {
         AstKind::Call(Call { fn_name: "dot", args: vec![Box::new(child)] })
     }
-    pub fn new_index(left: Ast, right: Ast) -> Self {
+    pub fn new_index(left: Ast<'a>, right: Ast<'a>) -> Self {
         AstKind::Index(Index{left: Box::new(left), right: Box::new(right)})
     }
     pub fn new_name(name: &'a str) -> Self {
@@ -138,6 +142,9 @@ impl<'a> AstKind<'a> {
     }
     pub fn new_int(num: i64) -> Self {
         AstKind::Integer(num)
+    }
+    pub fn new_irange(range: (usize, usize)) -> Self {
+        AstKind::IntRange(IntRange { lower: range.0, upper: range.1 })
     }
     pub fn new_num(num: f64) -> Self {
         AstKind::Number(num)
@@ -233,6 +240,7 @@ impl<'a> Ast<'a> {
                     .collect(),
             }),
             AstKind::Range(range) => AstKind::Range(range.clone()),
+            AstKind::IntRange(range) => AstKind::IntRange(range.clone()),
         };
         Ast {
             kind: cloned_kind,
@@ -289,6 +297,7 @@ impl<'a> Ast<'a> {
             AstKind::Definition(_) => (),
             AstKind::Submodel(_) => (),
             AstKind::Range(_) => (),
+            AstKind::IntRange(_) => (),
         }
     }
 }
@@ -312,6 +321,7 @@ impl<'a> fmt::Display for Ast<'a> {
                 unknown.name, unknown.dependents, unknown.codomain
             ),
             AstKind::Range(range) => write!(f, "({}, {})", range.lower, range.upper),
+            AstKind::IntRange(range) => write!(f, "({}, {})", range.lower, range.upper),
             AstKind::Equation(eqn) => {
                 write!(f, "{}", eqn)
             }

@@ -10,6 +10,7 @@ pub mod parser;
 pub mod ast;
 pub mod builder;
 pub mod discretise;
+pub mod codegen;
 
 #[cfg(test)]
 mod tests {

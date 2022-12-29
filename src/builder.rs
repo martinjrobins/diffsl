@@ -74,7 +74,8 @@ impl<'a> fmt::Display for Variable<'a> {
 
 impl<'s> Variable<'s> {
     pub fn is_time_dependent(&self) -> bool {
-        self.time_index.is_some()
+        self.time_index.is_some() 
+        || self.dependents.iter().any(|d| d.borrow().is_time_dependent())
     }
     pub fn is_independent(&self) -> bool {
         self.dependents.is_empty()
@@ -496,7 +497,6 @@ impl<'s> ModelInfo<'s> {
     }
 
     fn check_expr(&mut self, expr: & Box<Ast<'s>>) {
-        let test = &expr.kind;
         match &expr.kind {
             AstKind::Name(name) => {
                 // check name exists

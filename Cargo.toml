@@ -6,9 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm14-0"] }
 pest = ">=2.1.3"
 pest_derive = ">=2.1.0"
 itertools = ">=0.10.3"
+sundials-sys = { version = ">=0.2.3", features = ["idas"] }
 
 [profile.dev]
 opt-level = 0

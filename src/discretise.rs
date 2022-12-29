@@ -56,28 +56,61 @@ impl<'s> fmt::Display for State<'s> {
     }
 }
 
+impl<'s> State<'s> {
+    pub fn is_algebraic(&self) ->bool {
+        match self.init.kind {
+            AstKind::Number(value) => f64::is_nan(value),
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug)]
 // F(t, u, u_dot) = G(t, u)
 pub struct DiscreteModel<'s> {
-    arrays: Vec<Array<'s>>,
-    inputs: Vec<Input<'s>>,
-    state: Vec<State<'s>>,
+    pub name: &'s str,
+    lhs: Array<'s>,
+    rhs: Array<'s>,
+    out: Array<'s>,
+    in_defns: Vec<Array<'s>>,
+    out_defns: Vec<Array<'s>>,
+    pub inputs: Vec<Input<'s>>,
+    pub states: Vec<State<'s>>,
 }
 
 impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let inputs_str: Vec<String> = self.inputs.iter().map(|i| i.to_string()).collect();
         let states_str: Vec<String> = self.state.iter().map(|i| i.to_string()).collect();
-        let result = write!(f, "in {{\n  {}\n}}\n", inputs_str.join("\n  ")).and_then(|_|
+        write!(f, "in {{\n  {}\n}}\n", inputs_str.join("\n  "))
+        .and_then(|_|
+            self.in_defns.iter().fold(Ok(()), |result, array| {
+                result.and_then(|_| writeln!(f, "{}", array))
+            })
+        )
+        .and_then(|_|
             write!(f, "u {{\n  {}\n}}\n", states_str.join("\n  "))
-        );
-        self.arrays.iter().fold(result, |result, array| {
-            result.and_then(|_| writeln!(f, "{}", array))
-        })
+        ).and_then(|_|
+            write!(f, "{}\n", self.lhs)
+        ).and_then(|_|
+            write!(f, "{}\n", self.rhs)
+        ).and_then(|_|
+            self.out_defns.iter().fold(Ok(()), |result, array| {
+                result.and_then(|_| writeln!(f, "{}", array))
+            })
+        ).and_then(|_|
+            write!(f, "{}\n", self.out)
+        )
     }
 }
 
 impl<'s> DiscreteModel<'s> {
+    pub fn len_state(&self) -> usize {
+        self.state.iter().fold(0, |sum, i| sum + i.dim)
+    }
+    pub fn len_inputs(&self) -> usize {
+        self.inputs.iter().fold(0, |sum, i| sum + i.dim)
+    }
     fn state_to_elmt(state_cell: &Rc<RefCell<Variable<'s>>>) -> (Ast<'s>, Ast<'s>) {
         let state = state_cell.borrow();
         let ast_eqn = if let Some(eqn) = &state.equation {
@@ -118,48 +151,23 @@ impl<'s> DiscreteModel<'s> {
         };
         State { name: state.name, dim: state.dim, init }
     }
-    fn state_to_array(state_cell: &Rc<RefCell<Variable<'s>>>, indices: (usize, usize)) -> Array<'s> {
-        let state = state_cell.borrow();
-        let span = if let Some(eqn) = &state.equation {
-            eqn.span
-        } else {
-            panic!("state var should have an equation")
-        };
-        let state_name = Ast {
-            kind: AstKind::new_name("u"),
-            span: span,
-        };
-        let range = if indices.0 == indices.1 - 1 {
-            Ast {
-                kind: AstKind::new_int(indices.0 as i64),
-                span: span,
-            }
-        } else {
-            Ast {
-                kind: AstKind::new_irange(indices),
-                span: span,
-            }
-        };
-        let eqn = Ast {
-            kind: AstKind::new_index(state_name, range),
-            span: span,
-        };
-        Array {
-            name: state.name,
-            elmts: vec![eqn],
-        }
-    }
-    fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Option<Array<'s>> {
+    fn idfn_to_array(defn_cell: &&Rc<RefCell<Variable<'s>>>) -> Array<'s> {
         let defn = defn_cell.borrow();
-        if defn.is_dependent_on_state() {
-            None
-        } else {
-            Some(Array {
-                name: defn.name,
-                elmts: vec![defn.expression.as_ref().unwrap().clone()],
-            })
+        assert!(!defn.is_dependent_on_state());
+        Array {
+            name: defn.name,
+            elmts: vec![defn.expression.as_ref().unwrap().clone()],
         }
     }
+    fn odfn_to_array(defn_cell: &&Rc<RefCell<Variable<'s>>>) -> Array<'s> {
+        let defn = defn_cell.borrow();
+        assert!(defn.is_dependent_on_state());
+        Array {
+            name: defn.name,
+            elmts: vec![defn.expression.as_ref().unwrap().clone()],
+        }
+    }
+    
     fn state_to_input(input_cell: &Rc<RefCell<Variable<'s>>>) -> Input<'s> {
         let input = input_cell.borrow();
         assert!(input.is_independent());
@@ -172,22 +180,14 @@ impl<'s> DiscreteModel<'s> {
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> Option<Ast<'s>> {
         let output = output_cell.borrow();
-        if output.is_definition() {
-            if output.is_dependent_on_state() {
-                Some(output.expression.as_ref().unwrap().clone())
-            } else {
-                None
-            }
-        } else {
-            Some(Ast {
-                kind: AstKind::new_name(output.name),
-                span: if output.is_definition() { 
-                    output.expression.as_ref().unwrap().span 
-                } else if output.has_equation() { 
-                    output.equation.as_ref().unwrap().span 
-                } else { None } 
-            })
-        }
+        Some(Ast {
+            kind: AstKind::new_name(output.name),
+            span: if output.is_definition() { 
+                output.expression.as_ref().unwrap().span 
+            } else if output.has_equation() { 
+                output.equation.as_ref().unwrap().span 
+            } else { None } 
+        })
     }
     pub fn from(model: ModelInfo<'s>) -> DiscreteModel<'s> {
         let (inputs, time_varying): (Vec<_>, Vec<_>) = model
@@ -202,10 +202,11 @@ impl<'s> DiscreteModel<'s> {
         let (states, defns): (Vec<_>, Vec<_>) = time_varying
             .into_iter()
             .partition(|v| v.borrow().is_state());
+        let (odefns, idefns): (Vec<_>, Vec<_>) =  
+            defns 
+            .iter()
+            .partition(|v| v.borrow().is_dependent_on_state());
 
-        let (start_indices, end_indices): (Vec<usize>, Vec<usize>) = states.iter().scan((0, 0), |s, v|  { 
-            *s = (s.1, s.1 + v.borrow().dim); Some(*s) 
-        }).unzip();
         let (f_elmts, g_elmts) = states
             .iter()
             .map(DiscreteModel::state_to_elmt)
@@ -215,26 +216,25 @@ impl<'s> DiscreteModel<'s> {
             .map(DiscreteModel::state_to_u0)
             .collect();
 
-        let mut arrays: Vec<Array> = Vec::new(); 
         let inputs: Vec<Input> = inputs.iter().map(DiscreteModel::state_to_input).collect();
-        arrays.extend(
-            defns 
-            .iter()
-            .filter_map(DiscreteModel::dfn_to_array)
-        );
-        arrays.push(Array {
+        let in_defns = idefns.iter().map(DiscreteModel::idfn_to_array).collect();
+        let out_defns = odefns.iter().map(DiscreteModel::odfn_to_array).collect();
+        let lhs = Array {
             name: "F",
             elmts: f_elmts,
-        });
-        arrays.push(Array {
+        };
+        let rhs = Array {
             name: "G",
             elmts: g_elmts,
-        });
-        arrays.push(out_array);
+        };
+        let name = model.name;
         DiscreteModel {
+            name,
+            lhs, rhs,
             inputs,
-            arrays,
             state: init_states,
+            out: out_array,
+            in_defns, out_defns
         }
     }
 }
@@ -262,15 +262,14 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo}
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.output.len(), 0);
         let discrete = DiscreteModel::from(model_info);
-        assert_eq!(discrete.arrays.len(), 4);
-        assert_eq!(discrete.arrays[0].name, "inputVoltage");
-        assert_eq!(discrete.arrays[0].elmts.len(), 1);
-        assert_eq!(discrete.arrays[1].name, "F");
-        assert_eq!(discrete.arrays[1].elmts.len(), 1);
-        assert_eq!(discrete.arrays[2].name, "G");
-        assert_eq!(discrete.arrays[2].elmts.len(), 1);
-        assert_eq!(discrete.arrays[3].name, "out");
-        assert_eq!(discrete.arrays[3].elmts.len(), 2);
+        assert_eq!(discrete.in_defns.len(), 1);
+        assert_eq!(discrete.in_defns[0].name, "inputVoltage");
+        assert_eq!(discrete.out_defns.len(), 1);
+        assert_eq!(discrete.out_defns[0].name, "doubleI");
+        assert_eq!(discrete.lhs.name, "F");
+        assert_eq!(discrete.rhs.name, "G");
+        assert_eq!(discrete.state.len(), 1);
+        assert_eq!(discrete.out.elmts.len(), 3);
         println!("{}", discrete);
     }
      #[test]

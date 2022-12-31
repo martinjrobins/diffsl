@@ -516,7 +516,7 @@ impl<'s> ModelInfo<'s> {
             }
             AstKind::Call(call) => {
                 // check name in allowed functions
-                let functions = ["sin"];
+                let functions = ["sin" , "cos" , "tan" , "pow" , "exp" , "log" , "sqrt" , "abs"];
                 if functions.contains(&call.fn_name) {
                     // built in functions all have 1 arg
                     // built in functions should have no keyword args

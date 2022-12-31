@@ -10,9 +10,22 @@ use crate::builder::Variable;
 
 #[derive(Debug)]
 // F(t, u, u_dot) = G(t, u)
+pub struct ArrayElmt<'s> {
+    pub bounds: (u32, u32),
+    pub expr: Ast<'s>,
+}
+
+impl<'s> ArrayElmt<'s> {
+    pub fn get_dim(&self) -> u32 {
+        self.bounds.1 - self.bounds.0
+    }
+}
+
+#[derive(Debug)]
+// F(t, u, u_dot) = G(t, u)
 pub struct Array<'s> {
-    name: &'s str,
-    elmts: Vec<Ast<'s>>,
+    pub name: &'s str,
+    pub elmts: Vec<ArrayElmt<'s>>,
 }
 
 impl<'s> fmt::Display for Array<'s> {
@@ -69,11 +82,11 @@ impl<'s> State<'s> {
 // F(t, u, u_dot) = G(t, u)
 pub struct DiscreteModel<'s> {
     pub name: &'s str,
-    lhs: Array<'s>,
-    rhs: Array<'s>,
-    out: Array<'s>,
-    in_defns: Vec<Array<'s>>,
-    out_defns: Vec<Array<'s>>,
+    pub lhs: Array<'s>,
+    pub rhs: Array<'s>,
+    pub out: Array<'s>,
+    pub in_defns: Vec<Array<'s>>,
+    pub out_defns: Vec<Array<'s>>,
     pub inputs: Vec<Input<'s>>,
     pub states: Vec<State<'s>>,
 }

@@ -11,6 +11,7 @@ pub mod ast;
 pub mod builder;
 pub mod discretise;
 pub mod codegen;
+pub mod error;
 
 #[cfg(test)]
 mod tests {

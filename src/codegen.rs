@@ -3,19 +3,18 @@ use inkwell::types::{AnyType, BasicType, FloatType, BasicMetadataTypeEnum, IntTy
 use inkwell::values::{PointerValue, FloatValue, FunctionValue, ArrayValue, IntValue, StructValue, VectorValue, FloatMathValue, BasicMetadataValueEnum};
 use inkwell::{OptimizationLevel, AddressSpace, IntPredicate};
 use inkwell::builder::Builder;
-use inkwell::context::Context;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction};
 use inkwell::module::Module;
 use sundials_sys::{realtype, N_Vector, IDACreate, N_VNew_Serial, N_VCloneVectorArray, N_VGetArrayPointer, N_VConst, IDAInit, IDASVtolerances, IDARootInit, IDASetUserData, IDASetJacFn, IDASetJacTimes, SUNLinSolInitialize, IDASetId, IDASensInit, IDASensEEtolerances, SUNMatrix, SUNLinearSolver, SUNSparseMatrix, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, IDA_SIMULTANEOUS, IDASensFree, SUNLinSolFree, SUNMatDestroy, N_VDestroy, N_VDestroyVectorArray, IDAFree};
 use std::cmp::max;
 use std::collections::HashMap;
-use std::{error, vec};
+use std::{error, vec, any};
 use std::ffi::c_void;
 use std::fmt::Pointer;
 use std::ptr::null;
 use std::{io, fmt};
 use std::iter::zip;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, Context};
 
 
 use crate::ast::{Ast, AstKind, Binop};
@@ -36,7 +35,7 @@ struct Args<'ctx> {
 type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, inputs: *const realtype, rr: *mut realtype);
 
 struct CodeGen<'ctx> {
-    context: &'ctx Context,
+    context: &'ctx inkwell::context::Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
     execution_engine: ExecutionEngine<'ctx>,
@@ -184,17 +183,17 @@ impl<'ctx> CodeGen<'ctx> {
                 self.jit_compile_expr(&arg.expression, index, name)
             },
             AstKind::Number(value) => Ok(self.real_type.const_float(value)),
-            AstKind::Integer(value) => Ok(self.context.i32_type().const_int(value, true)),
             AstKind::Name(name) => {
-                let ptr = self.variables.get(name)?;
+                let ptr = self.variables.get(name).expect("variable not found");
                 let ptr = match index {
                     Some(i) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name) },
                     None => *ptr,
                 };
-                Ok(self.builder.build_load(ptr, name))
+                Ok(self.builder.build_load(ptr, name).into_float_value())
             },
             AstKind::Index(_) => todo!(),
             AstKind::Slice(_) => todo!(),
+            AstKind::Integer(_) => todo!(),
             _ => panic!("unexprected astkind"),
         }
     }
@@ -239,13 +238,13 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.position_at_end(basic_block);
 
         // input definitiions
-        for a in self.model.in_defns {
+        for a in self.model.in_defns.iter() {
             let alloca = self.jit_compile_array(a, None)?;
-            self.variables.insert(a.name, alloca);
+            self.variables.insert(a.name.to_owned(), alloca);
         }
         // F and G
-        let lhs_ptr = self.jit_compile_array(self.model.lhs, None)?;
-        let rhs_ptr = self.jit_compile_array(self.model.rhs, None)?;
+        let lhs_ptr = self.jit_compile_array(&self.model.lhs, None)?;
+        let rhs_ptr = self.jit_compile_array(&self.model.rhs, None)?;
         
         // compute residual here as dummy array
         let residual = Array {
@@ -262,30 +261,12 @@ impl<'ctx> CodeGen<'ctx> {
                             }
                 }
             ],
-        }
+        };
         let res_ptr = self.variables.get("rr").unwrap();
-        let res_ptr = self.jit_compile_array(residual, Some(res_ptr))?;
-        let name = "residual";
-        let mut res = self.builder.build_load(*res_ptr, name).into_array_value();
-        let res = self.builder.build_load(*res_ptr, name).into_array_value();
-        let lhs = self.builder.build_load(*lhs_ptr, name).into_array_value();
-        let rhs = self.builder.build_load(*rhs_ptr, name).into_array_value();
-        if n_states > 5 {
-            // do a loop
-            todo!()
-        } else {
-            // unroll it
-            for index in 0..n_states {
-                let lhsi = self.builder.build_extract_value(lhs, index, name)?;
-                let rhsi = self.builder.build_extract_value(rhs, index, name)?;
-                let resi = self.builder.build_float_sub(lhsi, rhsi, name)?;
-                res = self.builder.build_insert_value(res, resi, index, name).unwrap().into_array_value();
-            }
-        }
-
+        let res_ptr = self.jit_compile_array(&residual, Some(*res_ptr))?;
         self.builder.build_return(None);
 
-        unsafe { self.execution_engine.get_function("residual").ok() }
+        unsafe { self.execution_engine.get_function("residual").context("jit") }
     }
     fn residual(&self, args: &Args) {
 
@@ -327,9 +308,12 @@ impl<'ctx> Sundials<'ctx> {
     pub fn from_discrete_model(model: DiscreteModel, options: Options) -> Result<Sundials> {
         let number_of_states = i64::try_from(model.len_state())?;
         let number_of_parameters = i64::try_from(model.len_inputs())?;
-        let context = Context::create();
+        let context = inkwell::context::Context::create();
         let module = context.create_module(model.name);
-        let execution_engine = module.create_jit_execution_engine(OptimizationLevel::None)?;
+        let execution_engine = match module.create_jit_execution_engine(OptimizationLevel::None) {
+            Ok(e) => todo!(),
+            Err(e) => Err(anyhow!("{}", e.to_string())),
+        }?;
         let real_type = context.f64_type();
         let real_type_str = "f64";
         let codegen = CodeGen {
@@ -337,9 +321,12 @@ impl<'ctx> Sundials<'ctx> {
             module,
             builder: context.create_builder(),
             execution_engine,
-            model,
+            model: &model,
             real_type,
-            real_type_str,
+            real_type_str: real_type_str.to_owned(),
+            variables: HashMap::new(),
+            functions: HashMap::new(),
+            fn_value_opt: None,
         };
         let residual = codegen.jit_compile_residual()?;
 

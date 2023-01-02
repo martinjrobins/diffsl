@@ -1,7 +1,7 @@
 use inkwell::intrinsics::Intrinsic;
-use inkwell::types::{AnyType, BasicType, FloatType, BasicMetadataTypeEnum};
-use inkwell::values::{PointerValue, FloatValue, FunctionValue, ArrayValue, IntValue, StructValue, VectorValue, FloatMathValue};
-use inkwell::{OptimizationLevel, AddressSpace};
+use inkwell::types::{AnyType, BasicType, FloatType, BasicMetadataTypeEnum, IntType};
+use inkwell::values::{PointerValue, FloatValue, FunctionValue, ArrayValue, IntValue, StructValue, VectorValue, FloatMathValue, BasicMetadataValueEnum};
+use inkwell::{OptimizationLevel, AddressSpace, IntPredicate};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction};
@@ -9,17 +9,17 @@ use inkwell::module::Module;
 use sundials_sys::{realtype, N_Vector, IDACreate, N_VNew_Serial, N_VCloneVectorArray, N_VGetArrayPointer, N_VConst, IDAInit, IDASVtolerances, IDARootInit, IDASetUserData, IDASetJacFn, IDASetJacTimes, SUNLinSolInitialize, IDASetId, IDASensInit, IDASensEEtolerances, SUNMatrix, SUNLinearSolver, SUNSparseMatrix, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, IDA_SIMULTANEOUS, IDASensFree, SUNLinSolFree, SUNMatDestroy, N_VDestroy, N_VDestroyVectorArray, IDAFree};
 use std::cmp::max;
 use std::collections::HashMap;
-use std::error::{Error, self};
+use std::{error, vec};
 use std::ffi::c_void;
 use std::fmt::Pointer;
 use std::ptr::null;
 use std::{io, fmt};
 use std::iter::zip;
+use anyhow::{Result, anyhow};
 
-use crate::ast::{Ast, AstKind};
-use crate::discretise::{DiscreteModel, Array};
 
-type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
+use crate::ast::{Ast, AstKind, Binop};
+use crate::discretise::{DiscreteModel, Array, ArrayElmt};
 
 struct Args<'ctx> {
     time: FloatValue<'ctx>,
@@ -50,8 +50,8 @@ struct CodeGen<'ctx> {
 
 impl<'ctx> CodeGen<'ctx> {
     fn get_function(&mut self, name: &str) -> Option<FunctionValue<'ctx>> {
-        match self.function.get(name) {
-            Some(func) => func,
+        match self.functions.get(name) {
+            Some(&func) => Some(func),
             // support some llvm intrinsics
             None => {
                 match name {
@@ -70,7 +70,7 @@ impl<'ctx> CodeGen<'ctx> {
                         for (i, arg) in fn_val.get_param_iter().enumerate() {
                             arg.into_float_value().set_name("x");
                         }
-                        self.functions.insert(name.to_owned(), fn_val);
+                        self.functions.insert(name.to_owned(), fn_val)
                     },
                     unknown => None,
                 }
@@ -93,73 +93,108 @@ impl<'ctx> CodeGen<'ctx> {
         }
         builder
     }
-
-    fn jit_compile_array(&mut self, a: &Array)  -> Result<PointerValue> {
-        if a.dim == 1 {
-            let float_value = self.jit_compile_expr(&a.elmts[0], a.name)?;
-            let float_alloca = self.create_entry_block_builder().build_alloca(self.real_type, a.name);
-            self.builder.build_store(float_alloca, float_value);
-            Ok(float_alloca)
-        } else {
-            let array_type = self.real_type.array_type(a.dim);
-            let array_alloca = self.create_entry_block_builder().build_alloca(array_type, a.name);
-            let mut array = self.builder.build_load(array_alloca, a.name).into_array_value();
-            for (i, elmt) in a.elmts.iter().enumerate() {
-                let elmt_name = format!("{}-{}", a.name, i);
-                if elmt.get_dim() == 1 {
-                    let float_value = self.jit_compile_expr(&elmt.expr, elmt_name.as_str())?;
-                    array = self.builder.build_insert_value(array, float_value, elmt.bounds.0, a.name).unwrap().into_array_value();
-                } else {
-                    let array_v = self.jit_compile_array_expr(&elmt.expr)?;
-                    array = self.jit_compile_insert_slice(array, array_v, elmt.bounds, a.name)?;
-                }
-            }
-            self.builder.build_store(array_alloca, array);
-            Ok(array_alloca)
-        }
+    
+    
+    fn jit_compile_scalar_array(&mut self, a: &Array, res_ptr_opt: Option<PointerValue>)  -> Result<PointerValue> {
+        let res_type = self.real_type;
+        let res_ptr = match res_ptr_opt {
+            Some(ptr) => ptr,
+            None => self.create_entry_block_builder().build_alloca(res_type, a.name),
+        };
+        let elmt = a.elmts.first().unwrap();
+        let float_value = self.jit_compile_expr(&elmt.expr, None, a.name)?;
+        self.builder.build_store(res_ptr, float_value);
+        Ok(res_ptr)
     }
 
-    fn jit_compile_expr(&mut self, expr: &Ast, name: &str) -> Result<FloatMathValue<'ctx>> {
+    fn jit_compile_array(&mut self, a: &Array, res_ptr_opt: Option<PointerValue>)  -> Result<PointerValue> {
+        let a_dim = a.get_dim();
+        if a_dim == 1 {
+            return self.jit_compile_scalar_array(a, res_ptr_opt)
+        }
+        let res_type = self.real_type.array_type(a_dim);
+        let res_ptr = match res_ptr_opt {
+            Some(ptr) => ptr,
+            None => self.create_entry_block_builder().build_alloca(res_type, a.name),
+        };
+        let one = self.context.i32_type().const_int(1, false);
+        let res_index = self.context.i32_type().const_int(0, false);
+        for (i, elmt) in a.elmts.iter().enumerate() {
+            let elmt_name = format!("{}-{}", a.name, i).as_str();
+            let elmt_dim = elmt.get_dim();
+            if elmt_dim < 2 {
+                for i in 0..elmt_dim {
+                    let float_value = self.jit_compile_expr(&elmt.expr, Some(res_index), elmt_name)?;
+                    let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[res_index], elmt_name) };
+                    self.builder.build_store(resi_ptr, float_value);
+                    res_index = self.builder.build_int_add(res_index, one, elmt_name);
+                }
+            } else {
+                let block = self.context.append_basic_block(self.fn_value(), elmt_name);
+                let after_block = self.context.append_basic_block(self.fn_value(), elmt_name);
+                let final_index = self.context.i32_type().const_int(elmt.bounds.1.into(), false);
+                let float_value = self.jit_compile_expr(&elmt.expr, Some(res_index), elmt_name)?;
+                let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[res_index], elmt_name) };
+                res_index = self.builder.build_int_add(res_index, one, elmt_name);
+                self.builder.build_store(resi_ptr, float_value);
+                let loop_while = self.builder.build_int_compare(IntPredicate::ULE, res_index, final_index, elmt_name);
+                self.builder.build_conditional_branch(loop_while, block, after_block);
+            }
+        }
+        Ok(res_ptr)
+    }
+
+    fn jit_compile_expr(&mut self, expr: &Ast, index: Option<IntValue<'ctx>>, name: &str) -> Result<FloatValue<'ctx>> {
         match expr.kind {
             AstKind::Binop(binop) => {
-                let lhs = self.jit_compile_expr(binop.left.as_ref(), name);
-                let rhs = self.jit_compile_expr(binop.right.as_ref(), name);
+                let lhs = self.jit_compile_expr(binop.left.as_ref(), index, name)?;
+                let rhs = self.jit_compile_expr(binop.right.as_ref(), index, name)?;
                 match binop.op {
-                    '*' => self.builder.build_float_mul(lhs, rhs, name),
-                    '/' => self.builder.build_float_div(lhs, rhs, name),
-                    '-' => self.builder.build_float_sub(lhs, rhs, name),
-                    '+' => self.builder.build_float_add(lhs, rhs, name),
-                    _ => Err("unknown binop op")
+                    '*' => Ok(self.builder.build_float_mul(lhs, rhs, name)),
+                    '/' => Ok(self.builder.build_float_div(lhs, rhs, name)),
+                    '-' => Ok(self.builder.build_float_sub(lhs, rhs, name)),
+                    '+' => Ok(self.builder.build_float_add(lhs, rhs, name)),
+                    unknown => Err(anyhow!("unknown binop op '{}'", unknown))
                 }
             },
             AstKind::Monop(monop) => {
-                let child = self.jit_compile_expr(monop.child.as_ref(), name);
+                let child = self.jit_compile_expr(monop.child.as_ref(), index, name)?;
                 match monop.op {
-                    '-' => self.builder.build_float_neg(child, name),
-                    _ => Err("unknown monop op")
+                    '-' => Ok(self.builder.build_float_neg(child, name)),
+                    unknown => Err(anyhow!("unknown monop op '{}'", unknown))
                 }                
             },
             AstKind::Call(call) => {
                 match self.get_function(call.fn_name) {
                     Some(function) => {
-                        let mut args: Vec<FloatMathValue> = Vec::new();
-                        for i in 0..function.count_params() {
-                            args.push(self.jit_compile_expr(call.args[i]?, name));
+                        let mut args: Vec<BasicMetadataValueEnum> = Vec::new();
+                        for arg in call.args {
+                            let arg_val = self.jit_compile_expr(arg.as_ref(), index, name)?;
+                            args.push(BasicMetadataValueEnum::FloatValue(arg_val));
                         }
-                        self.builder.build_call(function, args, name)
+                        let ret_value = self.builder.build_call(function, args.as_slice(), name)
+                            .try_as_basic_value().left().unwrap().into_float_value();
+                        Ok(ret_value)
                     },
-                    _ => Err("unknown function call")
+                    None => Err(anyhow!("unknown function call '{}'", call.fn_name))
                 }
                 
             },
             AstKind::CallArg(arg) => {
-                self.jit_compile_expr(&arg.expression, name)
+                self.jit_compile_expr(&arg.expression, index, name)
             },
-            AstKind::Index(index) => index.,
+            AstKind::Number(value) => Ok(self.real_type.const_float(value)),
+            AstKind::Integer(value) => Ok(self.context.i32_type().const_int(value, true)),
+            AstKind::Name(name) => {
+                let ptr = self.variables.get(name)?;
+                let ptr = match index {
+                    Some(i) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name) },
+                    None => *ptr,
+                };
+                Ok(self.builder.build_load(ptr, name))
+            },
+            AstKind::Index(_) => todo!(),
             AstKind::Slice(_) => todo!(),
-            AstKind::Number(_) => todo!(),
-            AstKind::Integer(_) => todo!(),
-            AstKind::Name(_) => todo!(),
             _ => panic!("unexprected astkind"),
         }
     }
@@ -173,12 +208,13 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn jit_compile_residual(&mut self) -> Result<JitFunction<ResidualFunc>> {
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
+        let n_states = self.model.len_state();
+        let real_array_type = self.real_type.array_type(n_states);
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            &[self.real_type.into(), real_array_type.into(), real_array_type.into(), real_array_type.into(), real_array_type.into()]
             , false
         );
-        let n_states = self.model.len_state();
         let n_inputs = self.model.len_inputs();
         let fn_arg_names = &["t", "u", "dotu", "inputs", "rr"];
         let fn_arg_dims = &[1, n_states, n_states, n_inputs, n_states];
@@ -197,22 +233,55 @@ impl<'ctx> CodeGen<'ctx> {
                 }
                 _ => unreachable!()
             };
-            self.variables.insert(arg_name.to_owned(), Local {ptr: alloca, dim: arg_dim});
+            self.variables.insert(arg_name.to_owned(), alloca);
         }
 
         self.builder.position_at_end(basic_block);
 
         // input definitiions
         for a in self.model.in_defns {
-            let alloca = self.jit_compile_array(a)?;
+            let alloca = self.jit_compile_array(a, None)?;
             self.variables.insert(a.name, alloca);
         }
         // F and G
-        let lhs = self.jit_compile_array(self.model.lhs)?;
-        let rhs = self.jit_compile_array(self.model.rhs)?;
+        let lhs_ptr = self.jit_compile_array(self.model.lhs, None)?;
+        let rhs_ptr = self.jit_compile_array(self.model.rhs, None)?;
         
-        // compute residual here
-        todo!()
+        // compute residual here as dummy array
+        let residual = Array {
+            name: "residual",
+            elmts: vec![
+                ArrayElmt { 
+                    bounds: (0, n_states), 
+                    expr: Ast { kind: AstKind::new_binop(
+                                        '-', 
+                                        Ast { kind: AstKind::new_name("F"), span: None }, 
+                                        Ast { kind: AstKind::new_name("G"), span: None }
+                                ),
+                                span: None
+                            }
+                }
+            ],
+        }
+        let res_ptr = self.variables.get("rr").unwrap();
+        let res_ptr = self.jit_compile_array(residual, Some(res_ptr))?;
+        let name = "residual";
+        let mut res = self.builder.build_load(*res_ptr, name).into_array_value();
+        let res = self.builder.build_load(*res_ptr, name).into_array_value();
+        let lhs = self.builder.build_load(*lhs_ptr, name).into_array_value();
+        let rhs = self.builder.build_load(*rhs_ptr, name).into_array_value();
+        if n_states > 5 {
+            // do a loop
+            todo!()
+        } else {
+            // unroll it
+            for index in 0..n_states {
+                let lhsi = self.builder.build_extract_value(lhs, index, name)?;
+                let rhsi = self.builder.build_extract_value(rhs, index, name)?;
+                let resi = self.builder.build_float_sub(lhsi, rhsi, name)?;
+                res = self.builder.build_insert_value(res, resi, index, name).unwrap().into_array_value();
+            }
+        }
 
         self.builder.build_return(None);
 

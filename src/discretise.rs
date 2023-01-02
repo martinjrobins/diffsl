@@ -28,6 +28,12 @@ pub struct Array<'s> {
     pub elmts: Vec<ArrayElmt<'s>>,
 }
 
+impl<'s> Array<'s> {
+    pub fn get_dim(&self) -> u32 {
+        self.elmts.iter().fold(0, |sum, e| sum + e.get_dim())
+    }
+}
+
 impl<'s> fmt::Display for Array<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let elmts_str: Vec<String> = self.elmts.iter().map(|e| e.to_string()).collect();
@@ -118,10 +124,10 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
 }
 
 impl<'s> DiscreteModel<'s> {
-    pub fn len_state(&self) -> usize {
+    pub fn len_state(&self) -> u32 {
         self.state.iter().fold(0, |sum, i| sum + i.dim)
     }
-    pub fn len_inputs(&self) -> usize {
+    pub fn len_inputs(&self) -> u32 {
         self.inputs.iter().fold(0, |sum, i| sum + i.dim)
     }
     fn state_to_elmt(state_cell: &Rc<RefCell<Variable<'s>>>) -> (Ast<'s>, Ast<'s>) {

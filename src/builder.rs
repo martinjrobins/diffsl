@@ -74,7 +74,7 @@ impl<'a> fmt::Display for Variable<'a> {
 
 impl<'s> Variable<'s> {
     pub fn is_time_dependent(&self) -> bool {
-        self.time_index.is_some() 
+        self.time_index.is_some() || self.is_time()
         || self.dependents.iter().any(|d| d.borrow().is_time_dependent())
     }
     pub fn is_independent(&self) -> bool {

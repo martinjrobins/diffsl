@@ -521,6 +521,8 @@ impl<'ctx> Sundials<'ctx> {
     pub fn solve(&mut self, times: &Array1<f64>, inputs: &Array1<f64>, y0: &Array1<f64>, yp0: &Array1<f64>) -> (Array1<f64>, Array2<f64>, Array3<f64>) {
         let number_of_timesteps = times.len();
         let number_of_inputs = inputs.len();
+        assert_eq!(number_of_inputs, self.number_of_parameters);
+        assert_eq!(y0.len(), self.number_of_states);
 
         let mut t_return = Array1::zeros((number_of_timesteps).f());
         let mut y_return = Array2::zeros((number_of_timesteps, self.number_of_states).f());

@@ -248,6 +248,9 @@ impl<'s> DiscreteModel<'s> {
         let mut curr_index = 0;
         let mut out_array_elmts: Vec<ArrayElmt> = Vec::new();
         for out in time_varying.iter() {
+            if out.borrow().is_time() {
+                continue
+            }
             if let Some(mut elmt) = DiscreteModel::output_to_elmt(out) {
                 elmt.bounds.0 += curr_index;
                 elmt.bounds.1 += curr_index;
@@ -265,6 +268,7 @@ impl<'s> DiscreteModel<'s> {
         let (odefns, idefns): (Vec<_>, Vec<_>) =  
             defns 
             .iter()
+            .filter(|d| !d.borrow().is_time())
             .partition(|v| v.borrow().is_dependent_on_state());
 
         let mut f_elmts: Vec<ArrayElmt> = Vec::new();

@@ -23,7 +23,7 @@ impl<'s> ArrayElmt<'s> {
 
 impl<'s> fmt::Display for ArrayElmt<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}:{} -> {}", self.bounds.0, self.bounds.1, self.expr)
+        write!(f, "{}..{}: {}", self.bounds.0, self.bounds.1, self.expr)
     }
 }
 
@@ -50,7 +50,7 @@ impl<'s> fmt::Display for Array<'s> {
 #[derive(Debug)]
 // the p[i] in F(t, p, u, u_dot) = G(t, p, u)
 pub struct Input<'s> {
-    name: &'s str,
+    pub name: &'s str,
     dim: u32,
     bounds: (f64, f64),
 }
@@ -67,10 +67,16 @@ impl<'s> fmt::Display for Input<'s> {
     }
 }
 
+impl<'s> Input<'s> {
+    pub fn get_dim(&self) -> u32 {
+        self.dim
+    }
+}
+
 #[derive(Debug)]
 // the p[i] in F(t, p, u, u_dot) = G(t, p, u)
 pub struct State<'s> {
-    name: &'s str,
+    pub name: &'s str,
     dim: u32,
     init: Ast<'s>,
 }
@@ -82,6 +88,9 @@ impl<'s> fmt::Display for State<'s> {
 }
 
 impl<'s> State<'s> {
+    pub fn get_dim(&self) -> u32 {
+        self.dim
+    }
     pub fn is_algebraic(&self) ->bool {
         match self.init.kind {
             AstKind::Number(value) => f64::is_nan(value),
@@ -105,8 +114,20 @@ pub struct DiscreteModel<'s> {
 
 impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let inputs_str: Vec<String> = self.inputs.iter().map(|i| i.to_string()).collect();
-        let states_str: Vec<String> = self.states.iter().map(|i| i.to_string()).collect();
+        let mut inputs_str: Vec<String> = Vec::new();
+        let mut curr_index = 0;
+        for input in self.inputs.iter() {
+            let bounds = (curr_index, curr_index + input.dim);
+            inputs_str.push(format!("{}..{}: {}", bounds.0, bounds.1, input));
+            curr_index = bounds.1;
+        }
+        let mut states_str: Vec<String> = Vec::new();
+        let mut curr_index = 0;
+        for state in self.states.iter() {
+            let bounds = (curr_index, curr_index + state.dim);
+            states_str.push(format!("{}..{}: {}", bounds.0, bounds.1, state));
+            curr_index = bounds.1;
+        }
         write!(f, "in {{\n  {}\n}}\n", inputs_str.join("\n  "))
         .and_then(|_|
             self.in_defns.iter().fold(Ok(()), |result, array| {
@@ -223,9 +244,20 @@ impl<'s> DiscreteModel<'s> {
             .into_iter()
             .map(|(_name, var)| var)
             .partition(|var| !var.borrow().is_time_dependent());
+        
+        let mut curr_index = 0;
+        let mut out_array_elmts: Vec<ArrayElmt> = Vec::new();
+        for out in time_varying.iter() {
+            if let Some(mut elmt) = DiscreteModel::output_to_elmt(out) {
+                elmt.bounds.0 += curr_index;
+                elmt.bounds.1 += curr_index;
+                curr_index = elmt.bounds.1;
+                out_array_elmts.push(elmt);
+            }
+        }
         let out_array = Array {
             name: "out",
-            elmts: time_varying.iter().filter_map(DiscreteModel::output_to_elmt).collect(),
+            elmts: out_array_elmts,
         };
         let (states, defns): (Vec<_>, Vec<_>) = time_varying
             .into_iter()
@@ -235,10 +267,19 @@ impl<'s> DiscreteModel<'s> {
             .iter()
             .partition(|v| v.borrow().is_dependent_on_state());
 
-        let (f_elmts, g_elmts) = states
-            .iter()
-            .map(DiscreteModel::state_to_elmt)
-            .unzip();
+        let mut f_elmts: Vec<ArrayElmt> = Vec::new();
+        let mut g_elmts: Vec<ArrayElmt> = Vec::new();
+        let mut curr_index = 0;
+        for state in states.iter() {
+            let mut elmt = DiscreteModel::state_to_elmt(state);
+            elmt.0.bounds.0 += curr_index;
+            elmt.0.bounds.1 += curr_index;
+            elmt.1.bounds.0 += curr_index;
+            elmt.1.bounds.1 += curr_index;
+            curr_index = elmt.1.bounds.1;
+            f_elmts.push(elmt.0);
+            g_elmts.push(elmt.1);
+        }
         let init_states = states
             .iter()
             .map(DiscreteModel::state_to_u0)

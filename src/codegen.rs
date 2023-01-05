@@ -109,10 +109,10 @@ impl<'ctx> CodeGen<'ctx> {
         if a_dim == 1 {
             return self.jit_compile_scalar_array(a, res_ptr_opt)
         }
-        let res_type = self.real_type.array_type(a_dim);
+        let a_dim_val = self.context.i32_type().const_int(u64::from(a_dim), false);
         let res_ptr = match res_ptr_opt {
             Some(ptr) => ptr,
-            None => self.create_entry_block_builder().build_alloca(res_type, a.name),
+            None => self.create_entry_block_builder().build_array_alloca(self.real_type, a_dim_val, a.name),
         };
         let one = self.context.i32_type().const_int(1, false);
         let mut res_index = self.context.i32_type().const_int(0, false);
@@ -129,14 +129,17 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             } else {
                 let block = self.context.append_basic_block(self.fn_value(), elmt_name);
-                let after_block = self.context.append_basic_block(self.fn_value(), elmt_name);
+                self.builder.build_unconditional_branch(block);
+                self.builder.position_at_end(block);
                 let final_index = self.context.i32_type().const_int(elmt.bounds.1.into(), false);
                 let float_value = self.jit_compile_expr(&elmt.expr, Some(res_index), elmt_name)?;
                 let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[res_index], elmt_name) };
                 res_index = self.builder.build_int_add(res_index, one, elmt_name);
                 self.builder.build_store(resi_ptr, float_value);
                 let loop_while = self.builder.build_int_compare(IntPredicate::ULE, res_index, final_index, elmt_name);
+                let after_block = self.context.append_basic_block(self.fn_value(), elmt_name);
                 self.builder.build_conditional_branch(loop_while, block, after_block);
+                self.builder.position_at_end(after_block);
             }
         }
         Ok(res_ptr)
@@ -163,6 +166,17 @@ impl<'ctx> CodeGen<'ctx> {
                 }                
             },
             AstKind::Call(call) => {
+                // deal with dot(name)
+                if call.fn_name == "dot" && call.args.len() == 1 {
+                    if let AstKind::Name(name) = call.args[0].kind {
+                        let ptr = self.variables.get(format!("dot({})", name).as_str()).expect("variable not found");
+                        let ptr = match index {
+                            Some(i) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name) },
+                            None => *ptr,
+                        };
+                        return Ok(self.builder.build_load(ptr, name).into_float_value())
+                    }
+                }
                 match self.get_function(call.fn_name) {
                     Some(function) => {
                         let mut args: Vec<BasicMetadataValueEnum> = Vec::new();
@@ -209,6 +223,8 @@ impl<'ctx> CodeGen<'ctx> {
         let fn_arg_names = &["t", "u", "dotu", "inputs", "rr"];
         let function = self.module.add_function("residual", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
+        self.fn_value_opt = Some(function);
+        self.builder.position_at_end(basic_block);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let arg_name = fn_arg_names[i];
@@ -224,7 +240,38 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(arg_name.to_owned(), alloca);
         }
 
-        self.builder.position_at_end(basic_block);
+        // input variables
+        let mut curr_index = 0;
+        for input in model.inputs.iter() {
+            let bounds = (curr_index, curr_index + input.get_dim());
+
+            let ptr = self.variables.get("inputs").unwrap();
+            let i = self.context.i32_type().const_int(u64::from(curr_index), false);
+            let alloca = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], input.name) };
+
+            self.variables.insert(input.name.to_owned(), alloca);
+
+            curr_index = bounds.1;
+        }
+
+        // state variables
+        let mut curr_index = 0;
+        for s in model.states.iter() {
+            let bounds = (curr_index, curr_index + s.get_dim());
+
+            let ptr = self.variables.get("u").unwrap();
+            let i = self.context.i32_type().const_int(u64::from(curr_index), false);
+            let alloca = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], s.name) };
+
+            let ptr = self.variables.get("dotu").unwrap();
+            let i = self.context.i32_type().const_int(u64::from(curr_index), false);
+            let alloca_dot = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], s.name) };
+
+            self.variables.insert(s.name.to_owned(), alloca);
+            self.variables.insert(format!("dot({})", s.name), alloca_dot);
+
+            curr_index = bounds.1;
+        }
 
         // input definitiions
         for a in model.in_defns.iter() {
@@ -232,8 +279,10 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(a.name.to_owned(), alloca);
         }
         // F and G
-        let _lhs_ptr = self.jit_compile_array(&model.lhs, None)?;
-        let _rhs_ptr = self.jit_compile_array(&model.rhs, None)?;
+        let lhs_ptr = self.jit_compile_array(&model.lhs, None)?;
+        self.variables.insert("F".to_owned(), lhs_ptr);
+        let rhs_ptr = self.jit_compile_array(&model.rhs, None)?;
+        self.variables.insert("G".to_owned(), rhs_ptr);
         
         // compute residual here as dummy array
         let residual = Array {
@@ -437,7 +486,6 @@ impl<'ctx> Sundials<'ctx> {
                 //IDASensInit(ida_mem, number_of_parameters, IDA_SIMULTANEOUS,
                 //            sensitivities, yyS, ypS);
                 //IDASensEEtolerances(ida_mem);
-                todo!();
             }
 
             SUNLinSolInitialize(linear_solver);
@@ -635,10 +683,9 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo,
      #[test]
     fn rate_equationn() {
         let text = "
-        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t), z(t) ) { 
+        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t) ) { 
             dot(y) = r * y * (1 - y / k)
             y(0) = 1.0
-            z = 2 * y
         }
         ";
         let models = parse_string(text).unwrap();

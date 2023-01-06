@@ -51,14 +51,14 @@ impl<'s> fmt::Display for Array<'s> {
 // the p[i] in F(t, p, u, u_dot) = G(t, p, u)
 pub struct Input<'s> {
     pub name: &'s str,
-    dim: u32,
-    bounds: (f64, f64),
+    pub bounds: (u32, u32),
 }
 
 impl<'s> fmt::Display for Input<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.dim > 1 {
-            write!(f, "{}^{}", self.name, self.dim)
+        let dim = self.get_dim();
+        if dim > 1 {
+            write!(f, "{}^{}", self.name, dim)
         } else {
             write!(f, "{}", self.name)
         }.and_then(|_|
@@ -69,7 +69,7 @@ impl<'s> fmt::Display for Input<'s> {
 
 impl<'s> Input<'s> {
     pub fn get_dim(&self) -> u32 {
-        self.dim
+        self.bounds.1 - self.bounds.0
     }
 }
 
@@ -77,7 +77,7 @@ impl<'s> Input<'s> {
 // the p[i] in F(t, p, u, u_dot) = G(t, p, u)
 pub struct State<'s> {
     pub name: &'s str,
-    dim: u32,
+    pub bounds: (u32, u32),
     init: Ast<'s>,
 }
 
@@ -89,7 +89,7 @@ impl<'s> fmt::Display for State<'s> {
 
 impl<'s> State<'s> {
     pub fn get_dim(&self) -> u32 {
-        self.dim
+        self.bounds.1 - self.bounds.0
     }
     pub fn is_algebraic(&self) ->bool {
         match self.init.kind {
@@ -115,18 +115,12 @@ pub struct DiscreteModel<'s> {
 impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut inputs_str: Vec<String> = Vec::new();
-        let mut curr_index = 0;
         for input in self.inputs.iter() {
-            let bounds = (curr_index, curr_index + input.dim);
-            inputs_str.push(format!("{}..{}: {}", bounds.0, bounds.1, input));
-            curr_index = bounds.1;
+            inputs_str.push(format!("{}..{}: {}", input.bounds.0, input.bounds.1, input));
         }
         let mut states_str: Vec<String> = Vec::new();
-        let mut curr_index = 0;
         for state in self.states.iter() {
-            let bounds = (curr_index, curr_index + state.dim);
-            states_str.push(format!("{}..{}: {}", bounds.0, bounds.1, state));
-            curr_index = bounds.1;
+            states_str.push(format!("{}..{}: {}", state.bounds.0, state.bounds.1, state));
         }
         write!(f, "in {{\n  {}\n}}\n", inputs_str.join("\n  "))
         .and_then(|_|
@@ -152,10 +146,16 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
 
 impl<'s> DiscreteModel<'s> {
     pub fn len_state(&self) -> u32 {
-        self.states.iter().fold(0, |sum, i| sum + i.dim)
+        self.states.iter().fold(0, |sum, i| sum + i.get_dim())
     }
     pub fn len_inputs(&self) -> u32 {
-        self.inputs.iter().fold(0, |sum, i| sum + i.dim)
+        self.inputs.iter().fold(0, |sum, i| sum + i.get_dim())
+    }
+    pub fn get_init_state(&self) -> Array<'s> {
+        Array {
+            name: "u0",
+            elmts: self.states.iter().map(|s| ArrayElmt{ bounds: s.bounds, expr: s.init.clone() }).collect(),
+        }
     }
     fn state_to_elmt(state_cell: &Rc<RefCell<Variable<'s>>>) -> (ArrayElmt<'s>, ArrayElmt<'s>) {
         let state = state_cell.borrow();
@@ -195,7 +195,7 @@ impl<'s> DiscreteModel<'s> {
                 span,
             }
         };
-        State { name: state.name, dim: u32::try_from(state.dim).expect("cannot convert usize -> u32"), init }
+        State { name: state.name, bounds: (0, u32::try_from(state.dim).expect("cannot convert usize -> u32")), init }
     }
     fn idfn_to_array(defn_cell: &&Rc<RefCell<Variable<'s>>>) -> Array<'s> {
         let defn = defn_cell.borrow();
@@ -220,8 +220,7 @@ impl<'s> DiscreteModel<'s> {
         assert!(!input.is_time_dependent());
         Input {
             name: input.name,
-            dim: u32::try_from(input.dim).unwrap(),
-            bounds: input.bounds,
+            bounds: (0, u32::try_from(input.dim).unwrap()),
         }
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> Option<ArrayElmt<'s>> {
@@ -239,7 +238,7 @@ impl<'s> DiscreteModel<'s> {
     })
     }
     pub fn from(model: ModelInfo<'s>) -> DiscreteModel<'s> {
-        let (inputs, time_varying): (Vec<_>, Vec<_>) = model
+        let (parameters, time_varying): (Vec<_>, Vec<_>) = model
             .variables
             .into_iter()
             .map(|(_name, var)| var)
@@ -274,22 +273,32 @@ impl<'s> DiscreteModel<'s> {
         let mut f_elmts: Vec<ArrayElmt> = Vec::new();
         let mut g_elmts: Vec<ArrayElmt> = Vec::new();
         let mut curr_index = 0;
+        let mut init_states: Vec<State> = Vec::new();
         for state in states.iter() {
             let mut elmt = DiscreteModel::state_to_elmt(state);
             elmt.0.bounds.0 += curr_index;
             elmt.0.bounds.1 += curr_index;
             elmt.1.bounds.0 += curr_index;
             elmt.1.bounds.1 += curr_index;
+            let mut init_state = DiscreteModel::state_to_u0(state);
+            init_state.bounds.0 += curr_index;
+            init_state.bounds.1 += curr_index;
             curr_index = elmt.1.bounds.1;
             f_elmts.push(elmt.0);
             g_elmts.push(elmt.1);
+            init_states.push(init_state);
         }
-        let init_states = states
-            .iter()
-            .map(DiscreteModel::state_to_u0)
-            .collect();
-
-        let inputs: Vec<Input> = inputs.iter().map(DiscreteModel::state_to_input).collect();
+        
+        let mut curr_index = 0;
+        let mut inputs: Vec<Input> = Vec::new();
+        for input in parameters.iter() {
+            let mut inp = DiscreteModel::state_to_input(input);
+            inp.bounds.0 += curr_index;
+            inp.bounds.1 += curr_index;
+            curr_index = inp.bounds.1;
+            inputs.push(inp);
+        }
+        
         let in_defns = idefns.iter().map(DiscreteModel::idfn_to_array).collect();
         let out_defns = odefns.iter().map(DiscreteModel::odfn_to_array).collect();
         let lhs = Array {

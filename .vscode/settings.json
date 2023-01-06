@@ -1,0 +1,3 @@
+{
+  "rust-analyzer.debug.engineSettings": {"cppvsdbg": {"visualizerFile":"${workspaceFolder}/.vscode/custom.natvis"}}
+}

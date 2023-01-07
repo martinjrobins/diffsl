@@ -7,9 +7,10 @@ use inkwell::builder::Builder;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
 use ndarray::{Array1, Array2, Array3, ShapeBuilder};
-use sundials_sys::{realtype, N_Vector, IDAGetSens, IDAGetNonlinSolvStats, IDA_TSTOP_RETURN, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, IDASensFree, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit};
+use sundials_sys::{realtype, N_Vector, IDAGetNonlinSolvStats, IDA_TSTOP_RETURN, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, IDASensFree, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit};
 use std::collections::HashMap;
-use std::vec;
+use std::io::Write;
+use std::{vec, io};
 use std::ffi::c_void;
 use std::ptr::{null_mut};
 use std::iter::{zip};
@@ -117,29 +118,46 @@ impl<'ctx> CodeGen<'ctx> {
             Some(ptr) => ptr,
             None => self.create_entry_block_builder().build_array_alloca(self.real_type, a_dim_val, a.name),
         };
-        let one = self.context.i32_type().const_int(1, false);
-        let mut res_index = self.context.i32_type().const_int(0, false);
         for (i, elmt) in a.elmts.iter().enumerate() {
             let elmt_name_string = format!("{}-{}", a.name, i);
             let elmt_name= elmt_name_string.as_str();
             let elmt_dim = elmt.get_dim();
-            if elmt_dim < 2 {
-                for _ in 0..elmt_dim {
-                    let float_value = self.jit_compile_expr(&elmt.expr, Some(res_index), elmt_name)?;
-                    let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[res_index], elmt_name) };
+            let int_type = self.context.i64_type();
+            if elmt_dim == 1 {
+                let index = int_type.const_int(u64::from(elmt.bounds.0), false);
+                let float_value = self.jit_compile_expr(&elmt.expr, None, elmt_name)?;
+                let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[index], elmt_name) };
+                self.builder.build_store(resi_ptr, float_value);
+            } else if elmt_dim < 2 {
+                for i in 0..elmt_dim {
+                    let index = int_type.const_int(u64::from(elmt.bounds.0 + i), false);
+                    let float_value = self.jit_compile_expr(&elmt.expr, Some(index), elmt_name)?;
+                    let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[index], elmt_name) };
                     self.builder.build_store(resi_ptr, float_value);
-                    res_index = self.builder.build_int_add(res_index, one, elmt_name);
                 }
             } else {
+                let preblock = self.builder.get_insert_block().unwrap();
                 let block = self.context.append_basic_block(self.fn_value(), elmt_name);
                 self.builder.build_unconditional_branch(block);
                 self.builder.position_at_end(block);
-                let final_index = self.context.i32_type().const_int(elmt.bounds.1.into(), false);
-                let float_value = self.jit_compile_expr(&elmt.expr, Some(res_index), elmt_name)?;
-                let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[res_index], elmt_name) };
-                res_index = self.builder.build_int_add(res_index, one, elmt_name);
+
+                // setup index
+                let start_index = int_type.const_int(elmt.bounds.0.into(), false);
+                let one = int_type.const_int(1, false);
+                let final_index = int_type.const_int(elmt.bounds.1.into(), false);
+                let curr_index = self.builder.build_phi(int_type, "i");
+                curr_index.add_incoming(&[(&start_index, preblock)]);
+                
+                // loop body
+                let curr_index_int = curr_index.as_basic_value().into_int_value();
+                let float_value = self.jit_compile_expr(&elmt.expr, Some(curr_index_int), elmt_name)?;
+                let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[curr_index_int], elmt_name) };
                 self.builder.build_store(resi_ptr, float_value);
-                let loop_while = self.builder.build_int_compare(IntPredicate::ULE, res_index, final_index, elmt_name);
+
+                // increment index and check loop condition
+                let next_index = self.builder.build_int_add(curr_index_int, one, elmt_name);
+                curr_index.add_incoming(&[(&next_index, block)]);
+                let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, final_index, elmt_name);
                 let after_block = self.context.append_basic_block(self.fn_value(), elmt_name);
                 self.builder.build_conditional_branch(loop_while, block, after_block);
                 self.builder.position_at_end(after_block);
@@ -172,12 +190,13 @@ impl<'ctx> CodeGen<'ctx> {
                 // deal with dot(name)
                 if call.fn_name == "dot" && call.args.len() == 1 {
                     if let AstKind::Name(name) = call.args[0].kind {
-                        let ptr = self.variables.get(format!("dot({})", name).as_str()).expect("variable not found");
+                        let name = format!("dot({})", name);
+                        let ptr = self.variables.get(name.as_str()).expect("variable not found");
                         let ptr = match index {
-                            Some(i) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name) },
+                            Some(i) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name.as_str()) },
                             None => *ptr,
                         };
-                        return Ok(self.builder.build_load(ptr, name).into_float_value())
+                        return Ok(self.builder.build_load(ptr, name.as_str()).into_float_value())
                     }
                 }
                 match self.get_function(call.fn_name) {
@@ -282,9 +301,15 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(a.name.to_owned(), alloca);
         }
 
+        let (u0_array, dotu0_array) = model.get_init_state();
+
         let u0_ptr = self.variables.get("u0").unwrap();
-        let u0_array = model.get_init_state();
         self.jit_compile_array(&u0_array, Some(*u0_ptr))?;
+        
+        let dotu0_ptr = self.variables.get("dotu0").unwrap();
+        self.jit_compile_array(&dotu0_array, Some(*dotu0_ptr))?;
+        
+        
         self.builder.build_return(None);
 
         if function.verify(true) {
@@ -333,10 +358,11 @@ impl<'ctx> CodeGen<'ctx> {
 
             let ptr = self.variables.get("dotu").unwrap();
             let i = self.context.i32_type().const_int(u64::from(s.bounds.0), false);
-            let alloca_dot = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], s.name) };
+            let name = format!("dot({})", s.name);
+            let alloca_dot = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name.as_str()) };
 
             self.variables.insert(s.name.to_owned(), alloca);
-            self.variables.insert(format!("dot({})", s.name), alloca_dot);
+            self.variables.insert(name, alloca_dot);
         }
 
         // input definitiions
@@ -371,6 +397,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None);
 
         if function.verify(true) {
+            function.print_to_stderr();
             self.fpm.run_on(&function);
 
             Ok(function)
@@ -445,6 +472,13 @@ impl<'ctx> Sundials<'ctx> {
             N_VGetArrayPointer(data.inputs), 
             N_VGetArrayPointer(rr), 
         );
+
+        println!("t {}", t);
+        println!("id {}, {}", *N_VGetArrayPointer(data.id), *(N_VGetArrayPointer(data.id).add(1)));
+        println!("y {}, {}", *N_VGetArrayPointer(y), *(N_VGetArrayPointer(y).add(1)));
+        println!("yp {}, {}", *N_VGetArrayPointer(yp), *(N_VGetArrayPointer(yp).add(1)));
+        println!("residual {}, {}", *N_VGetArrayPointer(rr), *(N_VGetArrayPointer(rr).add(1)));
+        io::stdout().flush().unwrap();
         0
     }   
 
@@ -485,12 +519,18 @@ impl<'ctx> Sundials<'ctx> {
                 *u0_ptr.add(i) = u0[i]; 
                 *up0_ptr.add(i) = up0[i]; 
             }
+            println!("t {}", t);
+            println!("y {}, {}", *N_VGetArrayPointer(self.data.yy), *(N_VGetArrayPointer(self.data.yy).add(1)));
+            println!("yp {}, {}", *N_VGetArrayPointer(self.data.yp), *(N_VGetArrayPointer(self.data.yp).add(1)));
+            println!("before residual {}, {}", *N_VGetArrayPointer(rr), *(N_VGetArrayPointer(rr).add(1)));
             self.data.residual.call(t, 
                 N_VGetArrayPointer(self.data.yy), 
                 N_VGetArrayPointer(self.data.yp), 
                 N_VGetArrayPointer(self.data.inputs), 
                 N_VGetArrayPointer(rr), 
             );
+            println!("after residual {}, {}", *N_VGetArrayPointer(rr), *(N_VGetArrayPointer(rr).add(1)));
+            io::stdout().flush().unwrap();
             let rr_ptr = N_VGetArrayPointer(rr);
             for i in 0..self.data.number_of_states {
                 res[i] = *rr_ptr.add(i); 
@@ -564,6 +604,11 @@ impl<'ctx> Sundials<'ctx> {
                 N_VConst(0.0, yy_si);
                 N_VConst(0.0, yp_si);
             }
+            
+            let yval = N_VGetArrayPointer(yy);
+            let ypval = N_VGetArrayPointer(yp);
+            let inputsval = N_VGetArrayPointer(inputs);
+            set_u0.call(inputsval, yval, ypval);
 
             // initialise solver
             IDAInit(ida_mem, Some(Self::sresidual), 0.0, yy, yp);
@@ -680,7 +725,7 @@ impl<'ctx> Sundials<'ctx> {
 
         let mut t_return = Array1::zeros((number_of_timesteps).f());
         let mut y_return = Array2::zeros((number_of_timesteps, self.data.number_of_states).f());
-        let mut y_s_return = Array3::zeros((number_of_timesteps, self.data.number_of_parameters, self.data.number_of_states).f());
+        let y_s_return = Array3::zeros((number_of_timesteps, self.data.number_of_parameters, self.data.number_of_states).f());
 
         unsafe {
             let inputs_ptr = N_VGetArrayPointer(self.data.inputs);
@@ -700,25 +745,30 @@ impl<'ctx> Sundials<'ctx> {
 
             self.data.set_u0.call(inputsval, yval, ypval);
 
+            println!("y {}, {}", *N_VGetArrayPointer(self.data.yy), *(N_VGetArrayPointer(self.data.yy).add(1)));
+            println!("yp {}, {}", *N_VGetArrayPointer(self.data.yp), *(N_VGetArrayPointer(self.data.yp).add(1)));
+
             let t0 = times[0];
 
             IDAReInit(self.ida_mem, t0, self.data.yy, self.data.yp);
 
-
+            let mut retval: i32;
+            retval = IDACalcIC(self.ida_mem, IDA_YA_YDP_INIT, times[1]);
+            
+            let yval = N_VGetArrayPointer(self.data.yy);
+            println!("y {}, {}", *N_VGetArrayPointer(self.data.yy), *(N_VGetArrayPointer(self.data.yy).add(1)));
+            println!("yp {}, {}", *N_VGetArrayPointer(self.data.yp), *(N_VGetArrayPointer(self.data.yp).add(1)));
 
             t_return[0] = times[0];
             for j in 0..self.data.number_of_states {
                 y_return[[0, j]] = *yval.add(j);
             }
-            for j in 0..self.data.number_of_parameters {
-                for k in 0..self.data.number_of_states {
-                    y_s_return[[0, j, k]] = *ys_val[j].add(k);
-                }
-            }
+            //for j in 0..self.data.number_of_parameters {
+            //    for k in 0..self.data.number_of_states {
+            //        y_s_return[[0, j, k]] = *ys_val[j].add(k);
+            //    }
+            //}
 
-            IDACalcIC(self.ida_mem, IDA_YA_YDP_INIT, times[1]);
-
-            let mut retval: i32;
             let t_final = times.last().unwrap().clone();
             for t_i in 1..number_of_timesteps {
                 let t_next = times[t_i];
@@ -837,9 +887,10 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo,
      #[test]
     fn rate_equationn() {
         let text = "
-        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t) ) { 
+        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t), z(t)) { 
             dot(y) = r * y * (1 - y / k)
             y(0) = 1.0
+            z = 2 * y
         }
         ";
         let models = parse_string(text).unwrap();
@@ -855,17 +906,54 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo,
         let r = 1.0;
         let k = 1.0;
         let y0 = 1.0;
+        let y_is_0 = discrete.states.first().unwrap().name == "y";
         let inputs = array![r, k];
 
         // test set_u0
         let u0 = sundials.calc_u0(&inputs);
-        let check_u0 = array![y0];
+        let check_u0 = if y_is_0 {
+            array![y0, 0.]
+        } else {
+            array![0., y0]
+        };
         assert_relative_eq!(u0, check_u0);
-
+        let u0 = if y_is_0 {
+            array![y0, 2.*y0]
+        } else {
+            array![2.*y0, y0]
+        };
+        
         // test residual
-        let up0 = array![r * y0 * (1. - y0 / k)];
+        let up0 = if y_is_0 {
+            array![1. * (r * y0 * (1. - y0 / k)), 2. * (r * y0 * (1. - y0 / k))]
+        } else {
+            array![2. * (r * y0 * (1. - y0 / k)), 1. * (r * y0 * (1. - y0 / k))]
+        };
         let res = sundials.calc_residual(0., &inputs, &u0, &up0);
-        let res_check = array![0.];
+        let res_check = array![0., 0.];
+        assert_relative_eq!(res, res_check);
+        
+        let up0 = if y_is_0 {
+            array![1., 0.]
+        } else {
+            array![0., 1.]
+        };
+        let res = sundials.calc_residual(0., &inputs, &u0, &up0);
+        let res_check = if y_is_0 {
+            array![1., 0.]
+        } else {
+            array![0., 1.]
+        };
+        assert_relative_eq!(res, res_check);
+        
+        let up0 = array![0., 0.];
+        let u0 = array![1., 1.];
+        let res = sundials.calc_residual(0., &inputs, &u0, &up0);
+        let res_check = if y_is_0 {
+            array![0., -1.]
+        } else {
+            array![-1., 0.]
+        };
         assert_relative_eq!(res, res_check);
 
         // solve
@@ -873,7 +961,14 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo,
 
         assert_relative_eq!(out_times, times);
         let y_check = k / ((k - y0) * (-r * times).mapv(f64::exp) / y0 + 1.);
-        assert_relative_eq!(y_check, y.slice(s![.., 0]));
+        if y_is_0 {
+            assert_relative_eq!(y_check, y.slice(s![.., 0]));
+            assert_relative_eq!(y_check * 2., y.slice(s![.., 1]));
+        } else {
+            assert_relative_eq!(y_check, y.slice(s![.., 1]));
+            assert_relative_eq!(y_check * 2., y.slice(s![.., 0]));
+            
+        }
 
         sundials.destroy();
     }

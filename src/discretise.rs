@@ -78,12 +78,15 @@ impl<'s> Input<'s> {
 pub struct State<'s> {
     pub name: &'s str,
     pub bounds: (u32, u32),
-    init: Ast<'s>,
+    init: Option<Ast<'s>>,
 }
 
 impl<'s> fmt::Display for State<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} = {}", self.name, self.init)
+        match &self.init {
+            Some(eq) => write!(f, "{} = {}", self.name, eq),
+            None => write!(f, "{}", self.name),
+        }
     }
 }
 
@@ -92,10 +95,7 @@ impl<'s> State<'s> {
         self.bounds.1 - self.bounds.0
     }
     pub fn is_algebraic(&self) ->bool {
-        match self.init.kind {
-            AstKind::Number(value) => f64::is_nan(value),
-            _ => false,
-        }
+        self.init.is_none()
     }
 }
 
@@ -151,11 +151,25 @@ impl<'s> DiscreteModel<'s> {
     pub fn len_inputs(&self) -> u32 {
         self.inputs.iter().fold(0, |sum, i| sum + i.get_dim())
     }
-    pub fn get_init_state(&self) -> Array<'s> {
-        Array {
-            name: "u0",
-            elmts: self.states.iter().map(|s| ArrayElmt{ bounds: s.bounds, expr: s.init.clone() }).collect(),
-        }
+    pub fn get_init_state(&self) -> (Array<'s>, Array<'s>) {
+        let alg_init = Ast {
+            kind: AstKind::Number(0.),
+            span: None,
+        };
+        (
+            Array {
+                name: "u0",
+                elmts: self.states.iter().map(
+                    |s| ArrayElmt{ bounds: s.bounds, expr: match &s.init { Some(eq) => eq.clone(), None => alg_init.clone(), } } 
+                ).collect(),
+            },
+            Array {
+                name: "dotu0",
+                elmts: self.states.iter().map(
+                    |s| ArrayElmt{ bounds: s.bounds, expr: alg_init.clone() } 
+                ).collect(),
+            }
+        )
     }
     fn state_to_elmt(state_cell: &Rc<RefCell<Variable<'s>>>) -> (ArrayElmt<'s>, ArrayElmt<'s>) {
         let state = state_cell.borrow();
@@ -182,18 +196,10 @@ impl<'s> DiscreteModel<'s> {
     }
     fn state_to_u0(state_cell: &Rc<RefCell<Variable<'s>>>) -> State<'s> {
         let state = state_cell.borrow();
-        let span = if let Some(eqn) = &state.equation {
-            eqn.span
-        } else {
-            panic!("state var should have an equation")
-        };
         let init = if state.has_initial_condition() {
-            state.init_conditions[0].equation.clone()
+            Some(state.init_conditions[0].equation.clone())
         } else {
-            Ast {
-                kind: AstKind::new_num(f64::NAN),
-                span,
-            }
+            None
         };
         State { name: state.name, bounds: (0, u32::try_from(state.dim).expect("cannot convert usize -> u32")), init }
     }

@@ -334,15 +334,43 @@ impl<'a> fmt::Display for Ast<'a> {
                 submodel.name, submodel.args, submodel.local_name
             ),
             AstKind::Binop(binop) => {
+                let lhs_bracket = match binop.left.kind {
+                    AstKind::Binop(_) | AstKind::Monop(_) => true,
+                    _ => false,
+                };
+                let rhs_bracket = match binop.right.kind {
+                    AstKind::Binop(_) | AstKind::Monop(_) => true,
+                    _ => false,
+                };
+                let lhs = if lhs_bracket {
+                    format!("({})", binop.left)
+                } else {
+                    format!("{}", binop.left)
+                };
+                let rhs = if rhs_bracket {
+                    format!("({})", binop.right)
+                } else {
+                    format!("{}", binop.right)
+                };
                 write!(
                     f,
                     "{} {} {}",
-                    binop.left.to_string(),
+                    lhs,
                     binop.op,
-                    binop.right.to_string(),
+                    rhs,
                 )
             }
-            AstKind::Monop(monop) => write!(f, "{} {}", monop.op, monop.child.to_string()),
+            AstKind::Monop(monop) => {
+                let bracket = match monop.child.kind {
+                    AstKind::Binop(_) | AstKind::Monop(_) => true,
+                    _ => false,
+                };
+                if bracket {
+                    write!(f, "{} ({})", monop.op, monop.child.to_string())
+                } else {
+                    write!(f, "{} {}", monop.op, monop.child.to_string())
+                }
+            }
             AstKind::Call(call) => {
                 let arg_strs: Vec<String> = call.args.iter().map(|arg| arg.to_string()).collect();
                 write!(f, "{}({})", call.fn_name, arg_strs.join(", "))

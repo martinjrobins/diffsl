@@ -125,7 +125,7 @@ impl<'s> Variable<'s> {
                             "NonNegative" => (0.0, f64::INFINITY),
                             "R" => (-f64::INFINITY, f64::INFINITY),
                             _ => {
-                                info.output.push(Output::new(
+                                info.errors.push(Output::new(
                                     format!("Unknown domain {}", name),
                                     node.span,
                                 ));
@@ -169,10 +169,11 @@ impl<'s> Variable<'s> {
 pub struct ModelInfo<'s> {
     pub name: &'s str,
     pub unknowns: Vec<Rc<RefCell<Variable<'s>>>>,
+    pub outputs: Vec<Rc<RefCell<Variable<'s>>>>,
     pub variables: HashMap<&'s str, Rc<RefCell<Variable<'s>>>>,
     pub time: Rc<RefCell<Variable<'s>>>,
     pub stmts: Vec<Ast<'s>>,
-    pub output: Vec<Output>,
+    pub errors: Vec<Output>,
 }
 
 impl<'s> ModelInfo<'s> {
@@ -190,7 +191,8 @@ impl<'s> ModelInfo<'s> {
         }));
         Self {
             name,
-            output: Vec::new(),
+            errors: Vec::new(),
+            outputs: Vec::new(),
             unknowns: Vec::new(),
             stmts: Vec::new(),
             variables: HashMap::from([(t_name, time.clone())]),
@@ -252,7 +254,7 @@ impl<'s> ModelInfo<'s> {
                                             }
                                         ))
                                     } else {
-                                        self.output.push(Output::new(
+                                        self.errors.push(Output::new(
                                             format!(
                                                 "Did you mean to set an initial condition here? equation should be {}({}) = ...",
                                                 fn_name, self.time.borrow().bounds.0, 
@@ -281,7 +283,7 @@ impl<'s> ModelInfo<'s> {
                         if v.is_state() && v.is_time_dependent() {
                             Some(v_c.clone())
                         } else {
-                            self.output.push(Output::new(
+                            self.errors.push(Output::new(
                                 format!(
                                     "Rate equation invalid: variable {} does not depend on time",
                                     v.name
@@ -292,7 +294,7 @@ impl<'s> ModelInfo<'s> {
                         }
                     }
                     None => {
-                        self.output.push(Output::new(
+                        self.errors.push(Output::new(
                             format!("name {} not found", reqn.name),
                             stmt.span,
                         ));
@@ -329,7 +331,7 @@ impl<'s> ModelInfo<'s> {
             };
             let unallocated_eqns_disp: Vec<String> = unallocated_eqns.iter().map(|eqn| eqn.to_string()).collect();
             let unallocated_state_vars_disp: Vec<String> = unallocated_state_vars.iter().map(|var| var.borrow().to_string()).collect();
-            self.output.push(Output::new(
+            self.errors.push(Output::new(
                 format!(
                     "{}, {} equations for {} unknowns. Equations are: [{}]. Unknowns are: [{}]",
                     msg,
@@ -349,14 +351,14 @@ impl<'s> ModelInfo<'s> {
             let v = v_cell.borrow();
             if v.is_state() && v.has_equation() {
                 if !v.is_algebraic().unwrap() && !v.has_initial_condition() {
-                    self.output.push(Output::new(
+                    self.errors.push(Output::new(
                         format!("{} does not have an inital condition", v),
                         ast.span,
                     ));
                 }
                 // check algebraic variables do not have initial conditions 
                 if v.is_algebraic().unwrap() && v.has_initial_condition() {
-                    self.output.push(Output::new(
+                    self.errors.push(Output::new(
                         format!("overdetermined initial condition, algebraic variable {} should not have an initial condition", v),
                         v.init_conditions[0].equation.span,
                     ));
@@ -395,7 +397,7 @@ impl<'s> ModelInfo<'s> {
             if var.name == "t" {
                 info.time = var_cell.clone();
             } else if reserved.contains(&var.name) {
-                info.output.push(Output::new(
+                info.errors.push(Output::new(
                     format!("Name {} is reserved", var.name),
                     node.span,
                 ));
@@ -408,6 +410,10 @@ impl<'s> ModelInfo<'s> {
             if let AstKind::Unknown(u) = &node.kind {
                 if let Some(var) = info.variables.get(u.name) {
                     info.set_dependents(& mut var.borrow_mut(), &u.dependents);
+                    // if time is a dependent then add to outputs
+                    if var.borrow().is_time_dependent() { 
+                        info.outputs.push(var.clone());
+                    }
                 }
             }
         }
@@ -419,7 +425,7 @@ impl<'s> ModelInfo<'s> {
                     {
                         Some(x) => x,
                         None => {
-                            info.output.push(Output::new(
+                            info.errors.push(Output::new(
                                 format!("Submodel name {} not found", submodel_call.name),
                                 stmt.span,
                             ));
@@ -447,7 +453,7 @@ impl<'s> ModelInfo<'s> {
                     let var_cell = Rc::new(RefCell::new(Variable::new(&stmt, &mut info)));
                     let mut var = var_cell.borrow_mut();
                     if reserved.contains(&var.name) {
-                        info.output.push(Output::new(
+                        info.errors.push(Output::new(
                             format!("Name {} is reserved", var.name),
                             stmt.span,
                         ));
@@ -456,6 +462,9 @@ impl<'s> ModelInfo<'s> {
                     let dependents: Vec<&str> = deps.into_iter().collect();
                     var.time_index = dependents.iter().position(|d| *d == "t");
                     info.set_dependents(& mut var, &dependents);
+                    if var.is_time_dependent() {
+                        info.outputs.push(var_cell.clone());
+                    }
                     info.variables.insert(var.name, var_cell.clone());
                     info.check_expr(&dfn.rhs);
                 }
@@ -470,7 +479,7 @@ impl<'s> ModelInfo<'s> {
         submodel: & mut ModelInfo<'s>,
         submodel_call: & ast::Submodel<'s>,
     ) {
-        self.output.append(&mut submodel.output);
+        self.errors.append(&mut submodel.errors);
         let replacements = self.find_replacements(submodel, submodel_call);
 
         // add all the stmts with replacement
@@ -501,7 +510,7 @@ impl<'s> ModelInfo<'s> {
             AstKind::Name(name) => {
                 // check name exists
                 if self.variables.iter().find(|(var_name, _)| *var_name == name).is_none() {
-                    self.output.push(Output::new(
+                    self.errors.push(Output::new(
                         format!("name {} not found", name),
                         expr.span,
                     ))
@@ -521,7 +530,7 @@ impl<'s> ModelInfo<'s> {
                     // built in functions all have 1 arg
                     // built in functions should have no keyword args
                     if call.args.len() != 1 {
-                        self.output.push(Output::new(
+                        self.errors.push(Output::new(
                             format!("incorrect number of given arguments ({} instead of {}) for function {}", call.args.len(), 1, call.fn_name),
                             expr.span,
                         ));
@@ -529,7 +538,7 @@ impl<'s> ModelInfo<'s> {
                     for arg in call.args.iter() {
                         if let AstKind::CallArg(call_arg) = &arg.kind {
                             if let Some(_) = call_arg.name {
-                                self.output.push(Output::new(
+                                self.errors.push(Output::new(
                                     format!("keyword args not allowed for built-in funcitons"),
                                     arg.span,
                                 ));
@@ -542,7 +551,7 @@ impl<'s> ModelInfo<'s> {
                     // variable call, check we've got all the right call args
                     let var = var_cell.borrow();
                     if var.dependents.len() != call.args.len() {
-                        self.output.push(Output::new(
+                        self.errors.push(Output::new(
                             format!("incorrect number of arguments ({}) for dependent variable {}", call.args.len(), var),
                             expr.span,
                         ));
@@ -553,14 +562,14 @@ impl<'s> ModelInfo<'s> {
                             if let Some(name) = call_arg.name {
                                 has_kwarg = true;
                                 if var.dependents.iter().all(|v| v.borrow().name != name) {
-                                    self.output.push(Output::new(
+                                    self.errors.push(Output::new(
                                         format!("named arg {} does not exist in variable {}", name, var),
                                         arg.span,
                                     ));
                                 }
                             } else {
                                 if has_kwarg {
-                                    self.output.push(Output::new(
+                                    self.errors.push(Output::new(
                                         format!("indexed call arg found after named arg"),
                                         arg.span,
                                     ));
@@ -572,7 +581,7 @@ impl<'s> ModelInfo<'s> {
 
                     }
                 } else {
-                    self.output.push(Output::new(
+                    self.errors.push(Output::new(
                         format!("Function or variable {} not found", call.fn_name),
                         expr.span,
                     ));
@@ -606,7 +615,7 @@ impl<'s> ModelInfo<'s> {
                     if let Some(_) = submodel.variables.iter().find(|(name, var)| var.borrow().name == **name) {
                         replacements.insert(name, &call_arg.expression);
                     } else {
-                        self.output.push(Output::new(
+                        self.errors.push(Output::new(
                             format!(
                                 "Cannot find unknown {} in model {}",
                                 name, submodel.name
@@ -616,7 +625,7 @@ impl<'s> ModelInfo<'s> {
                     }
                 } else {
                     if found_kwarg {
-                        self.output.push(Output::new(
+                        self.errors.push(Output::new(
                             format!("positional argument found after keyword argument"),
                             arg.span,
                         ));
@@ -650,7 +659,7 @@ mod tests {
         assert!(model_info.variables.get("i").is_some());
         assert!(model_info.variables.get("t").is_some());
         assert_eq!(model_info.stmts.len(), 0);
-        assert_eq!(model_info.output.len(), 0);
+        assert_eq!(model_info.errors.len(), 0);
     }
     #[test]
     fn rate_equation() {
@@ -663,7 +672,7 @@ mod tests {
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.variables.len(), 4);
-        assert_eq!(model_info.output.len(), 0);
+        assert_eq!(model_info.errors.len(), 0);
     }
     #[test]
     fn init_cond_wrong_lower_bound() {
@@ -675,8 +684,8 @@ mod tests {
         ";
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
-        assert!(model_info.output.len() > 0);
-        assert!(model_info.output.iter().any(|o| o.as_error_message(text).contains("Did you mean to set an initial condition")));
+        assert!(model_info.errors.len() > 0);
+        assert!(model_info.errors.iter().any(|o| o.as_error_message(text).contains("Did you mean to set an initial condition")));
     }
     #[test]
     fn missing_initial_condition() {
@@ -689,11 +698,11 @@ mod tests {
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.variables.len(), 4);
         assert_eq!(model_info.stmts.len(), 0);
-        for o in model_info.output.iter() {
+        for o in model_info.errors.iter() {
             println!("{}", o.as_error_message(text));
         }
-        assert_eq!(model_info.output.len(), 1);
-        assert!(model_info.output[0].as_error_message(text).contains("does not have an inital condition"));
+        assert_eq!(model_info.errors.len(), 1);
+        assert!(model_info.errors[0].as_error_message(text).contains("does not have an inital condition"));
     }
     #[test]
     fn submodel_name_not_found() {
@@ -709,9 +718,9 @@ mod tests {
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.variables.len(), 3);
-        assert_eq!(model_info.output.len(), 2);
-        assert!(model_info.output[0].text.contains("resistorr") == true);
-        assert!(model_info.output[1].text.contains("underdetermined") == true);
+        assert_eq!(model_info.errors.len(), 2);
+        assert!(model_info.errors[0].text.contains("resistorr") == true);
+        assert!(model_info.errors[1].text.contains("underdetermined") == true);
     }
     #[test]
     fn submodel_replacements() {
@@ -727,7 +736,7 @@ mod tests {
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.variables.len(), 3);
-        assert_eq!(model_info.output.len(), 0);
+        assert_eq!(model_info.errors.len(), 0);
     }
     #[test]
     fn variable_name_not_found() {
@@ -739,9 +748,9 @@ mod tests {
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("resistor", &models).unwrap();
         assert_eq!(model_info.variables.len(), 4);
-        assert_eq!(model_info.output.len(), 2);
-        assert!(model_info.output[0].text.contains("doesnotexist") == true);
-        assert!(model_info.output[1].text.contains("underdetermined") == true);
+        assert_eq!(model_info.errors.len(), 2);
+        assert!(model_info.errors[0].text.contains("doesnotexist") == true);
+        assert!(model_info.errors[1].text.contains("underdetermined") == true);
     }
     #[test]
     fn alg_variable_with_ic() {
@@ -753,7 +762,7 @@ mod tests {
         ";
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("resistor", &models).unwrap();
-        assert_eq!(model_info.output.len(), 1);
-        assert!(model_info.output[0].text.contains("overdetermined initial condition") == true);
+        assert_eq!(model_info.errors.len(), 1);
+        assert!(model_info.errors[0].text.contains("overdetermined initial condition") == true);
     }
 }

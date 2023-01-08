@@ -101,7 +101,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             let mut inner = pair.into_inner();
             let name = parse_name(inner.next().unwrap());
             //dependents = { "(" ~ name ~ ("," ~ name )* ~ ")" }
-            let dependents = if inner.peek().unwrap().as_rule() == Rule::dependents {
+            let dependents = if inner.peek().is_some() && inner.peek().unwrap().as_rule() == Rule::dependents {
                 inner.next().unwrap().into_inner().map(parse_name).collect()
             } else {
                 Vec::new()

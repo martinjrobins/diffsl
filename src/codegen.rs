@@ -6,12 +6,12 @@ use inkwell::{OptimizationLevel, AddressSpace, IntPredicate};
 use inkwell::builder::Builder;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
-use ndarray::{Array1, Array2, Array3, ShapeBuilder};
-use sundials_sys::{realtype, N_Vector, IDAGetNonlinSolvStats, IDA_TSTOP_RETURN, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, IDASensFree, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit};
+use ndarray::{Array1, Array2, ShapeBuilder};
+use sundials_sys::{realtype, N_Vector, IDAGetNonlinSolvStats, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit, IDAGetConsistentIC, IDAGetReturnFlagName};
 use std::collections::HashMap;
 use std::io::Write;
 use std::{vec, io};
-use std::ffi::c_void;
+use std::ffi::{c_void, CStr, c_int};
 use std::ptr::{null_mut};
 use std::iter::{zip};
 use anyhow::{Result, anyhow};
@@ -26,6 +26,7 @@ use crate::discretise::{DiscreteModel, Array, ArrayElmt, Input};
 /// do `unsafe` operations internally.
 type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, inputs: *const realtype, rr: *mut realtype);
 type U0Func = unsafe extern "C" fn(inputs: *const realtype, u: *mut realtype, up: *mut realtype);
+type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, inputs: *const realtype, out: *mut realtype);
 
 struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
@@ -324,6 +325,69 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
+    fn compile_calc_out<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
+        self.clear();
+        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
+        let void_type = self.context.void_type();
+        let fn_type = void_type.fn_type(
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            , false
+        );
+        let fn_arg_names = &["t", "u", "dotu", "inputs", "out"];
+        let function = self.module.add_function("calc_out", fn_type, None);
+        let basic_block = self.context.append_basic_block(function, "entry");
+        self.fn_value_opt = Some(function);
+        self.builder.position_at_end(basic_block);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.variables.insert(name.to_owned(), alloca);
+        }
+
+        for input in model.inputs.iter() {
+            let alloca = self.input_alloca(input);
+            self.variables.insert(input.name.to_owned(), alloca);
+        }
+
+        // state variables
+        for s in model.states.iter() {
+            let ptr = self.variables.get("u").unwrap();
+            let i = self.context.i32_type().const_int(u64::from(s.bounds.0), false);
+            let alloca = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], s.name) };
+
+            let ptr = self.variables.get("dotu").unwrap();
+            let i = self.context.i32_type().const_int(u64::from(s.bounds.0), false);
+            let name = format!("dot({})", s.name);
+            let alloca_dot = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name.as_str()) };
+
+            self.variables.insert(s.name.to_owned(), alloca);
+            self.variables.insert(name, alloca_dot);
+        }
+
+        // input definitiions
+        for a in model.in_defns.iter() {
+            let alloca = self.jit_compile_array(a, None)?;
+            self.variables.insert(a.name.to_owned(), alloca);
+        }
+        
+        let out_ptr = self.variables.get("out").unwrap();
+        self.jit_compile_array(&model.out, Some(*out_ptr))?;
+        self.builder.build_return(None);
+
+        if function.verify(true) {
+            function.print_to_stderr();
+            self.fpm.run_on(&function);
+
+            Ok(function)
+        } else {
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
     fn compile_residual<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
@@ -437,7 +501,9 @@ impl Options {
 struct SundialsData<'ctx> {
     number_of_states: usize,
     number_of_parameters: usize,
+    number_of_outputs: usize,
     yy: N_Vector,
+    out: N_Vector,
     yp: N_Vector, 
     avtol: N_Vector,
     inputs: N_Vector,
@@ -448,6 +514,7 @@ struct SundialsData<'ctx> {
     linear_solver: SUNLinearSolver, 
     residual: JitFunction<'ctx, ResidualFunc>,
     set_u0: JitFunction<'ctx, U0Func>,
+    calc_out: JitFunction<'ctx, CalcOutFunc>,
     options: Options,
 }
 
@@ -473,14 +540,19 @@ impl<'ctx> Sundials<'ctx> {
             N_VGetArrayPointer(rr), 
         );
 
-        println!("t {}", t);
-        println!("id {}, {}", *N_VGetArrayPointer(data.id), *(N_VGetArrayPointer(data.id).add(1)));
-        println!("y {}, {}", *N_VGetArrayPointer(y), *(N_VGetArrayPointer(y).add(1)));
-        println!("yp {}, {}", *N_VGetArrayPointer(yp), *(N_VGetArrayPointer(yp).add(1)));
-        println!("residual {}, {}", *N_VGetArrayPointer(rr), *(N_VGetArrayPointer(rr).add(1)));
         io::stdout().flush().unwrap();
         0
     }   
+    
+    fn check(retval: c_int) -> Result<()> {
+        if retval < 0 {
+            let char_ptr = unsafe { IDAGetReturnFlagName(i64::from(retval)) };
+            let c_str = unsafe { CStr::from_ptr(char_ptr) };
+            Err(anyhow!("Sundials Error Name: {}", c_str.to_str()?))
+        } else {
+            return Ok(())
+        }
+    }
 
     pub fn calc_u0(&self, inputs: &Array1<f64>) -> Array1<f64> {
         let number_of_inputs = inputs.len();
@@ -519,17 +591,12 @@ impl<'ctx> Sundials<'ctx> {
                 *u0_ptr.add(i) = u0[i]; 
                 *up0_ptr.add(i) = up0[i]; 
             }
-            println!("t {}", t);
-            println!("y {}, {}", *N_VGetArrayPointer(self.data.yy), *(N_VGetArrayPointer(self.data.yy).add(1)));
-            println!("yp {}, {}", *N_VGetArrayPointer(self.data.yp), *(N_VGetArrayPointer(self.data.yp).add(1)));
-            println!("before residual {}, {}", *N_VGetArrayPointer(rr), *(N_VGetArrayPointer(rr).add(1)));
             self.data.residual.call(t, 
                 N_VGetArrayPointer(self.data.yy), 
                 N_VGetArrayPointer(self.data.yp), 
                 N_VGetArrayPointer(self.data.inputs), 
                 N_VGetArrayPointer(rr), 
             );
-            println!("after residual {}, {}", *N_VGetArrayPointer(rr), *(N_VGetArrayPointer(rr).add(1)));
             io::stdout().flush().unwrap();
             let rr_ptr = N_VGetArrayPointer(rr);
             for i in 0..self.data.number_of_states {
@@ -542,6 +609,7 @@ impl<'ctx> Sundials<'ctx> {
     pub fn from_discrete_model<'m>(model: &'m DiscreteModel, context: &'ctx inkwell::context::Context, options: Options) -> Result<Sundials<'ctx>> {
         let number_of_states = i64::try_from(model.len_state()).unwrap();
         let number_of_parameters = i64::try_from(model.len_inputs()).unwrap();
+        let number_of_outputs = i64::try_from(model.len_output()).unwrap();
         let module = context.create_module(model.name);
         let fpm = PassManager::create(&module);
         fpm.add_instruction_combining_pass();
@@ -572,19 +640,22 @@ impl<'ctx> Sundials<'ctx> {
 
         let set_u0 = codegen.compile_set_u0(model)?;
         let residual = codegen.compile_residual(model)?;
-        print!("set_u0 ir is:");
+        let calc_out = codegen.compile_calc_out(model)?;
+
         set_u0.print_to_stderr();
-        print!("residual ir is:");
         residual.print_to_stderr();
+        calc_out.print_to_stderr();
 
         let set_u0 = codegen.jit::<U0Func>(set_u0)?;
         let residual = codegen.jit::<ResidualFunc>(residual)?;
+        let calc_out = codegen.jit::<CalcOutFunc>(calc_out)?;
         
         unsafe {
             let ida_mem = IDACreate();
 
             // allocate vectors
             let yy = N_VNew_Serial(number_of_states);
+            let out = N_VNew_Serial(number_of_outputs);
             let yp = N_VNew_Serial(i64::from(number_of_states));
             let avtol = N_VNew_Serial(i64::from(number_of_states));
             let id = N_VNew_Serial(i64::from(number_of_states));
@@ -611,10 +682,10 @@ impl<'ctx> Sundials<'ctx> {
             set_u0.call(inputsval, yval, ypval);
 
             // initialise solver
-            IDAInit(ida_mem, Some(Self::sresidual), 0.0, yy, yp);
+            Self::check(IDAInit(ida_mem, Some(Self::sresidual), 0.0, yy, yp))?;
 
             // set tolerances
-            IDASVtolerances(ida_mem, options.rtol, avtol);
+            Self::check(IDASVtolerances(ida_mem, options.rtol, avtol))?;
 
             // set events
             //IDARootInit(ida_mem, number_of_events, events_casadi);
@@ -661,7 +732,7 @@ impl<'ctx> Sundials<'ctx> {
                 return Err(anyhow!("unknown linear solver {}", options.linear_solver))
             };
 
-            IDASetLinearSolver(ida_mem, linear_solver, jacobian);
+            Self::check(IDASetLinearSolver(ida_mem, linear_solver, jacobian))?;
 
             if options.preconditioner != "none" {
                 return Err(anyhow!("preconditioner not implemented"))
@@ -689,14 +760,16 @@ impl<'ctx> Sundials<'ctx> {
                 *id_val.add(ii) = if state.is_algebraic() { 0.0 } else { 1.0 };
             }
 
-            IDASetId(ida_mem, id);
+            Self::check(IDASetId(ida_mem, id))?;
 
             let mut data = Box::new(
                 SundialsData {
                     number_of_states: usize::try_from(number_of_states).unwrap(),
                     number_of_parameters: usize::try_from(number_of_parameters).unwrap(),
+                    number_of_outputs: usize::try_from(number_of_outputs).unwrap(),
                     yy,
                     yp,
+                    out,
                     avtol,
                     inputs,
                     yy_s,
@@ -706,10 +779,11 @@ impl<'ctx> Sundials<'ctx> {
                     linear_solver,
                     residual,
                     set_u0,
+                    calc_out,
                     options,
                 }
             );
-            IDASetUserData(ida_mem, &mut *data as *mut _ as *mut c_void);
+            Self::check(IDASetUserData(ida_mem, &mut *data as *mut _ as *mut c_void))?;
             let sundials = Sundials {
                 ida_mem,
                 data,
@@ -718,14 +792,12 @@ impl<'ctx> Sundials<'ctx> {
         }
     }
 
-    pub fn solve(&mut self, times: &Array1<f64>, inputs: &Array1<f64>) -> (Array1<f64>, Array2<f64>, Array3<f64>) {
+    pub fn solve(&mut self, times: &Array1<f64>, inputs: &Array1<f64>) -> Result<Array2<f64>> {
         let number_of_timesteps = times.len();
         let number_of_inputs = inputs.len();
         assert_eq!(number_of_inputs, self.data.number_of_parameters);
 
-        let mut t_return = Array1::zeros((number_of_timesteps).f());
-        let mut y_return = Array2::zeros((number_of_timesteps, self.data.number_of_states).f());
-        let y_s_return = Array3::zeros((number_of_timesteps, self.data.number_of_parameters, self.data.number_of_states).f());
+        let mut out_return = Array2::zeros((number_of_timesteps, self.data.number_of_outputs).f());
 
         unsafe {
             let inputs_ptr = N_VGetArrayPointer(self.data.inputs);
@@ -745,24 +817,26 @@ impl<'ctx> Sundials<'ctx> {
 
             self.data.set_u0.call(inputsval, yval, ypval);
 
-            println!("y {}, {}", *N_VGetArrayPointer(self.data.yy), *(N_VGetArrayPointer(self.data.yy).add(1)));
-            println!("yp {}, {}", *N_VGetArrayPointer(self.data.yp), *(N_VGetArrayPointer(self.data.yp).add(1)));
-
             let t0 = times[0];
 
-            IDAReInit(self.ida_mem, t0, self.data.yy, self.data.yp);
+            Self::check(IDAReInit(self.ida_mem, t0, self.data.yy, self.data.yp))?;
 
-            let mut retval: i32;
-            retval = IDACalcIC(self.ida_mem, IDA_YA_YDP_INIT, times[1]);
+            Self::check(IDACalcIC(self.ida_mem, IDA_YA_YDP_INIT, times[1]))?;
+
+            Self::check(IDAGetConsistentIC(self.ida_mem, self.data.yy, self.data.yp))?;
             
-            let yval = N_VGetArrayPointer(self.data.yy);
-            println!("y {}, {}", *N_VGetArrayPointer(self.data.yy), *(N_VGetArrayPointer(self.data.yy).add(1)));
-            println!("yp {}, {}", *N_VGetArrayPointer(self.data.yp), *(N_VGetArrayPointer(self.data.yp).add(1)));
-
-            t_return[0] = times[0];
-            for j in 0..self.data.number_of_states {
-                y_return[[0, j]] = *yval.add(j);
+            self.data.calc_out.call(
+                t0, 
+                N_VGetArrayPointer(self.data.yy), 
+                N_VGetArrayPointer(self.data.yp), 
+                N_VGetArrayPointer(self.data.inputs), 
+                N_VGetArrayPointer(self.data.out)
+            );
+            let outval = N_VGetArrayPointer(self.data.out);
+            for j in 0..self.data.number_of_outputs {
+                out_return[[0, j]] = *outval.add(j);
             }
+            
             //for j in 0..self.data.number_of_parameters {
             //    for k in 0..self.data.number_of_states {
             //        y_s_return[[0, j, k]] = *ys_val[j].add(k);
@@ -772,30 +846,33 @@ impl<'ctx> Sundials<'ctx> {
             let t_final = times.last().unwrap().clone();
             for t_i in 1..number_of_timesteps {
                 let t_next = times[t_i];
-                IDASetStopTime(self.ida_mem, t_next);
+                Self::check(IDASetStopTime(self.ida_mem, t_next))?;
                 let mut tret: realtype = 0.0;
+                let retval: c_int;
                 retval = IDASolve(self.ida_mem, t_final, & mut tret as *mut realtype, self.data.yy, self.data.yp, IDA_NORMAL);
+                Self::check(retval)?;
 
-                if retval == IDA_TSTOP_RETURN || retval == IDA_SUCCESS ||
-                    retval == IDA_ROOT_RETURN {
-                    //if self.data.number_of_parameters > 0 {
-                    //    IDAGetSens(self.ida_mem, & mut tret as *mut realtype, self.data.yy_s.as_mut_ptr());
-                    //}
+                //if self.data.number_of_parameters > 0 {
+                //    IDAGetSens(self.ida_mem, & mut tret as *mut realtype, self.data.yy_s.as_mut_ptr());
+                //}
 
-                    t_return[t_i] = tret;
-                    for j in 0..self.data.number_of_states {
-                        y_return[[t_i, j]] = *yval.add(j);
-                    }
-                    //for j in 0..self.data.number_of_parameters {
-                    //    for k in 0..self.data.number_of_states {
-                    //        y_s_return[[t_i, j, k]] = *ys_val[j].add(k);
-                    //    }
-                    //}
-                    if retval == IDA_SUCCESS || retval == IDA_ROOT_RETURN {
-                        break;
-                    }
-                } else {
-                    // failed
+                self.data.calc_out.call(
+                    tret, 
+                    N_VGetArrayPointer(self.data.yy), 
+                    N_VGetArrayPointer(self.data.yp), 
+                    N_VGetArrayPointer(self.data.inputs), 
+                    N_VGetArrayPointer(self.data.out)
+                );
+                let outval = N_VGetArrayPointer(self.data.out);
+                for j in 0..self.data.number_of_outputs {
+                    out_return[[t_i, j]] = *outval.add(j);
+                }
+                //for j in 0..self.data.number_of_parameters {
+                //    for k in 0..self.data.number_of_states {
+                //        y_s_return[[t_i, j, k]] = *ys_val[j].add(k);
+                //    }
+                //}
+                if retval == IDA_SUCCESS || retval == IDA_ROOT_RETURN {
                     break;
                 }
             }
@@ -813,7 +890,7 @@ impl<'ctx> Sundials<'ctx> {
                 let mut hcur = 0.0;
                 let mut tcur = 0.0;
 
-                IDAGetIntegratorStats(self.ida_mem, 
+                Self::check(IDAGetIntegratorStats(self.ida_mem, 
                                     &mut nsteps as *mut i64, 
                                     &mut nrevals as *mut i64, 
                                     &mut nlinsetups as *mut i64, 
@@ -823,12 +900,12 @@ impl<'ctx> Sundials<'ctx> {
                                     &mut hinused as *mut f64, 
                                     &mut hlast as *mut f64,
                                     &mut hcur as *mut f64, 
-                                    &mut tcur as *mut f64);
+                                    &mut tcur as *mut f64))?;
 
                     
                 let mut nniters = 0_i64;
                 let mut nncfails = 0_i64;
-                IDAGetNonlinSolvStats(self.ida_mem, &mut nniters as *mut i64, &mut nncfails as *mut i64);
+                Self::check(IDAGetNonlinSolvStats(self.ida_mem, &mut nniters as *mut i64, &mut nncfails as *mut i64))?;
 
                 //let ngevalsBBDP = 0;
                 //if false {
@@ -854,20 +931,21 @@ impl<'ctx> Sundials<'ctx> {
 
         }
 
-        return (t_return, y_return, y_s_return);
+        return Ok(out_return);
     }
 
     pub fn destroy(&mut self) {
         unsafe {
              /* Free memory */
-            if self.data.number_of_parameters > 0 {
-                IDASensFree(self.ida_mem);
-            }
+            //if self.data.number_of_parameters > 0 {
+            //    IDASensFree(self.ida_mem);
+            //}
             SUNLinSolFree(self.data.linear_solver);
             SUNMatDestroy(self.data.jacobian);
             N_VDestroy(self.data.avtol);
             N_VDestroy(self.data.yy);
             N_VDestroy(self.data.yp);
+            N_VDestroy(self.data.out);
             N_VDestroy(self.data.id);
             for (&yy_si, &yp_si) in zip(&self.data.yy_s, &self.data.yp_s) {
                 N_VDestroy(yy_si);
@@ -895,7 +973,7 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo,
         ";
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
-        assert_eq!(model_info.output.len(), 0);
+        assert_eq!(model_info.errors.len(), 0);
         let discrete = DiscreteModel::from(model_info);
         println!("{}", discrete);
         let options = Options::new();
@@ -906,69 +984,37 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo,
         let r = 1.0;
         let k = 1.0;
         let y0 = 1.0;
-        let y_is_0 = discrete.states.first().unwrap().name == "y";
         let inputs = array![r, k];
 
         // test set_u0
         let u0 = sundials.calc_u0(&inputs);
-        let check_u0 = if y_is_0 {
-            array![y0, 0.]
-        } else {
-            array![0., y0]
-        };
+        let check_u0 = array![y0, 0.];
         assert_relative_eq!(u0, check_u0);
-        let u0 = if y_is_0 {
-            array![y0, 2.*y0]
-        } else {
-            array![2.*y0, y0]
-        };
-        
+        let u0 = array![y0, 2.*y0];
+
         // test residual
-        let up0 = if y_is_0 {
-            array![1. * (r * y0 * (1. - y0 / k)), 2. * (r * y0 * (1. - y0 / k))]
-        } else {
-            array![2. * (r * y0 * (1. - y0 / k)), 1. * (r * y0 * (1. - y0 / k))]
-        };
+        let up0 = array![1. * (r * y0 * (1. - y0 / k)), 2. * (r * y0 * (1. - y0 / k))];
         let res = sundials.calc_residual(0., &inputs, &u0, &up0);
         let res_check = array![0., 0.];
         assert_relative_eq!(res, res_check);
         
-        let up0 = if y_is_0 {
-            array![1., 0.]
-        } else {
-            array![0., 1.]
-        };
+        let up0 = array![1., 0.];
         let res = sundials.calc_residual(0., &inputs, &u0, &up0);
-        let res_check = if y_is_0 {
-            array![1., 0.]
-        } else {
-            array![0., 1.]
-        };
+        let res_check = array![1., 0.];
         assert_relative_eq!(res, res_check);
         
         let up0 = array![0., 0.];
         let u0 = array![1., 1.];
         let res = sundials.calc_residual(0., &inputs, &u0, &up0);
-        let res_check = if y_is_0 {
-            array![0., -1.]
-        } else {
-            array![-1., 0.]
-        };
+        let res_check = array![0., -1.];
         assert_relative_eq!(res, res_check);
 
         // solve
-        let (out_times, y, _yp) = sundials.solve(&times, &inputs);
+        let out = sundials.solve(&times, &inputs).unwrap();
 
-        assert_relative_eq!(out_times, times);
         let y_check = k / ((k - y0) * (-r * times).mapv(f64::exp) / y0 + 1.);
-        if y_is_0 {
-            assert_relative_eq!(y_check, y.slice(s![.., 0]));
-            assert_relative_eq!(y_check * 2., y.slice(s![.., 1]));
-        } else {
-            assert_relative_eq!(y_check, y.slice(s![.., 1]));
-            assert_relative_eq!(y_check * 2., y.slice(s![.., 0]));
-            
-        }
+        assert_relative_eq!(y_check, out.slice(s![.., 0]), epsilon=1e-6);
+        assert_relative_eq!(y_check * 2., out.slice(s![.., 1]), epsilon=1e-6);
 
         sundials.destroy();
     }

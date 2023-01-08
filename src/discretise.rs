@@ -52,6 +52,7 @@ impl<'s> fmt::Display for Array<'s> {
 pub struct Input<'s> {
     pub name: &'s str,
     pub bounds: (u32, u32),
+    pub domain: (f64, f64),
 }
 
 impl<'s> fmt::Display for Input<'s> {
@@ -62,7 +63,7 @@ impl<'s> fmt::Display for Input<'s> {
         } else {
             write!(f, "{}", self.name)
         }.and_then(|_|
-            write!(f, " -> [{}, {}]", self.bounds.0, self.bounds.1)
+            write!(f, " -> [{}, {}]", self.domain.0, self.domain.1)
         )
     }
 }
@@ -151,6 +152,9 @@ impl<'s> DiscreteModel<'s> {
     pub fn len_inputs(&self) -> u32 {
         self.inputs.iter().fold(0, |sum, i| sum + i.get_dim())
     }
+    pub fn len_output(&self) -> u32 {
+        self.out.get_dim()
+    }
     pub fn get_init_state(&self) -> (Array<'s>, Array<'s>) {
         let alg_init = Ast {
             kind: AstKind::Number(0.),
@@ -227,6 +231,7 @@ impl<'s> DiscreteModel<'s> {
         Input {
             name: input.name,
             bounds: (0, u32::try_from(input.dim).unwrap()),
+            domain: input.bounds,
         }
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> Option<ArrayElmt<'s>> {
@@ -252,10 +257,7 @@ impl<'s> DiscreteModel<'s> {
         
         let mut curr_index = 0;
         let mut out_array_elmts: Vec<ArrayElmt> = Vec::new();
-        for out in time_varying.iter() {
-            if out.borrow().is_time() {
-                continue
-            }
+        for out in model.outputs.iter() {
             if let Some(mut elmt) = DiscreteModel::output_to_elmt(out) {
                 elmt.bounds.0 += curr_index;
                 elmt.bounds.1 += curr_index;
@@ -348,7 +350,7 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo}
         ";
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
-        assert_eq!(model_info.output.len(), 0);
+        assert_eq!(model_info.errors.len(), 0);
         let discrete = DiscreteModel::from(model_info);
         assert_eq!(discrete.in_defns.len(), 1);
         assert_eq!(discrete.in_defns[0].name, "inputVoltage");
@@ -363,7 +365,7 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo}
      #[test]
     fn rate_equation() {
         let text = "
-        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t), z(t) ) { 
+        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t), t, z(t) ) { 
             dot(y) = r * y * (1 - y / k)
             y(0) = 1.0
             z = 2 * y
@@ -371,8 +373,11 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo}
         ";
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
-        assert_eq!(model_info.output.len(), 0);
+        assert_eq!(model_info.errors.len(), 0);
         let discrete = DiscreteModel::from(model_info);
+        assert_eq!(discrete.out.elmts[0].expr.to_string(), "y");
+        assert_eq!(discrete.out.elmts[1].expr.to_string(), "t");
+        assert_eq!(discrete.out.elmts[2].expr.to_string(), "z");
         println!("{}", discrete);
     }
 }

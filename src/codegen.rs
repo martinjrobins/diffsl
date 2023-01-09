@@ -974,7 +974,7 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo,
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
-        let discrete = DiscreteModel::from(model_info);
+        let discrete = DiscreteModel::from(&model_info);
         println!("{}", discrete);
         let options = Options::new();
         let context = inkwell::context::Context::create();

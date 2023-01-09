@@ -169,8 +169,8 @@ impl<'s> Variable<'s> {
 pub struct ModelInfo<'s> {
     pub name: &'s str,
     pub unknowns: Vec<Rc<RefCell<Variable<'s>>>>,
-    pub outputs: Vec<Rc<RefCell<Variable<'s>>>>,
-    pub variables: HashMap<&'s str, Rc<RefCell<Variable<'s>>>>,
+    pub definitions: Vec<Rc<RefCell<Variable<'s>>>>,
+    variables: HashMap<&'s str, Rc<RefCell<Variable<'s>>>>,
     pub time: Rc<RefCell<Variable<'s>>>,
     pub stmts: Vec<Ast<'s>>,
     pub errors: Vec<Output>,
@@ -192,8 +192,8 @@ impl<'s> ModelInfo<'s> {
         Self {
             name,
             errors: Vec::new(),
-            outputs: Vec::new(),
             unknowns: Vec::new(),
+            definitions: Vec::new(),
             stmts: Vec::new(),
             variables: HashMap::from([(t_name, time.clone())]),
             time: time.clone(),
@@ -411,9 +411,6 @@ impl<'s> ModelInfo<'s> {
                 if let Some(var) = info.variables.get(u.name) {
                     info.set_dependents(& mut var.borrow_mut(), &u.dependents);
                     // if time is a dependent then add to outputs
-                    if var.borrow().is_time_dependent() { 
-                        info.outputs.push(var.clone());
-                    }
                 }
             }
         }
@@ -462,9 +459,7 @@ impl<'s> ModelInfo<'s> {
                     let dependents: Vec<&str> = deps.into_iter().collect();
                     var.time_index = dependents.iter().position(|d| *d == "t");
                     info.set_dependents(& mut var, &dependents);
-                    if var.is_time_dependent() {
-                        info.outputs.push(var_cell.clone());
-                    }
+                    info.definitions.push(var_cell.clone());
                     info.variables.insert(var.name, var_cell.clone());
                     info.check_expr(&dfn.rhs);
                 }

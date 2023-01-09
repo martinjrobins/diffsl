@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
+
 use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::builder::ModelInfo;
@@ -207,7 +208,7 @@ impl<'s> DiscreteModel<'s> {
         };
         State { name: state.name, bounds: (0, u32::try_from(state.dim).expect("cannot convert usize -> u32")), init }
     }
-    fn idfn_to_array(defn_cell: &&Rc<RefCell<Variable<'s>>>) -> Array<'s> {
+    fn idfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Array<'s> {
         let defn = defn_cell.borrow();
         assert!(!defn.is_dependent_on_state());
         Array {
@@ -215,7 +216,7 @@ impl<'s> DiscreteModel<'s> {
             elmts: vec![ArrayElmt {expr: defn.expression.as_ref().unwrap().clone(), bounds: (0, u32::try_from(defn.dim).unwrap()) }],
         }
     }
-    fn odfn_to_array(defn_cell: &&Rc<RefCell<Variable<'s>>>) -> Array<'s> {
+    fn odfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Array<'s> {
         let defn = defn_cell.borrow();
         assert!(defn.is_dependent_on_state());
         Array {
@@ -234,9 +235,9 @@ impl<'s> DiscreteModel<'s> {
             domain: input.bounds,
         }
     }
-    fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> Option<ArrayElmt<'s>> {
+    fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> ArrayElmt<'s> {
         let output = output_cell.borrow();
-        Some(ArrayElmt {
+        ArrayElmt {
             expr: Ast {
                 kind: AstKind::new_name(output.name),
                 span: if output.is_definition() { 
@@ -246,38 +247,35 @@ impl<'s> DiscreteModel<'s> {
                 } else { None } 
             },
             bounds: (0, u32::try_from(output.dim).unwrap())
-    })
+        }
     }
-    pub fn from(model: ModelInfo<'s>) -> DiscreteModel<'s> {
-        let (parameters, time_varying): (Vec<_>, Vec<_>) = model
-            .variables
-            .into_iter()
-            .map(|(_name, var)| var)
-            .partition(|var| !var.borrow().is_time_dependent());
+    pub fn from(model: &ModelInfo<'s>) -> DiscreteModel<'s> {
+        let (time_varying_unknowns, const_unknowns): (Vec<Rc<RefCell<Variable>>>, Vec<Rc<RefCell<Variable>>>)  = model.unknowns
+            .iter()
+            .cloned()
+            .partition(|var| var.borrow().is_time_dependent());
+
+        let states: Vec<Rc<RefCell<Variable>>> = time_varying_unknowns.iter().filter(|v| v.borrow().is_state()).cloned().collect();
+
+        let (out_defns, in_defns): (Vec<Rc<RefCell<Variable>>>, Vec<Rc<RefCell<Variable>>>)  = model.definitions
+            .iter()
+            .cloned()
+            .partition(|v| v.borrow().is_dependent_on_state());
         
+        let mut out_array_elmts: Vec<ArrayElmt> = time_varying_unknowns
+            .iter()
+            .map(DiscreteModel::output_to_elmt).collect();
         let mut curr_index = 0;
-        let mut out_array_elmts: Vec<ArrayElmt> = Vec::new();
-        for out in model.outputs.iter() {
-            if let Some(mut elmt) = DiscreteModel::output_to_elmt(out) {
-                elmt.bounds.0 += curr_index;
-                elmt.bounds.1 += curr_index;
-                curr_index = elmt.bounds.1;
-                out_array_elmts.push(elmt);
-            }
+        for elmt in out_array_elmts.iter_mut() {
+            elmt.bounds.0 += curr_index;
+            elmt.bounds.1 += curr_index;
+            curr_index = elmt.bounds.1;
         }
         let out_array = Array {
             name: "out",
             elmts: out_array_elmts,
         };
-        let (states, defns): (Vec<_>, Vec<_>) = time_varying
-            .into_iter()
-            .partition(|v| v.borrow().is_state());
-        let (odefns, idefns): (Vec<_>, Vec<_>) =  
-            defns 
-            .iter()
-            .filter(|d| !d.borrow().is_time())
-            .partition(|v| v.borrow().is_dependent_on_state());
-
+        
         let mut f_elmts: Vec<ArrayElmt> = Vec::new();
         let mut g_elmts: Vec<ArrayElmt> = Vec::new();
         let mut curr_index = 0;
@@ -299,7 +297,7 @@ impl<'s> DiscreteModel<'s> {
         
         let mut curr_index = 0;
         let mut inputs: Vec<Input> = Vec::new();
-        for input in parameters.iter() {
+        for input in const_unknowns.iter() {
             let mut inp = DiscreteModel::state_to_input(input);
             inp.bounds.0 += curr_index;
             inp.bounds.1 += curr_index;
@@ -307,8 +305,8 @@ impl<'s> DiscreteModel<'s> {
             inputs.push(inp);
         }
         
-        let in_defns = idefns.iter().map(DiscreteModel::idfn_to_array).collect();
-        let out_defns = odefns.iter().map(DiscreteModel::odfn_to_array).collect();
+        let in_defns = in_defns.iter().map(DiscreteModel::idfn_to_array).collect();
+        let out_defns = out_defns.iter().map(DiscreteModel::odfn_to_array).collect();
         let lhs = Array {
             name: "F",
             elmts: f_elmts,
@@ -351,7 +349,7 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo}
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
-        let discrete = DiscreteModel::from(model_info);
+        let discrete = DiscreteModel::from(&model_info);
         assert_eq!(discrete.in_defns.len(), 1);
         assert_eq!(discrete.in_defns[0].name, "inputVoltage");
         assert_eq!(discrete.out_defns.len(), 1);
@@ -374,7 +372,7 @@ use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo}
         let models = parse_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
-        let discrete = DiscreteModel::from(model_info);
+        let discrete = DiscreteModel::from(&model_info);
         assert_eq!(discrete.out.elmts[0].expr.to_string(), "y");
         assert_eq!(discrete.out.elmts[1].expr.to_string(), "t");
         assert_eq!(discrete.out.elmts[2].expr.to_string(), "z");

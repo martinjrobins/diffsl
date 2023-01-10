@@ -2,11 +2,8 @@ extern crate pest;
 #[macro_use]
 extern crate pest_derive;
 
-#[derive(Parser)]
-#[grammar = "ms_grammar.pest"] // relative to src
-struct MsParser;
-
-pub mod parser;
+pub mod ms_parser;
+pub mod ds_parser;
 pub mod ast;
 pub mod builder;
 pub mod discretise;
@@ -16,8 +13,8 @@ pub mod error;
 #[cfg(test)]
 mod tests {
     use super::pest::Parser;
-    use super::MsParser;
-    use super::Rule;
+    use crate::ms_parser::MsParser;
+    use crate::ms_parser::Rule;
     use std::fs;
 
     const MS_FILENAMES: &[&str] = &["test_circuit.ms", "test_fishers.ms", "test_pk.ms"];

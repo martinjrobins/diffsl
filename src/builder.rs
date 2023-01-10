@@ -200,7 +200,7 @@ impl<'s> ModelInfo<'s> {
         }
     }
     pub fn build(name: &'s str, ast: &'s Vec<Box<Ast<'s>>>) -> Result<Self, String> {
-        let model_refs: Vec<&Model> = ast.iter().filter_map(|n| AstKind::model(&n.kind)).collect();
+        let model_refs: Vec<&Model> = ast.iter().filter_map(|n| n.kind.as_model()).collect();
         match model_refs.iter().position(|v| v.name == name) {
             Some(i) => {
                 let other_models = [&model_refs[..i], &model_refs[i..]].concat();
@@ -635,7 +635,7 @@ impl<'s> ModelInfo<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{builder::ModelInfo, parser::parse_string};
+    use crate::{builder::ModelInfo, ms_parser::parse_string};
 
     #[test]
     fn simple_circuit() {

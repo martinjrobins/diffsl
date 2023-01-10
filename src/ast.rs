@@ -89,6 +89,24 @@ pub struct Model<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct Array<'a> {
+    pub name: &'a str,
+    pub elmts: Vec<Box<Ast<'a>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Assignment<'a> {
+    pub name: &'a str,
+    pub expr: Box<Ast<'a>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Parameter<'a> {
+    pub name: &'a str,
+    pub range: Box<Ast<'a>>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Index<'a> {
     pub left: Box<Ast<'a>>,
     pub right: Box<Ast<'a>>,
@@ -105,6 +123,9 @@ pub enum AstKind<'a> {
     Model(Model<'a>),
     Unknown(Unknown<'a>),
     Definition(Definition<'a>),
+    Array(Array<'a>),
+    Parameter(Parameter<'a>),
+    Assignment(Assignment<'a>),
     Submodel(Submodel<'a>),
     Equation(Equation<'a>),
     RateEquation(RateEquation<'a>),
@@ -122,9 +143,27 @@ pub enum AstKind<'a> {
 }
 
 impl<'a> AstKind<'a> {
-    pub fn model(&self) -> Option<&Model> {
+    pub fn as_model(&self) -> Option<&Model> {
         match self {
             AstKind::Model(m) => Some(m),
+            _ => None,
+        }
+    }
+    pub fn into_model(self) -> Option<Model<'a>> {
+        match self {
+            AstKind::Model(m) => Some(m),
+            _ => None,
+        }
+    }
+    pub fn as_array(&self) -> Option<&Array> {
+        match self {
+            AstKind::Array(a) => Some(a),
+            _ => None,
+        }
+    }
+    pub fn into_array(self) -> Option<Array<'a>> {
+        match self {
+            AstKind::Array(a) => Some(a),
             _ => None,
         }
     }
@@ -241,6 +280,9 @@ impl<'a> Ast<'a> {
             }),
             AstKind::Range(range) => AstKind::Range(range.clone()),
             AstKind::IntRange(range) => AstKind::IntRange(range.clone()),
+            AstKind::Array(a) => AstKind::Array(a.clone()),
+            AstKind::Parameter(p) => AstKind::Parameter(p.clone()),
+            AstKind::Assignment(a) => AstKind::Assignment(a.clone()),
         };
         Ast {
             kind: cloned_kind,
@@ -298,6 +340,9 @@ impl<'a> Ast<'a> {
             AstKind::Submodel(_) => (),
             AstKind::Range(_) => (),
             AstKind::IntRange(_) => (),
+            AstKind::Array(_) => (),
+            AstKind::Parameter(_) => (),
+            AstKind::Assignment(_) => (),
         }
     }
 }
@@ -388,7 +433,16 @@ impl<'a> fmt::Display for Ast<'a> {
             AstKind::Slice(slice) => {
                 write!(f, "{}:{}", slice.lower.to_string(), slice.upper.to_string())
             }
-
+            AstKind::Array(a) => {
+                let elmt_strs: Vec<String> = a.elmts.iter().map(|elmt| elmt.to_string()).collect();
+                write!(f, "{} {{\n{}\n}}", a.name, elmt_strs.join(",\n"))
+            },
+            AstKind::Parameter(p) => {
+                write!(f, "{} -> {}", p.name, p.range)
+            },
+            AstKind::Assignment(a) => {
+                write!(f, "{} = {}", a.name, a.expr)
+            },
         }
     }
 }

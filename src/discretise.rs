@@ -4,6 +4,8 @@ use std::fmt;
 use std::rc::Rc;
 
 
+use itertools::chain;
+
 use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::builder::ModelInfo;
@@ -24,7 +26,7 @@ impl<'s> ArrayElmt<'s> {
 
 impl<'s> fmt::Display for ArrayElmt<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}..{}: {}", self.bounds.0, self.bounds.1, self.expr)
+        write!(f, "{}", self.expr)
     }
 }
 
@@ -118,11 +120,11 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut inputs_str: Vec<String> = Vec::new();
         for input in self.inputs.iter() {
-            inputs_str.push(format!("{}..{}: {}", input.bounds.0, input.bounds.1, input));
+            inputs_str.push(format!("{}", input));
         }
         let mut states_str: Vec<String> = Vec::new();
         for state in self.states.iter() {
-            states_str.push(format!("{}..{}: {}", state.bounds.0, state.bounds.1, state));
+            states_str.push(format!("{}", state));
         }
         write!(f, "in {{\n  {}\n}}\n", inputs_str.join("\n  "))
         .and_then(|_|
@@ -262,8 +264,7 @@ impl<'s> DiscreteModel<'s> {
             .cloned()
             .partition(|v| v.borrow().is_dependent_on_state());
         
-        let mut out_array_elmts: Vec<ArrayElmt> = time_varying_unknowns
-            .iter()
+        let mut out_array_elmts: Vec<ArrayElmt> = chain(time_varying_unknowns.iter(), model.definitions.iter())
             .map(DiscreteModel::output_to_elmt).collect();
         let mut curr_index = 0;
         for elmt in out_array_elmts.iter_mut() {
@@ -332,7 +333,7 @@ impl<'s> DiscreteModel<'s> {
 
 #[cfg(test)]
 mod tests {
-use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo};
+use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelInfo};
 
     #[test]
     fn test_circuit_model() {

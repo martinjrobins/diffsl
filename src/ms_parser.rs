@@ -1,8 +1,10 @@
-use crate::ast::StringSpan;
-use crate::pest::Parser;
-use crate::MsParser;
-use crate::Rule;
+#[derive(Parser)]
+#[grammar = "ms_grammar.pest"] // relative to src
+pub(crate) struct MsParser;
 
+use crate::ast::StringSpan;
+
+use pest::Parser;
 use pest::error::Error;
 use pest::iterators::Pair;
 use std::boxed::Box;

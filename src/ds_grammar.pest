@@ -1,15 +1,21 @@
-main       = { SOI ~ array ~ EOI }
-array      = { name ~ "{" ~ expression ~ ("," ~ expression)* ~ "}" }
+main       = { SOI ~ array* ~ EOI }
+array      = { name ~ "{" ~ array_elmt? ~ (DELIM~ array_elmt )* ~ DELIM? ~ "}" }
+array_elmt = { expression | parameter | assignment }
+parameter  = { name ~ "->" ~  domain }
+domain     = { "[" ~ real ~ "..." ~ real ~ "]" }
+assignment = { name ~ "=" ~ expression }
 expression = { sign? ~ term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }
-factor     = { var | real | integer | "(" ~ expression ~ ")" }
-var        = { name ~ ( "[" ~ index ~ "]" )? }
+factor     = { call | real | integer | name | "(" ~ expression ~ ")" }
+call       = { name ~ "(" ~ call_arg ~ ("," ~ call_arg )* ~ ")" }
+call_arg   = { expression }
 sign       = @{ ("-"|"+") }
 term_op    = @{ "-"|"+" }
 factor_op  = @{ "*"|"/" }
 name       = @{ ( 'a'..'z' | 'A'..'Z' ) ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
 integer    = @{ ('0'..'9')+ }
 real       = @{ ( ('0'..'9')+ ~ "." ~ ('0'..'9')+ ) | integer }
+DELIM      = _{ "," }
 WHITESPACE = _{ " " | NEWLINE | "\t" }
 COMMENT    = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 

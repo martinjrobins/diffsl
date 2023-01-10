@@ -961,7 +961,7 @@ mod tests {
 use approx::{assert_relative_eq};
 use ndarray::{Array, array, s};
 
-use crate::{parser::parse_string, discretise::DiscreteModel, builder::ModelInfo, codegen::{Sundials, Options}};
+use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelInfo, codegen::{Sundials, Options}};
      #[test]
     fn rate_equationn() {
         let text = "

@@ -17,7 +17,6 @@ use crate::ast::AstKind;
 //sign       = @{ ("-"|"+")? }
 //factor_op  = @{ "*"|"/" }
 fn parse_sign(pair: Pair<Rule>) -> char {
-    print!("pair '{}'\n", pair.as_str());
     *pair
         .as_str()
         .chars()
@@ -51,8 +50,8 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             span,
         },
 
-        // domain = { "[" ~ real ~ "..." ~ real ~ "]" }
-        Rule::domain => {
+        // range = { "[" ~ range_val ~ "..." ~ range_val ~ "]" }
+        Rule::range => {
             let mut inner = pair.into_inner();
             Ast {
                 kind: AstKind::Range(ast::Range {
@@ -61,6 +60,18 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                 }),
                 span,
             }
+        }
+
+        // range_val  = { real | inf | neg_inf }
+        Rule::range_val => {
+            let inner_pair = pair.into_inner().next().unwrap();
+            match inner_pair.as_rule() {
+                Rule::real => parse_value(inner_pair),
+                Rule::inf => Ast { kind: AstKind::Number(f64::INFINITY), span },
+                Rule::neg_inf => Ast { kind: AstKind::Number(-f64::INFINITY), span },
+                _ => unreachable!()
+            }
+
         }
 
         //call_arg   = { (name ~ "=")? ~ expression }
@@ -173,7 +184,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             parse_value(pair.into_inner().next().unwrap())
         },
 
-        //parameter  = { name ~ "->" ~  domain }
+        //parameter  = { name ~ "->" ~  range }
         Rule::parameter => {
             let mut inner = pair.into_inner();
             let name = inner.next().unwrap().as_str();
@@ -215,6 +226,7 @@ pub fn parse_string(text: &str) -> Result<Vec<Box<Ast>>, Error<Rule>> {
 
 #[cfg(test)]
 mod tests {
+
     use super::parse_string;
     use crate::{ast::{Array}};
 
@@ -227,8 +239,52 @@ mod tests {
             }
         ";
         let arrays: Vec<Array> = parse_string(TEXT).unwrap().into_iter().map(|a| a.kind.into_array().unwrap()).collect();
-        println!("{:?}", arrays);
+        assert_eq!(arrays[0].name, "in");
+        assert_eq!(arrays[0].elmts.len(), 0);
+        assert_eq!(arrays[1].name, "test");
+        assert_eq!(arrays[1].elmts.len(), 1);
+        assert_eq!(arrays[1].elmts[0].to_string(), "1");
     }
+
+    #[test]
+    fn logistic_model() {
+        const TEXT: &str = "
+            in {
+                r -> [0, inf],
+                k -> [0, inf],
+            }
+            u {
+                y = 1,
+                z
+            }
+            F {
+                dot(y),
+                0,
+            }
+            G {
+                (r * y) * (1 - (y / k)),
+                (2 * y) - z,
+            }
+            out {
+                y,
+                t,
+                z
+            }
+        ";
+        let arrays: Vec<Array> = parse_string(TEXT).unwrap().into_iter().map(|a| a.kind.into_array().unwrap()).collect();
+        assert_eq!(arrays.len(), 5);
+        assert_eq!(arrays[0].name, "in");
+        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().name, "r");
+        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().range.kind.as_range().unwrap().lower, 0.);
+        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().range.kind.as_range().unwrap().upper, f64::INFINITY);
+
+        assert_eq!(arrays[1].name, "u");
+        assert_eq!(arrays[1].elmts[0].kind.as_assignment().unwrap().name, "y");
+        assert_eq!(arrays[1].elmts[0].kind.as_assignment().unwrap().expr.to_string(), "1");
+        assert_eq!(arrays[1].elmts[1].to_string(), "z");
+        assert_eq!(arrays[4].name, "out");
+    }
+
 
     
 }

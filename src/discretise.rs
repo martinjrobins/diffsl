@@ -2,6 +2,7 @@ use core::panic;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
+use anyhow::{Result, anyhow};
 
 
 use itertools::chain;
@@ -10,6 +11,7 @@ use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::builder::ModelInfo;
 use crate::builder::Variable;
+use crate::error::ValidationErrors;
 
 #[derive(Debug)]
 // F(t, u, u_dot) = G(t, u)
@@ -149,6 +151,18 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
 }
 
 impl<'s> DiscreteModel<'s> {
+
+    pub fn build(ast: &'s Vec<Box<Ast<'s>>>) -> Result<Self, ValidationErrors> {
+        for array in ast {
+            match array.kind {
+                AstKind::Array(_) => todo!(),
+                AstKind::Parameter(_) => todo!(),
+                AstKind::Assignment(_) => todo!(),
+                
+            }
+
+        }
+    }
     pub fn len_state(&self) -> u32 {
         self.states.iter().fold(0, |sum, i| sum + i.get_dim())
     }

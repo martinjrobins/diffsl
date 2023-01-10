@@ -161,6 +161,24 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
+    pub fn as_parameter(&self) -> Option<&Parameter> {
+        match self {
+            AstKind::Parameter(a) => Some(a),
+            _ => None,
+        }
+    }
+    pub fn as_assignment(&self) -> Option<&Assignment> {
+        match self {
+            AstKind::Assignment(a) => Some(a),
+            _ => None,
+        }
+    }
+    pub fn as_range(&self) -> Option<&Range> {
+        match self {
+            AstKind::Range(a) => Some(a),
+            _ => None,
+        }
+    }
     pub fn into_array(self) -> Option<Array<'a>> {
         match self {
             AstKind::Array(a) => Some(a),
@@ -204,6 +222,12 @@ impl Add for StringSpan {
             pos_start: cmp::min(self.pos_start, other.pos_start),
             pos_end: cmp::max(self.pos_end, other.pos_end),
         }
+    }
+}
+
+impl fmt::Display for StringSpan {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "[{}, {}]", self.pos_start, self.pos_end)
     }
 }
 

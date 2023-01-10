@@ -1,8 +1,11 @@
 main       = { SOI ~ array* ~ EOI }
 array      = { name ~ "{" ~ array_elmt? ~ (DELIM~ array_elmt )* ~ DELIM? ~ "}" }
-array_elmt = { expression | parameter | assignment }
-parameter  = { name ~ "->" ~  domain }
-domain     = { "[" ~ real ~ "..." ~ real ~ "]" }
+array_elmt = { parameter | assignment | expression }
+parameter  = { name ~ "->" ~  range }
+range      = { "[" ~ range_val ~ "," ~ range_val ~ "]" }
+range_val  = { real | integer | inf | neg_inf }
+inf        = { "inf" }
+neg_inf    = { "-inf" }
 assignment = { name ~ "=" ~ expression }
 expression = { sign? ~ term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }

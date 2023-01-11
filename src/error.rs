@@ -18,6 +18,7 @@ impl ValidationError {
         }
     }
 
+
     pub fn as_error_message(&self, f: &mut fmt::Formatter, input: &str) -> fmt::Result {
         if let Some(source_ref) = self.source_ref {
             let span = Span::new(input, source_ref.pos_start, source_ref.pos_end);

@@ -1,4 +1,5 @@
 use core::panic;
+use std::array;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -11,6 +12,7 @@ use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::builder::ModelInfo;
 use crate::builder::Variable;
+use crate::error::ValidationError;
 use crate::error::ValidationErrors;
 
 #[derive(Debug)]
@@ -40,6 +42,8 @@ pub struct Array<'s> {
 }
 
 impl<'s> Array<'s> {
+    pub fn new(name: &'s str) -> Self { Self { name, elmts: Vec::new() } }
+
     pub fn get_dim(&self) -> u32 {
         self.elmts.iter().fold(0, |sum, e| sum + e.get_dim())
     }
@@ -151,17 +155,76 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
 }
 
 impl<'s> DiscreteModel<'s> {
+    pub fn new(name: &'s str) -> Self { 
+        Self {
+            name,
+            lhs: Array::new("F"),
+            rhs: Array::new("G"),
+            out: Array::new("out"),
+            in_defns: Vec::new(),
+            out_defns: Vec::new(),
+            inputs: Vec::new(),
+            states: Vec::new(),
+        }
+    }
 
-    pub fn build(ast: &'s Vec<Box<Ast<'s>>>) -> Result<Self, ValidationErrors> {
-        for array in ast {
-            match array.kind {
-                AstKind::Array(_) => todo!(),
-                AstKind::Parameter(_) => todo!(),
-                AstKind::Assignment(_) => todo!(),
-                
+
+    pub fn build(name: &'s str, ast: &'s Vec<Box<Ast<'s>>>) -> Result<Self, ValidationErrors> {
+        let mut errors = ValidationErrors::new();
+        let ret = Self::new(name);
+        let read_state= false;
+        let read_F = false;
+        let read_G = false;
+        let read_out = false;
+        for (i, array_ast) in ast.iter().enumerate() {
+            match array_ast.kind.as_array() {
+                None => errors.push(ValidationError::new("not an array".to_string(), array_ast.span)),
+                Some(array) => {
+                    let span = array_ast.span;
+                    // first array must be in
+                    if i == 0 &&  array.name != "in" {
+                        errors.push(ValidationError::new("first array must be 'in'".to_string(), span));
+                    }
+                    match array.name {
+                        "in" => ret.inputs.extend(self.build_inputs(array, errors)),
+                        "u" => {
+                            read_state = true;
+                            ret.states.extend(self.build_states(array, errors)),
+                        },
+                        "F" => {
+                            read_F = true;
+                            let built_array_elmts = self.build_array(array, errors);
+                            ret.lhs.elmts.extend(built_array_elmts);
+                        },
+                        "G" => {
+                            read_G = true;
+                            let built_array_elmts = self.build_array(array, errors);
+                            ret.rhs.elmts.extend(built_array_elmts);
+                        },
+                        "out" => {
+                            read_out = true;
+                            let built_array_elmts = self.build_array(array, errors);
+                            ret.out.elmts.extend(built_array_elmts);
+                        },
+                        name => {
+                            let built_array_elmts = self.build_array(array, errors);
+                            let dependent_on_state = true;
+                            let new_array = Array { name, elmts: built_array_elmt };
+                            if dependent_on_state {
+                                ret.in_defns.push(new_array);
+                            } else {
+                                ret.out_defns.push(new_array);
+                            }
+                        }
+                    }
+                },
             }
 
+            
+            
+
         }
+        Err(errors)
     }
     pub fn len_state(&self) -> u32 {
         self.states.iter().fold(0, |sum, i| sum + i.get_dim())

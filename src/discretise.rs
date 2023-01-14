@@ -1,13 +1,17 @@
 use core::panic;
 use std::array;
 use std::cell::RefCell;
+use std::cmp::max;
+use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
+use std::slice::SliceIndex;
 use anyhow::{Result, anyhow};
 
 
 use itertools::chain;
 
+use crate::ast;
 use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::builder::ModelInfo;
@@ -23,7 +27,7 @@ pub struct ArrayElmt<'s> {
 }
 
 impl<'s> ArrayElmt<'s> {
-    pub fn get_dim(&self) -> u32 {
+    pub fn get_shape(&self) -> u32 {
         self.bounds.1 - self.bounds.0
     }
 }
@@ -44,8 +48,8 @@ pub struct Array<'s> {
 impl<'s> Array<'s> {
     pub fn new(name: &'s str) -> Self { Self { name, elmts: Vec::new() } }
 
-    pub fn get_dim(&self) -> u32 {
-        self.elmts.iter().fold(0, |sum, e| sum + e.get_dim())
+    pub fn get_shape(&self) -> u32 {
+        self.elmts.iter().fold(0, |sum, e| sum + e.get_shape())
     }
 }
 
@@ -66,7 +70,7 @@ pub struct Input<'s> {
 
 impl<'s> fmt::Display for Input<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let dim = self.get_dim();
+        let dim = self.get_shape();
         if dim > 1 {
             write!(f, "{}^{}", self.name, dim)
         } else {
@@ -78,7 +82,7 @@ impl<'s> fmt::Display for Input<'s> {
 }
 
 impl<'s> Input<'s> {
-    pub fn get_dim(&self) -> u32 {
+    pub fn get_shape(&self) -> u32 {
         self.bounds.1 - self.bounds.0
     }
 }
@@ -101,11 +105,128 @@ impl<'s> fmt::Display for State<'s> {
 }
 
 impl<'s> State<'s> {
-    pub fn get_dim(&self) -> u32 {
+    pub fn get_shape(&self) -> u32 {
         self.bounds.1 - self.bounds.0
     }
     pub fn is_algebraic(&self) ->bool {
         self.init.is_none()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct Shape {
+    data: Vec<usize>,
+}
+
+impl Shape {
+    pub fn rank(&self) -> usize {
+        self.data.len()
+    }
+    pub fn get<I>(&self, index: I) -> Option<&<I as SliceIndex<[usize]>>::Output> 
+    where 
+        I: std::slice::SliceIndex<[usize]>
+    {
+        self.data.get(index)
+    }
+
+    fn new_with_rank(max_rank: usize) -> Self {
+        Shape { data: vec![1; max_rank] }
+    }
+}
+
+impl fmt::Display for Shape {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut result = write!(f, "[");
+        let n = self.data.len();
+        for i in 0..n {
+            if i == n-1 {
+                result = write!(f, "{}]", self.data[i])
+            } else {
+                result = write!(f, "{}, ", self.data[i])
+            }
+        }
+        result
+    }
+}
+
+
+struct Env<'s> {
+    errs: ValidationErrors,
+    vars: HashMap<&'s str, Shape>,
+}
+
+pub fn broadcast_shapes(shapes: Vec<Shape>) -> Option<Shape> {
+    if shapes.is_empty() {
+        return None
+    }
+    let max_rank = shapes.iter().map(|s| s.rank()).max().unwrap();
+    let mut shape = Shape::new_with_rank(max_rank);
+    for i in max_rank-1..0 {
+        let (mdim, compatible) = shapes
+            .iter()
+            .map(|s| s.get(i)
+            .unwrap_or(&1))
+            .fold((1, true), |(mdim, result), dim| {
+                let new_mdim = max(mdim, *dim);
+                (new_mdim, *dim == 1 || *dim == new_mdim)
+            });
+        if !compatible {
+            return None
+        }
+        shape[i] = mdim;
+    }
+    Some(shape)
+}
+
+impl<'s> Env<'s> {
+    pub fn new() -> Self {
+        Env { errs: ValidationErrors::new(), vars: HashMap::new() }
+    }
+    pub fn get_shape(&mut self, ast: &Ast) -> Option<Shape> {
+        match ast.kind {
+            AstKind::Binop(binop) => {
+                let left_shape= self.get_shape(binop.left.as_ref())?;
+                let right_shape= self.get_shape(binop.right.as_ref())?;
+                match broadcast_shapes(vec!(left_shape, right_shape)) {
+                    Some(shape) => Some(shape),
+                    None => {
+                        self.errs.push(
+                            ValidationError::new(
+                                format!("cannot broadcast operands together. lhs {} and rhs {}", left_shape, right_shape),
+                                ast.span
+                            )
+                        );
+                        None
+                    }
+                }
+            },
+            AstKind::Monop(monop) => {
+                let dim = self.get_shape(monop.child.as_ref())?;
+                Some(dim)
+            },
+            AstKind::Call(call) => {
+                let shapes = call.args.iter().map(|c| self.get_shape(c.kind.as_call_arg().unwrap())).collect(); 
+                match broadcast_shapes(shapes) {
+                    Some(shape) => Some(shape),
+                    None => {
+                        self.errs.push(
+                            ValidationError::new(
+                                format!("cannot broadcast operands together. lhs {} and rhs {}", left_shape, right_shape),
+                                ast.span
+                            )
+                        );
+                        None
+                    }
+                }
+            },
+            AstKind::CallArg(arg) => todo!(),
+            AstKind::Index(i) => todo!(),
+            AstKind::Slice(s) => todo!(),
+            AstKind::Number(n) => todo!(),
+            AstKind::Integer(i) => todo!(),
+            AstKind::Name(name) => todo!(),
+            _ => panic!("unrecognised ast node {}", ast.kind)
+        }
     }
 }
 
@@ -154,6 +275,8 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
     }
 }
 
+
+
 impl<'s> DiscreteModel<'s> {
     pub fn new(name: &'s str) -> Self { 
         Self {
@@ -169,8 +292,19 @@ impl<'s> DiscreteModel<'s> {
     }
 
 
+    fn build_states(array: &ast::Array, env: &mut Env) -> Vec<State<'s>> {
+        let ret = Vec::new();
+        assert_eq!(array.name == "u");
+        for a in array.elmts {
+            if let Some(dim) = env.get_shape(a) {
+                ret.push(ArrayElmt{ bounds: (0, dim), expr: a.clone() })  
+            }
+        }
+        ret
+    }
+
     pub fn build(name: &'s str, ast: &'s Vec<Box<Ast<'s>>>) -> Result<Self, ValidationErrors> {
-        let mut errors = ValidationErrors::new();
+        let mut env = Env::new();
         let ret = Self::new(name);
         let read_state= false;
         let read_F = false;
@@ -186,10 +320,12 @@ impl<'s> DiscreteModel<'s> {
                         errors.push(ValidationError::new("first array must be 'in'".to_string(), span));
                     }
                     match array.name {
-                        "in" => ret.inputs.extend(self.build_inputs(array, errors)),
+                        "in" => {
+                            self.build_inputs(array, ret.input, env);
+                        }
                         "u" => {
                             read_state = true;
-                            ret.states.extend(self.build_states(array, errors)),
+                            self.build_states(array, env);
                         },
                         "F" => {
                             read_F = true;
@@ -227,13 +363,13 @@ impl<'s> DiscreteModel<'s> {
         Err(errors)
     }
     pub fn len_state(&self) -> u32 {
-        self.states.iter().fold(0, |sum, i| sum + i.get_dim())
+        self.states.iter().fold(0, |sum, i| sum + i.get_shape())
     }
     pub fn len_inputs(&self) -> u32 {
-        self.inputs.iter().fold(0, |sum, i| sum + i.get_dim())
+        self.inputs.iter().fold(0, |sum, i| sum + i.get_shape())
     }
     pub fn len_output(&self) -> u32 {
-        self.out.get_dim()
+        self.out.get_shape()
     }
     pub fn get_init_state(&self) -> (Array<'s>, Array<'s>) {
         let alg_init = Ast {

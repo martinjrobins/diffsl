@@ -55,6 +55,10 @@ impl ValidationErrors {
     pub fn push(&mut self, new: ValidationError) {
         self.errors.push(new);
     }
+    
+    pub fn extend(&mut self, new: Vec<ValidationError>) {
+        self.errors.extend(new)
+    }
 
     pub fn as_error_message(&self, f: &mut fmt::Formatter, input: &str) -> fmt::Result {
         self.errors.iter().fold(Ok(()), |result, err| {

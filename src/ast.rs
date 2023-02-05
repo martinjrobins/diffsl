@@ -45,6 +45,12 @@ pub struct RateEquation<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct IndexedName<'a> {
+    pub name: &'a str,
+    pub indices: Vec<char>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Range {
     pub lower: f64,
     pub upper: f64,
@@ -89,8 +95,9 @@ pub struct Model<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Array<'a> {
+pub struct Tensor<'a> {
     pub name: &'a str,
+    pub indices: Vec<char>,
     pub elmts: Vec<Box<Ast<'a>>>,
 }
 
@@ -103,7 +110,7 @@ pub struct Assignment<'a> {
 #[derive(Debug, Clone)]
 pub struct Parameter<'a> {
     pub name: &'a str,
-    pub range: Box<Ast<'a>>,
+    pub domain: Box<Ast<'a>>,
 }
 
 #[derive(Debug, Clone)]
@@ -123,7 +130,7 @@ pub enum AstKind<'a> {
     Model(Model<'a>),
     Unknown(Unknown<'a>),
     Definition(Definition<'a>),
-    Array(Array<'a>),
+    Tensor(Tensor<'a>),
     Parameter(Parameter<'a>),
     Assignment(Assignment<'a>),
     Submodel(Submodel<'a>),
@@ -137,6 +144,7 @@ pub enum AstKind<'a> {
     CallArg(CallArg<'a>),
     Index(Index<'a>),
     Slice(Slice<'a>),
+    IndexedName(IndexedName<'a>),
     Number(f64),
     Integer(i64),
     Name(&'a str),
@@ -155,9 +163,15 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
-    pub fn as_array(&self) -> Option<&Array> {
+    pub fn as_name(&self) -> Option<&str> {
         match self {
-            AstKind::Array(a) => Some(a),
+            AstKind::Name(n) => Some(n),
+            _ => None,
+        }
+    }
+    pub fn as_array(&self) -> Option<&Tensor> {
+        match self {
+            AstKind::Tensor(a) => Some(a),
             _ => None,
         }
     }
@@ -179,9 +193,15 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
-    pub fn into_array(self) -> Option<Array<'a>> {
+    pub fn as_call_arg(&self) -> Option<&CallArg> {
         match self {
-            AstKind::Array(a) => Some(a),
+            AstKind::CallArg(a) => Some(a),
+            _ => None,
+        }
+    }
+    pub fn into_array(self) -> Option<Tensor<'a>> {
+        match self {
+            AstKind::Tensor(a) => Some(a),
             _ => None,
         }
     }
@@ -284,6 +304,9 @@ impl<'a> Ast<'a> {
             }),
             AstKind::Number(num) => AstKind::Number(*num),
             AstKind::Integer(num) => AstKind::Integer(*num),
+            AstKind::IndexedName(name) => AstKind::IndexedName(IndexedName { 
+                name: name.name, indices: name.indices.clone() 
+            }),
             AstKind::Name(name) => {
                 if let Some(x) = replacements.get(name) {
                     x.kind.clone()
@@ -304,7 +327,7 @@ impl<'a> Ast<'a> {
             }),
             AstKind::Range(range) => AstKind::Range(range.clone()),
             AstKind::IntRange(range) => AstKind::IntRange(range.clone()),
-            AstKind::Array(a) => AstKind::Array(a.clone()),
+            AstKind::Tensor(a) => AstKind::Tensor(a.clone()),
             AstKind::Parameter(p) => AstKind::Parameter(p.clone()),
             AstKind::Assignment(a) => AstKind::Assignment(a.clone()),
         };
@@ -345,6 +368,9 @@ impl<'a> Ast<'a> {
             AstKind::CallArg(arg) => {
                 arg.expression.collect_deps(deps);
             }
+            AstKind::IndexedName(found_name) => {
+                deps.insert(found_name.name);
+            }
             AstKind::Name(found_name) => {
                 deps.insert(found_name);
             }
@@ -364,7 +390,7 @@ impl<'a> Ast<'a> {
             AstKind::Submodel(_) => (),
             AstKind::Range(_) => (),
             AstKind::IntRange(_) => (),
-            AstKind::Array(_) => (),
+            AstKind::Tensor(_) => (),
             AstKind::Parameter(_) => (),
             AstKind::Assignment(_) => (),
         }
@@ -382,6 +408,7 @@ impl<'a> fmt::Display for Ast<'a> {
                 )
             }
             AstKind::Name(name) => write!(f, "{}", name),
+            AstKind::IndexedName(name) => write!(f, "{}_{:?}", name.name, name.indices),
             AstKind::Number(num) => write!(f, "{}", num),
             AstKind::Integer(num) => write!(f, "{}", num),
             AstKind::Unknown(unknown) => write!(
@@ -457,12 +484,12 @@ impl<'a> fmt::Display for Ast<'a> {
             AstKind::Slice(slice) => {
                 write!(f, "{}:{}", slice.lower.to_string(), slice.upper.to_string())
             }
-            AstKind::Array(a) => {
+            AstKind::Tensor(a) => {
                 let elmt_strs: Vec<String> = a.elmts.iter().map(|elmt| elmt.to_string()).collect();
                 write!(f, "{} {{\n{}\n}}", a.name, elmt_strs.join(",\n"))
             },
             AstKind::Parameter(p) => {
-                write!(f, "{} -> {}", p.name, p.range)
+                write!(f, "{} -> {}", p.name, p.domain)
             },
             AstKind::Assignment(a) => {
                 write!(f, "{} = {}", a.name, a.expr)

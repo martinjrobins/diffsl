@@ -18,7 +18,7 @@ use anyhow::{Result, anyhow};
 
 
 use crate::ast::{Ast, AstKind};
-use crate::discretise::{DiscreteModel, Array, ArrayElmt, Input};
+use crate::discretise::{DiscreteModel, Tensor, TensorBlock, Input};
 
 /// Convenience type alias for the `sum` function.
 ///
@@ -97,11 +97,11 @@ impl<'ctx> CodeGen<'ctx> {
     }
     
     
-    fn jit_compile_scalar_array(&mut self, a: &Array, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
+    fn jit_compile_scalar_array(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
         let res_type = self.real_type;
         let res_ptr = match res_ptr_opt {
             Some(ptr) => ptr,
-            None => self.create_entry_block_builder().build_alloca(res_type, a.name),
+            None => self.create_entry_block_builder().build_alloca(res_type, a.name()),
         };
         let elmt = a.elmts.first().unwrap();
         let float_value = self.jit_compile_expr(&elmt.expr, None, a.name)?;
@@ -109,7 +109,7 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(res_ptr)
     }
 
-    fn jit_compile_array(&mut self, a: &Array, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
+    fn jit_compile_array(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
         let a_dim = a.get_dim();
         if a_dim == 1 {
             return self.jit_compile_scalar_array(a, res_ptr_opt)
@@ -441,10 +441,10 @@ impl<'ctx> CodeGen<'ctx> {
         self.variables.insert("G".to_owned(), rhs_ptr);
         
         // compute residual here as dummy array
-        let residual = Array {
+        let residual = Tensor {
             name: "residual",
             elmts: vec![
-                ArrayElmt { 
+                TensorBlock { 
                     bounds: (0, n_states), 
                     expr: Ast { kind: AstKind::new_binop(
                                         '-', 

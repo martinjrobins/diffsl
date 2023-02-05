@@ -174,7 +174,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             let name = inner.next().unwrap().as_str();
             let elmts = inner.map(|v| Box::new(parse_value(v))).collect();
             Ast { 
-                kind: AstKind::Array(ast::Array { name, elmts, }),
+                kind: AstKind::Tensor(ast::Tensor { name, elmts, }),
                 span 
             }
         },
@@ -228,7 +228,7 @@ pub fn parse_string(text: &str) -> Result<Vec<Box<Ast>>, Error<Rule>> {
 mod tests {
 
     use super::parse_string;
-    use crate::{ast::{Array}};
+    use crate::{ast::{Tensor}};
 
     #[test]
     fn basic_model() {
@@ -238,7 +238,7 @@ mod tests {
                 1,
             }
         ";
-        let arrays: Vec<Array> = parse_string(TEXT).unwrap().into_iter().map(|a| a.kind.into_array().unwrap()).collect();
+        let arrays: Vec<Tensor> = parse_string(TEXT).unwrap().into_iter().map(|a| a.kind.into_array().unwrap()).collect();
         assert_eq!(arrays[0].name, "in");
         assert_eq!(arrays[0].elmts.len(), 0);
         assert_eq!(arrays[1].name, "test");
@@ -271,7 +271,7 @@ mod tests {
                 z
             }
         ";
-        let arrays: Vec<Array> = parse_string(TEXT).unwrap().into_iter().map(|a| a.kind.into_array().unwrap()).collect();
+        let arrays: Vec<Tensor> = parse_string(TEXT).unwrap().into_iter().map(|a| a.kind.into_array().unwrap()).collect();
         assert_eq!(arrays.len(), 5);
         assert_eq!(arrays[0].name, "in");
         assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().name, "r");

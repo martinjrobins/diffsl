@@ -1,14 +1,31 @@
-RHS { 
-    p * 2 + g * u[0],
-    u[1],
+A_ij {
+    "filename.mat"
 }
 
-F {
+B_ij {
+    1 / p * A_ij
+}
+
+u_i {
+    x,
+    y,
+}
+
+RHS_i { 
+    p * 2 + g * x,
+    y,
+}
+
+RHS_AUG_i {
+    B_ij * RHS_i
+}
+
+F_i {
     dudt,
     0,
 }
 
-G {
+G_i {
     RHS,
-    u[0] + u[1] + t,
+    x + y + t,
 }

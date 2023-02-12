@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 
 
 use itertools::chain;
-use ndarray::Array1;
+use ndarray::{Array, Array1, ArrayD, array};
 
 use crate::ast;
 use crate::ast::Ast;
@@ -55,7 +55,7 @@ impl<'s> fmt::Display for TensorBlock<'s> {
 pub struct Tensor<'s> {
     name: &'s str,
     shape: Shape,
-    elmts: Vec<TensorBlock<'s>>,
+    elmts: ArrayD<TensorBlock<'s>>,
 }
 
 impl<'s> Tensor<'s> {
@@ -63,7 +63,7 @@ impl<'s> Tensor<'s> {
         Self { 
             name, 
             shape: Shape::zeros(0), 
-            elmts: Vec::new() 
+            elmts: ArrayD::zeros(0),
         } 
     }
      pub fn push(&mut self, block: TensorBlock<'s>) {
@@ -72,6 +72,10 @@ impl<'s> Tensor<'s> {
 
     pub fn shape(&self) -> &Shape {
         &self.shape
+    }
+
+    pub fn name(&self) -> &str {
+        self.name
     }
 }
 
@@ -86,6 +90,7 @@ impl<'s> fmt::Display for Tensor<'s> {
 // the p[i] in F(t, p, u, u_dot) = G(t, p, u)
 pub struct Input<'s> {
     name: &'s str,
+    start: Index,
     shape: Shape,
     domain: (f64, f64),
 }
@@ -117,6 +122,7 @@ impl<'s> fmt::Display for Input<'s> {
 // the p[i] in F(t, p, u, u_dot) = G(t, p, u)
 pub struct State<'s> {
     name: &'s str,
+    start: Index,
     shape: Shape,
     init: Option<Ast<'s>>,
 }
@@ -422,6 +428,7 @@ impl<'s> DiscreteModel<'s> {
     fn build_states(tensor: &ast::Tensor, env: &mut Env) -> Vec<State<'s>> {
         let ret = Vec::new();
         assert_eq!(tensor.name, "u");
+        let mut start = Index::zeros(1);
         for a in tensor.elmts {
             if let Some(elmt_shape) = env.get_shape(a.as_ref(), tensor.indices) {
                 match a.kind {
@@ -437,7 +444,8 @@ impl<'s> DiscreteModel<'s> {
                             );
                         }
                         let init = Some(*ass.expr.clone());
-                        ret.push(State{ name, shape, init })
+                        ret.push(State{ name, shape, init, start });
+                        start = start + shape.mapv(|x| i64::try_from(x).unwrap());
                     }
                     _ => {
                         env.errs.push(
@@ -456,6 +464,7 @@ impl<'s> DiscreteModel<'s> {
     fn build_inputs(tensor: &ast::Tensor, env: &mut Env) -> Vec<Input<'s>> {
         let ret = Vec::new();
         assert_eq!(tensor.name, "in");
+        let mut start = Index::zeros(1);
         for a in tensor.elmts {
             if let Some(elmt_shape) = env.get_shape(a.as_ref(), tensor.indices) {
                 match a.kind {
@@ -482,7 +491,8 @@ impl<'s> DiscreteModel<'s> {
                                 (0., 0.)
                             }
                         };
-                        ret.push(Input{ name, shape, domain })
+                        ret.push(Input{ name, shape, domain, start });
+                        start = start + shape.mapv(|x| i64::try_from(x).unwrap());
                     }
                     _ => {
                         env.errs.push(
@@ -612,18 +622,44 @@ impl<'s> DiscreteModel<'s> {
             kind: AstKind::Number(0.),
             span: None,
         };
+        let mut u0elmts = Vec::new();
+        let mut dotu0elmts = Vec::new();
+        let mut index = Index::zeros(1);
+        for s in &self.states {
+            let expr = match &s.init {
+                Some(eq) => eq.clone(),
+                None => alg_init.clone(),
+            };
+            if s.shape().len() != 1 {
+                panic!("state shape must be 1D");
+            }
+            u0elmts.push(
+                TensorBlock {
+                    expr,
+                    start: index.clone(),
+                    shape: s.shape().clone(),
+                }
+            );
+            dotu0elmts.push(
+                TensorBlock {
+                    expr: alg_init.clone(),
+                    start: index.clone(),
+                    shape: s.shape().clone(),
+                }
+            );
+            index = index + s.shape().mapv(|x| i64::try_from(x).unwrap());
+        }
+        let shape = index.mapv(|x| usize::try_from(x).unwrap());
         (
             Tensor {
                 name: "u0",
-                elmts: self.states.iter().map(
-                    |s| TensorBlock{ bounds: s.bounds, expr: match &s.init { Some(eq) => eq.clone(), None => alg_init.clone(), } } 
-                ).collect(),
+                shape,
+                elmts: u0elmts,
             },
             Tensor {
                 name: "dotu0",
-                elmts: self.states.iter().map(
-                    |s| TensorBlock{ bounds: s.bounds, expr: alg_init.clone() } 
-                ).collect(),
+                shape,
+                elmts: dotu0elmts,
             }
         )
     }
@@ -646,8 +682,16 @@ impl<'s> DiscreteModel<'s> {
             _ => panic!("equation for state var should be rate eqn or standard eqn"),
         };
         (
-            TensorBlock{ expr: Ast { kind: f_astkind, span: ast_eqn.span }, bounds: (0, u32::try_from(state.dim).unwrap()) },
-            TensorBlock{ expr: Ast { kind: g_astkind, span: ast_eqn.span }, bounds: (0, u32::try_from(state.dim).unwrap()) },
+            TensorBlock{ 
+                start: Index::zeros(1),
+                shape: Shape::from_vec(vec![state.dim]),
+                expr: Ast { kind: f_astkind, span: ast_eqn.span }, 
+            },
+            TensorBlock{ 
+                start: Index::zeros(1),
+                shape: Shape::from_vec(vec![state.dim]),
+                expr: Ast { kind: g_astkind, span: ast_eqn.span }, 
+            },
         )
     }
     fn state_to_u0(state_cell: &Rc<RefCell<Variable<'s>>>) -> State<'s> {
@@ -657,22 +701,20 @@ impl<'s> DiscreteModel<'s> {
         } else {
             None
         };
-        State { name: state.name, bounds: (0, u32::try_from(state.dim).expect("cannot convert usize -> u32")), init }
+        State { name: state.name, shape: Shape::from_vec(vec![state.dim]), init, start: Index::zeros(1) }
     }
-    fn idfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
+    fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
         let defn = defn_cell.borrow();
-        assert!(!defn.is_dependent_on_state());
         Tensor {
             name: defn.name,
-            elmts: vec![TensorBlock {expr: defn.expression.as_ref().unwrap().clone(), bounds: (0, u32::try_from(defn.dim).unwrap()) }],
-        }
-    }
-    fn odfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
-        let defn = defn_cell.borrow();
-        assert!(defn.is_dependent_on_state());
-        Tensor {
-            name: defn.name,
-            elmts: vec![TensorBlock {expr: defn.expression.as_ref().unwrap().clone(), bounds: (0, u32::try_from(defn.dim).unwrap())}],
+            shape: Shape::from_vec(vec![defn.dim]),
+            elmts: vec![
+                TensorBlock {
+                    start: Index::zeros(1),
+                    shape: Shape::from_vec(vec![defn.dim]),
+                    expr: defn.expression.as_ref().unwrap().clone()
+                }
+            ],
         }
     }
     
@@ -681,9 +723,10 @@ impl<'s> DiscreteModel<'s> {
         assert!(input.is_independent());
         assert!(!input.is_time_dependent());
         Input {
+            start: Index::zeros(1),
             name: input.name,
-            bounds: (0, u32::try_from(input.dim).unwrap()),
             domain: input.bounds,
+            shape: Shape::from_vec(vec![input.dim]),
         }
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
@@ -697,7 +740,8 @@ impl<'s> DiscreteModel<'s> {
                     output.equation.as_ref().unwrap().span 
                 } else { None } 
             },
-            bounds: (0, u32::try_from(output.dim).unwrap())
+            start: Index::zeros(1),
+            shape: Shape::from_vec(vec![output.dim]),
         }
     }
     pub fn from(model: &ModelInfo<'s>) -> DiscreteModel<'s> {
@@ -708,21 +752,23 @@ impl<'s> DiscreteModel<'s> {
 
         let states: Vec<Rc<RefCell<Variable>>> = time_varying_unknowns.iter().filter(|v| v.borrow().is_state()).cloned().collect();
 
-        let (out_defns, in_defns): (Vec<Rc<RefCell<Variable>>>, Vec<Rc<RefCell<Variable>>>)  = model.definitions
+        let (state_dep_defns, state_indep_defns): (Vec<Rc<RefCell<Variable>>>, Vec<Rc<RefCell<Variable>>>)  = model.definitions
             .iter()
             .cloned()
             .partition(|v| v.borrow().is_dependent_on_state());
         
+        let (time_dep_defns, const_defns) = state_indep_defns.iter().partition(|v| v.borrow().is_time_dependent());
+        
         let mut out_array_elmts: Vec<TensorBlock> = chain(time_varying_unknowns.iter(), model.definitions.iter())
             .map(DiscreteModel::output_to_elmt).collect();
-        let mut curr_index = 0;
+        let mut curr_index: usize = 0;
         for elmt in out_array_elmts.iter_mut() {
-            elmt.bounds.0 += curr_index;
-            elmt.bounds.1 += curr_index;
-            curr_index = elmt.bounds.1;
+            elmt.start[0] = i64::try_from(curr_index).unwrap();
+            curr_index = curr_index + elmt.shape[0];
         }
         let out_array = Tensor {
             name: "out",
+            shape: Shape::from_vec(vec![curr_index]),
             elmts: out_array_elmts,
         };
         
@@ -732,14 +778,11 @@ impl<'s> DiscreteModel<'s> {
         let mut init_states: Vec<State> = Vec::new();
         for state in states.iter() {
             let mut elmt = DiscreteModel::state_to_elmt(state);
-            elmt.0.bounds.0 += curr_index;
-            elmt.0.bounds.1 += curr_index;
-            elmt.1.bounds.0 += curr_index;
-            elmt.1.bounds.1 += curr_index;
+            elmt.0.start[0] = i64::try_from(curr_index).unwrap();
+            elmt.1.start[0] = i64::try_from(curr_index).unwrap();
             let mut init_state = DiscreteModel::state_to_u0(state);
-            init_state.bounds.0 += curr_index;
-            init_state.bounds.1 += curr_index;
-            curr_index = elmt.1.bounds.1;
+            init_state.start[0] = i64::try_from(curr_index).unwrap();
+            curr_index = curr_index + elmt.0.shape[0];
             f_elmts.push(elmt.0);
             g_elmts.push(elmt.1);
             init_states.push(init_state);
@@ -749,21 +792,25 @@ impl<'s> DiscreteModel<'s> {
         let mut inputs: Vec<Input> = Vec::new();
         for input in const_unknowns.iter() {
             let mut inp = DiscreteModel::state_to_input(input);
-            inp.bounds.0 += curr_index;
-            inp.bounds.1 += curr_index;
-            curr_index = inp.bounds.1;
+            inp.start[0] = i64::try_from(curr_index).unwrap();
+            curr_index = curr_index + inp.shape[0];
             inputs.push(inp);
         }
         
-        let in_defns = in_defns.iter().map(DiscreteModel::idfn_to_array).collect();
-        let out_defns = out_defns.iter().map(DiscreteModel::odfn_to_array).collect();
+        let state_dep_defns = state_dep_defns.iter().map(DiscreteModel::dfn_to_array).collect();
+        let time_dep_defns = time_dep_defns.iter().map(DiscreteModel::dfn_to_array).collect();
+        let time_indep_defns = const_defns.iter().map(DiscreteModel::dfn_to_array).collect();
+        let lhs_shape = (f_elmts.last().unwrap().start + f_elmts.last().unwrap().shape.mapv(|x| i64::try_from(x).unwrap())).mapv(|x| usize::try_from(x).unwrap());
         let lhs = Tensor {
             name: "F",
             elmts: f_elmts,
+            shape: lhs_shape,
         };
+        let rhs_shape = (g_elmts.last().unwrap().start + g_elmts.last().unwrap().shape.mapv(|x| i64::try_from(x).unwrap())).mapv(|x| usize::try_from(x).unwrap());
         let rhs = Tensor {
             name: "G",
             elmts: g_elmts,
+            shape: rhs_shape,
         };
         let name = model.name;
         DiscreteModel {
@@ -772,7 +819,10 @@ impl<'s> DiscreteModel<'s> {
             inputs,
             states: init_states,
             out: out_array,
-            in_defns, out_defns
+            time_indep_defns,
+            time_dep_defns,
+            state_dep_defns,
+                
         }
     }
 }
@@ -800,10 +850,11 @@ use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelIn
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
         let discrete = DiscreteModel::from(&model_info);
-        assert_eq!(discrete.in_defns.len(), 1);
-        assert_eq!(discrete.in_defns[0].name, "inputVoltage");
-        assert_eq!(discrete.out_defns.len(), 1);
-        assert_eq!(discrete.out_defns[0].name, "doubleI");
+        assert_eq!(discrete.time_indep_defns.len(), 0);
+        assert_eq!(discrete.time_dep_defns.len(), 1);
+        assert_eq!(discrete.time_dep_defns[0].name, "inputVoltage");
+        assert_eq!(discrete.state_dep_defns.len(), 1);
+        assert_eq!(discrete.state_dep_defns[0].name, "doubleI");
         assert_eq!(discrete.lhs.name, "F");
         assert_eq!(discrete.rhs.name, "G");
         assert_eq!(discrete.states.len(), 1);

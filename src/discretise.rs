@@ -55,7 +55,7 @@ impl<'s> fmt::Display for TensorBlock<'s> {
 pub struct Tensor<'s> {
     name: &'s str,
     shape: Shape,
-    elmts: ArrayD<TensorBlock<'s>>,
+    elmts: Vec<TensorBlock<'s>>,
 }
 
 impl<'s> Tensor<'s> {
@@ -63,7 +63,7 @@ impl<'s> Tensor<'s> {
         Self { 
             name, 
             shape: Shape::zeros(0), 
-            elmts: ArrayD::zeros(0),
+            elmts: Vec::new(),
         } 
     }
      pub fn push(&mut self, block: TensorBlock<'s>) {
@@ -76,6 +76,10 @@ impl<'s> Tensor<'s> {
 
     pub fn name(&self) -> &str {
         self.name
+    }
+
+    pub fn elmts(&self) -> &[TensorBlock] {
+        self.elmts.as_ref()
     }
 }
 
@@ -103,6 +107,14 @@ impl<'s> Input<'s> {
     pub fn shape(&self) -> &Shape {
         &self.shape
     }
+
+    pub fn start(&self) -> &Index {
+        &self.start
+    }
+
+    pub fn domain(&self) -> (f64, f64) {
+        self.domain
+    }
 }
 
 impl<'s> fmt::Display for Input<'s> {
@@ -125,6 +137,7 @@ pub struct State<'s> {
     start: Index,
     shape: Shape,
     init: Option<Ast<'s>>,
+    is_algebraic: bool,
 }
 
 impl<'s> State<'s> {
@@ -134,6 +147,18 @@ impl<'s> State<'s> {
 
     pub fn shape(&self) -> &Shape {
         &self.shape
+    }
+
+    pub fn start(&self) -> &Index {
+        &self.start
+    }
+
+    pub fn init(&self) -> Option<&Ast> {
+        self.init.as_ref()
+    }
+
+    pub fn is_algebraic(&self) -> bool {
+        self.is_algebraic
     }
 }
 
@@ -146,8 +171,8 @@ impl<'s> fmt::Display for State<'s> {
     }
 }
 
-type Shape = Array1<usize>;
-type Index = Array1<i64>;
+pub type Shape = Array1<usize>;
+pub type Index = Array1<i64>;
 
 struct EnvVar {
     shape: Shape,
@@ -701,7 +726,7 @@ impl<'s> DiscreteModel<'s> {
         } else {
             None
         };
-        State { name: state.name, shape: Shape::from_vec(vec![state.dim]), init, start: Index::zeros(1) }
+        State { name: state.name, shape: Shape::from_vec(vec![state.dim]), init, start: Index::zeros(1), is_algebraic: true }
     }
     fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
         let defn = defn_cell.borrow();

@@ -18,7 +18,7 @@ use anyhow::{Result, anyhow};
 
 
 use crate::ast::{Ast, AstKind};
-use crate::discretise::{DiscreteModel, Tensor, TensorBlock, Input};
+use crate::discretise::{DiscreteModel, Tensor, TensorBlock, Input, Shape, Index};
 
 /// Convenience type alias for the `sum` function.
 ///
@@ -103,36 +103,38 @@ impl<'ctx> CodeGen<'ctx> {
             Some(ptr) => ptr,
             None => self.create_entry_block_builder().build_alloca(res_type, a.name()),
         };
-        let elmt = a.elmts.first().unwrap();
-        let float_value = self.jit_compile_expr(&elmt.expr, None, a.name)?;
+        let elmt = a.elmts().first().unwrap();
+        let float_value = self.jit_compile_expr(&elmt.expr(), None, a.name())?;
         self.builder.build_store(res_ptr, float_value);
         Ok(res_ptr)
     }
 
     fn jit_compile_array(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
-        let a_dim = a.get_dim();
+        let a_dim = a.shape()[0];
         if a_dim == 1 {
             return self.jit_compile_scalar_array(a, res_ptr_opt)
         }
-        let a_dim_val = self.context.i32_type().const_int(u64::from(a_dim), false);
+        let a_dim_val = self.context.i32_type().const_int(u64::try_from(a_dim).unwrap(), false);
         let res_ptr = match res_ptr_opt {
             Some(ptr) => ptr,
-            None => self.create_entry_block_builder().build_array_alloca(self.real_type, a_dim_val, a.name),
+            None => self.create_entry_block_builder().build_array_alloca(self.real_type, a_dim_val, a.name()),
         };
-        for (i, elmt) in a.elmts.iter().enumerate() {
-            let elmt_name_string = format!("{}-{}", a.name, i);
+        for (i, elmt) in a.elmts().iter().enumerate() {
+            let elmt_name_string = format!("{}-{}", a.name(), i);
             let elmt_name= elmt_name_string.as_str();
-            let elmt_dim = elmt.get_dim();
+            let elmt_dim = u64::try_from(elmt.shape()[0]).unwrap();
+            let elmt_start = u64::try_from(elmt.start()[0]).unwrap();
+            let elmt_end = elmt_start + elmt_dim;
             let int_type = self.context.i64_type();
             if elmt_dim == 1 {
-                let index = int_type.const_int(u64::from(elmt.bounds.0), false);
-                let float_value = self.jit_compile_expr(&elmt.expr, None, elmt_name)?;
+                let index = int_type.const_int(elmt_start, false);
+                let float_value = self.jit_compile_expr(&elmt.expr(), None, elmt_name)?;
                 let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[index], elmt_name) };
                 self.builder.build_store(resi_ptr, float_value);
             } else if elmt_dim < 2 {
                 for i in 0..elmt_dim {
-                    let index = int_type.const_int(u64::from(elmt.bounds.0 + i), false);
-                    let float_value = self.jit_compile_expr(&elmt.expr, Some(index), elmt_name)?;
+                    let index = int_type.const_int(elmt_start + i, false);
+                    let float_value = self.jit_compile_expr(&elmt.expr(), Some(index), elmt_name)?;
                     let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[index], elmt_name) };
                     self.builder.build_store(resi_ptr, float_value);
                 }
@@ -143,15 +145,15 @@ impl<'ctx> CodeGen<'ctx> {
                 self.builder.position_at_end(block);
 
                 // setup index
-                let start_index = int_type.const_int(elmt.bounds.0.into(), false);
+                let start_index = int_type.const_int(elmt_start, false);
                 let one = int_type.const_int(1, false);
-                let final_index = int_type.const_int(elmt.bounds.1.into(), false);
+                let final_index = int_type.const_int(elmt_end, false);
                 let curr_index = self.builder.build_phi(int_type, "i");
                 curr_index.add_incoming(&[(&start_index, preblock)]);
                 
                 // loop body
                 let curr_index_int = curr_index.as_basic_value().into_int_value();
-                let float_value = self.jit_compile_expr(&elmt.expr, Some(curr_index_int), elmt_name)?;
+                let float_value = self.jit_compile_expr(&elmt.expr(), Some(curr_index_int), elmt_name)?;
                 let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[curr_index_int], elmt_name) };
                 self.builder.build_store(resi_ptr, float_value);
 
@@ -254,8 +256,9 @@ impl<'ctx> CodeGen<'ctx> {
     
     fn input_alloca(&mut self, input: &Input) -> PointerValue<'ctx> {
         let ptr = self.variables.get("inputs").unwrap();
-        let i = self.context.i32_type().const_int(u64::from(input.bounds.0), false);
-        unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], input.name) }
+        let input_start = u64::try_from(input.start()[0]).unwrap();
+        let i = self.context.i32_type().const_int(input_start, false);
+        unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], input.name()) }
     }
 
     fn jit<T>(&self, function: FunctionValue) -> Result<JitFunction<'ctx, T>> 
@@ -294,12 +297,18 @@ impl<'ctx> CodeGen<'ctx> {
 
         for input in model.inputs.iter() {
             let alloca = self.input_alloca(input);
-            self.variables.insert(input.name.to_owned(), alloca);
+            self.variables.insert(input.name().to_owned(), alloca);
         }
 
-        for a in model.in_defns.iter() {
+        //TODO: these should be taken out of the time loop
+        for a in model.time_indep_defns.iter() {
             let alloca = self.jit_compile_array(a, None)?;
-            self.variables.insert(a.name.to_owned(), alloca);
+            self.variables.insert(a.name().to_owned(), alloca);
+        }
+
+        for a in model.time_dep_defns.iter() {
+            let alloca = self.jit_compile_array(a, None)?;
+            self.variables.insert(a.name().to_owned(), alloca);
         }
 
         let (u0_array, dotu0_array) = model.get_init_state();
@@ -347,28 +356,36 @@ impl<'ctx> CodeGen<'ctx> {
 
         for input in model.inputs.iter() {
             let alloca = self.input_alloca(input);
-            self.variables.insert(input.name.to_owned(), alloca);
+            self.variables.insert(input.name().to_owned(), alloca);
         }
 
         // state variables
         for s in model.states.iter() {
             let ptr = self.variables.get("u").unwrap();
-            let i = self.context.i32_type().const_int(u64::from(s.bounds.0), false);
-            let alloca = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], s.name) };
+            let s_start = u64::try_from(s.start()[0]).unwrap();
+            let i = self.context.i32_type().const_int(s_start, false);
+            let alloca = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], s.name()) };
 
             let ptr = self.variables.get("dotu").unwrap();
-            let i = self.context.i32_type().const_int(u64::from(s.bounds.0), false);
-            let name = format!("dot({})", s.name);
+            let name = format!("dot({})", s.name());
             let alloca_dot = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name.as_str()) };
 
-            self.variables.insert(s.name.to_owned(), alloca);
+            self.variables.insert(s.name().to_owned(), alloca);
             self.variables.insert(name, alloca_dot);
         }
 
-        // input definitiions
-        for a in model.in_defns.iter() {
+        // definitiions
+        for a in model.time_indep_defns.iter() {
             let alloca = self.jit_compile_array(a, None)?;
-            self.variables.insert(a.name.to_owned(), alloca);
+            self.variables.insert(a.name().to_owned(), alloca);
+        }
+        for a in model.time_dep_defns.iter() {
+            let alloca = self.jit_compile_array(a, None)?;
+            self.variables.insert(a.name().to_owned(), alloca);
+        }
+        for a in model.state_dep_defns.iter() {
+            let alloca = self.jit_compile_array(a, None)?;
+            self.variables.insert(a.name().to_owned(), alloca);
         }
         
         let out_ptr = self.variables.get("out").unwrap();
@@ -411,28 +428,32 @@ impl<'ctx> CodeGen<'ctx> {
 
         for input in model.inputs.iter() {
             let alloca = self.input_alloca(input);
-            self.variables.insert(input.name.to_owned(), alloca);
+            self.variables.insert(input.name().to_owned(), alloca);
         }
 
         // state variables
         for s in model.states.iter() {
             let ptr = self.variables.get("u").unwrap();
-            let i = self.context.i32_type().const_int(u64::from(s.bounds.0), false);
-            let alloca = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], s.name) };
+            let s_start = u64::try_from(s.start()[0]).unwrap();
+            let i = self.context.i32_type().const_int(s_start, false);
+            let alloca = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], s.name()) };
 
             let ptr = self.variables.get("dotu").unwrap();
-            let i = self.context.i32_type().const_int(u64::from(s.bounds.0), false);
-            let name = format!("dot({})", s.name);
+            let name = format!("dot({})", s.name());
             let alloca_dot = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name.as_str()) };
 
-            self.variables.insert(s.name.to_owned(), alloca);
+            self.variables.insert(s.name().to_owned(), alloca);
             self.variables.insert(name, alloca_dot);
         }
 
-        // input definitiions
-        for a in model.in_defns.iter() {
+        // definitions
+        for a in model.time_indep_defns.iter() {
             let alloca = self.jit_compile_array(a, None)?;
-            self.variables.insert(a.name.to_owned(), alloca);
+            self.variables.insert(a.name().to_owned(), alloca);
+        }
+        for a in model.time_dep_defns.iter() {
+            let alloca = self.jit_compile_array(a, None)?;
+            self.variables.insert(a.name().to_owned(), alloca);
         }
         // F and G
         let lhs_ptr = self.jit_compile_array(&model.lhs, None)?;
@@ -443,9 +464,11 @@ impl<'ctx> CodeGen<'ctx> {
         // compute residual here as dummy array
         let residual = Tensor {
             name: "residual",
+            shape: Shape::from_vec(vec![n_states]),
             elmts: vec![
                 TensorBlock { 
-                    bounds: (0, n_states), 
+                    start: Index::from_vec(vec![0]),
+                    shape: Shape::from_vec(vec![n_states]),
                     expr: Ast { kind: AstKind::new_binop(
                                         '-', 
                                         Ast { kind: AstKind::new_name("F"), span: None }, 

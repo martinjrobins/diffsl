@@ -14,6 +14,7 @@ use crate::ast;
 use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::ast::Call;
+use crate::ast::StringSpan;
 use crate::builder::ModelInfo;
 use crate::builder::Variable;
 use crate::error::ValidationError;
@@ -206,7 +207,7 @@ struct Env<'s> {
     vars: HashMap<&'s str, EnvVar>,
 }
 
-pub fn broadcast_shapes(shapes: Vec<Shape>) -> Option<Shape> {
+pub fn broadcast_shapes(shapes: &[&Shape]) -> Option<Shape> {
     if shapes.is_empty() {
         return None
     }
@@ -248,7 +249,7 @@ impl<'s> Env<'s> {
         })
     }
 
-    pub fn push_var(&mut self, var: &Tensor) {
+    pub fn push_var(&mut self, var: &Tensor<'s>) {
         self.vars.insert(var.name, EnvVar {
             is_algebraic: true,
             is_state: false,
@@ -258,7 +259,7 @@ impl<'s> Env<'s> {
         });
     }
     
-    pub fn push_state(&mut self, state: &State) {
+    pub fn push_state(&mut self, state: &State<'s>) {
         self.vars.insert(state.name, EnvVar {
             is_algebraic: state.is_algebraic,
             shape: state.shape.clone(),
@@ -271,10 +272,10 @@ impl<'s> Env<'s> {
     fn get(&self, name: &str) -> Option<&EnvVar> {
         self.vars.get(name)
     }
-    fn get_shape_binary_op(&self, left: &Ast, right: &Ast, indices: Vec<char>) -> Option<Shape> {
+    fn get_shape_binary_op(&mut self, left: &Ast<'s>, right: &Ast<'s>, indices: &Vec<char>) -> Option<Shape> {
         let left_shape= self.get_shape(left, indices)?;
         let right_shape= self.get_shape(right, indices)?;
-        match broadcast_shapes(vec!(left_shape, right_shape)) {
+        match broadcast_shapes(&[&left_shape, &right_shape]) {
             Some(shape) => Some(shape),
             None => {
                 self.errs.push(
@@ -288,7 +289,7 @@ impl<'s> Env<'s> {
         }
         
     }
-    fn get_shape_dot(&mut self, call: &Call, ast: &Ast, indices: Vec<char>) -> Option<Shape> {
+    fn get_shape_dot(&mut self, call: &Call<'s>, ast: &Ast<'s>, indices: &Vec<char>) -> Option<Shape> {
         if call.args.len() != 1 {
             self.errs.push(
                 ValidationError::new(
@@ -319,7 +320,7 @@ impl<'s> Env<'s> {
         return Some(arg_shape)
     }
 
-    fn get_shape_name(&mut self, name: &str, ast: &Ast, rhs_indices: Vec<char>, lhs_indices: Vec<char>) -> Option<Shape> {
+    fn get_shape_name(&mut self, name: &str, ast: &Ast, rhs_indices: &Vec<char>, lhs_indices: &Vec<char>) -> Option<Shape> {
         let var = self.get(name);
         if var.is_none() {
             self.errs.push(
@@ -359,7 +360,7 @@ impl<'s> Env<'s> {
     }
 
 
-    fn get_shape_sum(&mut self, call: &Call, ast: &Ast, indices: Vec<char>) -> Option<Shape> {
+    fn get_shape_sum(&mut self, call: &Call<'s>, ast: &Ast<'s>, indices: &Vec<char>) -> Option<Shape> {
         if call.args.len() != 2 {
             self.errs.push(
                 ValidationError::new(
@@ -389,13 +390,14 @@ impl<'s> Env<'s> {
             return None
         }
         let index = name.chars().next().unwrap();
-        indices.push(index);
-        self.get_shape(call.args[1].as_ref(), indices)
+        let mut within_sum_indices = indices.clone();
+        within_sum_indices.push(index);
+        self.get_shape(call.args[1].as_ref(), &within_sum_indices)
     }
 
-    fn get_shape_call(&mut self, call: &Call<'s>, ast: &Ast, indices: Vec<char>) -> Option<Shape> {
+    fn get_shape_call(&mut self, call: &Call<'s>, ast: &Ast, indices: &Vec<char>) -> Option<Shape> {
         let shapes = call.args.iter().map(|c| self.get_shape(c, indices)).collect::<Option<Vec<Shape>>>()?; 
-        match broadcast_shapes(shapes) {
+        match broadcast_shapes(shapes.iter().collect::<Vec<&Shape>>().as_slice()) {
             Some(shape) => Some(shape),
             None => {
                 let shape_strs: Vec<String> = shapes.iter().map(|s| s.to_string()).collect();
@@ -410,8 +412,8 @@ impl<'s> Env<'s> {
         }
     }
 
-    pub fn get_shape(&mut self, ast: &Ast, indices: Vec<char>) -> Option<Shape> {
-        match ast.kind {
+    pub fn get_shape(&mut self, ast: &Ast<'s>, indices: &Vec<char>) -> Option<Shape> {
+        match &ast.kind {
             AstKind::Parameter(p) => self.get_shape(&p.domain, indices),
             AstKind::Assignment(a) => self.get_shape(a.expr.as_ref(), indices),
             AstKind::Binop(binop) => self.get_shape_binary_op(binop.left.as_ref(), binop.right.as_ref(), indices),
@@ -427,8 +429,8 @@ impl<'s> Env<'s> {
             AstKind::Number(n) => Some(Shape::zeros(0)),
             AstKind::Integer(i) => Some(Shape::zeros(0)),
             AstKind::Range(r) => Some(Shape::zeros(0)),
-            AstKind::IndexedName(name) => self.get_shape_name(name.name, ast, name.indices, indices),
-            AstKind::Name(name) => self.get_shape_name(name, ast, vec!(), indices),
+            AstKind::IndexedName(name) => self.get_shape_name(name.name, ast, &name.indices, indices),
+            AstKind::Name(name) => self.get_shape_name(name, ast, &vec!(), indices),
             _ => panic!("unrecognised ast node {:#?}", ast.kind)
         }
     }
@@ -501,13 +503,13 @@ impl<'s> DiscreteModel<'s> {
     }
 
 
-    fn build_states(tensor: &ast::Tensor, env: &mut Env) -> Vec<State<'s>> {
-        let ret = Vec::new();
+    fn build_states(tensor: &ast::Tensor<'s>, env: &mut Env<'s>) -> Vec<State<'s>> {
+        let mut ret = Vec::new();
         assert_eq!(tensor.name, "u");
         let mut start = Index::zeros(1);
-        for a in tensor.elmts {
-            if let Some(elmt_shape) = env.get_shape(a.as_ref(), tensor.indices) {
-                match a.kind {
+        for a in &tensor.elmts {
+            if let Some(elmt_shape) = env.get_shape(a.as_ref(), &tensor.indices) {
+                match &a.kind {
                     AstKind::Assignment(ass) => {
                         let name = ass.name;
                         let shape = elmt_shape;
@@ -520,10 +522,10 @@ impl<'s> DiscreteModel<'s> {
                             );
                         }
                         let init = Some(*ass.expr.clone());
-                        let state = State{ name, shape, init, start, is_algebraic: false };
+                        let state = State{ name, shape: shape.clone(), init, start: start.clone(), is_algebraic: false };
                         env.push_state(&state);
                         ret.push(state);
-                        start = start + shape.mapv(|x| i64::try_from(x).unwrap());
+                        start += &shape.mapv(|x| i64::try_from(x).unwrap());
                     }
                     _ => {
                         env.errs.push(
@@ -539,13 +541,13 @@ impl<'s> DiscreteModel<'s> {
         ret
     }
     
-    fn build_inputs(tensor: &ast::Tensor, env: &mut Env) -> Vec<Input<'s>> {
-        let ret = Vec::new();
+    fn build_inputs(tensor: &ast::Tensor<'s>, env: &mut Env<'s>) -> Vec<Input<'s>> {
+        let mut ret = Vec::new();
         assert_eq!(tensor.name, "in");
         let mut start = Index::zeros(1);
-        for a in tensor.elmts {
-            if let Some(elmt_shape) = env.get_shape(a.as_ref(), tensor.indices) {
-                match a.kind {
+        for a in &tensor.elmts {
+            if let Some(elmt_shape) = env.get_shape(a.as_ref(), &tensor.indices) {
+                match &a.kind {
                     AstKind::Parameter(p) => {
                         let name = p.name;
                         let shape = elmt_shape;
@@ -557,7 +559,7 @@ impl<'s> DiscreteModel<'s> {
                                 )
                             );
                         }
-                        let domain = match p.domain.kind {
+                        let domain = match &p.domain.kind {
                             AstKind::Range(r) => (r.lower, r.upper),
                             _ => {
                                 env.errs.push(
@@ -569,8 +571,8 @@ impl<'s> DiscreteModel<'s> {
                                 (0., 0.)
                             }
                         };
-                        ret.push(Input{ name, shape, domain, start });
-                        start = start + shape.mapv(|x| i64::try_from(x).unwrap());
+                        ret.push(Input{ name, shape: shape.clone(), domain, start: start.clone() });
+                        start += &shape.mapv(|x| i64::try_from(x).unwrap());
                     }
                     _ => {
                         env.errs.push(
@@ -586,7 +588,7 @@ impl<'s> DiscreteModel<'s> {
         ret
     }
 
-    fn build_array(array: &ast::Tensor, env: &mut Env) -> Option<Tensor<'s>> {
+    fn build_array(array: &ast::Tensor<'s>, env: &mut Env<'s>) -> Option<Tensor<'s>> {
         let rank = array.indices.len();
         let mut ret = Tensor::new(array.name);
         let mut start = Index::zeros(rank);
@@ -606,10 +608,10 @@ impl<'s> DiscreteModel<'s> {
                 )
             );
         }
-        for a in array.elmts {
-            if let Some(elmt_shape) = env.get_shape(a.as_ref(), array.indices) {
-                ret.push(TensorBlock{ expr: *a.clone(), start: start, shape: elmt_shape });
-                start = start + elmt_shape.mapv(|x| i64::try_from(x).unwrap());
+        for a in &array.elmts {
+            if let Some(elmt_shape) = env.get_shape(a.as_ref(), &array.indices) {
+                ret.push(TensorBlock{ expr: *a.clone(), start: start.clone(), shape: elmt_shape.clone() });
+                start += &elmt_shape.mapv(|x| i64::try_from(x).unwrap());
             }
         }
         env.push_var(&ret);
@@ -618,11 +620,11 @@ impl<'s> DiscreteModel<'s> {
 
     pub fn build(name: &'s str, ast: &'s Vec<Box<Ast<'s>>>) -> Result<Self, ValidationErrors> {
         let mut env = Env::new();
-        let ret = Self::new(name);
-        let read_state= false;
-        let read_F = false;
-        let read_G = false;
-        let read_out = false;
+        let mut ret = Self::new(name);
+        let mut read_state= false;
+        let mut read_f = false;
+        let mut read_g = false;
+        let mut read_out = false;
         for (i, tensor_ast) in ast.iter().enumerate() {
             match tensor_ast.kind.as_array() {
                 None => env.errs.push(ValidationError::new("not an array".to_string(), tensor_ast.span)),
@@ -641,13 +643,13 @@ impl<'s> DiscreteModel<'s> {
                             Self::build_states(tensor, &mut env);
                         },
                         "F" => {
-                            read_F = true;
+                            read_f = true;
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 ret.lhs.elmts.extend(built.elmts);
                             }
                         },
                         "G" => {
-                            read_G = true;
+                            read_g = true;
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 ret.rhs.elmts.extend(built.elmts);
                             }
@@ -666,7 +668,7 @@ impl<'s> DiscreteModel<'s> {
                                 ret.out.elmts.extend(built.elmts);
                             }
                         },
-                        name => {
+                        _name => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 let env_entry = env.get(built.name).unwrap();
                                 let dependent_on_state = env_entry.is_state_dependent();
@@ -689,7 +691,33 @@ impl<'s> DiscreteModel<'s> {
             let env_entry = env.get(s.name).unwrap();
             s.is_algebraic = env_entry.is_algebraic();
         }
-        Err(env.errs)
+        // check that we've read all the required arrays
+
+        let span_all = if ast.is_empty() && ast.first().unwrap().span.is_some() {
+            None
+        } else {
+            Some(StringSpan {
+                pos_start: ast.first().unwrap().span.unwrap().pos_start,
+                pos_end : ast.last().unwrap().span.unwrap().pos_start,
+            })
+        };
+        if !read_state {
+            env.errs.push(ValidationError::new("missing 'u' array".to_string(), span_all));
+        }
+        if !read_f {
+            env.errs.push(ValidationError::new("missing 'F' array".to_string(), span_all));
+        }
+        if !read_g {
+            env.errs.push(ValidationError::new("missing 'G' array".to_string(), span_all));
+        }
+        if !read_out {
+            env.errs.push(ValidationError::new("missing 'out' array".to_string(), span_all));
+        }
+        if env.errs.is_empty() {
+            Ok(ret)
+        } else {
+            Err(env.errs)
+        }
     }
     pub fn len_state(&self) -> usize {
         self.states.iter().fold(0, |sum, i| sum + i.shape()[0])
@@ -736,7 +764,7 @@ impl<'s> DiscreteModel<'s> {
         (
             Tensor {
                 name: "u0",
-                shape,
+                shape: shape.clone(),
                 elmts: u0elmts,
             },
             Tensor {
@@ -883,13 +911,13 @@ impl<'s> DiscreteModel<'s> {
         let state_dep_defns = state_dep_defns.iter().map(DiscreteModel::dfn_to_array).collect();
         let time_dep_defns = time_dep_defns.iter().map(DiscreteModel::dfn_to_array).collect();
         let time_indep_defns = const_defns.iter().map(DiscreteModel::dfn_to_array).collect();
-        let lhs_shape = (f_elmts.last().unwrap().start + f_elmts.last().unwrap().shape.mapv(|x| i64::try_from(x).unwrap())).mapv(|x| usize::try_from(x).unwrap());
+        let lhs_shape = &f_elmts.last().unwrap().start.mapv(|x| usize::try_from(x).unwrap()) + &f_elmts.last().unwrap().shape;
         let lhs = Tensor {
             name: "F",
             elmts: f_elmts,
             shape: lhs_shape,
         };
-        let rhs_shape = (g_elmts.last().unwrap().start + g_elmts.last().unwrap().shape.mapv(|x| i64::try_from(x).unwrap())).mapv(|x| usize::try_from(x).unwrap());
+        let rhs_shape = &g_elmts.last().unwrap().start.mapv(|x| usize::try_from(x).unwrap()) + &g_elmts.last().unwrap().shape;
         let rhs = Tensor {
             name: "G",
             elmts: g_elmts,

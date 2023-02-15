@@ -167,19 +167,43 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         // factor     = { call | name | real | integer | "(" ~ expression ~ ")" }
         Rule::factor => parse_value(pair.into_inner().next().unwrap()),
 
+
+        // name_ij    = { name ~ ("_" ~ name)? }
+        Rule::name_ij => {
+            let mut inner = pair.into_inner();
+            let name = parse_name(inner.next().unwrap());
+            let indices = if inner.peek().is_some() {
+                let mut inner = inner.next().unwrap().into_inner();
+                let indices = parse_name(inner.next().unwrap());
+                indices.chars().collect::<Vec<_>>()
+            } else {
+                vec![]
+            };
+            Ast {
+                kind: AstKind::IndexedName(ast::IndexedName { name, indices }),
+                span,
+            }
+        }
+
         // tensor     = { name_ij ~ "{" ~ tensor_elmt? ~ (DELIM~ tensor_elmt )* ~ DELIM? ~ "}" }
         Rule::tensor =>  {
             let mut inner = pair.into_inner();
-            let name = inner.next().unwrap().as_str();
+            let name_ij = parse_value(inner.next().unwrap());
+            let (name, indices) = match name_ij.kind {
+                AstKind::IndexedName(ast::IndexedName { name, indices }) => {
+                    (name, indices)
+                }
+                _ => unreachable!()
+            };
             let elmts = inner.map(|v| Box::new(parse_value(v))).collect();
             Ast { 
-                kind: AstKind::Tensor(ast::Tensor { name, elmts, }),
+                kind: AstKind::Tensor(ast::Tensor { name, elmts, indices }),
                 span 
             }
         },
 
-        // array_elmt = { expression | parameter | assignment }
-        Rule::array_elmt =>  {
+        // tensor_elmt = { parameter | expression }
+        Rule::tensor_elmt =>  {
             parse_value(pair.into_inner().next().unwrap())
         },
 
@@ -187,9 +211,9 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         Rule::parameter => {
             let mut inner = pair.into_inner();
             let name = inner.next().unwrap().as_str();
-            let range = Box::new(parse_value(inner.next().unwrap()));
+            let domain = Box::new(parse_value(inner.next().unwrap()));
             Ast { 
-                kind: AstKind::Parameter(ast::Parameter { name, range }),
+                kind: AstKind::Parameter(ast::Parameter { name, domain }),
                 span 
             }
 

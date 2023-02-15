@@ -60,6 +60,10 @@ impl ValidationErrors {
         self.errors.extend(new)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.errors.is_empty()
+    }
+
     pub fn as_error_message(&self, f: &mut fmt::Formatter, input: &str) -> fmt::Result {
         self.errors.iter().fold(Ok(()), |result, err| {
             result.and_then(|_| err.as_error_message(f, input))

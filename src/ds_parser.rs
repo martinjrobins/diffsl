@@ -1,11 +1,10 @@
-use crate::pest::Parser;
-
 #[derive(Parser)]
 #[grammar = "ds_grammar.pest"] // relative to src
 pub(crate) struct DsParser;
 
 use crate::ast::StringSpan;
 
+use pest::Parser;
 use pest::error::Error;
 use pest::iterators::Pair;
 use std::boxed::Box;
@@ -168,8 +167,8 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         // factor     = { call | name | real | integer | "(" ~ expression ~ ")" }
         Rule::factor => parse_value(pair.into_inner().next().unwrap()),
 
-        // array      = { name ~ "{" ~ array_elmt? ~ (DELIM~ array_elmt )* ~ DELIM? ~ "}" }
-        Rule::array =>  {
+        // tensor     = { name_ij ~ "{" ~ tensor_elmt? ~ (DELIM~ tensor_elmt )* ~ DELIM? ~ "}" }
+        Rule::tensor =>  {
             let mut inner = pair.into_inner();
             let name = inner.next().unwrap().as_str();
             let elmts = inner.map(|v| Box::new(parse_value(v))).collect();

@@ -1,22 +1,22 @@
 main       = { SOI ~ tensor* ~ EOI }
-tensor     = { name_ij "{" ~ tensor_elmt? ~ (DELIM~ tensor_elmt )* ~ DELIM? ~ "}" }
+tensor     = { name_ij ~ "{" ~ tensor_elmt? ~ (DELIM~ tensor_elmt )* ~ DELIM? ~ "}" }
 tensor_elmt = { parameter | expression }
-parameter  = { name "->" ~  range }
+parameter  = { name ~ "->" ~  range }
 range      = { "[" ~ range_val ~ "," ~ range_val ~ "]" }
 range_val  = { real | integer | inf | neg_inf }
 inf        = { "inf" }
 neg_inf    = { "-inf" }
-assignment = { name_ij "=" ~ expression }
+assignment = { name_ij ~ "=" ~ expression }
 expression = { sign? ~ term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }
 factor     = { call | real | integer | name_ij | "(" ~ expression ~ ")" }
-call       = { name "(" ~ call_arg ~ ("," ~ call_arg )* ~ ")" }
+call       = { name ~ "(" ~ call_arg ~ ("," ~ call_arg )* ~ ")" }
 call_arg   = { expression }
 name_ij    = { name ~ "_" ~ name }
 sign       = @{ ("-"|"+") }
 term_op    = @{ "-"|"+" }
 factor_op  = @{ "*"|"/" }
-name         @{ ( 'a'..'z' | 'A'..'Z' ) ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
+name       = @{ ( 'a'..'z' | 'A'..'Z' ) ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
 integer    = @{ ('0'..'9')+ }
 real       = @{ ( ('0'..'9')+ ~ "." ~ ('0'..'9')+ ) | integer }
 DELIM      = _{ "," }

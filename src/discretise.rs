@@ -1,22 +1,19 @@
 use core::panic;
-use std::array;
 use std::cell::RefCell;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
-use std::slice::SliceIndex;
-use anyhow::{Result, anyhow};
+use anyhow::{Result};
 
 
 use itertools::chain;
-use ndarray::{Array, Array1, ArrayD, array};
+use ndarray::{Array1};
 
 use crate::ast;
 use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::ast::Call;
-use crate::ast::IndexedName;
 use crate::builder::ModelInfo;
 use crate::builder::Variable;
 use crate::error::ValidationError;
@@ -178,6 +175,8 @@ struct EnvVar {
     shape: Shape,
     is_time_dependent: bool,
     is_state_dependent: bool,
+    is_algebraic: bool,
+    is_state: bool,
 }
 
 impl EnvVar {
@@ -191,6 +190,14 @@ impl EnvVar {
 
     fn shape(&self) -> &Shape {
         &self.shape
+    }
+
+    fn is_algebraic(&self) -> bool {
+        self.is_algebraic
+    }
+
+    fn is_state(&self) -> bool {
+        self.is_state
     }
 }
 
@@ -243,9 +250,21 @@ impl<'s> Env<'s> {
 
     pub fn push_var(&mut self, var: &Tensor) {
         self.vars.insert(var.name, EnvVar {
+            is_algebraic: true,
+            is_state: false,
             shape: var.shape.clone(),
             is_time_dependent: self.is_tensor_time_dependent(var),
             is_state_dependent: self.is_tensor_state_dependent(var),
+        });
+    }
+    
+    pub fn push_state(&mut self, state: &State) {
+        self.vars.insert(state.name, EnvVar {
+            is_algebraic: state.is_algebraic,
+            shape: state.shape.clone(),
+            is_time_dependent: true,
+            is_state_dependent: false,
+            is_state: true,
         });
     }
 
@@ -269,6 +288,37 @@ impl<'s> Env<'s> {
         }
         
     }
+    fn get_shape_dot(&mut self, call: &Call, ast: &Ast, indices: Vec<char>) -> Option<Shape> {
+        if call.args.len() != 1 {
+            self.errs.push(
+                ValidationError::new(
+                    format!("time derivative dot call expects 1 argument, got {}", call.args.len()),
+                    ast.span
+                )
+            );
+            return None
+        }
+        let arg = &call.args[0];
+        let arg_shape = self.get_shape(arg, indices)?;
+        if arg_shape.len() != 1 {
+            self.errs.push(
+                ValidationError::new(
+                    format!("time derivative dot call expects 1D argument, got {}D", arg_shape.len()),
+                    ast.span
+                )
+            );
+            return None
+        }
+        let depends_on = arg.get_dependents();
+        // for each state variable, set is_algebraic to false
+        for dep in depends_on {
+            if let Some(var) = self.vars.get_mut(dep) {
+                var.is_algebraic = false;
+            }
+        }
+        return Some(arg_shape)
+    }
+
     fn get_shape_name(&mut self, name: &str, ast: &Ast, rhs_indices: Vec<char>, lhs_indices: Vec<char>) -> Option<Shape> {
         let var = self.get(name);
         if var.is_none() {
@@ -368,6 +418,7 @@ impl<'s> Env<'s> {
             AstKind::Monop(monop) => self.get_shape(monop.child.as_ref(), indices),
             AstKind::Call(call) => match call.fn_name {
                 "sum" => self.get_shape_sum(&call, ast, indices),
+                "dot" => self.get_shape_dot(&call, ast, indices),
                 _ => self.get_shape_call(&call, ast, indices),
             }
             AstKind::CallArg(arg) => self.get_shape(arg.expression.as_ref(), indices),
@@ -469,7 +520,9 @@ impl<'s> DiscreteModel<'s> {
                             );
                         }
                         let init = Some(*ass.expr.clone());
-                        ret.push(State{ name, shape, init, start });
+                        let state = State{ name, shape, init, start, is_algebraic: false };
+                        env.push_state(&state);
+                        ret.push(state);
                         start = start + shape.mapv(|x| i64::try_from(x).unwrap());
                     }
                     _ => {
@@ -631,6 +684,11 @@ impl<'s> DiscreteModel<'s> {
                 },
             }
         }
+        // set is_algebraic for every state based on env
+        for s in &mut ret.states {
+            let env_entry = env.get(s.name).unwrap();
+            s.is_algebraic = env_entry.is_algebraic();
+        }
         Err(env.errs)
     }
     pub fn len_state(&self) -> usize {
@@ -782,7 +840,7 @@ impl<'s> DiscreteModel<'s> {
             .cloned()
             .partition(|v| v.borrow().is_dependent_on_state());
         
-        let (time_dep_defns, const_defns) = state_indep_defns.iter().partition(|v| v.borrow().is_time_dependent());
+        let (time_dep_defns, const_defns): (Vec<Rc<RefCell<Variable>>>, Vec<Rc<RefCell<Variable>>>) = state_indep_defns.iter().cloned().partition(|v| v.borrow().is_time_dependent());
         
         let mut out_array_elmts: Vec<TensorBlock> = chain(time_varying_unknowns.iter(), model.definitions.iter())
             .map(DiscreteModel::output_to_elmt).collect();

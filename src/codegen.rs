@@ -10,7 +10,7 @@ use ndarray::{Array1, Array2, ShapeBuilder};
 use sundials_sys::{realtype, N_Vector, IDAGetNonlinSolvStats, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit, IDAGetConsistentIC, IDAGetReturnFlagName};
 use std::collections::HashMap;
 use std::io::Write;
-use std::{vec, io};
+use std::{io};
 use std::ffi::{c_void, CStr, c_int};
 use std::ptr::{null_mut};
 use std::iter::{zip};
@@ -18,7 +18,7 @@ use anyhow::{Result, anyhow};
 
 
 use crate::ast::{Ast, AstKind};
-use crate::discretise::{DiscreteModel, Tensor, TensorBlock, Input, Shape, Index};
+use crate::discretise::{DiscreteModel, Tensor, Input};
 
 /// Convenience type alias for the `sum` function.
 ///
@@ -462,23 +462,8 @@ impl<'ctx> CodeGen<'ctx> {
         self.variables.insert("G".to_owned(), rhs_ptr);
         
         // compute residual here as dummy array
-        let residual = Tensor {
-            name: "residual",
-            shape: Shape::from_vec(vec![n_states]),
-            elmts: vec![
-                TensorBlock { 
-                    start: Index::from_vec(vec![0]),
-                    shape: Shape::from_vec(vec![n_states]),
-                    expr: Ast { kind: AstKind::new_binop(
-                                        '-', 
-                                        Ast { kind: AstKind::new_name("F"), span: None }, 
-                                        Ast { kind: AstKind::new_name("G"), span: None }
-                                ),
-                                span: None
-                            }
-                }
-            ],
-        };
+        let residual = Tensor::new_binop("residual", n_states, "F", "G", '-');
+
         let res_ptr = self.variables.get("rr").unwrap();
         let _res_ptr = self.jit_compile_array(&residual, Some(*res_ptr))?;
         self.builder.build_return(None);

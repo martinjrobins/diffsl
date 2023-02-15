@@ -64,6 +64,27 @@ impl<'s> Tensor<'s> {
             elmts: Vec::new(),
         } 
     }
+    pub fn new_binop(name: &'s str, n_states: usize, lhs: &'s str, rhs: &'s str, op: char) -> Self { 
+        Self {
+            name,
+            shape: Shape::from_vec(vec![n_states]),
+            elmts: vec![
+                TensorBlock { 
+                    start: Index::from_vec(vec![0]),
+                    shape: Shape::from_vec(vec![n_states]),
+                    expr: Ast { kind: AstKind::new_binop(
+                                        op, 
+                                        Ast { kind: AstKind::new_name(lhs), span: None }, 
+                                        Ast { kind: AstKind::new_name(rhs), span: None }
+                                ),
+                                span: None
+                            }
+                }
+            ],
+        }
+    }
+ 
+        
      pub fn push(&mut self, block: TensorBlock<'s>) {
         self.elmts.push(block);
      }
@@ -177,7 +198,6 @@ struct EnvVar {
     is_time_dependent: bool,
     is_state_dependent: bool,
     is_algebraic: bool,
-    is_state: bool,
 }
 
 impl EnvVar {
@@ -195,10 +215,6 @@ impl EnvVar {
 
     fn is_algebraic(&self) -> bool {
         self.is_algebraic
-    }
-
-    fn is_state(&self) -> bool {
-        self.is_state
     }
 }
 
@@ -218,7 +234,7 @@ pub fn broadcast_shapes(shapes: &[&Shape]) -> Option<Shape> {
             .iter()
             .map(|s| s.get(i)
             .unwrap_or(&1))
-            .fold((1, true), |(mdim, result), dim| {
+            .fold((1, true), |(mdim, _result), dim| {
                 let new_mdim = max(mdim, *dim);
                 (new_mdim, *dim == 1 || *dim == new_mdim)
             });
@@ -252,7 +268,6 @@ impl<'s> Env<'s> {
     pub fn push_var(&mut self, var: &Tensor<'s>) {
         self.vars.insert(var.name, EnvVar {
             is_algebraic: true,
-            is_state: false,
             shape: var.shape.clone(),
             is_time_dependent: self.is_tensor_time_dependent(var),
             is_state_dependent: self.is_tensor_state_dependent(var),
@@ -265,7 +280,6 @@ impl<'s> Env<'s> {
             shape: state.shape.clone(),
             is_time_dependent: true,
             is_state_dependent: false,
-            is_state: true,
         });
     }
 
@@ -426,9 +440,9 @@ impl<'s> Env<'s> {
             AstKind::CallArg(arg) => self.get_shape(arg.expression.as_ref(), indices),
             AstKind::Index(i) => self.get_shape_binary_op(i.left.as_ref(), i.right.as_ref(), indices),
             AstKind::Slice(s) => self.get_shape_binary_op(s.lower.as_ref(), s.upper.as_ref(), indices),
-            AstKind::Number(n) => Some(Shape::zeros(0)),
-            AstKind::Integer(i) => Some(Shape::zeros(0)),
-            AstKind::Range(r) => Some(Shape::zeros(0)),
+            AstKind::Number(_) => Some(Shape::zeros(0)),
+            AstKind::Integer(_) => Some(Shape::zeros(0)),
+            AstKind::Range(_) => Some(Shape::zeros(0)),
             AstKind::IndexedName(name) => self.get_shape_name(name.name, ast, &name.indices, indices),
             AstKind::Name(name) => self.get_shape_name(name, ast, &vec!(), indices),
             _ => panic!("unrecognised ast node {:#?}", ast.kind)

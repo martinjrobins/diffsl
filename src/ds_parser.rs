@@ -298,8 +298,8 @@ mod tests {
         assert_eq!(arrays.len(), 5);
         assert_eq!(arrays[0].name, "in");
         assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().name, "r");
-        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().range.kind.as_range().unwrap().lower, 0.);
-        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().range.kind.as_range().unwrap().upper, f64::INFINITY);
+        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().domain.kind.as_range().unwrap().lower, 0.);
+        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().domain.kind.as_range().unwrap().upper, f64::INFINITY);
 
         assert_eq!(arrays[1].name, "u");
         assert_eq!(arrays[1].elmts[0].kind.as_assignment().unwrap().name, "y");

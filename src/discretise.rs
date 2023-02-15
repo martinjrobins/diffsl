@@ -248,7 +248,14 @@ pub fn broadcast_shapes(shapes: &[&Shape]) -> Option<Shape> {
 
 impl<'s> Env<'s> {
     pub fn new() -> Self {
-        Env { errs: ValidationErrors::new(), vars: HashMap::new() }
+        let mut vars = HashMap::new();
+        vars.insert("t", EnvVar {
+            shape: Shape::zeros(1),
+            is_time_dependent: true,
+            is_state_dependent: false,
+            is_algebraic: true,
+        });
+        Env { errs: ValidationErrors::new(), vars }
     }
     pub fn is_tensor_time_dependent(&self, tensor: &Tensor) -> bool {
         tensor.elmts.iter().any(|block| {
@@ -279,6 +286,15 @@ impl<'s> Env<'s> {
             is_algebraic: state.is_algebraic,
             shape: state.shape.clone(),
             is_time_dependent: true,
+            is_state_dependent: true,
+        });
+    }
+
+    pub fn push_input(&mut self, input: &Input<'s>) {
+        self.vars.insert(input.name, EnvVar {
+            is_algebraic: true,
+            shape: input.shape.clone(),
+            is_time_dependent: false,
             is_state_dependent: false,
         });
     }
@@ -347,10 +363,22 @@ impl<'s> Env<'s> {
         }
         let var = var.unwrap();
         let shape = var.shape();
-        if rhs_indices.len() != shape.len() {
+
+        // ones can be broadcasted so work out required number of indices
+        let min_rank = {
+            let mut i = shape.len() - 1;
+            loop {
+                if i == 0 || shape[i] != 1 {
+                    break 
+                }
+                i -= 1;
+            }
+            i
+        };
+        if rhs_indices.len() < min_rank {
             self.errs.push(
                 ValidationError::new(
-                    format!("cannot index variable {} with {} indices. Expected {} indices", name, rhs_indices.len(), shape.len()),
+                    format!("cannot index variable {} with {} indices. Expected at least {} indices", name, rhs_indices.len(), shape.len()),
                     ast.span
                 )
             );
@@ -429,7 +457,6 @@ impl<'s> Env<'s> {
     pub fn get_shape(&mut self, ast: &Ast<'s>, indices: &Vec<char>) -> Option<Shape> {
         match &ast.kind {
             AstKind::Parameter(p) => self.get_shape(&p.domain, indices),
-            AstKind::Assignment(a) => self.get_shape(a.expr.as_ref(), indices),
             AstKind::Binop(binop) => self.get_shape_binary_op(binop.left.as_ref(), binop.right.as_ref(), indices),
             AstKind::Monop(monop) => self.get_shape(monop.child.as_ref(), indices),
             AstKind::Call(call) => match call.fn_name {
@@ -440,9 +467,9 @@ impl<'s> Env<'s> {
             AstKind::CallArg(arg) => self.get_shape(arg.expression.as_ref(), indices),
             AstKind::Index(i) => self.get_shape_binary_op(i.left.as_ref(), i.right.as_ref(), indices),
             AstKind::Slice(s) => self.get_shape_binary_op(s.lower.as_ref(), s.upper.as_ref(), indices),
-            AstKind::Number(_) => Some(Shape::zeros(0)),
-            AstKind::Integer(_) => Some(Shape::zeros(0)),
-            AstKind::Range(_) => Some(Shape::zeros(0)),
+            AstKind::Number(_) => Some(Shape::ones(1)),
+            AstKind::Integer(_) => Some(Shape::ones(1)),
+            AstKind::Range(_) => Some(Shape::ones(1)),
             AstKind::IndexedName(name) => self.get_shape_name(name.name, ast, &name.indices, indices),
             AstKind::Name(name) => self.get_shape_name(name, ast, &vec!(), indices),
             _ => panic!("unrecognised ast node {:#?}", ast.kind)
@@ -519,13 +546,22 @@ impl<'s> DiscreteModel<'s> {
 
     fn build_states(tensor: &ast::Tensor<'s>, env: &mut Env<'s>) -> Vec<State<'s>> {
         let mut ret = Vec::new();
+        let rank = tensor.indices.len();
+        if rank == 0 && tensor.elmts.len() > 1 {
+            env.errs.push(
+                ValidationError::new(
+                    format!("cannot have more than one element in a scalar"),
+                    tensor.elmts[1].span
+                )
+            );
+        }
         assert_eq!(tensor.name, "u");
         let mut start = Index::zeros(1);
         for a in &tensor.elmts {
             if let Some(elmt_shape) = env.get_shape(a.as_ref(), &tensor.indices) {
                 match &a.kind {
-                    AstKind::Assignment(ass) => {
-                        let name = ass.name;
+                    AstKind::Parameter(p) => {
+                        let name = p.name;
                         let shape = elmt_shape;
                         if shape.len() > 1 {
                             env.errs.push(
@@ -535,7 +571,22 @@ impl<'s> DiscreteModel<'s> {
                                 )
                             );
                         }
-                        let init = Some(*ass.expr.clone());
+                        let init = match p.init {
+                            Some(ref init) => {
+                                if let Some(init_shape) = env.get_shape(init, &tensor.indices) {
+                                    if init_shape != shape {
+                                        env.errs.push(
+                                            ValidationError::new(
+                                                format!("state {} has shape {}, but initial value has shape {}", name, shape, init_shape),
+                                                a.span
+                                            )
+                                        );
+                                    }
+                                }
+                                Some(*init.clone())
+                            }
+                            None => None
+                        };
                         let state = State{ name, shape: shape.clone(), init, start: start.clone(), is_algebraic: false };
                         env.push_state(&state);
                         ret.push(state);
@@ -558,7 +609,18 @@ impl<'s> DiscreteModel<'s> {
     fn build_inputs(tensor: &ast::Tensor<'s>, env: &mut Env<'s>) -> Vec<Input<'s>> {
         let mut ret = Vec::new();
         assert_eq!(tensor.name, "in");
-        let mut start = Index::zeros(1);
+
+        let rank = tensor.indices.len();
+        if rank == 0 && tensor.elmts.len() > 1 {
+            env.errs.push(
+                ValidationError::new(
+                    format!("cannot have more than one element in a scalar"),
+                    tensor.elmts[1].span
+                )
+            );
+        }
+        
+        let mut start = Index::zeros(rank);
         for a in &tensor.elmts {
             if let Some(elmt_shape) = env.get_shape(a.as_ref(), &tensor.indices) {
                 match &a.kind {
@@ -585,7 +647,9 @@ impl<'s> DiscreteModel<'s> {
                                 (0., 0.)
                             }
                         };
-                        ret.push(Input{ name, shape: shape.clone(), domain, start: start.clone() });
+                        let input = Input{ name, shape: shape.clone(), domain, start: start.clone() };
+                        env.push_input(&input);
+                        ret.push(input);
                         start += &shape.mapv(|x| i64::try_from(x).unwrap());
                     }
                     _ => {
@@ -650,20 +714,32 @@ impl<'s> DiscreteModel<'s> {
                     }
                     match tensor.name {
                         "in" => {
+                            if tensor.indices.len() > 1 {
+                                env.errs.push(ValidationError::new("input must be a scalar or 1D vector".to_string(), span));
+                            }
                             Self::build_inputs(tensor, &mut env);
                         }
                         "u" => {
+                            if tensor.indices.len() > 1 {
+                                env.errs.push(ValidationError::new("u must be a scalar or 1D vector".to_string(), span));
+                            }
                             read_state = true;
                             Self::build_states(tensor, &mut env);
                         },
                         "F" => {
                             read_f = true;
+                            if tensor.indices.len() > 1 {
+                                env.errs.push(ValidationError::new("F must be a scalar or 1D vector".to_string(), span));
+                            }
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 ret.lhs.elmts.extend(built.elmts);
                             }
                         },
                         "G" => {
                             read_g = true;
+                            if tensor.indices.len() > 1 {
+                                env.errs.push(ValidationError::new("G must be a scalar or 1D vector".to_string(), span));
+                            }
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 ret.rhs.elmts.extend(built.elmts);
                             }
@@ -957,7 +1033,7 @@ impl<'s> DiscreteModel<'s> {
 
 #[cfg(test)]
 mod tests {
-use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelInfo};
+use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelInfo, ds_parser};
 
     #[test]
     fn test_circuit_model() {
@@ -1004,5 +1080,43 @@ use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelIn
         assert_eq!(discrete.out.elmts[2].expr.to_string(), "z");
         println!("{}", discrete);
     }
+
+    #[test]
+    fn discrete_logistic_model() {
+        const TEXT: &str = "
+            in_i {
+                r -> [0, inf],
+                k -> [0, inf],
+            }
+            u_i {
+                y -> [-inf, inf] = 1,
+                z -> [-inf, inf],
+            }
+            F_i {
+                dot(y),
+                0,
+            }
+            G_i {
+                (r * y) * (1 - (y / k)),
+                (2 * y) - z,
+            }
+            out_i {
+                y,
+                t,
+                z
+            }
+        ";
+        let arrays: Vec<_> = ds_parser::parse_string(TEXT).unwrap();
+        match DiscreteModel::build("logistic_growth", &arrays) {
+            Ok(model) => {
+                assert_eq!(model.out.elmts[0].expr.to_string(), "y");
+                assert_eq!(model.out.elmts[1].expr.to_string(), "t");
+                assert_eq!(model.out.elmts[2].expr.to_string(), "z");
+                println!("{}", model);
+            }
+            Err(e) => {
+                panic!("{}", e.as_error_message(TEXT));
+            }
+        };
+    }
 }
- 

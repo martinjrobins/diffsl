@@ -1,7 +1,7 @@
 main       = { SOI ~ tensor* ~ EOI }
 tensor     = { name_ij ~ "{" ~ tensor_elmt? ~ (DELIM~ tensor_elmt )* ~ DELIM? ~ "}" }
 tensor_elmt = { parameter | expression }
-parameter  = { name ~ "->" ~  range }
+parameter  = { name ~ "->" ~  range ~ ("=" ~ expression)? }
 range      = { "[" ~ range_val ~ "," ~ range_val ~ "]" }
 range_val  = { real | integer | inf | neg_inf }
 inf        = { "inf" }
@@ -12,7 +12,7 @@ term       = { factor ~ (factor_op ~ factor)* }
 factor     = { call | real | integer | name_ij | "(" ~ expression ~ ")" }
 call       = { name ~ "(" ~ call_arg ~ ("," ~ call_arg )* ~ ")" }
 call_arg   = { expression }
-name_ij    = { name ~ ("_" ~ name)? }
+name_ij    = ${ name ~ ("_" ~ name)? }
 sign       = @{ ("-"|"+") }
 term_op    = @{ "-"|"+" }
 factor_op  = @{ "*"|"/" }

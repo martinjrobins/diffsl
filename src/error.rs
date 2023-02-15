@@ -1,6 +1,7 @@
 use std::fmt;
 
 use pest::Span;
+use std::fmt::Write;
 
 use crate::ast::StringSpan;
 
@@ -19,7 +20,7 @@ impl ValidationError {
     }
 
 
-    pub fn as_error_message(&self, f: &mut fmt::Formatter, input: &str) -> fmt::Result {
+    pub fn as_error_message(&self, f: &mut String, input: &str) -> fmt::Result {
         if let Some(source_ref) = self.source_ref {
             let span = Span::new(input, source_ref.pos_start, source_ref.pos_end);
             let (line, col) = span.as_ref().unwrap().start_pos().line_col();
@@ -64,10 +65,12 @@ impl ValidationErrors {
         self.errors.is_empty()
     }
 
-    pub fn as_error_message(&self, f: &mut fmt::Formatter, input: &str) -> fmt::Result {
+    pub fn as_error_message(&self, input: &str) -> String {
+        let mut buf = "\n".to_string();
         self.errors.iter().fold(Ok(()), |result, err| {
-            result.and_then(|_| err.as_error_message(f, input))
-        })
+            result.and_then(|_| err.as_error_message(&mut buf, input)).and_then(|_| write!(buf, "\n"))
+        }).unwrap();
+        buf
     }
 }
 

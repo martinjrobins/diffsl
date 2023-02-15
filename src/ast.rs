@@ -111,6 +111,7 @@ pub struct Assignment<'a> {
 pub struct Parameter<'a> {
     pub name: &'a str,
     pub domain: Box<Ast<'a>>,
+    pub init: Option<Box<Ast<'a>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -408,7 +409,11 @@ impl<'a> fmt::Display for Ast<'a> {
                 )
             }
             AstKind::Name(name) => write!(f, "{}", name),
-            AstKind::IndexedName(name) => write!(f, "{}_{:?}", name.name, name.indices),
+            AstKind::IndexedName(name) => if name.indices.is_empty() {
+                write!(f, "{}", name.name)
+            } else {
+                write!(f, "{}_{:?}", name.name, name.indices)
+            },
             AstKind::Number(num) => write!(f, "{}", num),
             AstKind::Integer(num) => write!(f, "{}", num),
             AstKind::Unknown(unknown) => write!(

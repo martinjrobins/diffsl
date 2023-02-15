@@ -173,7 +173,6 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             let mut inner = pair.into_inner();
             let name = parse_name(inner.next().unwrap());
             let indices = if inner.peek().is_some() {
-                let mut inner = inner.next().unwrap().into_inner();
                 let indices = parse_name(inner.next().unwrap());
                 indices.chars().collect::<Vec<_>>()
             } else {
@@ -207,27 +206,20 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             parse_value(pair.into_inner().next().unwrap())
         },
 
-        //parameter  = { name ~ "->" ~  range }
+        //parameter  = { name ~ "->" ~  range ~ ("=" ~ expression)? }
         Rule::parameter => {
             let mut inner = pair.into_inner();
             let name = inner.next().unwrap().as_str();
             let domain = Box::new(parse_value(inner.next().unwrap()));
+            let init = match inner.next() {
+                Some(e) => Some(Box::new(parse_value(e))),
+                None => None,
+            };
             Ast { 
-                kind: AstKind::Parameter(ast::Parameter { name, domain }),
+                kind: AstKind::Parameter(ast::Parameter { name, domain, init }),
                 span 
             }
 
-        },
-
-        //assignment = { name ~ "=" ~ expression }
-        Rule::assignment => {
-            let mut inner = pair.into_inner();
-            let name = inner.next().unwrap().as_str();
-            let expr = Box::new(parse_value(inner.next().unwrap()));
-            Ast { 
-                kind: AstKind::Assignment(ast::Assignment{ name, expr }),
-                span 
-            }
         },
 
         _ => unreachable!("{:?}", pair.to_string()),
@@ -276,7 +268,7 @@ mod tests {
                 r -> [0, inf],
                 k -> [0, inf],
             }
-            u {
+            u_i {
                 y = 1,
                 z
             }
@@ -302,6 +294,7 @@ mod tests {
         assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().domain.kind.as_range().unwrap().upper, f64::INFINITY);
 
         assert_eq!(arrays[1].name, "u");
+        assert_eq!(arrays[1].indices[0], 'i');
         assert_eq!(arrays[1].elmts[0].kind.as_assignment().unwrap().name, "y");
         assert_eq!(arrays[1].elmts[0].kind.as_assignment().unwrap().expr.to_string(), "1");
         assert_eq!(arrays[1].elmts[1].to_string(), "z");

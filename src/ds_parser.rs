@@ -205,8 +205,26 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         Rule::tensor_elmt =>  {
             parse_value(pair.into_inner().next().unwrap())
         },
+        
+        
+        // domain     = ${ (range | name) ~ ("^" ~ integer)? }
+        Rule::domain => {
+            let mut inner = pair.into_inner();
+            let range = Box::new(parse_value(inner.next().unwrap()));
+            if inner.peek().is_none() {
+                return Ast { 
+                    kind: AstKind::Domain(ast::Domain{ range, dim: 1 }),
+                    span 
+                }
+            }
+            let dim = inner.next().unwrap().as_str().parse().unwrap();
+            Ast { 
+                kind: AstKind::Domain(ast::Domain{ range, dim }),
+                span 
+            }
+        },
 
-        //parameter  = { name ~ "->" ~  range ~ ("=" ~ expression)? }
+        //parameter  = { name ~ "->" ~  domain ~ ("=" ~ expression)? }
         Rule::parameter => {
             let mut inner = pair.into_inner();
             let name = inner.next().unwrap().as_str();
@@ -266,11 +284,11 @@ mod tests {
         const TEXT: &str = "
             in {
                 r -> [0, inf],
-                k -> [0, inf],
+                k -> R,
             }
             u_i {
-                y = 1,
-                z
+                y -> R = 1,
+                z -> R^2,
             }
             F {
                 dot(y),

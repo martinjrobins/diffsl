@@ -5,6 +5,7 @@ use std::fmt;
 use std::ops::Add;
 
 
+
 #[derive(Debug, Clone)]
 pub struct Unknown<'a> {
     pub name: &'a str,
@@ -54,6 +55,30 @@ pub struct IndexedName<'a> {
 pub struct Range {
     pub lower: f64,
     pub upper: f64,
+}
+
+impl fmt::Display for Range {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}, {})", self.lower, self.upper)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Domain<'a> {
+    pub range: Box<Ast<'a>>,
+    pub dim: usize,
+}
+
+impl<'a> fmt::Display for Domain<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.range).and_then(|_| {
+            if self.dim == 1 {
+                write!(f, "^{}", self.dim)
+            } else {
+                Ok(())
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +163,7 @@ pub enum AstKind<'a> {
     Equation(Equation<'a>),
     RateEquation(RateEquation<'a>),
     Range(Range),
+    Domain(Domain<'a>),
     IntRange(IntRange),
     Binop(Binop<'a>),
     Monop(Monop<'a>),
@@ -155,6 +181,12 @@ impl<'a> AstKind<'a> {
     pub fn as_model(&self) -> Option<&Model> {
         match self {
             AstKind::Model(m) => Some(m),
+            _ => None,
+        }
+    }
+    pub fn as_domain(&self) -> Option<&Domain> {
+        match self {
+            AstKind::Domain(m) => Some(m),
             _ => None,
         }
     }
@@ -327,6 +359,7 @@ impl<'a> Ast<'a> {
                     .collect(),
             }),
             AstKind::Range(range) => AstKind::Range(range.clone()),
+            AstKind::Domain(domain) => AstKind::Domain(domain.clone()),
             AstKind::IntRange(range) => AstKind::IntRange(range.clone()),
             AstKind::Tensor(a) => AstKind::Tensor(a.clone()),
             AstKind::Parameter(p) => AstKind::Parameter(p.clone()),
@@ -390,6 +423,7 @@ impl<'a> Ast<'a> {
             AstKind::Definition(_) => (),
             AstKind::Submodel(_) => (),
             AstKind::Range(_) => (),
+            AstKind::Domain(_) => (),
             AstKind::IntRange(_) => (),
             AstKind::Tensor(_) => (),
             AstKind::Parameter(_) => (),
@@ -421,7 +455,15 @@ impl<'a> fmt::Display for Ast<'a> {
                 "Unknown ({})({:#?}) -> {:#?}",
                 unknown.name, unknown.dependents, unknown.codomain
             ),
-            AstKind::Range(range) => write!(f, "({}, {})", range.lower, range.upper),
+            AstKind::Domain(domain) => {
+                write!(f, "{}", domain.range).and_then(|_| {
+                    if domain.dim == 1 {
+                        write!(f, "^{}", domain.dim)
+                    } else {
+                        Ok(())
+                    }
+                })
+            }
             AstKind::IntRange(range) => write!(f, "({}, {})", range.lower, range.upper),
             AstKind::Equation(eqn) => {
                 write!(f, "{}", eqn)
@@ -499,6 +541,7 @@ impl<'a> fmt::Display for Ast<'a> {
             AstKind::Assignment(a) => {
                 write!(f, "{} = {}", a.name, a.expr)
             },
+            AstKind::Range(range) => write!(f, "{}", range),
         }
     }
 }

@@ -295,7 +295,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(name.to_owned(), alloca);
         }
 
-        for input in model.inputs.iter() {
+        for input in model.inputs.elmts().iter() {
             let alloca = self.input_alloca(input);
             self.variables.insert(input.name().to_owned(), alloca);
         }
@@ -311,7 +311,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(a.name().to_owned(), alloca);
         }
 
-        let (u0_array, dotu0_array) = model.get_init_state();
+        let (u0_array, dotu0_array) = model.states.get_init();
 
         let u0_ptr = self.variables.get("u0").unwrap();
         self.jit_compile_array(&u0_array, Some(*u0_ptr))?;
@@ -354,13 +354,13 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(name.to_owned(), alloca);
         }
 
-        for input in model.inputs.iter() {
+        for input in model.inputs.elmts().iter() {
             let alloca = self.input_alloca(input);
             self.variables.insert(input.name().to_owned(), alloca);
         }
 
         // state variables
-        for s in model.states.iter() {
+        for s in model.states.elmts().iter() {
             let ptr = self.variables.get("u").unwrap();
             let s_start = u64::try_from(s.start()[0]).unwrap();
             let i = self.context.i32_type().const_int(s_start, false);
@@ -426,13 +426,13 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(name.to_owned(), alloca);
         }
 
-        for input in model.inputs.iter() {
+        for input in model.inputs.elmts().iter() {
             let alloca = self.input_alloca(input);
             self.variables.insert(input.name().to_owned(), alloca);
         }
 
         // state variables
-        for s in model.states.iter() {
+        for s in model.states.elmts().iter() {
             let ptr = self.variables.get("u").unwrap();
             let s_start = u64::try_from(s.start()[0]).unwrap();
             let i = self.context.i32_type().const_int(s_start, false);
@@ -764,7 +764,7 @@ impl<'ctx> Sundials<'ctx> {
             SUNLinSolInitialize(linear_solver);
 
             let id_val = N_VGetArrayPointer(id);
-            for (ii, state) in model.states.iter().enumerate() {
+            for (ii, state) in model.states.elmts().iter().enumerate() {
                 *id_val.add(ii) = if state.is_algebraic() { 0.0 } else { 1.0 };
             }
 

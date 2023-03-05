@@ -72,6 +72,10 @@ impl ValidationErrors {
         }).unwrap();
         buf
     }
+    
+    pub fn has_error_contains(&self, text: &str) -> bool {
+        self.errors.iter().any(|err| err.text.contains(text))
+    }
 }
 
 impl fmt::Display for ValidationErrors {

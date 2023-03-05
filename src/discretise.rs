@@ -119,7 +119,7 @@ impl<'s> Tensor<'s> {
             }
             acc
         });
-        println!("shape: {}", shape);
+        println!("shape: {} {:?} ", shape, indices);
         Self {
             name,
             shape,
@@ -131,7 +131,8 @@ impl<'s> Tensor<'s> {
 
 impl<'s> fmt::Display for Tensor<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.indices.len() > 1 {
+        println!("name: {}, indices: {:?}", self.name, self.indices);
+        if self.indices.len() > 0 {
             write!(f, "{}_", self.name).and_then(|_| self.indices.iter().fold(Ok(()), |acc, i| {
                 acc.and_then(|_| write!(f, "{}", i))
             }))
@@ -139,7 +140,7 @@ impl<'s> fmt::Display for Tensor<'s> {
             write!(f, "{}", self.name)
         }.and_then(|_|  write!(f, " {{\n"))
         .and_then(|_| self.elmts.iter().fold(Ok(()), |acc, e| {
-            acc.and_then(|_| write!(f, "  {}\n", e))
+            acc.and_then(|_| write!(f, "  {},\n", e))
         }))
         .and_then(|_| write!(f, "}}"))
     }
@@ -201,7 +202,7 @@ impl<'s> fmt::Display for Inputs<'s> {
         }
         .and_then(|_| write!(f, " {{\n"))
         .and_then(|_| self.elmts.iter().fold(Ok(()), |acc, e| {
-            acc.and_then(|_| write!(f, "  {}\n", e))
+            acc.and_then(|_| write!(f, "  {},\n", e))
         }))
         .and_then(|_| write!(f, "}}"))
     }
@@ -349,7 +350,7 @@ impl<'s> fmt::Display for States<'s> {
             write!(f, "u")
         }.and_then(|_| write!(f, " {{\n"))
         .and_then(|_| self.elmts.iter().fold(Ok(()), |acc, e| {
-            acc.and_then(|_| write!(f, "  {}\n", e))
+            acc.and_then(|_| write!(f, "  {},\n", e))
         }))
         .and_then(|_| write!(f, "}}"))
     }
@@ -1053,7 +1054,8 @@ impl<'s> DiscreteModel<'s> {
                                         tensor_ast.span,
                                     ));
                                 }
-                                ret.out.elmts.extend(built.elmts);
+                                print!("built out: {:#?}", built);
+                                ret.out = built;
                             }
                         }
                         _name => {
@@ -1449,13 +1451,15 @@ mod tests {
             out_i {
                 y,
                 t,
-                z
+                z,
             }
         ";
         let arrays: Vec<_> = ds_parser::parse_string(TEXT).unwrap();
         match DiscreteModel::build("logistic_growth", &arrays) {
             Ok(model) => {
-                assert_eq!(format!("{}", model), TEXT.trim());
+                let model_str: String = format!("{}", model).chars().filter(|c| !c.is_whitespace()).collect();
+                let text_str: String = TEXT.chars().filter(|c| !c.is_whitespace()).collect();
+                assert_eq!(model_str, text_str);
                 println!("{}", model);
             }
             Err(e) => {

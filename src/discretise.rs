@@ -43,7 +43,7 @@ impl<'s> TensorBlock<'s> {
     }
     
     pub fn rank(&self) -> usize {
-        self.shape.shape().len()
+        self.shape.len()
     }
 }
 
@@ -113,13 +113,11 @@ impl<'s> Tensor<'s> {
         let rank = elmts.iter().fold(0, |acc, i| max(acc, i.rank()));
         let shape = elmts.iter().fold(Shape::zeros(rank), |mut acc, i| {
             let max_index = i.start().mapv(|x| usize::try_from(x).unwrap()) + i.shape();
-            println!("{} + {} = {}", i.start(), i.shape(), max_index);
             for i in 0..acc.shape()[0] {
                 acc[i] = max(acc[i], max_index[i]);
             }
             acc
         });
-        println!("shape: {} {:?} ", shape, indices);
         Self {
             name,
             shape,
@@ -131,7 +129,6 @@ impl<'s> Tensor<'s> {
 
 impl<'s> fmt::Display for Tensor<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        println!("name: {}, indices: {:?}", self.name, self.indices);
         if self.indices.len() > 0 {
             write!(f, "{}_", self.name).and_then(|_| self.indices.iter().fold(Ok(()), |acc, i| {
                 acc.and_then(|_| write!(f, "{}", i))
@@ -175,10 +172,10 @@ impl<'s> Inputs<'s> {
         }
         let last = inputs.last().unwrap();
         let shape = last.start().mapv(|x| usize::try_from(x).unwrap()) + last.shape();
-        if shape.len() != 1 {
-            panic!("Inputs must be 1D");
+        if shape.len() > 1 {
+            panic!("Inputs must be scalar or 1D");
         }
-        let indices = if shape[0] == 1 { 
+        let indices = if shape.len() == 0 || shape[0] == 1 { 
             vec![]
         } else {
             vec!['i']
@@ -471,8 +468,6 @@ pub fn broadcast_shapes(shapes: &[&Shape]) -> Option<Shape> {
         }
         shape[i] = mdim;
     }
-    println!("shapes: {:?}", shapes);
-    println!("broadcasted shape: {}", shape);
     Some(shape)
 }
 
@@ -640,7 +635,6 @@ impl<'s> Env<'s> {
             }
             i
         };
-        println!("{}: min_rank = {}, shape = {}", name, min_rank, shape);
         if rhs_indices.len() < min_rank {
             self.errs.push(ValidationError::new(
                 format!(
@@ -665,7 +659,6 @@ impl<'s> Env<'s> {
                 return None;
             }
         }
-        println!("{}: {} -> {}", name, shape, new_shape);
         Some(new_shape)
     }
 
@@ -838,7 +831,7 @@ impl<'s> DiscreteModel<'s> {
             ));
         }
         assert_eq!(tensor.name, "u");
-        let mut start = Index::zeros(1);
+        let mut start = Index::zeros(rank);
         for a in &tensor.elmts {
             if let Some(elmt_shape) = env.get_shape(a.as_ref(), &tensor.indices) {
                 match &a.kind {
@@ -965,7 +958,17 @@ impl<'s> DiscreteModel<'s> {
                     a.span,
                 ));
             }
-            if let Some(elmt_shape) = env.get_shape(a.as_ref(), &array.indices) {
+            if let Some(mut elmt_shape) = env.get_shape(a.as_ref(), &array.indices) {
+                if rank == 0 && elmt_shape.len() == 1 {
+                    if elmt_shape[0] > 1 {
+                        env.errs.push(ValidationError::new(
+                            format!("cannot assign an expression with rank > 1 to a scalar, rhs has shape {}", elmt_shape),
+                            a.span,
+                        ));
+                    }
+                    // convert to scalar array
+                    elmt_shape = vec![].into();
+                }
                 ret.push(TensorBlock {
                     expr: *a.clone(),
                     start: start.clone(),
@@ -1467,6 +1470,86 @@ mod tests {
             }
         };
     }
+
+    #[test]
+    fn discrete_logistic_model_single_state() {
+        const TEXT: &str = "
+            in {
+                r -> [0, inf],
+            }
+            u {
+                y -> R = 1,
+            }
+            F {
+                dot(y),
+            }
+            G {
+                (r * y) * (1 - y),
+            }
+            out {
+                y,
+            }
+        ";
+        let arrays: Vec<_> = ds_parser::parse_string(TEXT).unwrap();
+        match DiscreteModel::build("logistic_growth", &arrays) {
+            Ok(model) => {
+                let model_str: String = format!("{}", model).chars().filter(|c| !c.is_whitespace()).collect();
+                let text_str: String = TEXT.chars().filter(|c| !c.is_whitespace()).collect();
+                assert_eq!(model_str, text_str);
+                println!("{}", model);
+            }
+            Err(e) => {
+                panic!("{}", e.as_error_message(TEXT));
+            }
+        };
+    }
+
+    #[test]
+    fn logistic_model_with_matrix() {
+        const TEXT: &str = "
+            in_i {
+                r -> [0, inf],
+                k -> [0, inf],
+            }
+            I_ij {
+                (0, 0): 1,
+                (1, 1): 1,
+            }
+            u_i {
+                y -> R^2 = 1,
+                z -> R,
+            }
+            F_i {
+                dot(y),
+                0,
+            }
+            rhs_i {
+                (r * y) * (1 - (y / k)),
+                (2 * y) - z,
+            }
+            G_i {
+                sum(j, I_ij * rhs_i)
+            }
+            out_i {
+                y,
+                t,
+                z,
+            }
+        ";
+        let arrays: Vec<_> = ds_parser::parse_string(TEXT).unwrap();
+        match DiscreteModel::build("logistic_growth", &arrays) {
+            Ok(model) => {
+                let model_str: String = format!("{}", model).chars().filter(|c| !c.is_whitespace()).collect();
+                let text_str: String = TEXT.chars().filter(|c| !c.is_whitespace()).collect();
+                assert_eq!(model_str, text_str);
+                println!("{}", model);
+            }
+            Err(e) => {
+                panic!("{}", e.as_error_message(TEXT));
+            }
+        };
+    }
+ 
     
     #[test]
     fn param_error() {

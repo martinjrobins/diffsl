@@ -127,6 +127,49 @@ pub struct Tensor<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct Indice<'a> {
+    pub first: Box<Ast<'a>>,
+    pub last: Option<Box<Ast<'a>>>,
+    pub sep: Option<&'a str>,
+}
+
+impl<'a> fmt::Display for Indice<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.first)?;
+        if let Some(ref last) = self.last {
+            if let Some(ref sep) = self.sep {
+                write!(f, "{}{}", sep, last)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Vector<'a> {
+    pub data: Vec<Box<Ast<'a>>>,
+}
+
+impl<'a> fmt::Display for Vector<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result  {
+        write!(f, "(")?;
+        for (i, elmt) in self.data.iter().enumerate() {
+            write!(f, "{}", elmt)?;
+            if i < self.data.len() - 1 {
+                write!(f, ", ")?;
+            }
+        }
+        write!(f, ")")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TensorElmt<'a> {
+    pub expr: Box<Ast<'a>>,
+    pub indices: Option<Box<Ast<'a>>>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Assignment<'a> {
     pub name: &'a str,
     pub expr: Box<Ast<'a>>,
@@ -157,6 +200,9 @@ pub enum AstKind<'a> {
     Unknown(Unknown<'a>),
     Definition(Definition<'a>),
     Tensor(Tensor<'a>),
+    Indice(Indice<'a>),
+    Vector(Vector<'a>),
+    TensorElmt(TensorElmt<'a>),
     Parameter(Parameter<'a>),
     Assignment(Assignment<'a>),
     Submodel(Submodel<'a>),
@@ -360,10 +406,13 @@ impl<'a> Ast<'a> {
             }),
             AstKind::Range(range) => AstKind::Range(range.clone()),
             AstKind::Domain(domain) => AstKind::Domain(domain.clone()),
+            AstKind::Indice(indices) => AstKind::Indice(indices.clone()),
             AstKind::IntRange(range) => AstKind::IntRange(range.clone()),
             AstKind::Tensor(a) => AstKind::Tensor(a.clone()),
+            AstKind::TensorElmt(a) => AstKind::TensorElmt(a.clone()),
             AstKind::Parameter(p) => AstKind::Parameter(p.clone()),
             AstKind::Assignment(a) => AstKind::Assignment(a.clone()),
+            AstKind::Vector(a) => AstKind::Vector(a.clone()),
         };
         Ast {
             kind: cloned_kind,
@@ -416,6 +465,14 @@ impl<'a> Ast<'a> {
                 slice.lower.collect_deps(deps);
                 slice.upper.collect_deps(deps);
             },
+            AstKind::Tensor(tensor) => {
+                for elmt in &tensor.elmts {
+                    elmt.collect_deps(deps);
+                }
+            },
+            AstKind::TensorElmt(elmt) => {
+                elmt.expr.collect_deps(deps);
+            },
             AstKind::Number(_) => (),
             AstKind::Integer(_) => (),
             AstKind::Model(_) => (),
@@ -425,9 +482,10 @@ impl<'a> Ast<'a> {
             AstKind::Range(_) => (),
             AstKind::Domain(_) => (),
             AstKind::IntRange(_) => (),
-            AstKind::Tensor(_) => (),
             AstKind::Parameter(_) => (),
             AstKind::Assignment(_) => (),
+            AstKind::Vector(_) => (),
+            AstKind::Indice(_) => (),
         }
     }
 }
@@ -535,6 +593,13 @@ impl<'a> fmt::Display for Ast<'a> {
                 let elmt_strs: Vec<String> = a.elmts.iter().map(|elmt| elmt.to_string()).collect();
                 write!(f, "{} {{\n{}\n}}", a.name, elmt_strs.join(",\n"))
             },
+            AstKind::TensorElmt(elmt) => {
+                if let Some(indices) = &elmt.indices {
+                    write!(f, "{} {}", indices.to_string(), elmt.expr.to_string())
+                } else {
+                    write!(f, "{}", elmt.expr.to_string())
+                }
+            },
             AstKind::Parameter(p) => {
                 write!(f, "{} -> {}", p.name, p.domain)
             },
@@ -542,6 +607,8 @@ impl<'a> fmt::Display for Ast<'a> {
                 write!(f, "{} = {}", a.name, a.expr)
             },
             AstKind::Range(range) => write!(f, "{}", range),
+            AstKind::Vector(v) => write!(f, "{}", v),
+            AstKind::Indice(i) => write!(f, "{}", i),
         }
     }
 }

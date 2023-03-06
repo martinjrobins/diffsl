@@ -201,12 +201,54 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             }
         },
 
-        // tensor_elmt = { parameter | expression }
-        Rule::tensor_elmt =>  {
-            parse_value(pair.into_inner().next().unwrap())
+        // param_or_tensor_elmt = { parameter | tensor_elmt }
+        Rule::param_elmt => parse_value(pair.into_inner().next().unwrap()),
+
+        // indice      = { integer ~ ( range_sep ~ integer )? }
+        Rule::indice => {
+            let mut inner = pair.into_inner();
+            let first = Box::new(parse_value(inner.next().unwrap()));
+            if inner.peek().is_some() {
+                let sep = Some(inner.next().unwrap().as_str());
+                let last = Some(Box::new(parse_value(inner.next().unwrap())));
+                Ast { 
+                    kind: AstKind::Indice(ast::Indice { first, last, sep }),
+                    span
+                }
+            } else {
+                Ast { 
+                    kind: AstKind::Indice(ast::Indice { first, last: None, sep: None }),
+                    span 
+                }
+            }
         },
-        
-        
+
+        // indices   = { "(" ~ indice ~ ("," ~ indice)* ~ ")" ~ ":" }
+        Rule::indices => {
+            let inner = pair.into_inner();
+            let mut indices = inner.map(|v| Box::new(parse_value(v))).collect::<Vec<_>>();
+            indices.pop();
+            Ast { 
+                kind: AstKind::Vector(ast::Vector { data: indices }),
+                span 
+            }
+        },
+
+        // tensor_elmt = { indices? ~ expression }
+        Rule::tensor_elmt =>  {
+            let mut inner = pair.into_inner();
+            let indices = if inner.peek().unwrap().as_rule() == Rule::indices {
+                Some(Box::new(parse_value(inner.next().unwrap())))
+            } else {
+                None
+            };
+            let expr = Box::new(parse_value(inner.next().unwrap()));
+            Ast { 
+                kind: AstKind::TensorElmt(ast::TensorElmt { indices, expr }),
+                span 
+            }
+        },
+
         // domain     = ${ (range | name) ~ ("^" ~ integer)? }
         Rule::domain => {
             let mut inner = pair.into_inner();
@@ -286,9 +328,14 @@ mod tests {
                 r -> [0, inf],
                 k -> R,
             }
+            I_ij {
+                (0, 0): 1,
+                (1..2, 1..2): 1,
+                (2:3, 2:3): 1,
+            }
             u_i {
                 y -> R = 1,
-                z -> R^2,
+                z -> R**2,
             }
             F {
                 dot(y),
@@ -305,18 +352,18 @@ mod tests {
             }
         ";
         let arrays: Vec<Tensor> = parse_string(TEXT).unwrap().into_iter().map(|a| a.kind.into_array().unwrap()).collect();
-        assert_eq!(arrays.len(), 5);
+        assert_eq!(arrays.len(), 6);
         assert_eq!(arrays[0].name, "in");
         assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().name, "r");
-        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().domain.kind.as_range().unwrap().lower, 0.);
-        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().domain.kind.as_range().unwrap().upper, f64::INFINITY);
+        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().domain.kind.as_domain().unwrap().range.kind.as_range().unwrap().lower, 0.);
+        assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().domain.kind.as_domain().unwrap().range.kind.as_range().unwrap().upper, f64::INFINITY);
 
-        assert_eq!(arrays[1].name, "u");
-        assert_eq!(arrays[1].indices[0], 'i');
-        assert_eq!(arrays[1].elmts[0].kind.as_assignment().unwrap().name, "y");
-        assert_eq!(arrays[1].elmts[0].kind.as_assignment().unwrap().expr.to_string(), "1");
-        assert_eq!(arrays[1].elmts[1].to_string(), "z");
-        assert_eq!(arrays[4].name, "out");
+        assert_eq!(arrays[2].name, "u");
+        assert_eq!(arrays[2].indices[0], 'i');
+        assert_eq!(arrays[2].elmts[0].kind.as_parameter().unwrap().name, "y");
+        assert_eq!(arrays[2].elmts[0].kind.as_parameter().unwrap().init.as_ref().unwrap().to_string(), "1");
+        assert_eq!(arrays[2].elmts[1].kind.as_parameter().unwrap().name, "z");
+        assert_eq!(arrays[5].name, "out");
     }
 
 

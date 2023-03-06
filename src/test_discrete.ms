@@ -1,5 +1,11 @@
+in_i {
+    p -> R,
+    g -> R,
+}
+
 A_ij {
-    "filename.mat"
+    (0..1, 0..1): 1,
+    (1, 1): 1,
 }
 
 B_ij {
@@ -17,7 +23,7 @@ RHS_i {
 }
 
 RHS_AUG_i {
-    B_ij * RHS_i
+    sum(j, B_ij * RHS_i)
 }
 
 F_i {

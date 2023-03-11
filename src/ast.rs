@@ -242,9 +242,20 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
+    pub fn as_call_arg(&self) -> Option<&CallArg> {
+        match self {
+            AstKind::CallArg(m) => Some(m),
+            _ => None,
+        }
+    }
     pub fn as_name(&self) -> Option<&str> {
         match self {
             AstKind::Name(n) => Some(n),
+            AstKind::IndexedName(n) => if n.indices.is_empty() {
+                Some(n.name)
+             } else {
+                None
+             },
             _ => None,
         }
     }
@@ -263,12 +274,19 @@ impl<'a> AstKind<'a> {
     pub fn as_integer(&self) -> Option<i64> {
         match self {
             AstKind::Integer(a) => Some(*a),
+            AstKind::Number(a) => Some(*a as i64),
             _ => None,
         }
     }
     pub fn as_indice(&self) -> Option<&Indice> {
         match self {
             AstKind::Indice(a) => Some(a),
+            _ => None,
+        }
+    }
+    pub fn as_tensor_elmt(&self) -> Option<&TensorElmt> {
+        match self {
+            AstKind::TensorElmt(a) => Some(a),
             _ => None,
         }
     }
@@ -287,12 +305,6 @@ impl<'a> AstKind<'a> {
     pub fn as_range(&self) -> Option<&Range> {
         match self {
             AstKind::Range(a) => Some(a),
-            _ => None,
-        }
-    }
-    pub fn as_call_arg(&self) -> Option<&CallArg> {
-        match self {
-            AstKind::CallArg(a) => Some(a),
             _ => None,
         }
     }

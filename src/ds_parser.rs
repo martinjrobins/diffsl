@@ -226,8 +226,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         // indices   = { "(" ~ indice ~ ("," ~ indice)* ~ ")" ~ ":" }
         Rule::indices => {
             let inner = pair.into_inner();
-            let mut indices = inner.map(|v| Box::new(parse_value(v))).collect::<Vec<_>>();
-            indices.pop();
+            let indices = inner.map(|v| Box::new(parse_value(v))).collect::<Vec<_>>();
             Ast { 
                 kind: AstKind::Vector(ast::Vector { data: indices }),
                 span 
@@ -357,6 +356,9 @@ mod tests {
         assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().name, "r");
         assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().domain.kind.as_domain().unwrap().range.kind.as_range().unwrap().lower, 0.);
         assert_eq!(arrays[0].elmts[0].kind.as_parameter().unwrap().domain.kind.as_domain().unwrap().range.kind.as_range().unwrap().upper, f64::INFINITY);
+        
+        assert_eq!(arrays[1].name, "I");
+        assert_eq!(arrays[1].elmts[0].kind.as_tensor_elmt().unwrap().indices.as_ref().unwrap().kind.as_vector().unwrap().data.len(), 2);
 
         assert_eq!(arrays[2].name, "u");
         assert_eq!(arrays[2].indices[0], 'i');

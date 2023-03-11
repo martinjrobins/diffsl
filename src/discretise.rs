@@ -683,7 +683,9 @@ impl<'s> Env<'s> {
             ));
             return None;
         }
-        if call.args[0].kind.as_name().is_none() {
+        println!("sum args: {:?}", call.args);
+        let first_arg = call.args[0].kind.as_call_arg().unwrap().expression.as_ref();
+        if first_arg.kind.as_name().is_none() {
             self.errs.push(ValidationError::new(
                 format!(
                     "sum must have a variable as the first argument. found {}",
@@ -693,7 +695,7 @@ impl<'s> Env<'s> {
             ));
             return None;
         }
-        let name = call.args[0].kind.as_name().unwrap();
+        let name = first_arg.kind.as_name().unwrap();
         if name.len() != 1 {
             self.errs.push(ValidationError::new(
                 format!(
@@ -707,7 +709,8 @@ impl<'s> Env<'s> {
         let index = name.chars().next().unwrap();
         let mut within_sum_indices = indices.clone();
         within_sum_indices.push(index);
-        self.get_shape(call.args[1].as_ref(), &within_sum_indices)
+        let expr_shape = self.get_shape(call.args[1].as_ref(), &within_sum_indices)?;
+        Some(expr_shape.slice(s![..-1]).to_owned())
     }
 
     fn get_shape_call(&mut self, call: &Call<'s>, ast: &Ast, indices: &Vec<char>) -> Option<Shape> {
@@ -1608,7 +1611,7 @@ mod tests {
                 (1, 1): 1,
             }
             u_i {
-                y -> R**2 = 1,
+                y -> R = 1,
                 z -> R,
             }
             F_i {

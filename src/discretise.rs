@@ -1,4 +1,5 @@
 use anyhow::Result;
+use ndarray::s;
 use core::panic;
 use std::cell::RefCell;
 use std::cmp::max;
@@ -13,6 +14,8 @@ use crate::ast;
 use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::ast::Call;
+use crate::ast::Indice;
+use crate::ast::TensorElmt;
 use crate::ast::StringSpan;
 use crate::builder::ModelInfo;
 use crate::builder::Variable;
@@ -471,6 +474,11 @@ pub fn broadcast_shapes(shapes: &[&Shape]) -> Option<Shape> {
     Some(shape)
 }
 
+pub fn can_broadcast_to(to_shape: &Shape, from_shape: &Shape) -> bool {
+    let bc_shape = broadcast_shapes(&[to_shape, from_shape]);
+    bc_shape.is_some() && bc_shape.unwrap() == *to_shape
+}
+
 impl<'s> Env<'s> {
     pub fn new() -> Self {
         let mut vars = HashMap::new();
@@ -726,6 +734,7 @@ impl<'s> Env<'s> {
 
     pub fn get_shape(&mut self, ast: &Ast<'s>, indices: &Vec<char>) -> Option<Shape> {
         match &ast.kind {
+            AstKind::TensorElmt(t) => self.get_shape_tensor_elmt(t, indices),
             AstKind::Parameter(p) => self.get_shape(&p.domain, indices),
             AstKind::Binop(binop) => {
                 self.get_shape_binary_op(binop.left.as_ref(), binop.right.as_ref(), indices)
@@ -745,13 +754,96 @@ impl<'s> Env<'s> {
             }
             AstKind::Number(_) => Some(Shape::ones(1)),
             AstKind::Integer(_) => Some(Shape::ones(1)),
-            AstKind::Domain(d) => Some(Shape::ones(d.dim)),
+            AstKind::Domain(d) => Some(Shape::zeros(1) + d.dim),
             AstKind::IndexedName(name) => {
                 self.get_shape_name(name.name, ast, &name.indices, indices)
             }
             AstKind::Name(name) => self.get_shape_name(name, ast, &vec![], indices),
             _ => panic!("unrecognised ast node {:#?}", ast.kind),
         }
+    }
+
+    fn get_shape_tensor_elmt(&mut self, elmt: &TensorElmt<'s>, indices: &Vec<char>) -> Option<Shape> {
+        // get the shape of the expression
+        let expr_shape = self.get_shape(elmt.expr.as_ref(), indices)?;
+        if elmt.indices.is_none() {
+            return Some(expr_shape);
+        }
+        
+        // make sure the number of indices matches the number of dimensions
+        let elmt_indices = elmt.indices.as_ref().unwrap();
+        let given_indices_ast = &elmt_indices.kind.as_vector().unwrap().data;
+        let given_indices: Vec<&Indice> = given_indices_ast.iter().map(|i| i.kind.as_indice().unwrap()).collect();
+        if given_indices.len() != indices.len() {
+            self.errs.push(ValidationError::new(
+                format!(
+                    "number of dimensions of tensor element ({}) does not match number of dimensions of tensor ({})",
+                    given_indices.len(), indices.len()
+                ),
+                elmt_indices.span,
+            ));
+            return None;
+        }
+        
+        // make sure the rank of the expression is not too large
+        if expr_shape.len() > indices.len() {
+            self.errs.push(ValidationError::new(
+                format!(
+                    "number of dimensions of given expression ({}) does not match number of dimensions of tensor ({})",
+                    expr_shape.len(), indices.len()
+                ),
+                elmt.expr.span,
+            ));
+            return None;
+        }
+
+        // expand the expression shape to match the number of dimensions
+        let mut exp_expr_shape = Shape::ones(indices.len());
+        exp_expr_shape.slice_mut(s![..expr_shape.len()]).assign(&expr_shape);
+        
+        // calculate the shape of the tensor element from the given indices and expression shape
+        let all_range_indices = given_indices.iter().all(|i| i.sep == Some(".."));
+        let mut old_dim = None;
+        for (i, indice) in given_indices.iter().enumerate() {
+            let first = indice.first.kind.as_integer().unwrap();
+            
+            // make sure the use of the range separator is valid
+            if !all_range_indices && matches!(indice.sep, Some("..")) {
+                self.errs.push(ValidationError::new(
+                    format!("can only use range separator if all indices are ranges"),
+                    given_indices_ast[i].span,
+                ));
+            }
+            let dim = if let Some(_) = indice.sep {
+                if let Some(second) = &indice.last {
+                    let second = second.kind.as_integer().unwrap();
+                    if second < first {
+                        self.errs.push(ValidationError::new(
+                            format!("range end must be greater than range start"),
+                            given_indices_ast[i].span,
+                        ));
+                        return None;
+                    }
+                    usize::try_from(second - first).unwrap()
+                } else {
+                    exp_expr_shape[i]
+                }
+            } else {
+                1usize
+            };
+            
+            // make sure the dimension of the range is consistent
+            if all_range_indices && old_dim.is_none() && dim != old_dim.unwrap() {
+                self.errs.push(ValidationError::new(
+                    format!("range indices must have the same dimension"),
+                    given_indices_ast[i].span,
+                ));
+                return None;
+            }
+            old_dim = Some(dim);
+            exp_expr_shape[i] = dim;
+        }
+        Some(exp_expr_shape)
     }
 }
 
@@ -1516,7 +1608,7 @@ mod tests {
                 (1, 1): 1,
             }
             u_i {
-                y -> R^2 = 1,
+                y -> R**2 = 1,
                 z -> R,
             }
             F_i {

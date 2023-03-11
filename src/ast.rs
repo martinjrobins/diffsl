@@ -254,6 +254,24 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
+    pub fn as_vector(&self) -> Option<&Vector> {
+        match self {
+            AstKind::Vector(a) => Some(a),
+            _ => None,
+        }
+    }
+    pub fn as_integer(&self) -> Option<i64> {
+        match self {
+            AstKind::Integer(a) => Some(*a),
+            _ => None,
+        }
+    }
+    pub fn as_indice(&self) -> Option<&Indice> {
+        match self {
+            AstKind::Indice(a) => Some(a),
+            _ => None,
+        }
+    }
     pub fn as_parameter(&self) -> Option<&Parameter> {
         match self {
             AstKind::Parameter(a) => Some(a),

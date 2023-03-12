@@ -30,6 +30,7 @@ pub struct TensorBlock<'s> {
     start: Index,
     shape: Shape,
     expr: Ast<'s>,
+    is_diagonal: bool,
 }
 
 impl<'s> TensorBlock<'s> {
@@ -48,10 +49,28 @@ impl<'s> TensorBlock<'s> {
     pub fn rank(&self) -> usize {
         self.shape.len()
     }
+
+    pub fn is_diagonal(&self) -> bool {
+        self.is_diagonal
+    }
 }
 
 impl<'s> fmt::Display for TensorBlock<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.rank() > 1 {
+            let sep = if self.is_diagonal { ".." } else { ":" };
+            write!(f, "(")?;
+            for i in 0..self.rank() {
+                write!(f, "{}", self.start[i])?;
+                if self.shape[0] > 1 {
+                    write!(f, "{}{}", sep, self.start[i] + i64::try_from(self.shape[i]).unwrap())?;
+                }
+                if i < self.rank() - 1 {
+                    write!(f, ", ")?;
+                }
+            }
+            write!(f, "): ")?;
+        }
         write!(f, "{}", self.expr)
     }
 }
@@ -82,6 +101,7 @@ impl<'s> Tensor<'s> {
             elmts: vec![TensorBlock {
                 start: Index::from_vec(vec![0]),
                 shape: Shape::from_vec(vec![n_states]),
+                is_diagonal: false,
                 expr: Ast {
                     kind: AstKind::new_binop(
                         op,
@@ -312,11 +332,13 @@ impl<'s> States<'s> {
             }
             u0elmts.push(TensorBlock {
                 expr,
+                is_diagonal: false,
                 start: index.clone(),
                 shape: s.shape().clone(),
             });
             dotu0elmts.push(TensorBlock {
                 expr: alg_init.clone(),
+                is_diagonal: false,
                 start: index.clone(),
                 shape: s.shape().clone(),
             });
@@ -683,7 +705,6 @@ impl<'s> Env<'s> {
             ));
             return None;
         }
-        println!("sum args: {:?}", call.args);
         let first_arg = call.args[0].kind.as_call_arg().unwrap().expression.as_ref();
         if first_arg.kind.as_name().is_none() {
             self.errs.push(ValidationError::new(
@@ -836,7 +857,7 @@ impl<'s> Env<'s> {
             };
             
             // make sure the dimension of the range is consistent
-            if all_range_indices && old_dim.is_none() && dim != old_dim.unwrap() {
+            if all_range_indices && old_dim.is_some() && dim != old_dim.unwrap() {
                 self.errs.push(ValidationError::new(
                     format!("range indices must have the same dimension"),
                     given_indices_ast[i].span,
@@ -946,7 +967,7 @@ impl<'s> DiscreteModel<'s> {
                         let init = match p.init {
                             Some(ref init) => {
                                 if let Some(init_shape) = env.get_shape(init, &tensor.indices) {
-                                    if init_shape != shape {
+                                    if !can_broadcast_to(&shape, &init_shape) {
                                         env.errs.push(
                                             ValidationError::new(
                                                 format!("state {} has shape {}, but initial value has shape {}", name, shape, init_shape),
@@ -1035,6 +1056,7 @@ impl<'s> DiscreteModel<'s> {
         let rank = array.indices.len();
         let mut ret = Vec::new();
         let mut start = Index::zeros(rank);
+        let nerrs = env.errs.len();
         if rank == 0 && array.elmts.len() > 1 {
             env.errs.push(ValidationError::new(
                 format!("cannot have more than one element in a scalar"),
@@ -1047,33 +1069,50 @@ impl<'s> DiscreteModel<'s> {
             ));
         }
         for a in &array.elmts {
-            if let AstKind::Parameter(_) = a.kind {
-                env.errs.push(ValidationError::new(
-                    format!("cannot have parameters in tensor definition"),
-                    a.span,
-                ));
-            }
-            if let Some(mut elmt_shape) = env.get_shape(a.as_ref(), &array.indices) {
-                if rank == 0 && elmt_shape.len() == 1 {
-                    if elmt_shape[0] > 1 {
-                        env.errs.push(ValidationError::new(
-                            format!("cannot assign an expression with rank > 1 to a scalar, rhs has shape {}", elmt_shape),
-                            a.span,
-                        ));
+            match &a.kind {
+                AstKind::TensorElmt(te) => {
+                    if let Some(mut elmt_shape) = env.get_shape(a.as_ref(), &array.indices) {
+                        if rank == 0 && elmt_shape.len() == 1 {
+                            if elmt_shape[0] > 1 {
+                                env.errs.push(ValidationError::new(
+                                    format!("cannot assign an expression with rank > 1 to a scalar, rhs has shape {}", elmt_shape),
+                                    a.span,
+                                ));
+                            }
+                            // convert to scalar array
+                            elmt_shape = vec![].into();
+                        }
+                        let is_diagonal = if let Some(i) = &te.indices {
+                            if let Some(sep) = i.kind.as_vector().unwrap().data[0].kind.as_indice().unwrap().sep {
+                                sep == ".."
+                            } else {
+                                false
+                            } 
+                        } else {
+                            false
+                        };
+                        ret.push(TensorBlock {
+                            expr: *te.expr.clone(),
+                            start: start.clone(),
+                            is_diagonal,
+                            shape: elmt_shape.clone(),
+                        });
+                        start += &elmt_shape.mapv(|x| i64::try_from(x).unwrap());
                     }
-                    // convert to scalar array
-                    elmt_shape = vec![].into();
-                }
-                ret.push(TensorBlock {
-                    expr: *a.clone(),
-                    start: start.clone(),
-                    shape: elmt_shape.clone(),
-                });
-                start += &elmt_shape.mapv(|x| i64::try_from(x).unwrap());
+                },
+                AstKind::Parameter(_) => {
+                    env.errs.push(ValidationError::new(
+                        format!("cannot have parameters in tensor definition"),
+                        a.span,
+                    ));
+                },
+                _ => unreachable!("unexpected expression in tensor definition"),
             }
         }
         let tensor = Tensor::from_vec(array.name, ret, (&array.indices).clone());
-        env.push_var(&tensor);
+        if nerrs == env.errs.len() {
+            env.push_var(&tensor);
+        }
         Some(tensor)
     }
 
@@ -1158,15 +1197,16 @@ impl<'s> DiscreteModel<'s> {
                         }
                         _name => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
-                                let env_entry = env.get(built.name).unwrap();
-                                let dependent_on_state = env_entry.is_state_dependent();
-                                let dependent_on_time = env_entry.is_time_dependent();
-                                if !dependent_on_time {
-                                    ret.time_indep_defns.push(built);
-                                } else if dependent_on_time && !dependent_on_state {
-                                    ret.time_dep_defns.push(built);
-                                } else {
-                                    ret.state_dep_defns.push(built);
+                                if let Some(env_entry) = env.get(built.name) {
+                                    let dependent_on_state = env_entry.is_state_dependent();
+                                    let dependent_on_time = env_entry.is_time_dependent();
+                                    if !dependent_on_time {
+                                        ret.time_indep_defns.push(built);
+                                    } else if dependent_on_time && !dependent_on_state {
+                                        ret.time_dep_defns.push(built);
+                                    } else {
+                                        ret.state_dep_defns.push(built);
+                                    }
                                 }
                             }
                         }
@@ -1276,6 +1316,7 @@ impl<'s> DiscreteModel<'s> {
             TensorBlock {
                 start: Index::zeros(1),
                 shape: Shape::from_vec(vec![state.dim]),
+                is_diagonal: false,
                 expr: Ast {
                     kind: f_astkind,
                     span: ast_eqn.span,
@@ -1284,6 +1325,7 @@ impl<'s> DiscreteModel<'s> {
             TensorBlock {
                 start: Index::zeros(1),
                 shape: Shape::from_vec(vec![state.dim]),
+                is_diagonal: false,
                 expr: Ast {
                     kind: g_astkind,
                     span: ast_eqn.span,
@@ -1315,6 +1357,7 @@ impl<'s> DiscreteModel<'s> {
             shape: Shape::from_vec(vec![defn.dim]),
             elmts: vec![TensorBlock {
                 start: Index::zeros(1),
+                is_diagonal: false,
                 shape: Shape::from_vec(vec![defn.dim]),
                 expr: defn.expression.as_ref().unwrap().clone(),
             }],
@@ -1345,6 +1388,7 @@ impl<'s> DiscreteModel<'s> {
                     None
                 },
             },
+            is_diagonal: false,
             start: Index::zeros(1),
             shape: Shape::from_vec(vec![output.dim]),
         }
@@ -1606,29 +1650,34 @@ mod tests {
                 r -> [0, inf],
                 k -> [0, inf],
             }
+            sm_ij {
+                (0..2, 0..2): 1,
+            }
             I_ij {
-                (0, 0): 1,
-                (1, 1): 1,
+                (0:2, 0:2): sm_ij,
+                (2, 2): 1,
+                (3, 3): 1,
             }
             u_i {
-                y -> R = 1,
-                z -> R,
-            }
-            F_i {
-                dot(y),
-                0,
+                y -> R**2 = 1,
+                z -> R**2,
             }
             rhs_i {
-                (r * y) * (1 - (y / k)),
-                (2 * y) - z,
+                (r * y_i) * (1 - (y_i / k)),
+                (2 * y_i) - z_i,
+            }
+            F_i {
+                dot(y_i),
+                0,
+                0,
             }
             G_i {
-                sum(j, I_ij * rhs_i)
+                sum(j, I_ij * rhs_i),
             }
             out_i {
-                y,
+                y_i,
                 t,
-                z,
+                z_i,
             }
         ";
         let arrays: Vec<_> = ds_parser::parse_string(TEXT).unwrap();
@@ -1637,7 +1686,6 @@ mod tests {
                 let model_str: String = format!("{}", model).chars().filter(|c| !c.is_whitespace()).collect();
                 let text_str: String = TEXT.chars().filter(|c| !c.is_whitespace()).collect();
                 assert_eq!(model_str, text_str);
-                println!("{}", model);
             }
             Err(e) => {
                 panic!("{}", e.as_error_message(TEXT));

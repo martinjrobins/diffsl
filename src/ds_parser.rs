@@ -359,6 +359,8 @@ mod tests {
         
         assert_eq!(arrays[1].name, "I");
         assert_eq!(arrays[1].elmts[0].kind.as_tensor_elmt().unwrap().indices.as_ref().unwrap().kind.as_vector().unwrap().data.len(), 2);
+        assert_eq!(arrays[1].elmts[0].kind.as_tensor_elmt().unwrap().expr.to_string(), "1");
+        assert_eq!(arrays[1].elmts[1].kind.as_tensor_elmt().unwrap().expr.to_string(), "1");
 
         assert_eq!(arrays[2].name, "u");
         assert_eq!(arrays[2].indices[0], 'i');

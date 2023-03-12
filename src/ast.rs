@@ -51,6 +51,19 @@ pub struct IndexedName<'a> {
     pub indices: Vec<char>,
 }
 
+impl<'a> fmt::Display for IndexedName<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        if self.indices.len() > 0 {
+            write!(f, "_")?;
+            for idx in self.indices.iter() {
+                write!(f, "{}", idx)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Range {
     pub lower: f64,
@@ -474,7 +487,12 @@ impl<'a> Ast<'a> {
                 monop.child.collect_deps(deps);
             }
             AstKind::Call(call) => {
-                for c in &call.args {
+                let mut arg = call.args.iter();
+                // don't count the first argument of sum as a dependency
+                if call.fn_name == "sum" {
+                    arg.next();
+                }
+                for c in arg {
                     c.collect_deps(deps);
                 }
             }
@@ -531,11 +549,7 @@ impl<'a> fmt::Display for Ast<'a> {
                 )
             }
             AstKind::Name(name) => write!(f, "{}", name),
-            AstKind::IndexedName(name) => if name.indices.is_empty() {
-                write!(f, "{}", name.name)
-            } else {
-                write!(f, "{}_{:?}", name.name, name.indices)
-            },
+            AstKind::IndexedName(name) => write!(f, "{}", name),
             AstKind::Number(num) => write!(f, "{}", num),
             AstKind::Integer(num) => write!(f, "{}", num),
             AstKind::Unknown(unknown) => write!(

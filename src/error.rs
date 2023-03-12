@@ -64,7 +64,9 @@ impl ValidationErrors {
     pub fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }
-
+    pub fn len(&self) -> usize {
+        self.errors.len()
+    }
     pub fn as_error_message(&self, input: &str) -> String {
         let mut buf = "\n".to_string();
         self.errors.iter().fold(Ok(()), |result, err| {

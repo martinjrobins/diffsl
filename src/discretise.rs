@@ -22,9 +22,11 @@ use crate::builder::Variable;
 use crate::error::ValidationError;
 use crate::error::ValidationErrors;
 
+
+
 //TODO: inputs, states and tensors share a lot of code, refactor into a trait
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 // F(t, u, u_dot) = G(t, u)
 pub struct TensorBlock<'s> {
     start: Index,
@@ -34,6 +36,30 @@ pub struct TensorBlock<'s> {
 }
 
 impl<'s> TensorBlock<'s> {
+    pub fn new_vector(start: i64, shape: usize, expr: Ast<'s>) -> Self {
+        Self {
+            start: Index::from_vec(vec![start]),
+            shape: Shape::from_vec(vec![shape]),
+            expr,
+            is_diagonal: false,
+        }
+    }
+    pub fn new(start: Index, shape: Shape, expr: Ast<'s>, is_diagonal: bool) -> Self {
+        if is_diagonal {
+            assert!(shape.iter().min() == shape.iter().max(), "Diagonal TensorBlock must be square (shape is {:?})", shape);
+        }
+        Self {
+            start,
+            shape,
+            expr,
+            is_diagonal,
+        }
+    }
+    
+    pub fn nnz(&self) -> usize {
+        if self.is_diagonal { self.shape.iter().product() } else { *self.shape.get(0).unwrap_or(&0usize) }
+    }
+
     pub fn shape(&self) -> &Shape {
         &self.shape
     }
@@ -53,12 +79,36 @@ impl<'s> TensorBlock<'s> {
     pub fn is_diagonal(&self) -> bool {
         self.is_diagonal
     }
+    
+    pub fn layout(&self) -> Vec<Index> {
+        if self.is_diagonal {
+            let mut layout = Vec::new();
+            for i in 0i64..i64::try_from(self.shape[0]).unwrap() {
+                layout.push(self.start.clone() + i);
+            }
+            layout
+        } else {
+            let mut layout = Vec::new();
+            let mut index = self.start.clone();
+            while index != &self.start + self.shape.mapv(|x| i64::try_from(x).unwrap()) {
+                layout.push(index.clone());
+                index[0] += 1;
+                for i in 0..self.shape.len() - 1 {
+                    if index[i] == self.start[i] + i64::try_from(self.shape[i]).unwrap() {
+                        index[i] = self.start[i];
+                        index[i + 1] += 1;
+                    }
+                }
+            }
+            layout
+        }
+    }
 }
 
 impl<'s> fmt::Display for TensorBlock<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.rank() > 1 {
-            let sep = if self.is_diagonal { ".." } else { ":" };
+            let sep = if self.is_diagonal() { ".." } else { ":" };
             write!(f, "(")?;
             for i in 0..self.rank() {
                 write!(f, "{}", self.start[i])?;
@@ -75,48 +125,51 @@ impl<'s> fmt::Display for TensorBlock<'s> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 // F(t, u, u_dot) = G(t, u)
 pub struct Tensor<'s> {
     name: &'s str,
     shape: Shape,
     elmts: Vec<TensorBlock<'s>>,
+    elmts_indices: Vec<Vec<usize>>,
     indices: Vec<char>,
+    layout: Vec<Index>,
 }
 
 impl<'s> Tensor<'s> {
-    pub fn new(name: &'s str) -> Self {
+    pub fn new_empty(name: &'s str) -> Self {
         Self {
             name,
             shape: Shape::zeros(0),
             elmts: Vec::new(),
             indices: Vec::new(),
+            layout: Vec::new(),
+            elmts_indices: Vec::new(),
         }
     }
-    pub fn new_binop(name: &'s str, n_states: usize, lhs: &'s str, rhs: &'s str, op: char) -> Self {
+
+    pub fn nnz(&self) -> usize {
+        self.layout.len()
+    }
+
+    pub fn new(name: &'s str, shape: Shape, elmts: Vec<TensorBlock<'s>>, indices: Vec<char>) -> Self {
+        let mut layout = Vec::new();
+        let mut elmts_indices = Vec::new();
+        for elmt in elmts.iter() {
+            if elmt.rank() > 0 {
+                let indices = Vec::from_iter(layout.len()..layout.len() + elmt.nnz());
+                layout.append(&mut elmt.layout());
+                elmts_indices.push(indices);
+            }
+        }
+
         Self {
             name,
-            shape: Shape::from_vec(vec![n_states]),
-            indices: vec!['i'],
-            elmts: vec![TensorBlock {
-                start: Index::from_vec(vec![0]),
-                shape: Shape::from_vec(vec![n_states]),
-                is_diagonal: false,
-                expr: Ast {
-                    kind: AstKind::new_binop(
-                        op,
-                        Ast {
-                            kind: AstKind::new_name(lhs),
-                            span: None,
-                        },
-                        Ast {
-                            kind: AstKind::new_name(rhs),
-                            span: None,
-                        },
-                    ),
-                    span: None,
-                },
-            }],
+            shape,
+            elmts,
+            indices,
+            layout,
+            elmts_indices,
         }
     }
 
@@ -141,12 +194,7 @@ impl<'s> Tensor<'s> {
             }
             acc
         });
-        Self {
-            name,
-            shape,
-            elmts,
-            indices,
-        }
+        return Self::new(name, shape, elmts, indices);
     }
 }
 
@@ -321,7 +369,7 @@ impl<'s> States<'s> {
         };
         let mut u0elmts = Vec::new();
         let mut dotu0elmts = Vec::new();
-        let mut index = Index::zeros(1);
+        let mut index = 0;
         for s in &self.elmts {
             let expr = match &s.init {
                 Some(eq) => eq.clone(),
@@ -330,34 +378,14 @@ impl<'s> States<'s> {
             if s.shape().len() != 1 {
                 panic!("state shape must be 1D");
             }
-            u0elmts.push(TensorBlock {
-                expr,
-                is_diagonal: false,
-                start: index.clone(),
-                shape: s.shape().clone(),
-            });
-            dotu0elmts.push(TensorBlock {
-                expr: alg_init.clone(),
-                is_diagonal: false,
-                start: index.clone(),
-                shape: s.shape().clone(),
-            });
-            index = index + s.shape().mapv(|x| i64::try_from(x).unwrap());
+            u0elmts.push(TensorBlock::new_vector(index, s.shape()[0], expr.clone()));
+            dotu0elmts.push(TensorBlock::new_vector(index, s.shape()[0], expr));
+            index = index + i64::try_from(s.shape()[0]).unwrap();
         }
-        let shape = index.mapv(|x| usize::try_from(x).unwrap());
+        let shape = Shape::from_vec(vec![usize::try_from(index).unwrap()]);
         (
-            Tensor {
-                name: "u0",
-                shape: shape.clone(),
-                indices: self.indices.clone(),
-                elmts: u0elmts,
-            },
-            Tensor {
-                name: "dotu0",
-                shape,
-                indices: self.indices.clone(),
-                elmts: dotu0elmts,
-            },
+            Tensor::new("u0", shape.clone(), u0elmts, self.indices.clone()),
+            Tensor::new("dotu0", shape, dotu0elmts, self.indices.clone()),
         )
     }
 }
@@ -902,9 +930,9 @@ impl<'s> DiscreteModel<'s> {
     pub fn new(name: &'s str) -> Self {
         Self {
             name,
-            lhs: Tensor::new("F"),
-            rhs: Tensor::new("G"),
-            out: Tensor::new("out"),
+            lhs: Tensor::new_empty("F"),
+            rhs: Tensor::new_empty("G"),
+            out: Tensor::new_empty("out"),
             time_indep_defns: Vec::new(),
             time_dep_defns: Vec::new(),
             state_dep_defns: Vec::new(),
@@ -912,6 +940,21 @@ impl<'s> DiscreteModel<'s> {
             states: States::new(),
         }
     }
+
+    // residual = F(t, u, u_dot) - G(t, u)
+    // return a tensor equal to the residual
+    pub fn residual(&self) -> Tensor<'s> {
+        let mut residual = self.lhs.clone();
+        residual.name = "residual";
+        for (elmt_res, elmt_rhs) in residual.elmts.iter_mut().zip(self.rhs.elmts.iter()) {
+            elmt_res.expr = Ast {
+                kind: AstKind::new_binop('-', elmt_res.expr.clone(), elmt_rhs.expr.clone()),
+                span: None,
+            }
+        }
+        residual
+    }
+
     
     fn build_domain(domain_ast: &Ast<'s>, env: &mut Env<'s>) -> (f64, f64) {
         let domain = domain_ast.kind.as_domain().unwrap();
@@ -1091,12 +1134,7 @@ impl<'s> DiscreteModel<'s> {
                         } else {
                             false
                         };
-                        ret.push(TensorBlock {
-                            expr: *te.expr.clone(),
-                            start: start.clone(),
-                            is_diagonal,
-                            shape: elmt_shape.clone(),
-                        });
+                        ret.push(TensorBlock::new(start.clone(), elmt_shape.clone(), *te.expr.clone(), is_diagonal));
                         start += &elmt_shape.mapv(|x| i64::try_from(x).unwrap());
                     }
                 },
@@ -1114,6 +1152,58 @@ impl<'s> DiscreteModel<'s> {
             env.push_var(&tensor);
         }
         Some(tensor)
+    }
+
+    fn check_match(tensor1: &Tensor, tensor2: &States, span: Option<StringSpan>, env: &mut Env) {
+        // check shapes
+        if tensor1.shape() != tensor2.shape() {
+            env.errs.push(ValidationError::new(
+                format!(
+                    "{} and u must have the same shape, but {} has shape {} and u has shape {}",
+                    tensor1.name,
+                    tensor1.name,
+                    tensor1.shape(),
+                    tensor2.shape()
+                ),
+                span,
+            ));
+        }
+
+        // check that the number of elmts is the same
+        if tensor1.elmts.len() != tensor2.elmts.len() {
+            env.errs.push(ValidationError::new(
+                format!(
+                    "{} and u must have the same number of elements, but {} has {} elements and u has {} elements",
+                    tensor1.name,
+                    tensor1.name,
+                    tensor1.elmts.len(),
+                    tensor2.elmts.len()
+                ),
+                span,
+            ));
+        }
+
+        // check that the shape and layout of each elmt is the same
+        for (i, (elmt1, elmt2)) in tensor1.elmts.iter().zip(tensor2.elmts.iter()).enumerate() {
+            if elmt1.shape != elmt2.shape {
+                env.errs.push(ValidationError::new(
+                    format!(
+                        "element {} of {} and element {} of u must have the same shape, but element {} of {} has shape {} and element {} of u has shape {}",
+                        i, tensor1.name, i, i, tensor1.name, elmt1.shape, i, elmt2.shape
+                    ),
+                    span,
+                ));
+            }
+            if elmt1.is_diagonal != false {
+                env.errs.push(ValidationError::new(
+                    format!(
+                        "element {} of {} must not be diagonal, but element {} of {} is {}",
+                        i, tensor1.name, i, tensor1.name, if elmt1.is_diagonal { "diagonal" } else { "not diagonal" }
+                    ),
+                    span,
+                ));
+            }
+        }
     }
 
     pub fn build(name: &'s str, ast: &'s Vec<Box<Ast<'s>>>) -> Result<Self, ValidationErrors> {
@@ -1253,27 +1343,8 @@ impl<'s> DiscreteModel<'s> {
                 span_all,
             ));
         }
-        // check that length of F and G match the number of states
-        if ret.states.shape() != ret.lhs.shape() {
-            env.errs.push(ValidationError::new(
-                format!(
-                    "F and u must have the same shape, but F has shape {} and u has shape {}",
-                    ret.lhs.shape(),
-                    ret.states.shape()
-                ),
-                span_all,
-            ));
-        }
-        if ret.states.shape() != ret.rhs.shape() {
-            env.errs.push(ValidationError::new(
-                format!(
-                    "G and u must have the same shape, but G has shape {} and u has shape {}",
-                    ret.rhs.shape(),
-                    ret.states.shape()
-                ),
-                span_all,
-            ));
-        }
+        Self::check_match(&ret.lhs, &ret.states, span_all, &mut env);
+        Self::check_match(&ret.rhs, &ret.states, span_all, &mut env);
 
         if env.errs.is_empty() {
             Ok(ret)
@@ -1313,24 +1384,8 @@ impl<'s> DiscreteModel<'s> {
             _ => panic!("equation for state var should be rate eqn or standard eqn"),
         };
         (
-            TensorBlock {
-                start: Index::zeros(1),
-                shape: Shape::from_vec(vec![state.dim]),
-                is_diagonal: false,
-                expr: Ast {
-                    kind: f_astkind,
-                    span: ast_eqn.span,
-                },
-            },
-            TensorBlock {
-                start: Index::zeros(1),
-                shape: Shape::from_vec(vec![state.dim]),
-                is_diagonal: false,
-                expr: Ast {
-                    kind: g_astkind,
-                    span: ast_eqn.span,
-                },
-            },
+            TensorBlock::new_vector(0, state.dim, Ast { kind: f_astkind, span: ast_eqn.span }),
+            TensorBlock::new_vector(0, state.dim, Ast { kind: g_astkind, span: ast_eqn.span }),
         )
     }
     fn state_to_u0(state_cell: &Rc<RefCell<Variable<'s>>>) -> State<'s> {
@@ -1351,17 +1406,8 @@ impl<'s> DiscreteModel<'s> {
     }
     fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
         let defn = defn_cell.borrow();
-        Tensor {
-            name: defn.name,
-            indices: vec!['i'],
-            shape: Shape::from_vec(vec![defn.dim]),
-            elmts: vec![TensorBlock {
-                start: Index::zeros(1),
-                is_diagonal: false,
-                shape: Shape::from_vec(vec![defn.dim]),
-                expr: defn.expression.as_ref().unwrap().clone(),
-            }],
-        }
+        let tsr_blk = TensorBlock::new_vector(0, defn.dim, defn.expression.as_ref().unwrap().clone());
+        Tensor::new(defn.name, Shape::from_vec(vec![defn.dim]), vec![tsr_blk], vec!['i'])
     }
 
     fn state_to_input(input_cell: &Rc<RefCell<Variable<'s>>>) -> Input<'s> {
@@ -1377,21 +1423,17 @@ impl<'s> DiscreteModel<'s> {
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
         let output = output_cell.borrow();
-        TensorBlock {
-            expr: Ast {
-                kind: AstKind::new_name(output.name),
-                span: if output.is_definition() {
-                    output.expression.as_ref().unwrap().span
-                } else if output.has_equation() {
-                    output.equation.as_ref().unwrap().span
-                } else {
-                    None
-                },
+        let expr = Ast {
+            kind: AstKind::new_name(output.name),
+            span: if output.is_definition() {
+                output.expression.as_ref().unwrap().span
+            } else if output.has_equation() {
+                output.equation.as_ref().unwrap().span
+            } else {
+                None
             },
-            is_diagonal: false,
-            start: Index::zeros(1),
-            shape: Shape::from_vec(vec![output.dim]),
-        }
+        };
+        TensorBlock::new_vector(0, output.dim, expr)
     }
     pub fn from(model: &ModelInfo<'s>) -> DiscreteModel<'s> {
         let (time_varying_unknowns, const_unknowns): (
@@ -1435,12 +1477,12 @@ impl<'s> DiscreteModel<'s> {
             elmt.start[0] = i64::try_from(curr_index).unwrap();
             curr_index = curr_index + elmt.shape[0];
         }
-        let out_array = Tensor {
-            name: "out",
-            indices: vec!['i'],
-            shape: Shape::from_vec(vec![curr_index]),
-            elmts: out_array_elmts,
-        };
+        let out_array = Tensor::new(
+            "out",
+            Shape::from_vec(vec![curr_index]),
+            out_array_elmts,
+            vec!['i'],
+        );
 
         let mut f_elmts: Vec<TensorBlock> = Vec::new();
         let mut g_elmts: Vec<TensorBlock> = Vec::new();
@@ -1485,24 +1527,14 @@ impl<'s> DiscreteModel<'s> {
             .start
             .mapv(|x| usize::try_from(x).unwrap())
             + &f_elmts.last().unwrap().shape;
-        let lhs = Tensor {
-            name: "F",
-            indices: vec!['i'],
-            elmts: f_elmts,
-            shape: lhs_shape,
-        };
+        let lhs =  Tensor::new("F", lhs_shape, f_elmts, vec!['i']);
         let rhs_shape = &g_elmts
             .last()
             .unwrap()
             .start
             .mapv(|x| usize::try_from(x).unwrap())
             + &g_elmts.last().unwrap().shape;
-        let rhs = Tensor {
-            name: "G",
-            indices: vec!['i'],
-            elmts: g_elmts,
-            shape: rhs_shape,
-        };
+        let rhs = Tensor::new("G", rhs_shape, g_elmts, vec!['i']);
         let name = model.name;
         DiscreteModel {
             name,

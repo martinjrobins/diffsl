@@ -380,6 +380,13 @@ pub struct Ast<'a> {
 }
 
 impl<'a> Ast<'a> {
+
+    pub fn new_binop(op: char, lhs: Ast<'a>, rhs: Ast<'a>) -> Self {
+        Ast {
+            kind: AstKind::new_binop(op, lhs, rhs),
+            span: None,
+        }
+    }
     
     pub fn clone_and_subst<'b>(&self, replacements: &HashMap<&'a str, &'b Box<Ast<'a>>>) -> Self {
         let cloned_kind = match &self.kind {

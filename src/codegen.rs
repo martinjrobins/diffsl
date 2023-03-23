@@ -24,9 +24,9 @@ use crate::discretise::{DiscreteModel, Tensor, Input};
 ///
 /// Calling this is innately `unsafe` because there's no guarantee it doesn't
 /// do `unsafe` operations internally.
-type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, inputs: *const realtype, rr: *mut realtype);
-type U0Func = unsafe extern "C" fn(inputs: *const realtype, u: *mut realtype, up: *mut realtype);
-type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, inputs: *const realtype, out: *mut realtype);
+type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *const *const realtype, rr: *mut realtype);
+type U0Func = unsafe extern "C" fn(data: *const *mut realtype, u: *mut realtype, up: *mut realtype);
+type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *const *const realtype, out: *mut realtype);
 
 struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
@@ -253,6 +253,18 @@ impl<'ctx> CodeGen<'ctx> {
             _ => unreachable!()
         }
     }
+
+    fn data_inputs_alloca(&mut self) -> PointerValue<'ctx> {
+        let ptr = self.variables.get("data").unwrap();
+        let i = self.context.i32_type().const_int(0, false);
+        unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], "inputs") }
+    }
+    
+    fn data_alloca(&mut self, tensor: &Tensor, data_index: usize) -> PointerValue<'ctx> {
+        let ptr = self.variables.get("data").unwrap();
+        let i = self.context.i32_type().const_int(u64::try_from(data_index + 1).unwrap(), false);
+        unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], tensor.name()) }
+    }
     
     fn input_alloca(&mut self, input: &Input) -> PointerValue<'ctx> {
         let ptr = self.variables.get("inputs").unwrap();
@@ -278,12 +290,13 @@ impl<'ctx> CodeGen<'ctx> {
     fn compile_set_u0<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
+        let real_ptr_ptr_type = real_ptr_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            &[real_ptr_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &[ "inputs", "u0", "dotu0"];
+        let fn_arg_names = &[ "data", "u0", "dotu0"];
         let function = self.module.add_function("set_u0", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -295,22 +308,34 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(name.to_owned(), alloca);
         }
 
+        // insert inputs into variables
+        let inputs_alloca= self.data_inputs_alloca();
+        self.variables.insert("inputs".to_string(), inputs_alloca);
+
+        // insert time independant definitions into variables
+        for (i, tensor) in model.time_indep_defns.iter().enumerate() {
+            let alloca = self.data_alloca(tensor, i);
+            self.variables.insert(tensor.name().to_owned(), alloca);
+        }
+
+        // insert inputs into variables
         for input in model.inputs.elmts().iter() {
             let alloca = self.input_alloca(input);
             self.variables.insert(input.name().to_owned(), alloca);
         }
 
-        //TODO: these should be taken out of the time loop
+        // calculate time independant definitions
         for a in model.time_indep_defns.iter() {
             let alloca = self.jit_compile_array(a, None)?;
             self.variables.insert(a.name().to_owned(), alloca);
         }
 
+        // calculate time dependant definitions
         for a in model.time_dep_defns.iter() {
-            let alloca = self.jit_compile_array(a, None)?;
-            self.variables.insert(a.name().to_owned(), alloca);
+            let alloca = self.variables.get(a.name()).unwrap();
+            self.jit_compile_array(a, Some(*alloca))?;
         }
-
+        
         let (u0_array, dotu0_array) = model.states.get_init();
 
         let u0_ptr = self.variables.get("u0").unwrap();
@@ -337,12 +362,13 @@ impl<'ctx> CodeGen<'ctx> {
     fn compile_calc_out<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
+        let real_ptr_ptr_type = real_ptr_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &["t", "u", "dotu", "inputs", "out"];
+        let fn_arg_names = &["t", "u", "dotu", "data", "out"];
         let function = self.module.add_function("calc_out", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -354,6 +380,11 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(name.to_owned(), alloca);
         }
 
+        // insert inputs into variables
+        let inputs_alloca= self.data_inputs_alloca();
+        self.variables.insert("inputs".to_string(), inputs_alloca);
+
+        // insert inputs into variables
         for input in model.inputs.elmts().iter() {
             let alloca = self.input_alloca(input);
             self.variables.insert(input.name().to_owned(), alloca);
@@ -374,20 +405,23 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(name, alloca_dot);
         }
 
-        // definitiions
-        for a in model.time_indep_defns.iter() {
-            let alloca = self.jit_compile_array(a, None)?;
-            self.variables.insert(a.name().to_owned(), alloca);
+        // insert time independant definitions into variables
+        for (i, tensor) in model.time_indep_defns.iter().enumerate() {
+            let alloca = self.data_alloca(tensor, i);
+            self.variables.insert(tensor.name().to_owned(), alloca);
         }
+
+        // calculate time dependant definitions
         for a in model.time_dep_defns.iter() {
             let alloca = self.jit_compile_array(a, None)?;
             self.variables.insert(a.name().to_owned(), alloca);
         }
-        for a in model.state_dep_defns.iter() {
-            let alloca = self.jit_compile_array(a, None)?;
-            self.variables.insert(a.name().to_owned(), alloca);
+
+        for input in model.inputs.elmts().iter() {
+            let alloca = self.input_alloca(input);
+            self.variables.insert(input.name().to_owned(), alloca);
         }
-        
+
         let out_ptr = self.variables.get("out").unwrap();
         self.jit_compile_array(&model.out, Some(*out_ptr))?;
         self.builder.build_return(None);
@@ -408,13 +442,13 @@ impl<'ctx> CodeGen<'ctx> {
     fn compile_residual<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
-        let n_states = model.len_state();
+        let real_ptr_ptr_type = real_ptr_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &["t", "u", "dotu", "inputs", "rr"];
+        let fn_arg_names = &["t", "u", "dotu", "data", "rr"];
         let function = self.module.add_function("residual", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -426,6 +460,11 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(name.to_owned(), alloca);
         }
 
+        // insert inputs into variables
+        let inputs_alloca= self.data_inputs_alloca();
+        self.variables.insert("inputs".to_string(), inputs_alloca);
+
+        // insert inputs into variables
         for input in model.inputs.elmts().iter() {
             let alloca = self.input_alloca(input);
             self.variables.insert(input.name().to_owned(), alloca);
@@ -446,15 +485,18 @@ impl<'ctx> CodeGen<'ctx> {
             self.variables.insert(name, alloca_dot);
         }
 
-        // definitions
-        for a in model.time_indep_defns.iter() {
-            let alloca = self.jit_compile_array(a, None)?;
-            self.variables.insert(a.name().to_owned(), alloca);
+        // insert time independant definitions into variables
+        for (i, tensor) in model.time_indep_defns.iter().enumerate() {
+            let alloca = self.data_alloca(tensor, i);
+            self.variables.insert(tensor.name().to_owned(), alloca);
         }
+
+        // calculate time dependant definitions
         for a in model.time_dep_defns.iter() {
             let alloca = self.jit_compile_array(a, None)?;
             self.variables.insert(a.name().to_owned(), alloca);
         }
+
         // F and G
         let lhs_ptr = self.jit_compile_array(&model.lhs, None)?;
         self.variables.insert("F".to_owned(), lhs_ptr);
@@ -462,7 +504,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.variables.insert("G".to_owned(), rhs_ptr);
         
         // compute residual here as dummy array
-        let residual = Tensor::new_binop("residual", n_states, "F", "G", '-');
+        let residual = model.residual();
 
         let res_ptr = self.variables.get("rr").unwrap();
         let _res_ptr = self.jit_compile_array(&residual, Some(*res_ptr))?;
@@ -506,6 +548,7 @@ impl Options {
     }
 }
 
+
 struct SundialsData<'ctx> {
     number_of_states: usize,
     number_of_parameters: usize,
@@ -514,7 +557,7 @@ struct SundialsData<'ctx> {
     out: N_Vector,
     yp: N_Vector, 
     avtol: N_Vector,
-    inputs: N_Vector,
+    data: Vec<N_Vector>,
     yy_s: Vec<N_Vector>, 
     yp_s: Vec<N_Vector>,
     id: N_Vector,
@@ -524,6 +567,20 @@ struct SundialsData<'ctx> {
     set_u0: JitFunction<'ctx, U0Func>,
     calc_out: JitFunction<'ctx, CalcOutFunc>,
     options: Options,
+}
+
+impl SundialsData<'_> {
+    fn get_data_ptr(&self) -> *const *const f64 {
+        unsafe {
+            self.data.iter().map(|&x| N_VGetArrayPointer(x) as *const f64).collect::<Vec<_>>().as_ptr()
+        }
+    }
+
+    fn get_data_ptr_mut(&mut self) -> *const *mut f64 {
+        unsafe {
+            self.data.iter_mut().map(|&mut x| N_VGetArrayPointer(x) as *mut f64).collect::<Vec<_>>().as_ptr()
+        }
+    }
 }
 
 pub struct Sundials<'ctx> {
@@ -544,14 +601,13 @@ impl<'ctx> Sundials<'ctx> {
         data.residual.call(t, 
             N_VGetArrayPointer(y), 
             N_VGetArrayPointer(yp), 
-            N_VGetArrayPointer(data.inputs), 
+            data.get_data_ptr(), 
             N_VGetArrayPointer(rr), 
         );
-
         io::stdout().flush().unwrap();
         0
     }   
-    
+
     fn check(retval: c_int) -> Result<()> {
         if retval < 0 {
             let char_ptr = unsafe { IDAGetReturnFlagName(i64::from(retval)) };
@@ -562,16 +618,17 @@ impl<'ctx> Sundials<'ctx> {
         }
     }
 
-    pub fn calc_u0(&self, inputs: &Array1<f64>) -> Array1<f64> {
+    pub fn calc_u0(&mut self, inputs: &Array1<f64>) -> Array1<f64> {
         let number_of_inputs = inputs.len();
         assert_eq!(number_of_inputs, self.data.number_of_parameters);
         let mut u0 = Array1::zeros(self.data.number_of_states);
         unsafe {
-            let inputs_ptr = N_VGetArrayPointer(self.data.inputs);
+            let data_ptr = self.data.get_data_ptr_mut();
+            let inputs_ptr = *data_ptr;
             for i in 0..number_of_inputs {
                 *inputs_ptr.add(i) = inputs[i]; 
             }
-            self.data.set_u0.call(N_VGetArrayPointer(self.data.inputs), N_VGetArrayPointer(self.data.yy), N_VGetArrayPointer(self.data.yp));
+            self.data.set_u0.call(data_ptr, N_VGetArrayPointer(self.data.yy), N_VGetArrayPointer(self.data.yp));
             let yy_ptr = N_VGetArrayPointer(self.data.yy);
             for i in 0..self.data.number_of_states {
                 u0[i] = *yy_ptr.add(i); 
@@ -580,7 +637,7 @@ impl<'ctx> Sundials<'ctx> {
         u0
     }
 
-    pub fn calc_residual(&self, t: f64, inputs: &Array1<f64>, u0: &Array1<f64>, up0: &Array1<f64>) -> Array1<f64> {
+    pub fn calc_residual(&mut self, t: f64, inputs: &Array1<f64>, u0: &Array1<f64>, up0: &Array1<f64>) -> Array1<f64> {
         let number_of_inputs = inputs.len();
         let number_of_states = u0.len();
         assert_eq!(number_of_states, up0.len());
@@ -589,7 +646,8 @@ impl<'ctx> Sundials<'ctx> {
         let mut res = Array1::zeros(number_of_states);
         unsafe {
             let rr = N_VNew_Serial(i64::try_from(number_of_states).unwrap());
-            let inputs_ptr = N_VGetArrayPointer(self.data.inputs);
+            let data_ptr = self.data.get_data_ptr();
+            let inputs_ptr = *self.data.get_data_ptr_mut();
             for i in 0..number_of_inputs {
                 *inputs_ptr.add(i) = inputs[i]; 
             }
@@ -602,7 +660,7 @@ impl<'ctx> Sundials<'ctx> {
             self.data.residual.call(t, 
                 N_VGetArrayPointer(self.data.yy), 
                 N_VGetArrayPointer(self.data.yp), 
-                N_VGetArrayPointer(self.data.inputs), 
+                data_ptr,
                 N_VGetArrayPointer(rr), 
             );
             io::stdout().flush().unwrap();
@@ -617,6 +675,7 @@ impl<'ctx> Sundials<'ctx> {
     pub fn from_discrete_model<'m>(model: &'m DiscreteModel, context: &'ctx inkwell::context::Context, options: Options) -> Result<Sundials<'ctx>> {
         let number_of_states = i64::try_from(model.len_state()).unwrap();
         let number_of_parameters = i64::try_from(model.len_inputs()).unwrap();
+        let time_indep_data_nnz= model.time_indep_defns.iter().map(|defn| i64::try_from(defn.nnz()).unwrap()).collect::<Vec<_>>();
         let number_of_outputs = i64::try_from(model.len_output()).unwrap();
         let module = context.create_module(model.name);
         let fpm = PassManager::create(&module);
@@ -668,6 +727,8 @@ impl<'ctx> Sundials<'ctx> {
             let avtol = N_VNew_Serial(i64::from(number_of_states));
             let id = N_VNew_Serial(i64::from(number_of_states));
             let inputs = N_VNew_Serial(i64::from(number_of_parameters));
+            let mut data = vec![inputs];
+            data.extend(time_indep_data_nnz.iter().map(|&nnz| N_VNew_Serial(nnz)));
 
             let mut yy_s: Vec<N_Vector> = Vec::new();
             let mut yp_s: Vec<N_Vector> = Vec::new();
@@ -684,11 +745,6 @@ impl<'ctx> Sundials<'ctx> {
                 N_VConst(0.0, yp_si);
             }
             
-            let yval = N_VGetArrayPointer(yy);
-            let ypval = N_VGetArrayPointer(yp);
-            let inputsval = N_VGetArrayPointer(inputs);
-            set_u0.call(inputsval, yval, ypval);
-
             // initialise solver
             Self::check(IDAInit(ida_mem, Some(Self::sresidual), 0.0, yy, yp))?;
 
@@ -779,7 +835,7 @@ impl<'ctx> Sundials<'ctx> {
                     yp,
                     out,
                     avtol,
-                    inputs,
+                    data,
                     yy_s,
                     yp_s,
                     id,
@@ -808,14 +864,15 @@ impl<'ctx> Sundials<'ctx> {
         let mut out_return = Array2::zeros((number_of_timesteps, self.data.number_of_outputs).f());
 
         unsafe {
-            let inputs_ptr = N_VGetArrayPointer(self.data.inputs);
+            let data_ptr = self.data.get_data_ptr();
+            let data_ptr_mut = self.data.get_data_ptr_mut();
+            let inputs_ptr = *self.data.get_data_ptr_mut();
             for (i, &v) in inputs.iter().enumerate() {
                 *inputs_ptr.add(i) = v; 
             }
 
             let yval = N_VGetArrayPointer(self.data.yy);
             let ypval = N_VGetArrayPointer(self.data.yp);
-            let inputsval = N_VGetArrayPointer(self.data.inputs);
             let mut ys_val: Vec<*mut f64> = Vec::new();
             for is in 0..self.data.number_of_parameters {
                 ys_val.push(N_VGetArrayPointer(self.data.yy_s[is]));
@@ -823,7 +880,7 @@ impl<'ctx> Sundials<'ctx> {
                 N_VConst(0.0, self.data.yp_s[is]);
             }
 
-            self.data.set_u0.call(inputsval, yval, ypval);
+            self.data.set_u0.call(data_ptr_mut, yval, ypval);
 
             let t0 = times[0];
 
@@ -837,7 +894,7 @@ impl<'ctx> Sundials<'ctx> {
                 t0, 
                 N_VGetArrayPointer(self.data.yy), 
                 N_VGetArrayPointer(self.data.yp), 
-                N_VGetArrayPointer(self.data.inputs), 
+                data_ptr,
                 N_VGetArrayPointer(self.data.out)
             );
             let outval = N_VGetArrayPointer(self.data.out);
@@ -868,7 +925,7 @@ impl<'ctx> Sundials<'ctx> {
                     tret, 
                     N_VGetArrayPointer(self.data.yy), 
                     N_VGetArrayPointer(self.data.yp), 
-                    N_VGetArrayPointer(self.data.inputs), 
+                    data_ptr,
                     N_VGetArrayPointer(self.data.out)
                 );
                 let outval = N_VGetArrayPointer(self.data.out);

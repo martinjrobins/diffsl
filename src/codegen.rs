@@ -2,7 +2,7 @@ use inkwell::intrinsics::Intrinsic;
 use inkwell::passes::PassManager;
 use inkwell::types::{FloatType, BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{PointerValue, FloatValue, FunctionValue, IntValue, BasicMetadataValueEnum, BasicValueEnum};
-use inkwell::{OptimizationLevel, AddressSpace, IntPredicate};
+use inkwell::{OptimizationLevel, AddressSpace, IntPredicate, data_layout};
 use inkwell::builder::Builder;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
@@ -18,15 +18,15 @@ use anyhow::{Result, anyhow};
 
 
 use crate::ast::{Ast, AstKind};
-use crate::discretise::{DiscreteModel, Tensor, Input};
+use crate::discretise::{DiscreteModel, Tensor, Input, DataLayout, TensorBlock};
 
 /// Convenience type alias for the `sum` function.
 ///
 /// Calling this is innately `unsafe` because there's no guarantee it doesn't
 /// do `unsafe` operations internally.
-type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *const *const realtype, rr: *mut realtype);
-type U0Func = unsafe extern "C" fn(data: *const *mut realtype, u: *mut realtype, up: *mut realtype);
-type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *const *const realtype, out: *mut realtype);
+type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *const realtype, rr: *mut realtype);
+type U0Func = unsafe extern "C" fn(data: *mut realtype, u: *mut realtype, up: *mut realtype);
+type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *const realtype, out: *mut realtype);
 
 struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
@@ -35,6 +35,7 @@ struct CodeGen<'ctx> {
     fpm: PassManager<FunctionValue<'ctx>>,
     ee: ExecutionEngine<'ctx>,
     variables: HashMap<String, PointerValue<'ctx>>,
+    layouts: HashMap<String, PointerValue<'ctx>>,
     functions: HashMap<String, FunctionValue<'ctx>>,
     fn_value_opt: Option<FunctionValue<'ctx>>,
     real_type: FloatType<'ctx>,
@@ -97,7 +98,7 @@ impl<'ctx> CodeGen<'ctx> {
     }
     
     
-    fn jit_compile_scalar_array(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
+    fn jit_compile_scalar(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
         let res_type = self.real_type;
         let res_ptr = match res_ptr_opt {
             Some(ptr) => ptr,
@@ -108,72 +109,63 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_store(res_ptr, float_value);
         Ok(res_ptr)
     }
-
+    
     fn jit_compile_array(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
-        let a_dim = a.shape()[0];
-        if a_dim == 1 {
-            return self.jit_compile_scalar_array(a, res_ptr_opt)
+        if a.rank() == 1 && a.shape()[0] == 1 {
+            return self.jit_compile_scalar(a, res_ptr_opt)
+        } else {
+            return self.jit_compile_tensor(a, res_ptr_opt)
         }
-        let a_dim_val = self.context.i32_type().const_int(u64::try_from(a_dim).unwrap(), false);
+    }
+
+    fn jit_compile_tensor(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>, layout_ptr_opt: Option<PointerValue>)  -> Result<PointerValue<'ctx>> {
+        let nnz = u64::try_from(a.nnz()).unwrap();
+        let nnz_val = self.context.i32_type().const_int(nnz, false);
         let res_ptr = match res_ptr_opt {
             Some(ptr) => ptr,
-            None => self.create_entry_block_builder().build_array_alloca(self.real_type, a_dim_val, a.name()),
+            None => self.create_entry_block_builder().build_array_alloca(self.real_type, nnz_val, a.name()),
         };
-        for (i, elmt) in a.elmts().iter().enumerate() {
+        for (i, (elmt, elmt_indices)) in zip(a.elmts(), a.elmts_indices()).enumerate() {
             let elmt_name_string = format!("{}-{}", a.name(), i);
             let elmt_name= elmt_name_string.as_str();
-            let elmt_dim = u64::try_from(elmt.shape()[0]).unwrap();
-            let elmt_start = u64::try_from(elmt.start()[0]).unwrap();
-            let elmt_end = elmt_start + elmt_dim;
             let int_type = self.context.i64_type();
-            if elmt_dim == 1 {
-                let index = int_type.const_int(elmt_start, false);
-                let float_value = self.jit_compile_expr(&elmt.expr(), None, elmt_name)?;
-                let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[index], elmt_name) };
-                self.builder.build_store(resi_ptr, float_value);
-            } else if elmt_dim < 2 {
-                for i in 0..elmt_dim {
-                    let index = int_type.const_int(elmt_start + i, false);
-                    let float_value = self.jit_compile_expr(&elmt.expr(), Some(index), elmt_name)?;
-                    let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[index], elmt_name) };
-                    self.builder.build_store(resi_ptr, float_value);
-                }
-            } else {
-                let preblock = self.builder.get_insert_block().unwrap();
-                let block = self.context.append_basic_block(self.fn_value(), elmt_name);
-                self.builder.build_unconditional_branch(block);
-                self.builder.position_at_end(block);
+            
+            let preblock = self.builder.get_insert_block().unwrap();
+            let block = self.context.append_basic_block(self.fn_value(), elmt_name);
+            self.builder.build_unconditional_branch(block);
+            self.builder.position_at_end(block);
 
-                // setup index
-                let start_index = int_type.const_int(elmt_start, false);
-                let one = int_type.const_int(1, false);
-                let final_index = int_type.const_int(elmt_end, false);
-                let curr_index = self.builder.build_phi(int_type, "i");
-                curr_index.add_incoming(&[(&start_index, preblock)]);
-                
-                // loop body
-                let curr_index_int = curr_index.as_basic_value().into_int_value();
-                let float_value = self.jit_compile_expr(&elmt.expr(), Some(curr_index_int), elmt_name)?;
-                let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[curr_index_int], elmt_name) };
-                self.builder.build_store(resi_ptr, float_value);
+            // setup index
+            let start_index = int_type.const_int(0, false);
+            let curr_index = self.builder.build_phi(int_type, "i");
+            curr_index.add_incoming(&[(&start_index, preblock)]);
+            
+            // loop body
+            let curr_index_int = curr_index.as_basic_value().into_int_value();
+            let float_value = self.jit_compile_expr(&elmt.expr(), Some(curr_index_int), elmt)?;
+            let elmt_indices_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[curr_index_int], elmt_name) };
+            let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[curr_index_int], elmt_name) };
+            self.builder.build_store(resi_ptr, float_value);
 
-                // increment index and check loop condition
-                let next_index = self.builder.build_int_add(curr_index_int, one, elmt_name);
-                curr_index.add_incoming(&[(&next_index, block)]);
-                let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, final_index, elmt_name);
-                let after_block = self.context.append_basic_block(self.fn_value(), elmt_name);
-                self.builder.build_conditional_branch(loop_while, block, after_block);
-                self.builder.position_at_end(after_block);
-            }
+            // increment index and check loop condition
+            let one = int_type.const_int(1, false);
+            let next_index = self.builder.build_int_add(curr_index_int, one, elmt_name);
+            curr_index.add_incoming(&[(&next_index, block)]);
+            let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, nnz_val, elmt_name);
+            let after_block = self.context.append_basic_block(self.fn_value(), elmt_name);
+            self.builder.build_conditional_branch(loop_while, block, after_block);
+            self.builder.position_at_end(after_block);
         }
         Ok(res_ptr)
     }
 
-    fn jit_compile_expr(&mut self, expr: &Ast, index: Option<IntValue<'ctx>>, name: &str) -> Result<FloatValue<'ctx>> {
+    fn jit_compile_expr(&mut self, expr: &Ast, index: &[IntValue<'ctx>], tensor: &Tensor, elmt_index: usize) -> Result<FloatValue<'ctx>> {
+        let name_string = format!("{}-{}", tensor.name(), elmt_index);
+        let name= name_string.as_str();
         match &expr.kind {
             AstKind::Binop(binop) => {
-                let lhs = self.jit_compile_expr(binop.left.as_ref(), index, name)?;
-                let rhs = self.jit_compile_expr(binop.right.as_ref(), index, name)?;
+                let lhs = self.jit_compile_expr(binop.left.as_ref(), index, tensor, elmt_index)?;
+                let rhs = self.jit_compile_expr(binop.right.as_ref(), index, tensor, elmt_index)?;
                 match binop.op {
                     '*' => Ok(self.builder.build_float_mul(lhs, rhs, name)),
                     '/' => Ok(self.builder.build_float_div(lhs, rhs, name)),
@@ -183,7 +175,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             },
             AstKind::Monop(monop) => {
-                let child = self.jit_compile_expr(monop.child.as_ref(), index, name)?;
+                let child = self.jit_compile_expr(monop.child.as_ref(), index, tensor, elmt_index)?;
                 match monop.op {
                     '-' => Ok(self.builder.build_float_neg(child, name)),
                     unknown => Err(anyhow!("unknown monop op '{}'", unknown))
@@ -206,7 +198,7 @@ impl<'ctx> CodeGen<'ctx> {
                     Some(function) => {
                         let mut args: Vec<BasicMetadataValueEnum> = Vec::new();
                         for arg in call.args.iter() {
-                            let arg_val = self.jit_compile_expr(arg.as_ref(), index, name)?;
+                            let arg_val = self.jit_compile_expr(arg.as_ref(), index, tensor, elmt_index)?;
                             args.push(BasicMetadataValueEnum::FloatValue(arg_val));
                         }
                         let ret_value = self.builder.build_call(function, args.as_slice(), name)
@@ -218,16 +210,40 @@ impl<'ctx> CodeGen<'ctx> {
                 
             },
             AstKind::CallArg(arg) => {
-                self.jit_compile_expr(&arg.expression, index, name)
+                self.jit_compile_expr(&arg.expression, index, tensor, elmt_index)
             },
             AstKind::Number(value) => Ok(self.real_type.const_float(*value)),
+            AstKind::IndexedName(iname) => {
+                let ptr = self.variables.get(iname.name.as_str()).expect("variable not found");
+                let value_ptr = if tensor.is_dense() {
+                    // nnz index is the product of the index elements
+                    let nnz_index = index.iter().map(|i| {
+                        let layout_ptr = self.layouts.get(iname.name.as_str()).expect("variable not found");
+                        self.builder.build_load(layout_ptr, iname.name.as_str()).into_int_value()
+                    }).fold(None, |acc, i| {
+                        match acc {
+                            Some(acc) => Some(self.builder.build_int_mul(acc, i, name)),
+                            None => Some(i)
+                        }
+                    });
+                    match nnz_index {
+                        Some(i) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name) },
+                        None => *ptr,
+                    }
+                } else {
+                    let layout_ptr = self.layouts.get(iname.name.as_str()).expect("variable not found");
+                    let tensor_index = 0..tensor.rank().map(|axis| {
+                        let ptr = unsafe { self.builder.build_in_bounds_gep(*layout_ptr, &[axis * tensor.nnz() + i], name) };
+                        self.builder.build_load(layout_ptr, iname.name.as_str()).into_int_value()
+                    }.collect<Vec<_>>();
+                    let value_ptr = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], iname.name.as_str()) }
+                }
+                
+                Ok(self.builder.build_load(value_ptr, iname.name.as_str()).into_float_value())
+            },
             AstKind::Name(name) => {
                 let ptr = self.variables.get(*name).expect("variable not found");
-                let ptr = match index {
-                    Some(i) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name) },
-                    None => *ptr,
-                };
-                Ok(self.builder.build_load(ptr, name).into_float_value())
+                Ok(self.builder.build_load(*ptr, name).into_float_value())
             },
             AstKind::Index(_) => todo!(),
             AstKind::Slice(_) => todo!(),
@@ -557,7 +573,8 @@ struct SundialsData<'ctx> {
     out: N_Vector,
     yp: N_Vector, 
     avtol: N_Vector,
-    data: Vec<N_Vector>,
+    data: N_Vector,
+    data_layout: DataLayout,
     yy_s: Vec<N_Vector>, 
     yp_s: Vec<N_Vector>,
     id: N_Vector,
@@ -569,16 +586,22 @@ struct SundialsData<'ctx> {
     options: Options,
 }
 
-impl SundialsData<'_> {
-    fn get_data_ptr(&self) -> *const *const f64 {
+impl<'ctx> SundialsData<'ctx> {
+    pub fn get_tensor_data(&self, name: &str) -> Option<*const realtype> {
+        let index = self.data_layout.get_data_index(name)?;
         unsafe {
-            self.data.iter().map(|&x| N_VGetArrayPointer(x) as *const f64).collect::<Vec<_>>().as_ptr()
+            Some(N_VGetArrayPointer(self.data).offset(index.try_into().unwrap()))
         }
     }
-
-    fn get_data_ptr_mut(&mut self) -> *const *mut f64 {
+    pub fn get_tensor_data_mut(&self, name: &str) -> Option<*mut realtype> {
+        let index = self.data_layout.get_data_index(name)?;
         unsafe {
-            self.data.iter_mut().map(|&mut x| N_VGetArrayPointer(x) as *mut f64).collect::<Vec<_>>().as_ptr()
+            Some(N_VGetArrayPointer(self.data).offset(index.try_into().unwrap()))
+        }
+    }
+    pub fn get_data_ptr_mut(&self) -> *mut realtype {
+        unsafe {
+            N_VGetArrayPointer(self.data)
         }
     }
 }
@@ -601,7 +624,7 @@ impl<'ctx> Sundials<'ctx> {
         data.residual.call(t, 
             N_VGetArrayPointer(y), 
             N_VGetArrayPointer(yp), 
-            data.get_data_ptr(), 
+            N_VGetArrayPointer(data.data), 
             N_VGetArrayPointer(rr), 
         );
         io::stdout().flush().unwrap();
@@ -623,8 +646,8 @@ impl<'ctx> Sundials<'ctx> {
         assert_eq!(number_of_inputs, self.data.number_of_parameters);
         let mut u0 = Array1::zeros(self.data.number_of_states);
         unsafe {
-            let data_ptr = self.data.get_data_ptr_mut();
-            let inputs_ptr = *data_ptr;
+            let data_ptr = N_VGetArrayPointer(self.data.data);
+            let inputs_ptr = data_ptr.offset(self.data.data_layout.get_data_index("inputs").unwrap().try_into().unwrap());
             for i in 0..number_of_inputs {
                 *inputs_ptr.add(i) = inputs[i]; 
             }
@@ -646,8 +669,7 @@ impl<'ctx> Sundials<'ctx> {
         let mut res = Array1::zeros(number_of_states);
         unsafe {
             let rr = N_VNew_Serial(i64::try_from(number_of_states).unwrap());
-            let data_ptr = self.data.get_data_ptr();
-            let inputs_ptr = *self.data.get_data_ptr_mut();
+            let inputs_ptr = self.data.get_tensor_data_mut("inputs").unwrap();
             for i in 0..number_of_inputs {
                 *inputs_ptr.add(i) = inputs[i]; 
             }
@@ -660,7 +682,7 @@ impl<'ctx> Sundials<'ctx> {
             self.data.residual.call(t, 
                 N_VGetArrayPointer(self.data.yy), 
                 N_VGetArrayPointer(self.data.yp), 
-                data_ptr,
+                self.data.get_data_ptr_mut(),
                 N_VGetArrayPointer(rr), 
             );
             io::stdout().flush().unwrap();
@@ -716,6 +738,8 @@ impl<'ctx> Sundials<'ctx> {
         let set_u0 = codegen.jit::<U0Func>(set_u0)?;
         let residual = codegen.jit::<ResidualFunc>(residual)?;
         let calc_out = codegen.jit::<CalcOutFunc>(calc_out)?;
+
+        let data_layout = model.create_data_layout();
         
         unsafe {
             let ida_mem = IDACreate();
@@ -726,9 +750,8 @@ impl<'ctx> Sundials<'ctx> {
             let yp = N_VNew_Serial(i64::from(number_of_states));
             let avtol = N_VNew_Serial(i64::from(number_of_states));
             let id = N_VNew_Serial(i64::from(number_of_states));
-            let inputs = N_VNew_Serial(i64::from(number_of_parameters));
-            let mut data = vec![inputs];
-            data.extend(time_indep_data_nnz.iter().map(|&nnz| N_VNew_Serial(nnz)));
+
+            let data = N_VNew_Serial(data_layout.data_length().try_into().unwrap());
 
             let mut yy_s: Vec<N_Vector> = Vec::new();
             let mut yp_s: Vec<N_Vector> = Vec::new();
@@ -826,6 +849,7 @@ impl<'ctx> Sundials<'ctx> {
 
             Self::check(IDASetId(ida_mem, id))?;
 
+
             let mut data = Box::new(
                 SundialsData {
                     number_of_states: usize::try_from(number_of_states).unwrap(),
@@ -836,6 +860,7 @@ impl<'ctx> Sundials<'ctx> {
                     out,
                     avtol,
                     data,
+                    data_layout,
                     yy_s,
                     yp_s,
                     id,
@@ -864,9 +889,8 @@ impl<'ctx> Sundials<'ctx> {
         let mut out_return = Array2::zeros((number_of_timesteps, self.data.number_of_outputs).f());
 
         unsafe {
-            let data_ptr = self.data.get_data_ptr();
+            let inputs_ptr = self.data.get_tensor_data_mut("inputs").unwrap();
             let data_ptr_mut = self.data.get_data_ptr_mut();
-            let inputs_ptr = *self.data.get_data_ptr_mut();
             for (i, &v) in inputs.iter().enumerate() {
                 *inputs_ptr.add(i) = v; 
             }
@@ -894,7 +918,7 @@ impl<'ctx> Sundials<'ctx> {
                 t0, 
                 N_VGetArrayPointer(self.data.yy), 
                 N_VGetArrayPointer(self.data.yp), 
-                data_ptr,
+                data_ptr_mut,
                 N_VGetArrayPointer(self.data.out)
             );
             let outval = N_VGetArrayPointer(self.data.out);
@@ -925,7 +949,7 @@ impl<'ctx> Sundials<'ctx> {
                     tret, 
                     N_VGetArrayPointer(self.data.yy), 
                     N_VGetArrayPointer(self.data.yp), 
-                    data_ptr,
+                    data_ptr_mut,
                     N_VGetArrayPointer(self.data.out)
                 );
                 let outval = N_VGetArrayPointer(self.data.out);

@@ -1,6 +1,8 @@
 use anyhow::Result;
+use anyhow::anyhow;
 use ndarray::s;
 use core::panic;
+use core::slice::SlicePattern;
 use std::cell::RefCell;
 use std::cmp::max;
 use std::collections::HashMap;
@@ -22,6 +24,368 @@ use crate::builder::Variable;
 use crate::error::ValidationError;
 use crate::error::ValidationErrors;
 
+#[derive(Debug, Clone, PartialEq)]
+enum LayoutKind {
+    Dense,
+    Diagonal,
+    Sparse,
+}
+
+
+// a sparsity pattern for a multidimensional tensor. A tensor can be sparse, diagonal or dense, as given by the kind field.
+// A tensor can also have n_dense_axes axes which are dense, these are the last n_dense_axes axes of the tensor. So for example,
+// you could have a 2D sparse tensor with 1 dense axis, combining to give a tensor of rank 3 (i.e. the shape is length 3).
+// indices are kept in row major order, so the last index is the fastest changing index.
+#[derive(Debug, Clone, PartialEq)]
+struct Layout {
+    indices: Vec<Index>,
+    shape: Shape,
+    kind: LayoutKind,
+    n_dense_axes: usize,
+}
+
+impl Layout {
+    
+    fn unravel_index(index: usize, shape: &Shape) -> Index {
+        let mut idx = index;
+        let mut res = Index::zeros(shape.len());
+        for i in 0..shape.len() {
+            res[i] = i64::try_from(idx % shape[i]).unwrap();
+            idx = idx / shape[i];
+        }
+        res
+    }
+
+    // contract_last_axis contracts the last axis of the layout, returning a new layout with the last axis contracted.
+    fn contract_last_axis(&self) -> Result<Layout> {
+        let rank = self.rank();
+        if rank == 0 {
+            return Err(anyhow!("cannot contract last axis of a scalar"));
+        }
+        let new_shape = self.shape.slice(s![0..rank-1]).to_owned();
+        let mut new_indices = self.indices.clone();
+
+        // if the layout is sparse and there are no dense axes, then remove the last axis from each index
+        if self.is_sparse() && self.n_dense_axes == 0 {
+            for index in new_indices.iter_mut() {
+                // remove the last element of the index
+                index.
+            }
+        } 
+        new_indices.pop();
+        Ok(Layout {
+            indices: new_indices,
+            shape: new_shape,
+            kind: self.kind.clone(),
+            n_dense_axes: self.n_dense_axes,
+        })
+    }
+
+
+    // permute the axes of the layout and return a new layout
+    fn permute(&self, permutation: &[usize]) -> Result<Layout> {
+        let rank = self.rank();
+        // check that permutation is a valid permutation
+        if permutation.len() != rank {
+            return Err(anyhow!("permutation must have the same length as the rank of the layout"));
+        }
+        let mut permutation = permutation.to_vec();
+        permutation.sort();
+        for (i, &p) in permutation.iter().enumerate() {
+            if p != i {
+                return Err(anyhow!("permutation must be a valid permutation"));
+            }
+        }
+
+        // can't permute a diagonal layout
+        if self.is_diagonal() {
+            return Err(anyhow!("cannot permute a diagonal layout"));
+        }
+
+        // for a sparse tensor, can only permute the sparse axes
+        if self.is_sparse() {
+            for i in self.rank() - self.n_dense_axes..self.rank() {
+                if permutation[i] != i {
+                    return Err(anyhow!("cannot permute dense axes of a sparse layout"));
+                }
+            }
+        }
+
+        // permute shape
+        let mut new_shape = self.shape.clone();
+        for (i, &p) in permutation.iter().enumerate() {
+            new_shape[i] = self.shape[p];
+        }
+
+        // permute indices
+        let mut new_indices = self.indices.clone();
+        for (i, index) in new_indices.iter_mut().enumerate() {
+            for (ai, &p) in permutation.iter().enumerate() {
+                index[ai] = self.indices[i][p];
+            }
+        }
+        Ok(Layout {
+            indices: new_indices,
+            shape: new_shape,
+            kind: self.kind.clone(),
+            n_dense_axes: self.n_dense_axes,
+        })
+    }
+    
+    // create a new layout by broadcasting a list of layouts
+    fn broadcast(layouts: &[Layout]) -> Result<Layout> {
+        // the shapes of the layouts must be broadcastable
+        let shapes = layouts.iter().map(|x| &x.shape).collect::<Vec<_>>();
+        let shape = match broadcast_shapes(&shapes[..]) {
+            Some(x) => x,
+            None => {
+                let shapes_str = shapes.iter().map(|x| format!("{:?}", x)).collect::<Vec<_>>().join(", ");
+                return Err(anyhow!("cannot broadcast shapes [{}]", shapes_str));
+            }
+        };
+        let rank = shape.len();
+        
+        // if the final shape has greater rank than any of the layouts, then add dense axes to those layouts
+        // make sure to also update the shape of the layout
+        for layout in layouts {
+            layout.n_dense_axes += rank - layout.rank();
+            layout.shape = shape;
+        }
+
+        let indices = layouts[0].indices;
+        let n_dense_axes = layouts[0].n_dense_axes;
+
+        // if there are any diagonal layouts then the result is diagonal, all the layouts must be diagonal and have the same number of dense axes
+        if layouts.iter().any(|x| x.is_diagonal()) {
+            if layouts.iter().any(|x| !x.is_diagonal()) {
+                return Err(anyhow!("cannot broadcast diagonal and non-diagonal layouts"));
+            }
+            if layouts.iter().any(|x| x.n_dense_axes != n_dense_axes) {
+                return Err(anyhow!("cannot broadcast diagonal layouts with different numbers of dense axes"));
+            } 
+            return Ok(Layout {
+                indices,
+                shape,
+                kind: LayoutKind::Diagonal,
+                n_dense_axes,
+            });
+        }
+        // if there are any sparse layouts then the result is sparse, and the indicies of all sparse layouts must be identical and have the same number of dense axis. 
+        // sparse layouts can be combined with dense layouts.
+        if layouts.iter().any(|x| x.is_sparse()) {
+            for layout in layouts {
+                if layout.is_sparse() {
+                    if layout.indices != indices {
+                        return Err(anyhow!("cannot broadcast layouts with different sparsity patterns"));
+                    }
+                    if layout.n_dense_axes != n_dense_axes {
+                        return Err(anyhow!("cannot broadcast layouts with different numbers of dense axes"));
+                    }
+                }
+            }
+            return Ok(Layout {
+                indices,
+                shape,
+                kind: LayoutKind::Sparse,
+                n_dense_axes,
+            });
+        }
+        
+        // must be all dense here
+        let kind = LayoutKind::Dense;
+        Ok(Layout {
+            indices,
+            shape,
+            kind,
+            n_dense_axes,
+        })
+    }
+    fn is_dense(&self) -> bool {
+        self.kind == LayoutKind::Dense
+    }
+    fn is_sparse(&self) -> bool {
+        self.kind == LayoutKind::Sparse
+    }
+    fn is_diagonal(&self) -> bool {
+        self.kind == LayoutKind::Diagonal
+    }
+    
+    fn into_sparse(&self) -> Self {
+        let new_self = self.clone();
+        if self.is_dense() {
+            new_self.kind = LayoutKind::Sparse;
+            new_self.indices = (0..self.shape.iter().product()).map(|x| Self::unravel_index(x, &self.shape)).collect();
+        } else if self.is_diagonal() {
+            new_self.kind = LayoutKind::Sparse;
+            new_self.indices = (0..i64::try_from(self.shape[0]).unwrap()).map(|x| Index::zeros(self.rank()) + x).collect();
+        }
+        new_self
+    }
+    
+    fn to_sparse(&mut self) {
+        if self.is_dense() {
+            self.kind = LayoutKind::Sparse;
+            self.indices = (0..self.shape.iter().product()).map(|x| Self::unravel_index(x, &self.shape)).collect();
+        } else if self.is_diagonal() {
+            self.kind = LayoutKind::Sparse;
+            self.indices = (0..i64::try_from(self.shape[0]).unwrap()).map(|x| Index::zeros(self.rank()) + x).collect();
+        }
+    }
+
+    fn new_empty(rank: usize) -> Self {
+        Layout {
+            indices: vec![],
+            shape: Shape::zeros(rank),
+            kind: LayoutKind::Dense,
+            n_dense_axes: rank,
+        }
+    }
+
+    fn new_scalar() -> Self {
+        Layout {
+            indices: vec![],
+            shape: Shape::zeros(0),
+            kind: LayoutKind::Dense,
+            n_dense_axes: 0,
+        }
+    }
+
+    fn new_dense(shape: Shape) -> Self {
+        Layout {
+            indices: vec![],
+            shape,
+            kind: LayoutKind::Dense,
+            n_dense_axes: shape.len(),
+        }
+    }
+    
+    fn new_diagonal(shape: Shape) -> Self {
+        Layout {
+            indices: vec![],
+            shape,
+            kind: LayoutKind::Diagonal,
+            n_dense_axes: 0,
+        }
+    }
+
+    // append another layout to this one along a given axis. the layout is modified in-place
+    // can only append if the ranks are the same
+    fn append(&mut self, other: &Layout, start: &Index) -> Result<()> {
+        if self.rank() != other.rank() {
+            return Err(anyhow!("cannot append layouts with different ranks"));
+        }
+        
+        // number of final dense axes must be the same
+        if self.n_dense_axes != other.n_dense_axes {
+            return Err(anyhow!("cannot append layouts with different numbers of final dense axes"));
+        }
+        
+        // start indices must be zero for final dense axes
+        if start.slice(s![self.rank() - self.n_dense_axes..]).iter().any(|&x| x != 0) {
+            return Err(anyhow!("start indices must be zero for final dense axes"));
+        }
+        
+        // expand shape to fit the other layout
+        let mut new_shape = self.shape.clone();
+        let rank = self.rank();
+        for i in 0..rank {
+            new_shape[i] = max(new_shape[i], other.shape[i] + usize::try_from(start[i]).unwrap());
+        }
+        
+        // if both layouts are dense then we can just update the shape and return
+        if self.is_dense() && other.is_dense() {
+            // check that the start index is zero for all axes except the first
+            if start.iter().skip(1).any(|&x| x != 0) {
+                return Err(anyhow!("can only append dense layouts with a start index of zero for all axes except the first"));
+            }
+            self.shape = new_shape;
+            return Ok(());
+        }
+        
+        // if both layouts are diagonal and the start indices are the same then we can just update the shape and return
+        if self.is_diagonal() && other.is_diagonal() {
+            // check that the start index is on the diagonal
+            let first = start[0];
+            if start.iter().any(|&x| x != first) {
+                return Err(anyhow!("can only append diagonal layouts with a start index on the diagonal"));
+            }
+            self.shape = new_shape;
+            return Ok(());
+        }
+        
+        // if both layouts are sparse then we can just append the indices
+        if self.is_sparse() && other.is_sparse() {
+            self.indices.extend(other.indices.iter().map(|x| x + start));
+            self.shape = new_shape;
+            return Ok(());
+        }
+        
+        if self.is_sparse() {
+            // if this layout is sparse then convert the other and extend the indices
+            let sparse_other = other.into_sparse();
+            self.indices.extend(sparse_other.indices().iter().map(|x| x + start));
+        } else {
+            // if the other layout is sparse then we need to convert to sparse
+            let sparse_self = self.into_sparse();
+            self.indices = sparse_self.indices;
+            self.indices.extend(other.indices.iter().map(|x| x + start));
+        }
+        self.shape = new_shape;
+        Ok(())
+    }
+
+    fn rank(&self) -> usize {
+        self.shape.len()
+    }
+
+    fn dense(shape: Shape) -> Self {
+        Self {
+            indices: Vec::new(),
+            shape,
+            kind: LayoutKind::Dense,
+            n_dense_axes: 0,
+        }
+    }
+    fn diagonal(shape: Shape) -> Self {
+        Self {
+            indices: Vec::new(),
+            shape,
+            kind: LayoutKind::Diagonal,
+            n_dense_axes: 0,
+        }
+    }
+    fn sparse(indices: Vec<Index>, shape: Shape) -> Self {
+        Self {
+            indices,
+            shape,
+            kind: LayoutKind::Sparse,
+            n_dense_axes: 0,
+        }
+    }
+
+    fn nnz(&self) -> usize {
+        let n_dense: usize = self.shape.slice(s![self.rank() - self.n_dense_axes..]).iter().product();
+        if self.is_dense() {
+            self.shape.iter().product()
+        } else if self.is_diagonal() {
+            n_dense * (if self.shape.is_empty() { 0 } else { self.shape[0] })
+        } else {
+            n_dense * self.indices.len()
+        }
+    }
+
+    fn indices(&self) -> &Vec<Index> {
+        &self.indices
+    }
+
+    fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    fn kind(&self) -> &LayoutKind {
+        &self.kind
+    }
+}
 
 
 //TODO: inputs, states and tensors share a lot of code, refactor into a trait
@@ -30,38 +394,29 @@ use crate::error::ValidationErrors;
 // F(t, u, u_dot) = G(t, u)
 pub struct TensorBlock<'s> {
     start: Index,
-    shape: Shape,
+    indices: Vec<char>,
+    contraction: Vec<usize>,
+    layout: Rc<Layout>,
     expr: Ast<'s>,
-    is_diagonal: bool,
 }
 
 impl<'s> TensorBlock<'s> {
-    pub fn new_vector(start: i64, shape: usize, expr: Ast<'s>) -> Self {
+    pub fn new_dense_vector(start: i64, shape: usize, expr: Ast<'s>) -> Self {
         Self {
             start: Index::from_vec(vec![start]),
-            shape: Shape::from_vec(vec![shape]),
+            layout: Rc::new(Layout::dense(Shape::from_vec(vec![shape]))),
             expr,
-            is_diagonal: false,
+            indices: Vec::new(),
+            contraction: Vec::new(),
         }
     }
-    pub fn new(start: Index, shape: Shape, expr: Ast<'s>, is_diagonal: bool) -> Self {
-        if is_diagonal {
-            assert!(shape.iter().min() == shape.iter().max(), "Diagonal TensorBlock must be square (shape is {:?})", shape);
-        }
-        Self {
-            start,
-            shape,
-            expr,
-            is_diagonal,
-        }
-    }
-    
+
     pub fn nnz(&self) -> usize {
-        if self.is_diagonal { self.shape.iter().product() } else { *self.shape.get(0).unwrap_or(&0usize) }
+        if self.is_diagonal() { self.shape().iter().product() } else { *self.shape().get(0).unwrap_or(&0usize) }
     }
 
     pub fn shape(&self) -> &Shape {
-        &self.shape
+        &self.layout.shape
     }
 
     pub fn start(&self) -> &Index {
@@ -73,35 +428,15 @@ impl<'s> TensorBlock<'s> {
     }
     
     pub fn rank(&self) -> usize {
-        self.shape.len()
+        self.shape().len()
     }
 
     pub fn is_diagonal(&self) -> bool {
-        self.is_diagonal
+        self.layout.is_diagonal()
     }
     
-    pub fn layout(&self) -> Vec<Index> {
-        if self.is_diagonal {
-            let mut layout = Vec::new();
-            for i in 0i64..i64::try_from(self.shape[0]).unwrap() {
-                layout.push(self.start.clone() + i);
-            }
-            layout
-        } else {
-            let mut layout = Vec::new();
-            let mut index = self.start.clone();
-            while index != &self.start + self.shape.mapv(|x| i64::try_from(x).unwrap()) {
-                layout.push(index.clone());
-                index[0] += 1;
-                for i in 0..self.shape.len() - 1 {
-                    if index[i] == self.start[i] + i64::try_from(self.shape[i]).unwrap() {
-                        index[i] = self.start[i];
-                        index[i + 1] += 1;
-                    }
-                }
-            }
-            layout
-        }
+    pub fn layout(&self) -> &Layout {
+        self.layout.as_ref()
     }
 }
 
@@ -112,8 +447,8 @@ impl<'s> fmt::Display for TensorBlock<'s> {
             write!(f, "(")?;
             for i in 0..self.rank() {
                 write!(f, "{}", self.start[i])?;
-                if self.shape[0] > 1 {
-                    write!(f, "{}{}", sep, self.start[i] + i64::try_from(self.shape[i]).unwrap())?;
+                if self.shape()[0] > 1 {
+                    write!(f, "{}{}", sep, self.start[i] + i64::try_from(self.shape()[i]).unwrap())?;
                 }
                 if i < self.rank() - 1 {
                     write!(f, ", ")?;
@@ -129,52 +464,56 @@ impl<'s> fmt::Display for TensorBlock<'s> {
 // F(t, u, u_dot) = G(t, u)
 pub struct Tensor<'s> {
     name: &'s str,
-    shape: Shape,
     elmts: Vec<TensorBlock<'s>>,
-    elmts_indices: Vec<Vec<usize>>,
+    layout: Rc<Layout>,
     indices: Vec<char>,
-    layout: Vec<Index>,
 }
 
 impl<'s> Tensor<'s> {
     pub fn new_empty(name: &'s str) -> Self {
         Self {
             name,
-            shape: Shape::zeros(0),
             elmts: Vec::new(),
             indices: Vec::new(),
-            layout: Vec::new(),
-            elmts_indices: Vec::new(),
+            layout: Rc::new(Layout::dense(Shape::zeros(0))),
         }
+    }
+
+    pub fn is_dense(&self) -> bool {
+        self.layout.is_dense()
+    }
+
+    pub fn is_same_layout(&self, other: &Self) -> bool {
+        self.layout == other.layout
     }
 
     pub fn nnz(&self) -> usize {
-        self.layout.len()
+        self.layout.nnz()
     }
 
-    pub fn new(name: &'s str, shape: Shape, elmts: Vec<TensorBlock<'s>>, indices: Vec<char>) -> Self {
-        let mut layout = Vec::new();
-        let mut elmts_indices = Vec::new();
-        for elmt in elmts.iter() {
-            if elmt.rank() > 0 {
-                let indices = Vec::from_iter(layout.len()..layout.len() + elmt.nnz());
-                layout.append(&mut elmt.layout());
-                elmts_indices.push(indices);
-            }
-        }
-
+    
+    pub fn new(name: &'s str, elmts: Vec<TensorBlock<'s>>, indices: Vec<char>) -> Self {
+        let rank = elmts.iter().fold(0, |acc, i| max(acc, i.rank()));
+        let layout = elmts.iter().fold(Layout::new_empty(rank), |mut acc, i| {
+            acc.append(i.layout(), i.start());
+            acc
+        });
+        let layout = Rc::new(layout);
         Self {
             name,
-            shape,
             elmts,
             indices,
             layout,
-            elmts_indices,
         }
     }
 
+
+    pub fn rank(&self) -> usize {
+        self.layout.rank()
+    }
+
     pub fn shape(&self) -> &Shape {
-        &self.shape
+        &self.layout.shape()
     }
 
     pub fn name(&self) -> &str {
@@ -185,16 +524,16 @@ impl<'s> Tensor<'s> {
         self.elmts.as_ref()
     }
     
-    pub fn from_vec(name: &'s str, elmts: Vec<TensorBlock<'s>>, indices: Vec<char>) -> Self {
-        let rank = elmts.iter().fold(0, |acc, i| max(acc, i.rank()));
-        let shape = elmts.iter().fold(Shape::zeros(rank), |mut acc, i| {
-            let max_index = i.start().mapv(|x| usize::try_from(x).unwrap()) + i.shape();
-            for i in 0..acc.shape()[0] {
-                acc[i] = max(acc[i], max_index[i]);
-            }
-            acc
-        });
-        return Self::new(name, shape, elmts, indices);
+    pub fn indices(&self) -> &[char] {
+        self.indices.as_ref()
+    }
+
+    pub fn layout_ptr(&self) -> Rc<Layout> {
+        self.layout.clone()
+    }
+
+    pub fn layout(&self) -> &Layout {
+        self.layout.as_ref()
     }
 }
 
@@ -228,6 +567,11 @@ impl<'s> Inputs<'s> {
             elmts: Vec::new(),
             indices: Vec::new(),
         }
+    }
+
+    // inputs always dense
+    pub fn nnz(&self) -> usize {
+        self.shape.product()
     }
 
     pub fn shape(&self) -> &Shape {
@@ -339,6 +683,10 @@ impl<'s> States<'s> {
         }
     }
 
+    pub fn nnz(&self) -> usize {
+        self.shape.product()
+    }
+
     pub fn shape(&self) -> &Shape {
         &self.shape
     }
@@ -378,14 +726,14 @@ impl<'s> States<'s> {
             if s.shape().len() != 1 {
                 panic!("state shape must be 1D");
             }
-            u0elmts.push(TensorBlock::new_vector(index, s.shape()[0], expr.clone()));
-            dotu0elmts.push(TensorBlock::new_vector(index, s.shape()[0], expr));
+            u0elmts.push(TensorBlock::new_dense_vector(index, s.shape()[0], expr.clone()));
+            dotu0elmts.push(TensorBlock::new_dense_vector(index, s.shape()[0], expr));
             index = index + i64::try_from(s.shape()[0]).unwrap();
         }
         let shape = Shape::from_vec(vec![usize::try_from(index).unwrap()]);
         (
-            Tensor::new("u0", shape.clone(), u0elmts, self.indices.clone()),
-            Tensor::new("dotu0", shape, dotu0elmts, self.indices.clone()),
+            Tensor::new("u0", u0elmts, self.indices.clone()),
+            Tensor::new("dotu0", dotu0elmts, self.indices.clone()),
         )
     }
 }
@@ -472,8 +820,10 @@ impl<'s> fmt::Display for State<'s> {
 pub type Shape = Array1<usize>;
 pub type Index = Array1<i64>;
 
+
+
 struct EnvVar {
-    shape: Shape,
+    layout: Rc<Layout>,
     is_time_dependent: bool,
     is_state_dependent: bool,
     is_algebraic: bool,
@@ -488,12 +838,12 @@ impl EnvVar {
         self.is_state_dependent
     }
 
-    fn shape(&self) -> &Shape {
-        &self.shape
-    }
-
     fn is_algebraic(&self) -> bool {
         self.is_algebraic
+    }
+
+    fn layout(&self) -> &Layout {
+        self.layout.as_ref()
     }
 }
 
@@ -535,7 +885,7 @@ impl<'s> Env<'s> {
         vars.insert(
             "t",
             EnvVar {
-                shape: Shape::ones(1),
+                layout: Rc::new(Layout::new_scalar()),
                 is_time_dependent: true,
                 is_state_dependent: false,
                 is_algebraic: true,
@@ -569,8 +919,8 @@ impl<'s> Env<'s> {
         self.vars.insert(
             var.name,
             EnvVar {
+                layout: var.layout_ptr(),
                 is_algebraic: true,
-                shape: var.shape.clone(),
                 is_time_dependent: self.is_tensor_time_dependent(var),
                 is_state_dependent: self.is_tensor_state_dependent(var),
             },
@@ -581,8 +931,8 @@ impl<'s> Env<'s> {
         self.vars.insert(
             state.name,
             EnvVar {
+                layout: Rc::new(Layout::new_dense(state.shape.clone())),
                 is_algebraic: state.is_algebraic,
-                shape: state.shape.clone(),
                 is_time_dependent: true,
                 is_state_dependent: true,
             },
@@ -594,7 +944,7 @@ impl<'s> Env<'s> {
             input.name,
             EnvVar {
                 is_algebraic: true,
-                shape: input.shape.clone(),
+                layout: Rc::new(Layout::new_dense(input.shape.clone())),
                 is_time_dependent: false,
                 is_state_dependent: false,
             },
@@ -604,34 +954,31 @@ impl<'s> Env<'s> {
     fn get(&self, name: &str) -> Option<&EnvVar> {
         self.vars.get(name)
     }
-    fn get_shape_binary_op(
+    fn get_layout_binary_op(
         &mut self,
         left: &Ast<'s>,
         right: &Ast<'s>,
         indices: &Vec<char>,
-    ) -> Option<Shape> {
-        let left_shape = self.get_shape(left, indices)?;
-        let right_shape = self.get_shape(right, indices)?;
-        match broadcast_shapes(&[&left_shape, &right_shape]) {
-            Some(shape) => Some(shape),
-            None => {
+    ) -> Option<Layout> {
+        let mut left_layout = self.get_layout(left, indices)?;
+        let mut right_layout = self.get_layout(right, indices)?;
+        match Layout::broadcast(&[left_layout, right_layout]) {
+            Ok(layout) => Some(layout),
+            Err(e) => {
                 self.errs.push(ValidationError::new(
-                    format!(
-                        "cannot broadcast operands together. lhs {} and rhs {}",
-                        left_shape, right_shape
-                    ),
+                    format!("{}", e),
                     left.span,
                 ));
                 None
             }
         }
     }
-    fn get_shape_dot(
+    fn get_layout_dot(
         &mut self,
         call: &Call<'s>,
         ast: &Ast<'s>,
         indices: &Vec<char>,
-    ) -> Option<Shape> {
+    ) -> Option<Layout> {
         if call.args.len() != 1 {
             self.errs.push(ValidationError::new(
                 format!(
@@ -643,12 +990,12 @@ impl<'s> Env<'s> {
             return None;
         }
         let arg = &call.args[0];
-        let arg_shape = self.get_shape(arg, indices)?;
-        if arg_shape.len() != 1 {
+        let arg_layout = self.get_layout(arg, indices)?;
+        if arg_layout.rank() != 1 {
             self.errs.push(ValidationError::new(
                 format!(
                     "time derivative dot call expects 1D argument, got {}D",
-                    arg_shape.len()
+                    arg_layout.rank()
                 ),
                 ast.span,
             ));
@@ -661,16 +1008,16 @@ impl<'s> Env<'s> {
                 var.is_algebraic = false;
             }
         }
-        return Some(arg_shape);
+        return Some(arg_layout);
     }
 
-    fn get_shape_name(
+    fn get_layout_name(
         &mut self,
         name: &str,
         ast: &Ast,
         rhs_indices: &Vec<char>,
         lhs_indices: &Vec<char>,
-    ) -> Option<Shape> {
+    ) -> Option<Layout> {
         let var = self.get(name);
         if var.is_none() {
             self.errs.push(ValidationError::new(
@@ -680,52 +1027,53 @@ impl<'s> Env<'s> {
             return None;
         }
         let var = var.unwrap();
-        let shape = var.shape();
+        let layout = var.layout();
 
-        // work out required number of indices
-        let min_rank = {
-            let mut i = shape.len();
-            loop {
-                if i == 0 || shape[i - 1] != 1 {
-                    break;
-                }
-                i -= 1;
-            }
-            i
-        };
-        if rhs_indices.len() < min_rank {
+        if rhs_indices.len() < layout.rank() {
             self.errs.push(ValidationError::new(
                 format!(
                     "cannot index variable {} with {} indices. Expected at least {} indices",
                     name,
                     rhs_indices.len(),
-                    shape.len()
+                    layout.rank()
                 ),
                 ast.span,
             ));
             return None;
         }
-        let mut new_shape = Shape::ones(shape.len());
-        for (rhs_index, c) in rhs_indices.iter().enumerate() {
-            if let Some(lhs_index) = lhs_indices.iter().position(|&x| x == *c) {
-                new_shape[lhs_index] = shape[rhs_index];
-            } else {
+        let permutation = vec![0; rhs_indices.len()];
+        for i in 0..rhs_indices.len() {
+            permutation[i] = match lhs_indices.iter().position(|&x| x == rhs_indices[i]) {
+                Some(pos) => pos,
+                None => {
+                    self.errs.push(ValidationError::new(
+                        format!("cannot find index {} in lhs indices {:?} ", rhs_indices[i], lhs_indices),
+                        ast.span,
+                    ));
+                    return None;
+                }
+            }
+        }
+        let layout_permuted = match layout.permute(permutation.as_slice()) {
+            Ok(layout) => layout,
+            Err(e) => {
                 self.errs.push(ValidationError::new(
-                    format!("cannot find index {} in LHS indices {:?}", c, lhs_indices),
+                    format!("{}", e),
                     ast.span,
                 ));
                 return None;
             }
-        }
-        Some(new_shape)
+        };
+                
+        Some(layout_permuted)
     }
 
-    fn get_shape_sum(
+    fn get_layout_sum(
         &mut self,
         call: &Call<'s>,
         ast: &Ast<'s>,
         indices: &Vec<char>,
-    ) -> Option<Shape> {
+    ) -> Option<Layout> {
         if call.args.len() != 2 {
             self.errs.push(ValidationError::new(
                 format!("sum must have 2 arguments. found {}", call.args.len()),
@@ -758,68 +1106,81 @@ impl<'s> Env<'s> {
         let index = name.chars().next().unwrap();
         let mut within_sum_indices = indices.clone();
         within_sum_indices.push(index);
-        let expr_shape = self.get_shape(call.args[1].as_ref(), &within_sum_indices)?;
-        Some(expr_shape.slice(s![..-1]).to_owned())
+        let mut expr_layout= self.get_layout(call.args[1].as_ref(), &within_sum_indices)?;
+        expr_layout.contract_last_axis();
+        Some(expr_layout)
     }
 
-    fn get_shape_call(&mut self, call: &Call<'s>, ast: &Ast, indices: &Vec<char>) -> Option<Shape> {
-        let shapes = call
+    fn get_layout_call(&mut self, call: &Call<'s>, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
+        let mut layouts = call
             .args
             .iter()
-            .map(|c| self.get_shape(c, indices))
-            .collect::<Option<Vec<Shape>>>()?;
-        match broadcast_shapes(shapes.iter().collect::<Vec<&Shape>>().as_slice()) {
-            Some(shape) => Some(shape),
-            None => {
-                let shape_strs: Vec<String> = shapes.iter().map(|s| s.to_string()).collect();
+            .map(|c| self.get_layout(c, indices))
+            .collect::<Option<Vec<Layout>>>()?;
+        match Layout::broadcast(layouts.as_slice()) {
+            Ok(layout) => Some(layout),
+            Err(e) => {
                 self.errs.push(ValidationError::new(
-                    format!(
-                        "cannot broadcast operands together. shapes {:?}",
-                        shape_strs
-                    ),
+                    format!("{}", e),
                     ast.span,
                 ));
                 None
             }
-        }
+        }    
     }
 
-    pub fn get_shape(&mut self, ast: &Ast<'s>, indices: &Vec<char>) -> Option<Shape> {
+    pub fn get_layout(&mut self, ast: &Ast<'s>, indices: &Vec<char>) -> Option<Layout> {
         match &ast.kind {
-            AstKind::TensorElmt(t) => self.get_shape_tensor_elmt(t, indices),
-            AstKind::Parameter(p) => self.get_shape(&p.domain, indices),
+            AstKind::TensorElmt(t) => self.get_layout_tensor_elmt(t, indices),
+            AstKind::Parameter(p) => self.get_layout(&p.domain, indices),
             AstKind::Binop(binop) => {
-                self.get_shape_binary_op(binop.left.as_ref(), binop.right.as_ref(), indices)
+                self.get_layout_binary_op(binop.left.as_ref(), binop.right.as_ref(), indices)
             }
-            AstKind::Monop(monop) => self.get_shape(monop.child.as_ref(), indices),
+            AstKind::Monop(monop) => self.get_layout(monop.child.as_ref(), indices),
             AstKind::Call(call) => match call.fn_name {
-                "sum" => self.get_shape_sum(&call, ast, indices),
-                "dot" => self.get_shape_dot(&call, ast, indices),
-                _ => self.get_shape_call(&call, ast, indices),
+                // sum is only valid at the root of the expression
+                "sum" => {
+                    self.errs.push(ValidationError::new(
+                        format!("sum must be at the root of the expression"),
+                        ast.span,
+                    ));
+                    None
+                }
+                "dot" => self.get_layout_dot(&call, ast, indices),
+                _ => self.get_layout_call(&call, ast, indices),
             },
-            AstKind::CallArg(arg) => self.get_shape(arg.expression.as_ref(), indices),
+            AstKind::CallArg(arg) => self.get_layout(arg.expression.as_ref(), indices),
             AstKind::Index(i) => {
-                self.get_shape_binary_op(i.left.as_ref(), i.right.as_ref(), indices)
+                self.get_layout_binary_op(i.left.as_ref(), i.right.as_ref(), indices)
             }
             AstKind::Slice(s) => {
-                self.get_shape_binary_op(s.lower.as_ref(), s.upper.as_ref(), indices)
+                self.get_layout_binary_op(s.lower.as_ref(), s.upper.as_ref(), indices)
             }
-            AstKind::Number(_) => Some(Shape::ones(1)),
-            AstKind::Integer(_) => Some(Shape::ones(1)),
-            AstKind::Domain(d) => Some(Shape::zeros(1) + d.dim),
+            AstKind::Number(_) => Some(Layout::new_scalar()),
+            AstKind::Integer(_) => Some(Layout::new_scalar()),
+            AstKind::Domain(d) => Some(Layout::new_dense(Shape::zeros(1) + d.dim)),
             AstKind::IndexedName(name) => {
-                self.get_shape_name(name.name, ast, &name.indices, indices)
+                self.get_layout_name(name.name, ast, &name.indices, indices)
             }
-            AstKind::Name(name) => self.get_shape_name(name, ast, &vec![], indices),
+            AstKind::Name(name) => self.get_layout_name(name, ast, &vec![], indices),
             _ => panic!("unrecognised ast node {:#?}", ast.kind),
         }
     }
+    
+    
 
-    fn get_shape_tensor_elmt(&mut self, elmt: &TensorElmt<'s>, indices: &Vec<char>) -> Option<Shape> {
-        // get the shape of the expression
-        let expr_shape = self.get_shape(elmt.expr.as_ref(), indices)?;
+    fn get_layout_tensor_elmt(&mut self, elmt: &TensorElmt<'s>, indices: &Vec<char>) -> Option<Layout> {
+        // get the layout of the expression, we'll handle sum here as its only valid at the root
+        let expr_layout = match &elmt.expr.kind {
+            AstKind::Call(Call { fn_name: "sum", args })  => {
+                let call = Call { fn_name: "sum", args: args.to_vec() };
+                self.get_layout_sum(&call, &elmt.expr, indices)?
+            },
+            _ => self.get_layout(elmt.expr.as_ref(), indices)?
+        };
+
         if elmt.indices.is_none() {
-            return Some(expr_shape);
+            return Some(expr_layout);
         }
         
         // make sure the number of indices matches the number of dimensions
@@ -838,6 +1199,7 @@ impl<'s> Env<'s> {
         }
         
         // make sure the rank of the expression is not too large
+        let expr_shape = expr_layout.shape();
         if expr_shape.len() > indices.len() {
             self.errs.push(ValidationError::new(
                 format!(
@@ -895,8 +1257,120 @@ impl<'s> Env<'s> {
             old_dim = Some(dim);
             exp_expr_shape[i] = dim;
         }
-        Some(exp_expr_shape)
+        
+        //check we can broadcast the expression shape to the tensor element shape
+        if !can_broadcast_to(&exp_expr_shape, expr_shape) {
+            self.errs.push(ValidationError::new(
+                format!(
+                    "cannot broadcast expression shape ({}) to tensor element shape ({})",
+                    expr_shape, exp_expr_shape
+                ),
+                elmt.expr.span,
+            ));
+            return None;
+        }
+        
+        // tensor elmt layout is:
+        // 1. dense if the expression is dense and no indices are ranges
+        // 2. diagonal if the expression is dense and all indices are ranges, or the expression is diagonal and no indices are ranges
+        // 3. sparse if the expression is sparse and no indices are blocks
+        let elmt_layout = match expr_layout.kind() {
+            LayoutKind::Dense => {
+                if all_range_indices {
+                    Layout::new_diagonal(exp_expr_shape)
+                } else {
+                    Layout::new_dense(exp_expr_shape)
+                }
+            },
+            LayoutKind::Sparse => {
+                if all_range_indices {
+                    self.errs.push(ValidationError::new(
+                        format!("cannot use range indices with sparse expression"),
+                        elmt.expr.span,
+                    ));
+                    return None;
+                } else {
+                    expr_layout    
+                }
+            },
+            LayoutKind::Diagonal => {
+                if all_range_indices {
+                    self.errs.push(ValidationError::new(
+                        format!("cannot use range indices with diagonal expression"),
+                        elmt.expr.span,
+                    ));
+                    return None;
+                } else {
+                    Layout::new_diagonal(exp_expr_shape)
+                }
+            },
+        };
+        Some(elmt_layout)
     }
+}
+
+
+// there are three different layouts:
+// 1. the data layout is a mapping from tensor names to the index of the first element of the tensor in the data array
+// 2. the layout layout is a mapping from Sparsity to the index of the first element of the tensor in the layout array
+// 3. the contraction layout is a mapping from Sparsity from-to pairs to the index of the first element of the tensor in the layout array
+// Note: the layout and contraction layouts are contained in the same array, but the data layout is separate
+#[derive(Debug)]
+pub struct DataLayout {
+    data_index_map: HashMap<String, usize>,
+    data_length: usize,
+    layout_index_map: HashMap<Layout, usize>,
+    layout_length: usize,
+    contraction_index_map: HashMap<(Layout, Layout), usize>,
+}
+
+impl DataLayout {
+    pub fn new(model: &DiscreteModel) -> Self {
+        
+        let mut tensor_map = HashMap::new();
+        let mut data_index_map = HashMap::new();
+        let mut layout_index_map = HashMap::new();
+        let mut i = 0usize;
+        let mut ilayout = 0usize;
+
+        data_index_map.insert("inputs".to_string(), i);
+        i += model.inputs.nnz();
+
+        for dfn in model.time_indep_defns.iter().chain(model.time_dep_defns.iter()) {
+            data_index_map.insert(dfn.name.to_string(), i);
+            tensor_map.insert(dfn.name.to_string(), &dfn);
+            i += dfn.nnz();
+        }
+
+        data_index_map.insert("states".to_string(), i);
+        i += model.states.nnz();
+
+        for dfn in model.state_dep_defns.iter() {
+            data_index_map.insert(dfn.name.to_string(), i);
+            tensor_map.insert(dfn.name.to_string(), &dfn);
+            i += dfn.nnz();
+        }
+
+        data_index_map.insert(model.lhs.name.to_string(), i);
+        i += model.lhs.nnz();
+
+        data_index_map.insert(model.rhs.name.to_string(), i);
+        i += model.rhs.nnz();
+
+        let data_length = i;
+
+        Self { data_index_map, data_length }
+    }
+    
+    pub fn data_length(&self) -> usize {
+        self.data_length
+    }
+
+    // get the index of the data array for the given tensor name
+    pub fn get_data_index(&self, name: &str) -> Option<usize> {
+        self.data_index_map.get(name).map(|i| *i)
+    }
+
 }
 
 #[derive(Debug)]
@@ -941,17 +1415,39 @@ impl<'s> DiscreteModel<'s> {
         }
     }
 
+// define data layout for storage in a single array of arrays
+    // need 1 array for each dense tensor
+    // need 2 arrays (data + layout) for each sparse tensor
+    // don't need anything for out
+    pub fn create_data_layout<'t>(&'t self) -> DataLayout {
+        DataLayout::new(self)
+    }
+
     // residual = F(t, u, u_dot) - G(t, u)
     // return a tensor equal to the residual
     pub fn residual(&self) -> Tensor<'s> {
         let mut residual = self.lhs.clone();
         residual.name = "residual";
-        for (elmt_res, elmt_rhs) in residual.elmts.iter_mut().zip(self.rhs.elmts.iter()) {
-            elmt_res.expr = Ast {
-                kind: AstKind::new_binop('-', elmt_res.expr.clone(), elmt_rhs.expr.clone()),
-                span: None,
-            }
-        }
+        let lhs = Ast {
+            kind: AstKind::new_name("F"),
+            span: None,
+        };
+        let rhs = Ast {
+            kind: AstKind::new_name("G"),
+            span: None,
+        };
+        residual.elmts = vec![
+            TensorBlock {
+                expr: Ast {
+                    kind: AstKind::new_binop('-', lhs, rhs),
+                    span: None,
+                },
+                start: Index::from_vec(vec![0]),
+                shape: residual.shape.clone(),
+                is_diagonal: false,
+            };
+            residual.elmts.len()
+        ];
         residual
     }
 
@@ -1154,6 +1650,7 @@ impl<'s> DiscreteModel<'s> {
         Some(tensor)
     }
 
+
     fn check_match(tensor1: &Tensor, tensor2: &States, span: Option<StringSpan>, env: &mut Env) {
         // check shapes
         if tensor1.shape() != tensor2.shape() {
@@ -1167,42 +1664,6 @@ impl<'s> DiscreteModel<'s> {
                 ),
                 span,
             ));
-        }
-
-        // check that the number of elmts is the same
-        if tensor1.elmts.len() != tensor2.elmts.len() {
-            env.errs.push(ValidationError::new(
-                format!(
-                    "{} and u must have the same number of elements, but {} has {} elements and u has {} elements",
-                    tensor1.name,
-                    tensor1.name,
-                    tensor1.elmts.len(),
-                    tensor2.elmts.len()
-                ),
-                span,
-            ));
-        }
-
-        // check that the shape and layout of each elmt is the same
-        for (i, (elmt1, elmt2)) in tensor1.elmts.iter().zip(tensor2.elmts.iter()).enumerate() {
-            if elmt1.shape != elmt2.shape {
-                env.errs.push(ValidationError::new(
-                    format!(
-                        "element {} of {} and element {} of u must have the same shape, but element {} of {} has shape {} and element {} of u has shape {}",
-                        i, tensor1.name, i, i, tensor1.name, elmt1.shape, i, elmt2.shape
-                    ),
-                    span,
-                ));
-            }
-            if elmt1.is_diagonal != false {
-                env.errs.push(ValidationError::new(
-                    format!(
-                        "element {} of {} must not be diagonal, but element {} of {} is {}",
-                        i, tensor1.name, i, tensor1.name, if elmt1.is_diagonal { "diagonal" } else { "not diagonal" }
-                    ),
-                    span,
-                ));
-            }
         }
     }
 
@@ -1345,6 +1806,14 @@ impl<'s> DiscreteModel<'s> {
         }
         Self::check_match(&ret.lhs, &ret.states, span_all, &mut env);
         Self::check_match(&ret.rhs, &ret.states, span_all, &mut env);
+
+        // check that F and G have the same layout
+        if !ret.lhs.is_same_layout(&ret.rhs) {
+            env.errs.push(ValidationError::new(
+                "F and G must have the same layout".to_string(),
+                span_all,
+            ));
+        }
 
         if env.errs.is_empty() {
             Ok(ret)

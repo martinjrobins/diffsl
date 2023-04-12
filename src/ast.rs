@@ -543,6 +543,72 @@ impl<'a> Ast<'a> {
             AstKind::Indice(_) => (),
         }
     }
+    
+    pub fn get_indices(&self) -> Vec<char> {
+        let mut indices = Vec::new();
+        self.collect_indices(&mut indices);
+        indices
+    }
+
+    fn collect_indices(&self, indices: &mut Vec<char>) {
+        match &self.kind {
+            AstKind::Equation(eqn) => {
+                eqn.lhs.collect_indices(indices);
+                eqn.rhs.collect_indices(indices);
+            }
+            AstKind::RateEquation(eqn) => {
+                eqn.rhs.collect_indices(indices);
+            }
+            AstKind::Binop(binop) => {
+                binop.left.collect_indices(indices);
+                binop.right.collect_indices(indices);
+            }
+            AstKind::Monop(monop) => {
+                monop.child.collect_indices(indices);
+            }
+            AstKind::Call(call) => {
+                for c in call.args {
+                    c.collect_indices(indices);
+                }
+            }
+            AstKind::CallArg(arg) => {
+                arg.expression.collect_indices(indices);
+            }
+            AstKind::IndexedName(found_name) => {
+                indices.extend(found_name.indices.iter().cloned());
+            },
+            AstKind::Index(index) => {
+                index.left.collect_indices(indices);
+                index.right.collect_indices(indices);
+            },
+            AstKind::Slice(slice) => {
+                slice.lower.collect_indices(indices);
+                slice.upper.collect_indices(indices);
+            },
+            AstKind::Tensor(tensor) => {
+                for elmt in &tensor.elmts {
+                    elmt.collect_indices(indices);
+                }
+            },
+            AstKind::TensorElmt(elmt) => {
+                elmt.expr.collect_indices(indices);
+            },
+            AstKind::Name(found_name) => (),
+            AstKind::Number(_) => (),
+            AstKind::Integer(_) => (),
+            AstKind::Model(_) => (),
+            AstKind::Unknown(_) => (),
+            AstKind::Definition(_) => (),
+            AstKind::Submodel(_) => (),
+            AstKind::Range(_) => (),
+            AstKind::Domain(_) => (),
+            AstKind::IntRange(_) => (),
+            AstKind::Parameter(_) => (),
+            AstKind::Assignment(_) => (),
+            AstKind::Vector(_) => (),
+            AstKind::Indice(_) => (),
+        }
+    }
 }
 
 impl<'a> fmt::Display for Ast<'a> {

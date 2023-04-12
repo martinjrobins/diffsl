@@ -2,7 +2,6 @@ use anyhow::Result;
 use anyhow::anyhow;
 use ndarray::s;
 use core::panic;
-use core::slice::SlicePattern;
 use std::cell::RefCell;
 use std::cmp::max;
 use std::collections::HashMap;
@@ -69,7 +68,7 @@ impl Layout {
         if self.is_sparse() && self.n_dense_axes == 0 {
             for index in new_indices.iter_mut() {
                 // remove the last element of the index
-                index.
+                index = index.slice(s![0..rank-1]).to_owned();
             }
         } 
         new_indices.pop();
@@ -395,19 +394,20 @@ impl Layout {
 pub struct TensorBlock<'s> {
     start: Index,
     indices: Vec<char>,
-    contraction: Vec<usize>,
     layout: Rc<Layout>,
+    expr_layout: Rc<Layout>,
     expr: Ast<'s>,
 }
 
 impl<'s> TensorBlock<'s> {
     pub fn new_dense_vector(start: i64, shape: usize, expr: Ast<'s>) -> Self {
+        let layout = Rc::new(Layout::dense(Shape::from_vec(vec![shape])));
         Self {
             start: Index::from_vec(vec![start]),
-            layout: Rc::new(Layout::dense(Shape::from_vec(vec![shape]))),
+            layout: layout.clone(),
+            expr_layout: layout,
             expr,
             indices: Vec::new(),
-            contraction: Vec::new(),
         }
     }
 
@@ -553,274 +553,8 @@ impl<'s> fmt::Display for Tensor<'s> {
     }
 }
 
-#[derive(Debug)]
-pub struct Inputs<'s> {
-    shape: Shape,
-    elmts: Vec<Input<'s>>,
-    indices: Vec<char>,
-}
-
-impl<'s> Inputs<'s> {
-    pub fn new() -> Self {
-        Self {
-            shape: Shape::zeros(0),
-            elmts: Vec::new(),
-            indices: Vec::new(),
-        }
-    }
-
-    // inputs always dense
-    pub fn nnz(&self) -> usize {
-        self.shape.product()
-    }
-
-    pub fn shape(&self) -> &Shape {
-        &self.shape
-    }
-
-    pub fn elmts(&self) -> &[Input] {
-        self.elmts.as_ref()
-    }
-    pub fn from_vec(inputs: Vec<Input<'s>>) -> Self {
-        if inputs.is_empty() {
-            return Self::new();
-        }
-        let last = inputs.last().unwrap();
-        let shape = last.start().mapv(|x| usize::try_from(x).unwrap()) + last.shape();
-        if shape.len() > 1 {
-            panic!("Inputs must be scalar or 1D");
-        }
-        let indices = if shape.len() == 0 || shape[0] == 1 { 
-            vec![]
-        } else {
-            vec!['i']
-        };
-        Self {
-            shape,
-            elmts: inputs,
-            indices,
-        }
-    }
-}
-
-impl<'s> fmt::Display for Inputs<'s> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.elmts.len() > 1 {
-            write!(f, "in_").and_then(|_| self.indices.iter().fold(Ok(()), |acc, i| {
-                acc.and_then(|_| write!(f, "{}", i))
-            }))
-        } else {
-            write!(f, "in")
-        }
-        .and_then(|_| write!(f, " {{\n"))
-        .and_then(|_| self.elmts.iter().fold(Ok(()), |acc, e| {
-            acc.and_then(|_| write!(f, "  {},\n", e))
-        }))
-        .and_then(|_| write!(f, "}}"))
-    }
-}
-
-#[derive(Debug)]
-// the p[i] in F(t, p, u, u_dot) = G(t, p, u)
-pub struct Input<'s> {
-    name: &'s str,
-    start: Index,
-    shape: Shape,
-    domain: (f64, f64),
-}
-
-impl<'s> Input<'s> {
-    pub fn name(&self) -> &str {
-        self.name
-    }
-
-    pub fn shape(&self) -> &Shape {
-        &self.shape
-    }
-
-    pub fn start(&self) -> &Index {
-        &self.start
-    }
-
-    pub fn domain(&self) -> (f64, f64) {
-        self.domain
-    }
-
-    pub fn domain_str(&self) -> String {
-        if self.domain.0 == f64::NEG_INFINITY && self.domain.1 == f64::INFINITY {
-            return "R".to_string();
-        } else {
-            format!("[{}, {}]", self.domain.0, self.domain.1)
-        }
-    }
-}
-
-impl<'s> fmt::Display for Input<'s> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.name)
-        .and_then(|_| write!(f, " -> {}", self.domain_str()))
-        .and_then(|_| if self.shape[0] > 1 {
-            write!(f, " ** {}", self.shape[0])
-        } else {
-            Ok(())
-        })
-    }
-}
-
-#[derive(Debug)]
-pub struct States<'s> {
-    shape: Shape,
-    elmts: Vec<State<'s>>,
-    indices: Vec<char>,
-}
-
-impl<'s> States<'s> {
-    pub fn new() -> Self {
-        Self {
-            shape: Shape::zeros(0),
-            elmts: Vec::new(),
-            indices: Vec::new(),
-        }
-    }
-
-    pub fn nnz(&self) -> usize {
-        self.shape.product()
-    }
-
-    pub fn shape(&self) -> &Shape {
-        &self.shape
-    }
-
-    pub fn elmts(&self) -> &[State] {
-        self.elmts.as_ref()
-    }
-
-    pub fn indices(&self) -> &[char] {
-        self.indices.as_ref()
-    }
-    pub fn from_vec(elmts: Vec<State<'s>>, indices: Vec<char>) -> Self {
-        if elmts.is_empty() {
-            return Self::new();
-        }
-        let last = elmts.last().unwrap();
-        let shape = last.start().mapv(|x| usize::try_from(x).unwrap()) + last.shape();
-        Self {
-            shape: shape,
-            elmts: elmts,
-            indices: indices,
-        }
-    }
-    pub fn get_init(&self) -> (Tensor<'s>, Tensor<'s>) {
-        let alg_init = Ast {
-            kind: AstKind::Number(0.),
-            span: None,
-        };
-        let mut u0elmts = Vec::new();
-        let mut dotu0elmts = Vec::new();
-        let mut index = 0;
-        for s in &self.elmts {
-            let expr = match &s.init {
-                Some(eq) => eq.clone(),
-                None => alg_init.clone(),
-            };
-            if s.shape().len() != 1 {
-                panic!("state shape must be 1D");
-            }
-            u0elmts.push(TensorBlock::new_dense_vector(index, s.shape()[0], expr.clone()));
-            dotu0elmts.push(TensorBlock::new_dense_vector(index, s.shape()[0], expr));
-            index = index + i64::try_from(s.shape()[0]).unwrap();
-        }
-        let shape = Shape::from_vec(vec![usize::try_from(index).unwrap()]);
-        (
-            Tensor::new("u0", u0elmts, self.indices.clone()),
-            Tensor::new("dotu0", dotu0elmts, self.indices.clone()),
-        )
-    }
-}
-
-impl<'s> fmt::Display for States<'s> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.elmts.len() > 1 {
-            write!(f, "u_").and_then(|_| self.indices.iter().fold(Ok(()), |acc, i| {
-                acc.and_then(|_| write!(f, "{}", i))
-            }))
-        } else {
-            write!(f, "u")
-        }.and_then(|_| write!(f, " {{\n"))
-        .and_then(|_| self.elmts.iter().fold(Ok(()), |acc, e| {
-            acc.and_then(|_| write!(f, "  {},\n", e))
-        }))
-        .and_then(|_| write!(f, "}}"))
-    }
-}
-
-
-#[derive(Debug)]
-// the p[i] in F(t, p, u, u_dot) = G(t, p, u)
-pub struct State<'s> {
-    name: &'s str,
-    start: Index,
-    shape: Shape,
-    init: Option<Ast<'s>>,
-    domain: (f64, f64),
-    is_algebraic: bool,
-}
-
-impl<'s> State<'s> {
-    pub fn name(&self) -> &str {
-        self.name
-    }
-
-    pub fn shape(&self) -> &Shape {
-        &self.shape
-    }
-
-    pub fn start(&self) -> &Index {
-        &self.start
-    }
-
-    pub fn init(&self) -> Option<&Ast> {
-        self.init.as_ref()
-    }
-
-    pub fn is_algebraic(&self) -> bool {
-        self.is_algebraic
-    }
-
-    pub fn domain(&self) -> (f64, f64) {
-        self.domain
-    }
-    
-    pub fn domain_str(&self) -> String {
-        if self.domain.0 == f64::NEG_INFINITY && self.domain.1 == f64::INFINITY {
-            return "R".to_string();
-        } else {
-            format!("[{}, {}]", self.domain.0, self.domain.1)
-        }
-    }
-}
-
-impl<'s> fmt::Display for State<'s> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.name)
-        .and_then(|_| write!(f, " -> {}", self.domain_str()))
-        .and_then(|_| if self.shape[0] > 1 {
-            write!(f, " ** {}", self.shape[0])
-        } else {
-            Ok(())
-        })
-        .and_then(|_| if self.init.is_some() {
-            write!(f, " = {}", self.init.as_ref().unwrap())
-        } else {
-            Ok(())
-        })
-    }
-}
-
 pub type Shape = Array1<usize>;
 pub type Index = Array1<i64>;
-
-
 
 struct EnvVar {
     layout: Rc<Layout>,
@@ -927,11 +661,11 @@ impl<'s> Env<'s> {
         );
     }
 
-    pub fn push_state(&mut self, state: &State<'s>) {
+    pub fn push_state(&mut self, state: &Tensor<'s>) {
         self.vars.insert(
             state.name,
             EnvVar {
-                layout: Rc::new(Layout::new_dense(state.shape.clone())),
+                layout: Rc::new(Layout::new_dense(state.shape().clone())),
                 is_algebraic: state.is_algebraic,
                 is_time_dependent: true,
                 is_state_dependent: true,
@@ -1068,48 +802,7 @@ impl<'s> Env<'s> {
         Some(layout_permuted)
     }
 
-    fn get_layout_sum(
-        &mut self,
-        call: &Call<'s>,
-        ast: &Ast<'s>,
-        indices: &Vec<char>,
-    ) -> Option<Layout> {
-        if call.args.len() != 2 {
-            self.errs.push(ValidationError::new(
-                format!("sum must have 2 arguments. found {}", call.args.len()),
-                ast.span,
-            ));
-            return None;
-        }
-        let first_arg = call.args[0].kind.as_call_arg().unwrap().expression.as_ref();
-        if first_arg.kind.as_name().is_none() {
-            self.errs.push(ValidationError::new(
-                format!(
-                    "sum must have a variable as the first argument. found {}",
-                    call.args[0]
-                ),
-                ast.span,
-            ));
-            return None;
-        }
-        let name = first_arg.kind.as_name().unwrap();
-        if name.len() != 1 {
-            self.errs.push(ValidationError::new(
-                format!(
-                    "sum must have a single character variable as the first argument. found {}",
-                    name
-                ),
-                ast.span,
-            ));
-            return None;
-        }
-        let index = name.chars().next().unwrap();
-        let mut within_sum_indices = indices.clone();
-        within_sum_indices.push(index);
-        let mut expr_layout= self.get_layout(call.args[1].as_ref(), &within_sum_indices)?;
-        expr_layout.contract_last_axis();
-        Some(expr_layout)
-    }
+    
 
     fn get_layout_call(&mut self, call: &Call<'s>, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
         let mut layouts = call
@@ -1138,14 +831,6 @@ impl<'s> Env<'s> {
             }
             AstKind::Monop(monop) => self.get_layout(monop.child.as_ref(), indices),
             AstKind::Call(call) => match call.fn_name {
-                // sum is only valid at the root of the expression
-                "sum" => {
-                    self.errs.push(ValidationError::new(
-                        format!("sum must be at the root of the expression"),
-                        ast.span,
-                    ));
-                    None
-                }
                 "dot" => self.get_layout_dot(&call, ast, indices),
                 _ => self.get_layout_call(&call, ast, indices),
             },
@@ -1170,141 +855,182 @@ impl<'s> Env<'s> {
     
 
     fn get_layout_tensor_elmt(&mut self, elmt: &TensorElmt<'s>, indices: &Vec<char>) -> Option<Layout> {
-        // get the layout of the expression, we'll handle sum here as its only valid at the root
-        let expr_layout = match &elmt.expr.kind {
-            AstKind::Call(Call { fn_name: "sum", args })  => {
-                let call = Call { fn_name: "sum", args: args.to_vec() };
-                self.get_layout_sum(&call, &elmt.expr, indices)?
-            },
-            _ => self.get_layout(elmt.expr.as_ref(), indices)?
-        };
-
-        if elmt.indices.is_none() {
-            return Some(expr_layout);
+        let expr_indices = elmt.expr.get_indices();
+        // get any indices from the expression that do not appear in 'indices' and add them to 'indices' to a new vector
+        let mut new_indices = indices.clone();
+        for i in expr_indices {
+            if !indices.contains(&i) {
+                new_indices.push(i);
+            }
         }
         
-        // make sure the number of indices matches the number of dimensions
-        let elmt_indices = elmt.indices.as_ref().unwrap();
-        let given_indices_ast = &elmt_indices.kind.as_vector().unwrap().data;
-        let given_indices: Vec<&Indice> = given_indices_ast.iter().map(|i| i.kind.as_indice().unwrap()).collect();
-        if given_indices.len() != indices.len() {
+        // TODO: for now we will only support one additional index
+        if new_indices.len() > indices.len() + 1 {
             self.errs.push(ValidationError::new(
                 format!(
-                    "number of dimensions of tensor element ({}) does not match number of dimensions of tensor ({})",
-                    given_indices.len(), indices.len()
-                ),
-                elmt_indices.span,
-            ));
-            return None;
-        }
-        
-        // make sure the rank of the expression is not too large
-        let expr_shape = expr_layout.shape();
-        if expr_shape.len() > indices.len() {
-            self.errs.push(ValidationError::new(
-                format!(
-                    "number of dimensions of given expression ({}) does not match number of dimensions of tensor ({})",
-                    expr_shape.len(), indices.len()
+                    "cannot index tensor element with more than one additional index. Found {} indices",
+                    new_indices.len() - indices.len()
                 ),
                 elmt.expr.span,
             ));
             return None;
         }
 
-        // expand the expression shape to match the number of dimensions
-        let mut exp_expr_shape = Shape::ones(indices.len());
-        exp_expr_shape.slice_mut(s![..expr_shape.len()]).assign(&expr_shape);
+        let mut expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
         
-        // calculate the shape of the tensor element from the given indices and expression shape
-        let all_range_indices = given_indices.iter().all(|i| i.sep == Some(".."));
-        let mut old_dim = None;
-        for (i, indice) in given_indices.iter().enumerate() {
-            let first = indice.first.kind.as_integer().unwrap();
-            
-            // make sure the use of the range separator is valid
-            if !all_range_indices && matches!(indice.sep, Some("..")) {
-                self.errs.push(ValidationError::new(
-                    format!("can only use range separator if all indices are ranges"),
-                    given_indices_ast[i].span,
-                ));
-            }
-            let dim = if let Some(_) = indice.sep {
-                if let Some(second) = &indice.last {
-                    let second = second.kind.as_integer().unwrap();
-                    if second < first {
-                        self.errs.push(ValidationError::new(
-                            format!("range end must be greater than range start"),
-                            given_indices_ast[i].span,
-                        ));
-                        return None;
-                    }
-                    usize::try_from(second - first).unwrap()
-                } else {
-                    exp_expr_shape[i]
+        // if we have an additional index then we contract the last dimension of the expression layout to get the final layout
+        if new_indices.len() > indices.len() {
+            expr_layout = match expr_layout.contract_last_axis() {
+                Ok(layout) => layout,
+                Err(e) => {
+                    self.errs.push(ValidationError::new(
+                        format!("{}", e),
+                        elmt.expr.span,
+                    ));
+                    return None;
                 }
+            }
+        };
+        
+        // calculate the shape of the tensor element. 
+        let elmt_layout = if elmt.indices.is_none() {
+
+            // If there are no indices then the rank of the expression must be 0 or 1 (i.e a scalar
+            // or a vector) and if 1 then the length of the vector is the same as the expression
+            if expr_layout.rank() == 0 {
+                Layout::new_scalar()
+            } else if expr_layout.rank() == 1 {
+                Layout::new_dense(expr_layout.shape().clone())
             } else {
-                1usize
-            };
-            
-            // make sure the dimension of the range is consistent
-            if all_range_indices && old_dim.is_some() && dim != old_dim.unwrap() {
                 self.errs.push(ValidationError::new(
-                    format!("range indices must have the same dimension"),
-                    given_indices_ast[i].span,
+                    format!(
+                        "tensor element without indices must be a scalar or vector, but expression has rank {}",
+                        expr_layout.rank()
+                    ),
+                    elmt.expr.span,
                 ));
                 return None;
             }
-            old_dim = Some(dim);
-            exp_expr_shape[i] = dim;
-        }
-        
-        //check we can broadcast the expression shape to the tensor element shape
-        if !can_broadcast_to(&exp_expr_shape, expr_shape) {
-            self.errs.push(ValidationError::new(
-                format!(
-                    "cannot broadcast expression shape ({}) to tensor element shape ({})",
-                    expr_shape, exp_expr_shape
-                ),
-                elmt.expr.span,
-            ));
-            return None;
-        }
-        
-        // tensor elmt layout is:
-        // 1. dense if the expression is dense and no indices are ranges
-        // 2. diagonal if the expression is dense and all indices are ranges, or the expression is diagonal and no indices are ranges
-        // 3. sparse if the expression is sparse and no indices are blocks
-        let elmt_layout = match expr_layout.kind() {
-            LayoutKind::Dense => {
-                if all_range_indices {
-                    Layout::new_diagonal(exp_expr_shape)
-                } else {
-                    Layout::new_dense(exp_expr_shape)
-                }
-            },
-            LayoutKind::Sparse => {
-                if all_range_indices {
+        } else {
+            // If there are indicies then the rank is determined by the number of indices, and the
+            // shape is determined by the ranges of the indices
+            // TODO: this is quite large, perhaps move to another function
+            
+
+            // make sure the number of indices matches the number of dimensions
+            let elmt_indices = elmt.indices.as_ref().unwrap();
+            let given_indices_ast = &elmt_indices.kind.as_vector().unwrap().data;
+            let given_indices: Vec<&Indice> = given_indices_ast.iter().map(|i| i.kind.as_indice().unwrap()).collect();
+            if given_indices.len() != indices.len() {
+                self.errs.push(ValidationError::new(
+                    format!(
+                        "number of dimensions of tensor element ({}) does not match number of dimensions of tensor ({})",
+                        given_indices.len(), indices.len()
+                    ),
+                    elmt_indices.span,
+                ));
+                return None;
+            }
+            
+            let mut exp_expr_shape = Shape::ones(indices.len());
+            
+            // we will use the expression shape as defaults if the range is not explicitly given
+            exp_expr_shape.slice_mut(s![..expr_layout.rank()]).assign(&expr_layout.shape());
+            
+            // calculate the shape of the tensor element from the given indices and expression shape
+            let all_range_indices = given_indices.iter().all(|i| i.sep == Some(".."));
+            let mut old_dim = None;
+            for (i, indice) in given_indices.iter().enumerate() {
+                let first = indice.first.kind.as_integer().unwrap();
+                
+                // make sure the use of the range separator is valid
+                if !all_range_indices && matches!(indice.sep, Some("..")) {
                     self.errs.push(ValidationError::new(
-                        format!("cannot use range indices with sparse expression"),
-                        elmt.expr.span,
+                        format!("can only use range separator if all indices are ranges"),
+                        given_indices_ast[i].span,
+                    ));
+                }
+                let dim = if let Some(_) = indice.sep {
+                    if let Some(second) = &indice.last {
+                        let second = second.kind.as_integer().unwrap();
+                        if second < first {
+                            self.errs.push(ValidationError::new(
+                                format!("range end must be greater than range start"),
+                                given_indices_ast[i].span,
+                            ));
+                            return None;
+                        }
+                        usize::try_from(second - first).unwrap()
+                    } else {
+                        exp_expr_shape[i]
+                    }
+                } else {
+                    1usize
+                };
+                
+                // make sure the dimension of the range is consistent
+                if all_range_indices && old_dim.is_some() && dim != old_dim.unwrap() {
+                    self.errs.push(ValidationError::new(
+                        format!("range indices must have the same dimension"),
+                        given_indices_ast[i].span,
                     ));
                     return None;
-                } else {
-                    expr_layout    
                 }
-            },
-            LayoutKind::Diagonal => {
-                if all_range_indices {
-                    self.errs.push(ValidationError::new(
-                        format!("cannot use range indices with diagonal expression"),
-                        elmt.expr.span,
-                    ));
-                    return None;
-                } else {
-                    Layout::new_diagonal(exp_expr_shape)
-                }
-            },
+                old_dim = Some(dim);
+                exp_expr_shape[i] = dim;
+            }
+                
+            // tensor elmt layout is:
+            // 1. dense if the expression is dense and no indices are ranges
+            // 2. diagonal if the expression is dense and all indices are ranges, or the expression is diagonal and no indices are ranges
+            // 3. sparse if the expression is sparse and no indices are blocks
+            let elmt_layout = match expr_layout.kind() {
+                LayoutKind::Dense => {
+                    if all_range_indices {
+                        Layout::new_diagonal(exp_expr_shape)
+                    } else {
+                        Layout::new_dense(exp_expr_shape)
+                    }
+                },
+                LayoutKind::Sparse => {
+                    if all_range_indices {
+                        self.errs.push(ValidationError::new(
+                            format!("cannot use range indices with sparse expression"),
+                            elmt.expr.span,
+                        ));
+                        return None;
+                    } else {
+                        expr_layout    
+                    }
+                },
+                LayoutKind::Diagonal => {
+                    if all_range_indices {
+                        self.errs.push(ValidationError::new(
+                            format!("cannot use range indices with diagonal expression"),
+                            elmt.expr.span,
+                        ));
+                        return None;
+                    } else {
+                        Layout::new_diagonal(exp_expr_shape)
+                    }
+                },
+            };
+            elmt_layout
         };
+
+        // now broadcast the expr_layout and the elmt_layout to get the final layout
+        let layouts = vec![expr_layout, elmt_layout];
+        let elmt_layout = match Layout::broadcast(&[expr_layout, elmt_layout]) {
+            Ok(layout) => layout,
+            Err(e) => {
+                self.errs.push(ValidationError::new(
+                    format!("{}", e),
+                    elmt.expr.span,
+                ));
+                return None;
+            }
+        };
+        
         Some(elmt_layout)
     }
 }
@@ -1319,9 +1045,9 @@ impl<'s> Env<'s> {
 pub struct DataLayout {
     data_index_map: HashMap<String, usize>,
     data_length: usize,
-    layout_index_map: HashMap<Layout, usize>,
+    layout_index_map: HashMap<String, usize>,
     layout_length: usize,
-    contraction_index_map: HashMap<(Layout, Layout), usize>,
+    contraction_index_map: HashMap<(String, String), usize>,
 }
 
 impl DataLayout {
@@ -1373,6 +1099,78 @@ impl DataLayout {
 
 }
 
+// The state is a tensor that has named slices. We store this with an overall
+// tensor `tensor`, along with a vector of tensors representing each slice. Each of these "slice" tensors
+// corresponds with a tensorblock in the overall tensor, and has the same layout as the tensorblock.
+// The expressions in the over all tensor `tensor` are the initial values of the slices, and must only depend on 
+// the inputs and the time.
+// The `is_slice_algebraic` vector indicates whether each slice is algebraic or not.
+#[derive(Debug)]
+pub struct State<'s> {
+    tensor: Tensor<'s>,
+    slices: Vec<Tensor<'s>>,
+    is_slice_algebraic: Vec<bool>,
+}
+
+impl<'s> fmt::Display for State<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "u_i {{\n")?;
+        for (i, slice) in self.slices.iter().enumerate() {
+            write!(f, "  {}\n", slice.name())?;
+        }
+        write!(f, "}}")
+    }
+}
+
+impl<'s> State<'s> {
+    pub fn new() -> Self {
+        Self {
+            tensor: Tensor::new("u", Vec::new(), vec!['i']),
+            slices: Vec::new(),
+            is_slice_algebraic: Vec::new(),
+        }
+    }
+    
+    // returns a tensor that is the initial value of the state
+    pub fn get_u0(&self) -> Tensor<'s> {
+        let mut u0 = self.tensor.clone();
+        u0.name = "u0";
+        u0
+    }
+
+    // returns a tensor that is the initial value of the derivative of the state
+    pub fn get_dotu0(&self) -> Tensor<'s> {
+        let mut dotu0 = self.tensor.clone();
+        dotu0.name = "dotu0";
+        dotu0
+    }
+}
+
+#[derive(Debug)]
+pub struct Inputs<'s> {
+    tensors: Vec<Tensor<'s>>,
+    domains: Vec<(f64, f64)>,
+}
+
+impl<'s> fmt::Display for Inputs<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "in {{\n")?;
+        for (i, slice) in self.tensors.iter().enumerate() {
+            write!(f, "  {}\n", slice.name())?;
+        }
+        write!(f, "}}")
+    }
+}
+
+impl<'s> Inputs<'s> {
+    pub fn new() -> Self {
+        Self {
+            tensors: Vec::new(),
+            domains: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug)]
 // F(t, u, u_dot) = G(t, u)
 pub struct DiscreteModel<'s> {
@@ -1384,7 +1182,7 @@ pub struct DiscreteModel<'s> {
     pub time_dep_defns: Vec<Tensor<'s>>,
     pub state_dep_defns: Vec<Tensor<'s>>,
     pub inputs: Inputs<'s>,
-    pub states: States<'s>,
+    pub state: State<'s>,
 }
 
 impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
@@ -1392,7 +1190,7 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
         write!(f, "{}\n", self.inputs)
         .and_then(|_| self.time_indep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
         .and_then(|_| self.time_dep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
-        .and_then(|_| write!(f, "{}\n", self.states))
+        .and_then(|_| write!(f, "{}\n", self.state))
         .and_then(|_| self.state_dep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
         .and_then(|_| write!(f, "{}\n", self.lhs))
         .and_then(|_| write!(f, "{}\n", self.rhs))
@@ -1411,11 +1209,11 @@ impl<'s> DiscreteModel<'s> {
             time_dep_defns: Vec::new(),
             state_dep_defns: Vec::new(),
             inputs: Inputs::new(),
-            states: States::new(),
+            state: State::new(),
         }
     }
 
-// define data layout for storage in a single array of arrays
+    // define data layout for storage in a single array of arrays
     // need 1 array for each dense tensor
     // need 2 arrays (data + layout) for each sparse tensor
     // don't need anything for out
@@ -1443,8 +1241,9 @@ impl<'s> DiscreteModel<'s> {
                     span: None,
                 },
                 start: Index::from_vec(vec![0]),
-                shape: residual.shape.clone(),
-                is_diagonal: false,
+                indices: vec!['i'],
+                layout: self.lhs.layout_ptr().clone(),
+                expr_layout: self.lhs.layout_ptr().clone(),
             };
             residual.elmts.len()
         ];
@@ -1476,7 +1275,7 @@ impl<'s> DiscreteModel<'s> {
         }
     }
 
-    fn build_states(tensor: &ast::Tensor<'s>, env: &mut Env<'s>) -> States<'s> {
+    fn build_states(tensor: &ast::Tensor<'s>, env: &mut Env<'s>) -> State<'s> {
         let mut ret = Vec::new();
         let rank = tensor.indices.len();
         if rank == 0 && tensor.elmts.len() > 1 {
@@ -1488,16 +1287,15 @@ impl<'s> DiscreteModel<'s> {
         assert_eq!(tensor.name, "u");
         let mut start = Index::zeros(rank);
         for a in &tensor.elmts {
-            if let Some(elmt_shape) = env.get_shape(a.as_ref(), &tensor.indices) {
+            if let Some(layout) = env.get_layout(a.as_ref(), &tensor.indices) {
                 match &a.kind {
                     AstKind::Parameter(p) => {
                         let name = p.name;
-                        let shape = elmt_shape;
-                        if shape.len() > 1 {
+                        if layout.rank() > 1 {
                             env.errs.push(ValidationError::new(
                                 format!(
                                     "state {} has shape {}, expected scalar or 1D array",
-                                    name, shape
+                                    name, layout.shape()
                                 ),
                                 a.span,
                             ));

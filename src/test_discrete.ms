@@ -23,7 +23,7 @@ RHS_i {
 }
 
 RHS_AUG_i {
-    sum(j, B_ij * RHS_i)
+    B_ij * RHS_i
 }
 
 F_i {

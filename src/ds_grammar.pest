@@ -1,15 +1,10 @@
-main       = { SOI ~ tensor* ~ EOI }
-tensor     = { name_ij ~ "{" ~ param_elmt? ~ (DELIM~ param_elmt)* ~ DELIM? ~ "}" }
-param_elmt = { parameter | tensor_elmt }
+main       = { SOI ~ model ~ EOI }
+model      = { inputs? ~ tensor* }
+inputs     = { "in" ~ "=" ~ "[" ~ name ~ ("," ~ name)* ~ "]" }
+tensor     = { name_ij ~ "{" ~ tensor_elmt? ~ (DELIM~ tensor_elmt)* ~ DELIM? ~ "}" }
 indices   = { "(" ~ indice ~ ("," ~ indice)* ~ ")" ~ ":" }
 indice      = { integer ~ ( range_sep ~ integer )? }
-tensor_elmt = { indices? ~ expression }
-parameter  = { name ~ "->" ~  domain ~ ("=" ~ expression)? }
-domain     = { (range | name) ~ ("**" ~ integer)? }
-range      = { "[" ~ range_val ~ "," ~ range_val ~ "]" }
-range_val  = { real | integer | inf | neg_inf }
-inf        = { "inf" }
-neg_inf    = { "-inf" }
+tensor_elmt = { indices? ~ (assignment | expression) }
 assignment = { name_ij ~ "=" ~ expression }
 expression = { sign? ~ term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }

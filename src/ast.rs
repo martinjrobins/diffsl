@@ -5,6 +5,30 @@ use std::fmt;
 use std::ops::Add;
 
 
+#[derive(Debug, Clone)]
+pub struct DsModel<'a> {
+    pub inputs: Vec<&'a str>,
+    pub tensors: Vec<Box<Ast<'a>>>,
+}
+
+impl<'a> fmt::Display for DsModel<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.inputs.len() > 1 {
+            write!(f, "in = [")?;
+            for (i, name) in self.inputs.iter().enumerate() {
+                write!(f, "{}", name)?;
+                if i < self.inputs.len() - 1 {
+                    write!(f, ", ")?;
+                }
+            }
+            write!(f, "]")?;
+        }
+        for tensor in self.tensors.iter() {
+            write!(f, "{}", tensor)?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Unknown<'a> {
@@ -132,11 +156,30 @@ pub struct Model<'a> {
     pub statements: Vec<Box<Ast<'a>>>,
 }
 
+
+
 #[derive(Debug, Clone)]
 pub struct Tensor<'a> {
     pub name: &'a str,
     pub indices: Vec<char>,
     pub elmts: Vec<Box<Ast<'a>>>,
+}
+
+impl <'a> fmt::Display for Tensor<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        if self.indices.len() > 0 {
+            write!(f, "_")?;
+            for idx in self.indices.iter() {
+                write!(f, "{}", idx)?;
+            }
+        }
+        write!(f, " {{\n")?;
+        for (i, elmt) in self.elmts.iter().enumerate() {
+            write!(f, "{},\n", elmt)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -189,13 +232,6 @@ pub struct Assignment<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Parameter<'a> {
-    pub name: &'a str,
-    pub domain: Box<Ast<'a>>,
-    pub init: Option<Box<Ast<'a>>>,
-}
-
-#[derive(Debug, Clone)]
 pub struct Index<'a> {
     pub left: Box<Ast<'a>>,
     pub right: Box<Ast<'a>>,
@@ -210,13 +246,13 @@ pub struct Slice<'a> {
 #[derive(Debug, Clone)]
 pub enum AstKind<'a> {
     Model(Model<'a>),
+    DsModel(DsModel<'a>),
     Unknown(Unknown<'a>),
     Definition(Definition<'a>),
     Tensor(Tensor<'a>),
     Indice(Indice<'a>),
     Vector(Vector<'a>),
     TensorElmt(TensorElmt<'a>),
-    Parameter(Parameter<'a>),
     Assignment(Assignment<'a>),
     Submodel(Submodel<'a>),
     Equation(Equation<'a>),
@@ -237,9 +273,27 @@ pub enum AstKind<'a> {
 }
 
 impl<'a> AstKind<'a> {
+    pub fn as_tensor(&self) -> Option<&Tensor> {
+        match self {
+            AstKind::Tensor(m) => Some(m),
+            _ => None,
+        }
+    }
+    pub fn as_assignment(&self) -> Option<&Assignment> {
+        match self {
+            AstKind::Assignment(m) => Some(m),
+            _ => None,
+        }
+    }
     pub fn as_model(&self) -> Option<&Model> {
         match self {
             AstKind::Model(m) => Some(m),
+            _ => None,
+        }
+    }
+    pub fn as_ds_model(&self) -> Option<&DsModel> {
+        match self {
+            AstKind::DsModel(m) => Some(m),
             _ => None,
         }
     }
@@ -284,6 +338,13 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
+    pub fn as_real(&self) -> Option<f64> {
+        match self {
+            AstKind::Number(a) => Some(*a),
+            AstKind::Integer(a) => Some(*a as f64),
+            _ => None,
+        }
+    }
     pub fn as_integer(&self) -> Option<i64> {
         match self {
             AstKind::Integer(a) => Some(*a),
@@ -300,18 +361,6 @@ impl<'a> AstKind<'a> {
     pub fn as_tensor_elmt(&self) -> Option<&TensorElmt> {
         match self {
             AstKind::TensorElmt(a) => Some(a),
-            _ => None,
-        }
-    }
-    pub fn as_parameter(&self) -> Option<&Parameter> {
-        match self {
-            AstKind::Parameter(a) => Some(a),
-            _ => None,
-        }
-    }
-    pub fn as_assignment(&self) -> Option<&Assignment> {
-        match self {
-            AstKind::Assignment(a) => Some(a),
             _ => None,
         }
     }
@@ -458,9 +507,9 @@ impl<'a> Ast<'a> {
             AstKind::Domain(domain) => AstKind::Domain(domain.clone()),
             AstKind::Indice(indices) => AstKind::Indice(indices.clone()),
             AstKind::IntRange(range) => AstKind::IntRange(range.clone()),
+            AstKind::DsModel(m) => AstKind::DsModel(m.clone()),
             AstKind::Tensor(a) => AstKind::Tensor(a.clone()),
             AstKind::TensorElmt(a) => AstKind::TensorElmt(a.clone()),
-            AstKind::Parameter(p) => AstKind::Parameter(p.clone()),
             AstKind::Assignment(a) => AstKind::Assignment(a.clone()),
             AstKind::Vector(a) => AstKind::Vector(a.clone()),
         };
@@ -528,6 +577,9 @@ impl<'a> Ast<'a> {
             AstKind::TensorElmt(elmt) => {
                 elmt.expr.collect_deps(deps);
             },
+            AstKind::DsModel(m) => {
+                deps.extend(m.inputs.iter().cloned())
+            }
             AstKind::Number(_) => (),
             AstKind::Integer(_) => (),
             AstKind::Model(_) => (),
@@ -537,7 +589,6 @@ impl<'a> Ast<'a> {
             AstKind::Range(_) => (),
             AstKind::Domain(_) => (),
             AstKind::IntRange(_) => (),
-            AstKind::Parameter(_) => (),
             AstKind::Assignment(_) => (),
             AstKind::Vector(_) => (),
             AstKind::Indice(_) => (),
@@ -594,6 +645,7 @@ impl<'a> Ast<'a> {
                 elmt.expr.collect_indices(indices);
             },
             AstKind::Name(found_name) => (),
+            AstKind::DsModel(_) => (),
             AstKind::Number(_) => (),
             AstKind::Integer(_) => (),
             AstKind::Model(_) => (),
@@ -603,7 +655,6 @@ impl<'a> Ast<'a> {
             AstKind::Range(_) => (),
             AstKind::Domain(_) => (),
             AstKind::IntRange(_) => (),
-            AstKind::Parameter(_) => (),
             AstKind::Assignment(_) => (),
             AstKind::Vector(_) => (),
             AstKind::Indice(_) => (),
@@ -717,12 +768,11 @@ impl<'a> fmt::Display for Ast<'a> {
                     write!(f, "{}", elmt.expr.to_string())
                 }
             },
-            AstKind::Parameter(p) => {
-                write!(f, "{} -> {}", p.name, p.domain)
-            },
             AstKind::Assignment(a) => {
                 write!(f, "{} = {}", a.name, a.expr)
             },
+            AstKind::DsModel(m) => write!(f, "{}", m),
+            AstKind::Tensor(tensor) => write!(f, "{}", tensor),
             AstKind::Range(range) => write!(f, "{}", range),
             AstKind::Vector(v) => write!(f, "{}", v),
             AstKind::Indice(i) => write!(f, "{}", i),

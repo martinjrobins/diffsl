@@ -3,9 +3,12 @@ use anyhow::anyhow;
 use ndarray::s;
 use core::panic;
 use std::cell::RefCell;
+use std::ops::Deref;
+use std::hash::Hash;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::Hasher;
 use std::rc::Rc;
 
 use itertools::chain;
@@ -66,9 +69,8 @@ impl Layout {
 
         // if the layout is sparse and there are no dense axes, then remove the last axis from each index
         if self.is_sparse() && self.n_dense_axes == 0 {
-            for index in new_indices.iter_mut() {
-                // remove the last element of the index
-                index = index.slice(s![0..rank-1]).to_owned();
+            for i in 0..self.indices.len() {
+                new_indices[i] = new_indices[i].slice(s![0..rank-1]).to_owned();
             }
         } 
         new_indices.pop();
@@ -387,22 +389,66 @@ impl Layout {
 }
 
 
-//TODO: inputs, states and tensors share a lot of code, refactor into a trait
+// RcLayout is a wrapper for Rc<Layout> that implements Hash and PartialEq based on ptr equality
+#[derive(Debug)]
+struct RcLayout(Rc<Layout>);
+impl Hash for RcLayout {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.0).hash(state);
+    }
+}
+impl PartialEq for RcLayout {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Clone for RcLayout {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl Eq for RcLayout {}
+impl Deref for RcLayout {
+    type Target = Layout;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl RcLayout {
+    fn new(layout: Layout) -> Self {
+        Self(Rc::new(layout))
+    }
+    fn as_ref(&self) -> &Layout {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone)]
 // F(t, u, u_dot) = G(t, u)
 pub struct TensorBlock<'s> {
+    name: Option<&'s str>,
     start: Index,
     indices: Vec<char>,
-    layout: Rc<Layout>,
-    expr_layout: Rc<Layout>,
+    layout: RcLayout,
+    expr_layout: RcLayout,
     expr: Ast<'s>,
 }
 
 impl<'s> TensorBlock<'s> {
-    pub fn new_dense_vector(start: i64, shape: usize, expr: Ast<'s>) -> Self {
-        let layout = Rc::new(Layout::dense(Shape::from_vec(vec![shape])));
+    pub fn new(name: Option<&'s str>, start: Index, indices: Vec<char>, layout: RcLayout, expr_layout: RcLayout, expr: Ast<'s>) -> Self {
         Self {
+            name,
+            start,
+            indices,
+            layout,
+            expr_layout,
+            expr,
+        }
+    }
+    pub fn new_dense_vector(name: Option<&'s str>, start: i64, shape: usize, expr: Ast<'s>) -> Self {
+        let layout = RcLayout::new(Layout::dense(Shape::from_vec(vec![shape])));
+        Self {
+            name,
             start: Index::from_vec(vec![start]),
             layout: layout.clone(),
             expr_layout: layout,
@@ -410,7 +456,7 @@ impl<'s> TensorBlock<'s> {
             indices: Vec::new(),
         }
     }
-
+    
     pub fn nnz(&self) -> usize {
         if self.is_diagonal() { self.shape().iter().product() } else { *self.shape().get(0).unwrap_or(&0usize) }
     }
@@ -465,7 +511,7 @@ impl<'s> fmt::Display for TensorBlock<'s> {
 pub struct Tensor<'s> {
     name: &'s str,
     elmts: Vec<TensorBlock<'s>>,
-    layout: Rc<Layout>,
+    layout: RcLayout,
     indices: Vec<char>,
 }
 
@@ -475,7 +521,7 @@ impl<'s> Tensor<'s> {
             name,
             elmts: Vec::new(),
             indices: Vec::new(),
-            layout: Rc::new(Layout::dense(Shape::zeros(0))),
+            layout: RcLayout::new(Layout::dense(Shape::zeros(0))),
         }
     }
 
@@ -498,7 +544,7 @@ impl<'s> Tensor<'s> {
             acc.append(i.layout(), i.start());
             acc
         });
-        let layout = Rc::new(layout);
+        let layout = RcLayout::new(layout);
         Self {
             name,
             elmts,
@@ -528,8 +574,8 @@ impl<'s> Tensor<'s> {
         self.indices.as_ref()
     }
 
-    pub fn layout_ptr(&self) -> Rc<Layout> {
-        self.layout.clone()
+    pub fn layout_ptr(&self) -> &RcLayout {
+        &self.layout
     }
 
     pub fn layout(&self) -> &Layout {
@@ -557,7 +603,7 @@ pub type Shape = Array1<usize>;
 pub type Index = Array1<i64>;
 
 struct EnvVar {
-    layout: Rc<Layout>,
+    layout: RcLayout,
     is_time_dependent: bool,
     is_state_dependent: bool,
     is_algebraic: bool,
@@ -619,7 +665,7 @@ impl<'s> Env<'s> {
         vars.insert(
             "t",
             EnvVar {
-                layout: Rc::new(Layout::new_scalar()),
+                layout: RcLayout::new(Layout::new_scalar()),
                 is_time_dependent: true,
                 is_state_dependent: false,
                 is_algebraic: true,
@@ -653,7 +699,7 @@ impl<'s> Env<'s> {
         self.vars.insert(
             var.name,
             EnvVar {
-                layout: var.layout_ptr(),
+                layout: var.layout_ptr().clone(),
                 is_algebraic: true,
                 is_time_dependent: self.is_tensor_time_dependent(var),
                 is_state_dependent: self.is_tensor_state_dependent(var),
@@ -661,29 +707,6 @@ impl<'s> Env<'s> {
         );
     }
 
-    pub fn push_state(&mut self, state: &Tensor<'s>) {
-        self.vars.insert(
-            state.name,
-            EnvVar {
-                layout: Rc::new(Layout::new_dense(state.shape().clone())),
-                is_algebraic: state.is_algebraic,
-                is_time_dependent: true,
-                is_state_dependent: true,
-            },
-        );
-    }
-
-    pub fn push_input(&mut self, input: &Input<'s>) {
-        self.vars.insert(
-            input.name,
-            EnvVar {
-                is_algebraic: true,
-                layout: Rc::new(Layout::new_dense(input.shape.clone())),
-                is_time_dependent: false,
-                is_state_dependent: false,
-            },
-        );
-    }
 
     fn get(&self, name: &str) -> Option<&EnvVar> {
         self.vars.get(name)
@@ -824,8 +847,7 @@ impl<'s> Env<'s> {
 
     pub fn get_layout(&mut self, ast: &Ast<'s>, indices: &Vec<char>) -> Option<Layout> {
         match &ast.kind {
-            AstKind::TensorElmt(t) => self.get_layout_tensor_elmt(t, indices),
-            AstKind::Parameter(p) => self.get_layout(&p.domain, indices),
+            AstKind::Assignment(a) => self.get_layout(a.expr.as_ref(), indices),
             AstKind::Binop(binop) => {
                 self.get_layout_binary_op(binop.left.as_ref(), binop.right.as_ref(), indices)
             }
@@ -852,9 +874,9 @@ impl<'s> Env<'s> {
         }
     }
     
-    
 
-    fn get_layout_tensor_elmt(&mut self, elmt: &TensorElmt<'s>, indices: &Vec<char>) -> Option<Layout> {
+    // returns a tuple of (expr_layout, elmt_layout) giving the layouts of the expression and the tensor element.)
+    fn get_layout_tensor_elmt(&mut self, elmt: &TensorElmt<'s>, indices: &Vec<char>) -> Option<(Layout, Layout)> {
         let expr_indices = elmt.expr.get_indices();
         // get any indices from the expression that do not appear in 'indices' and add them to 'indices' to a new vector
         let mut new_indices = indices.clone();
@@ -1031,21 +1053,20 @@ impl<'s> Env<'s> {
             }
         };
         
-        Some(elmt_layout)
+        Some((expr_layout, elmt_layout))
     }
 }
 
 
 // there are three different layouts:
-// 1. the data layout is a mapping from tensor names to the index of the first element of the tensor in the data array
-// 2. the layout layout is a mapping from Sparsity to the index of the first element of the tensor in the layout array
-// 3. the contraction layout is a mapping from Sparsity from-to pairs to the index of the first element of the tensor in the layout array
-// Note: the layout and contraction layouts are contained in the same array, but the data layout is separate
+// 1. the data layout is a mapping from tensors to the index of the first element in the data array. Each tensor in the data layout is a contiguous array of nnz elements
+// 2. the layout layout is a mapping from Layout to the index of the first element in the data array. Only sparse layouts are stored, and each sparse layout is a contiguous array of nnz*rank elements
+// 3. the contraction layout is a mapping from layout from-to pairs to the index of the first element in the data array. Only contraction pairs are stored, and each contraction pair is a contiguous array of nnz elements where nnz is the number of non-zero elements in the from layout
 #[derive(Debug)]
 pub struct DataLayout {
     data_index_map: HashMap<String, usize>,
     data_length: usize,
-    layout_index_map: HashMap<String, usize>,
+    layout_index_map: HashMap<Layout, usize>,
     layout_length: usize,
     contraction_index_map: HashMap<(String, String), usize>,
 }
@@ -1069,7 +1090,7 @@ impl DataLayout {
         }
 
         data_index_map.insert("states".to_string(), i);
-        i += model.states.nnz();
+        i += model.state.nnz();
 
         for dfn in model.state_dep_defns.iter() {
             data_index_map.insert(dfn.name.to_string(), i);
@@ -1099,77 +1120,6 @@ impl DataLayout {
 
 }
 
-// The state is a tensor that has named slices. We store this with an overall
-// tensor `tensor`, along with a vector of tensors representing each slice. Each of these "slice" tensors
-// corresponds with a tensorblock in the overall tensor, and has the same layout as the tensorblock.
-// The expressions in the over all tensor `tensor` are the initial values of the slices, and must only depend on 
-// the inputs and the time.
-// The `is_slice_algebraic` vector indicates whether each slice is algebraic or not.
-#[derive(Debug)]
-pub struct State<'s> {
-    tensor: Tensor<'s>,
-    slices: Vec<Tensor<'s>>,
-    is_slice_algebraic: Vec<bool>,
-}
-
-impl<'s> fmt::Display for State<'s> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "u_i {{\n")?;
-        for (i, slice) in self.slices.iter().enumerate() {
-            write!(f, "  {}\n", slice.name())?;
-        }
-        write!(f, "}}")
-    }
-}
-
-impl<'s> State<'s> {
-    pub fn new() -> Self {
-        Self {
-            tensor: Tensor::new("u", Vec::new(), vec!['i']),
-            slices: Vec::new(),
-            is_slice_algebraic: Vec::new(),
-        }
-    }
-    
-    // returns a tensor that is the initial value of the state
-    pub fn get_u0(&self) -> Tensor<'s> {
-        let mut u0 = self.tensor.clone();
-        u0.name = "u0";
-        u0
-    }
-
-    // returns a tensor that is the initial value of the derivative of the state
-    pub fn get_dotu0(&self) -> Tensor<'s> {
-        let mut dotu0 = self.tensor.clone();
-        dotu0.name = "dotu0";
-        dotu0
-    }
-}
-
-#[derive(Debug)]
-pub struct Inputs<'s> {
-    tensors: Vec<Tensor<'s>>,
-    domains: Vec<(f64, f64)>,
-}
-
-impl<'s> fmt::Display for Inputs<'s> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "in {{\n")?;
-        for (i, slice) in self.tensors.iter().enumerate() {
-            write!(f, "  {}\n", slice.name())?;
-        }
-        write!(f, "}}")
-    }
-}
-
-impl<'s> Inputs<'s> {
-    pub fn new() -> Self {
-        Self {
-            tensors: Vec::new(),
-            domains: Vec::new(),
-        }
-    }
-}
 
 #[derive(Debug)]
 // F(t, u, u_dot) = G(t, u)
@@ -1181,13 +1131,13 @@ pub struct DiscreteModel<'s> {
     pub time_indep_defns: Vec<Tensor<'s>>,
     pub time_dep_defns: Vec<Tensor<'s>>,
     pub state_dep_defns: Vec<Tensor<'s>>,
-    pub inputs: Inputs<'s>,
-    pub state: State<'s>,
+    pub inputs: Vec<Tensor<'s>>,
+    pub state: Tensor<'s>,
 }
 
 impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}\n", self.inputs)
+        self.inputs.iter().fold(Ok(()), |acc, input| acc.and_then(|_| write!(f, "{}\n", input)))
         .and_then(|_| self.time_indep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
         .and_then(|_| self.time_dep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
         .and_then(|_| write!(f, "{}\n", self.state))
@@ -1208,8 +1158,8 @@ impl<'s> DiscreteModel<'s> {
             time_indep_defns: Vec::new(),
             time_dep_defns: Vec::new(),
             state_dep_defns: Vec::new(),
-            inputs: Inputs::new(),
-            state: State::new(),
+            inputs: Vec::new(),
+            state: Tensor::new_empty("u"),
         }
     }
 
@@ -1236,6 +1186,7 @@ impl<'s> DiscreteModel<'s> {
         };
         residual.elmts = vec![
             TensorBlock {
+                name: None,
                 expr: Ast {
                     kind: AstKind::new_binop('-', lhs, rhs),
                     span: None,
@@ -1275,123 +1226,9 @@ impl<'s> DiscreteModel<'s> {
         }
     }
 
-    fn build_states(tensor: &ast::Tensor<'s>, env: &mut Env<'s>) -> State<'s> {
-        let mut ret = Vec::new();
-        let rank = tensor.indices.len();
-        if rank == 0 && tensor.elmts.len() > 1 {
-            env.errs.push(ValidationError::new(
-                format!("cannot have more than one element in a scalar"),
-                tensor.elmts[1].span,
-            ));
-        }
-        assert_eq!(tensor.name, "u");
-        let mut start = Index::zeros(rank);
-        for a in &tensor.elmts {
-            if let Some(layout) = env.get_layout(a.as_ref(), &tensor.indices) {
-                match &a.kind {
-                    AstKind::Parameter(p) => {
-                        let name = p.name;
-                        if layout.rank() > 1 {
-                            env.errs.push(ValidationError::new(
-                                format!(
-                                    "state {} has shape {}, expected scalar or 1D array",
-                                    name, layout.shape()
-                                ),
-                                a.span,
-                            ));
-                        }
-                        let domain = Self::build_domain(&p.domain, env);
-                        let init = match p.init {
-                            Some(ref init) => {
-                                if let Some(init_shape) = env.get_shape(init, &tensor.indices) {
-                                    if !can_broadcast_to(&shape, &init_shape) {
-                                        env.errs.push(
-                                            ValidationError::new(
-                                                format!("state {} has shape {}, but initial value has shape {}", name, shape, init_shape),
-                                                a.span
-                                            )
-                                        );
-                                    }
-                                }
-                                Some(*init.clone())
-                            }
-                            None => None,
-                        };
-                        let state = State {
-                            name,
-                            shape: shape.clone(),
-                            init,
-                            domain,
-                            start: start.clone(),
-                            is_algebraic: false,
-                        };
-                        env.push_state(&state);
-                        ret.push(state);
-                        start += &shape.mapv(|x| i64::try_from(x).unwrap());
-                    }
-                    _ => {
-                        env.errs.push(ValidationError::new(
-                            format!("expected assignment in state definition"),
-                            a.span,
-                        ));
-                    }
-                }
-            }
-        }
-        States::from_vec(ret, (&tensor.indices).clone())
-    }
-
-    fn build_inputs(tensor: &ast::Tensor<'s>, env: &mut Env<'s>) -> Inputs<'s> {
-        let mut ret = Vec::new();
-        assert_eq!(tensor.name, "in");
-
-        let rank = tensor.indices.len();
-        if rank == 0 && tensor.elmts.len() > 1 {
-            env.errs.push(ValidationError::new(
-                format!("cannot have more than one element in a scalar"),
-                tensor.elmts[1].span,
-            ));
-        }
-
-        let mut start = Index::zeros(rank);
-        for a in &tensor.elmts {
-            if let Some(elmt_shape) = env.get_shape(a.as_ref(), &tensor.indices) {
-                match &a.kind {
-                    AstKind::Parameter(p) => {
-                        let name = p.name;
-                        let shape = elmt_shape;
-                        if shape.len() > 1 {
-                            env.errs.push(ValidationError::new(
-                                format!("input shape must be a scalar or 1D vector"),
-                                a.span,
-                            ));
-                        }
-                        let domain = Self::build_domain(&p.domain, env);
-                        let input = Input {
-                            name,
-                            shape: shape.clone(),
-                            domain,
-                            start: start.clone(),
-                        };
-                        env.push_input(&input);
-                        ret.push(input);
-                        start += &shape.mapv(|x| i64::try_from(x).unwrap());
-                    }
-                    _ => {
-                        env.errs.push(ValidationError::new(
-                            format!("expected parameter in input definition"),
-                            a.span,
-                        ));
-                    }
-                }
-            }
-        }
-        Inputs::from_vec(ret)
-    }
-
     fn build_array(array: &ast::Tensor<'s>, env: &mut Env<'s>) -> Option<Tensor<'s>> {
         let rank = array.indices.len();
-        let mut ret = Vec::new();
+        let mut elmts = Vec::new();
         let mut start = Index::zeros(rank);
         let nerrs = env.errs.len();
         if rank == 0 && array.elmts.len() > 1 {
@@ -1399,49 +1236,34 @@ impl<'s> DiscreteModel<'s> {
                 format!("cannot have more than one element in a scalar"),
                 array.elmts[1].span,
             ));
-        } else if rank > 2 && array.elmts.len() > 1 {
-            env.errs.push(ValidationError::new(
-                format!("cannot have more than one element in a tensor with rank > 2"),
-                array.elmts[1].span,
-            ));
         }
+        let mut tensor_layout = Layout::new_empty(rank);
         for a in &array.elmts {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
-                    if let Some(mut elmt_shape) = env.get_shape(a.as_ref(), &array.indices) {
-                        if rank == 0 && elmt_shape.len() == 1 {
-                            if elmt_shape[0] > 1 {
+                    if let Some((expr_layout, elmt_layout)) = env.get_layout_tensor_elmt(&te, &array.indices) {
+                        if rank == 0 && elmt_layout.rank() == 1 {
+                            if elmt_layout.shape()[0] > 1 {
                                 env.errs.push(ValidationError::new(
-                                    format!("cannot assign an expression with rank > 1 to a scalar, rhs has shape {}", elmt_shape),
+                                    format!("cannot assign an expression with rank > 1 to a scalar, rhs has shape {}", elmt_layout.shape()),
                                     a.span,
                                 ));
                             }
-                            // convert to scalar array
-                            elmt_shape = vec![].into();
                         }
-                        let is_diagonal = if let Some(i) = &te.indices {
-                            if let Some(sep) = i.kind.as_vector().unwrap().data[0].kind.as_indice().unwrap().sep {
-                                sep == ".."
-                            } else {
-                                false
-                            } 
+                        let (name, expr) = if let AstKind::Assignment(a) = &te.expr.kind {
+                            (Some(a.name), a.expr.clone())
                         } else {
-                            false
+                            (None, te.expr.clone())
                         };
-                        ret.push(TensorBlock::new(start.clone(), elmt_shape.clone(), *te.expr.clone(), is_diagonal));
-                        start += &elmt_shape.mapv(|x| i64::try_from(x).unwrap());
+                        elmts.push(TensorBlock::new(name, start.clone(), array.indices, RcLayout::new(elmt_layout), RcLayout::new(expr_layout), *te.expr.clone()));
+                        tensor_layout.append(&elmt_layout, &start);
+                        start += &elmt_layout.shape().mapv(|x| i64::try_from(x).unwrap());
                     }
-                },
-                AstKind::Parameter(_) => {
-                    env.errs.push(ValidationError::new(
-                        format!("cannot have parameters in tensor definition"),
-                        a.span,
-                    ));
                 },
                 _ => unreachable!("unexpected expression in tensor definition"),
             }
         }
-        let tensor = Tensor::from_vec(array.name, ret, (&array.indices).clone());
+        let tensor = Tensor::new(array.name, elmts, array.indices);
         if nerrs == env.errs.len() {
             env.push_var(&tensor);
         }
@@ -1449,14 +1271,16 @@ impl<'s> DiscreteModel<'s> {
     }
 
 
-    fn check_match(tensor1: &Tensor, tensor2: &States, span: Option<StringSpan>, env: &mut Env) {
+    fn check_match(tensor1: &Tensor, tensor2: &Tensor, span: Option<StringSpan>, env: &mut Env) {
         // check shapes
         if tensor1.shape() != tensor2.shape() {
             env.errs.push(ValidationError::new(
                 format!(
-                    "{} and u must have the same shape, but {} has shape {} and u has shape {}",
+                    "{} and {} must have the same shape, but {} has shape {} and {} has shape {}",
                     tensor1.name,
+                    tensor2.name,
                     tensor1.name,
+                    tensor2.name,
                     tensor1.shape(),
                     tensor2.shape()
                 ),
@@ -1465,14 +1289,14 @@ impl<'s> DiscreteModel<'s> {
         }
     }
 
-    pub fn build(name: &'s str, ast: &'s Vec<Box<Ast<'s>>>) -> Result<Self, ValidationErrors> {
+    pub fn build(name: &'s str, model: &ast::DsModel) -> Result<Self, ValidationErrors> {
         let mut env = Env::new();
         let mut ret = Self::new(name);
         let mut read_state = false;
-        let mut read_f = false;
-        let mut read_g = false;
         let mut read_out = false;
-        for (i, tensor_ast) in ast.iter().enumerate() {
+        let span_f = None;
+        let span_g = None;
+        for (i, tensor_ast) in model.tensors.iter().enumerate() {
             match tensor_ast.kind.as_array() {
                 None => env.errs.push(ValidationError::new(
                     "not an array".to_string(),
@@ -1480,53 +1304,27 @@ impl<'s> DiscreteModel<'s> {
                 )),
                 Some(tensor) => {
                     let span = tensor_ast.span;
-                    // first array must be in
-                    if i == 0 && tensor.name != "in" {
-                        env.errs.push(ValidationError::new(
-                            "first array must be 'in'".to_string(),
-                            span,
-                        ));
-                    }
                     match tensor.name {
-                        "in" => {
-                            if tensor.indices.len() > 1 {
-                                env.errs.push(ValidationError::new(
-                                    "input must be a scalar or 1D vector".to_string(),
-                                    span,
-                                ));
-                            }
-                            ret.inputs = Self::build_inputs(tensor, &mut env);
-                        }
                         "u" => {
-                            if tensor.indices.len() > 1 {
+                            read_state = true;
+                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                                ret.state = built;
+                            }
+                            if ret.state.rank() > 1 {
                                 env.errs.push(ValidationError::new(
                                     "u must be a scalar or 1D vector".to_string(),
                                     span,
                                 ));
                             }
-                            read_state = true;
-                            ret.states = Self::build_states(tensor, &mut env);
                         }
                         "F" => {
-                            read_f = true;
-                            if tensor.indices.len() > 1 {
-                                env.errs.push(ValidationError::new(
-                                    "F must be a scalar or 1D vector".to_string(),
-                                    span,
-                                ));
-                            }
+                            span_f = Some(span);
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 ret.lhs = built;
                             }
                         }
                         "G" => {
-                            read_g = true;
-                            if tensor.indices.len() > 1 {
-                                env.errs.push(ValidationError::new(
-                                    "G must be a scalar or 1D vector".to_string(),
-                                    span,
-                                ));
-                            }
+                            span_g = Some(span);
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 ret.rhs = built;
                             }
@@ -1584,13 +1382,13 @@ impl<'s> DiscreteModel<'s> {
                 span_all,
             ));
         }
-        if !read_f {
+        if span_f.is_none() {
             env.errs.push(ValidationError::new(
                 "missing 'F' array".to_string(),
                 span_all,
             ));
         }
-        if !read_g {
+        if span_g.is_none() {
             env.errs.push(ValidationError::new(
                 "missing 'G' array".to_string(),
                 span_all,
@@ -1602,15 +1400,11 @@ impl<'s> DiscreteModel<'s> {
                 span_all,
             ));
         }
-        Self::check_match(&ret.lhs, &ret.states, span_all, &mut env);
-        Self::check_match(&ret.rhs, &ret.states, span_all, &mut env);
-
-        // check that F and G have the same layout
-        if !ret.lhs.is_same_layout(&ret.rhs) {
-            env.errs.push(ValidationError::new(
-                "F and G must have the same layout".to_string(),
-                span_all,
-            ));
+        if let Some(span) = span_f {
+            Self::check_match(&ret.lhs, &ret.state, span, &mut env);
+        }
+        if let Some(span) = span_g {
+            Self::check_match(&ret.rhs, &ret.state, span, &mut env);
         }
 
         if env.errs.is_empty() {
@@ -1618,15 +1412,6 @@ impl<'s> DiscreteModel<'s> {
         } else {
             Err(env.errs)
         }
-    }
-    pub fn len_state(&self) -> usize {
-        self.states.shape()[0]
-    }
-    pub fn len_inputs(&self) -> usize {
-        self.inputs.shape()[0]
-    }
-    pub fn len_output(&self) -> usize {
-        self.out.shape()[0]
     }
     
     fn state_to_elmt(state_cell: &Rc<RefCell<Variable<'s>>>) -> (TensorBlock<'s>, TensorBlock<'s>) {
@@ -1651,42 +1436,30 @@ impl<'s> DiscreteModel<'s> {
             _ => panic!("equation for state var should be rate eqn or standard eqn"),
         };
         (
-            TensorBlock::new_vector(0, state.dim, Ast { kind: f_astkind, span: ast_eqn.span }),
-            TensorBlock::new_vector(0, state.dim, Ast { kind: g_astkind, span: ast_eqn.span }),
+            TensorBlock::new_dense_vector(0, state.dim, Ast { kind: f_astkind, span: ast_eqn.span }),
+            TensorBlock::new_dense_vector(0, state.dim, Ast { kind: g_astkind, span: ast_eqn.span }),
         )
     }
-    fn state_to_u0(state_cell: &Rc<RefCell<Variable<'s>>>) -> State<'s> {
+    fn state_to_u0(state_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
         let state = state_cell.borrow();
         let init = if state.has_initial_condition() {
-            Some(state.init_conditions[0].equation.clone())
+            state.init_conditions[0].equation.clone()
         } else {
-            None
+            Ast { kind: AstKind::new_num(0.0), span: None }
         };
-        State {
-            name: state.name,
-            shape: Shape::from_vec(vec![state.dim]),
-            domain: state.bounds.clone(),
-            init,
-            start: Index::zeros(1),
-            is_algebraic: true,
-        }
+        TensorBlock::new_dense_vector(0, state.dim, init)
     }
     fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
         let defn = defn_cell.borrow();
-        let tsr_blk = TensorBlock::new_vector(0, defn.dim, defn.expression.as_ref().unwrap().clone());
-        Tensor::new(defn.name, Shape::from_vec(vec![defn.dim]), vec![tsr_blk], vec!['i'])
+        let tsr_blk = TensorBlock::new_dense_vector(0, defn.dim, defn.expression.as_ref().unwrap().clone());
+        Tensor::new(defn.name, vec![tsr_blk], vec!['i'])
     }
 
-    fn state_to_input(input_cell: &Rc<RefCell<Variable<'s>>>) -> Input<'s> {
+    fn state_to_input(input_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
         let input = input_cell.borrow();
         assert!(input.is_independent());
         assert!(!input.is_time_dependent());
-        Input {
-            start: Index::zeros(1),
-            name: input.name,
-            domain: input.bounds,
-            shape: Shape::from_vec(vec![input.dim]),
-        }
+        Tensor::new(input.name, vec![TensorBlock::new_dense_vector(0, input.dim, Ast { kind: AstKind::new_name(input.name), span: None })], vec!['i'])
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
         let output = output_cell.borrow();
@@ -1700,7 +1473,7 @@ impl<'s> DiscreteModel<'s> {
                 None
             },
         };
-        TensorBlock::new_vector(0, output.dim, expr)
+        TensorBlock::new_dense_vector(0, output.dim, expr)
     }
     pub fn from(model: &ModelInfo<'s>) -> DiscreteModel<'s> {
         let (time_varying_unknowns, const_unknowns): (
@@ -1742,11 +1515,10 @@ impl<'s> DiscreteModel<'s> {
         let mut curr_index: usize = 0;
         for elmt in out_array_elmts.iter_mut() {
             elmt.start[0] = i64::try_from(curr_index).unwrap();
-            curr_index = curr_index + elmt.shape[0];
+            curr_index = curr_index + elmt.layout().shape()[0];
         }
         let out_array = Tensor::new(
             "out",
-            Shape::from_vec(vec![curr_index]),
             out_array_elmts,
             vec!['i'],
         );
@@ -1754,25 +1526,23 @@ impl<'s> DiscreteModel<'s> {
         let mut f_elmts: Vec<TensorBlock> = Vec::new();
         let mut g_elmts: Vec<TensorBlock> = Vec::new();
         let mut curr_index = 0;
-        let mut init_states: Vec<State> = Vec::new();
+        let mut init_states: Vec<TensorBlock> = Vec::new();
         for state in states.iter() {
             let mut elmt = DiscreteModel::state_to_elmt(state);
             elmt.0.start[0] = i64::try_from(curr_index).unwrap();
             elmt.1.start[0] = i64::try_from(curr_index).unwrap();
             let mut init_state = DiscreteModel::state_to_u0(state);
             init_state.start[0] = i64::try_from(curr_index).unwrap();
-            curr_index = curr_index + elmt.0.shape[0];
+            curr_index = curr_index + elmt.0.layout().shape[0];
             f_elmts.push(elmt.0);
             g_elmts.push(elmt.1);
             init_states.push(init_state);
         }
+        let state = Tensor::new("u", init_states, vec!['i']);
 
-        let mut curr_index = 0;
-        let mut inputs: Vec<Input> = Vec::new();
+        let mut inputs: Vec<Tensor> = Vec::new();
         for input in const_unknowns.iter() {
             let mut inp = DiscreteModel::state_to_input(input);
-            inp.start[0] = i64::try_from(curr_index).unwrap();
-            curr_index = curr_index + inp.shape[0];
             inputs.push(inp);
         }
 
@@ -1793,22 +1563,22 @@ impl<'s> DiscreteModel<'s> {
             .unwrap()
             .start
             .mapv(|x| usize::try_from(x).unwrap())
-            + &f_elmts.last().unwrap().shape;
-        let lhs =  Tensor::new("F", lhs_shape, f_elmts, vec!['i']);
+            + f_elmts.last().unwrap().layout().shape();
+        let lhs =  Tensor::new("F", f_elmts, vec!['i']);
         let rhs_shape = &g_elmts
             .last()
             .unwrap()
             .start
             .mapv(|x| usize::try_from(x).unwrap())
-            + &g_elmts.last().unwrap().shape;
-        let rhs = Tensor::new("G", rhs_shape, g_elmts, vec!['i']);
+            + g_elmts.last().unwrap().layout().shape();
+        let rhs = Tensor::new("G", g_elmts, vec!['i']);
         let name = model.name;
         DiscreteModel {
             name,
             lhs,
             rhs,
-            inputs: Inputs::from_vec(inputs),
-            states: States::from_vec(init_states, vec!['i']),
+            inputs,
+            state,
             out: out_array,
             time_indep_defns,
             time_dep_defns,

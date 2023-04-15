@@ -3,6 +3,7 @@ use anyhow::anyhow;
 use ndarray::s;
 use core::panic;
 use std::cell::RefCell;
+use std::cmp::min;
 use std::ops::Deref;
 use std::hash::Hash;
 use std::cmp::max;
@@ -56,6 +57,86 @@ impl Layout {
             idx = idx / shape[i];
         }
         res
+    }
+
+    // calculate the translation indices going from an expression layout (self)
+    // to a target tensor layout, via a given intermediate block layout and
+    // start position. The translation indices are a vector of length equal to
+    // the number of nnz in the expression layout, where each element is the
+    // index in the tensor layout where the result of the expression is summed
+    // into. The intermidiate block layout is used to determine if the
+    // expression layout is contracted by one axis, or broadcast to one or more
+    // axes.
+    // TODO: don't think we really need the blk layout since we only use the rank and its the same as the tensor?
+    fn translate(&self, blk_layout: &Layout, blk_start: &Index, tensor_layout: &Layout) -> Result<Vec<i64>> {
+        if self.rank() > blk_layout.rank() + 1 {
+            return Err(anyhow!("cannot contract by more than one axis"));
+        }
+        // we assume that we only need to translate to a sparse layout
+        if !tensor_layout.is_sparse() {
+            return Err(anyhow!("can only translate to a sparse layout"));
+        }
+
+        let mut translation_indices: Vec<i64> = Vec::new();
+        // calculate the broadcast indices and add the block start position
+        let broadcast_indices = self.broadcast_indices(blk_layout);
+        broadcast_indices.iter_mut().for_each(|x| *x += blk_start);
+        let min_rank = min(self.rank(), blk_layout.rank());
+        let find_index = |x: &Index| -> Result<()> {
+            for bc_index in &broadcast_indices {
+                let index = x + bc_index;
+                tensor_layout.indices.iter().position(|y| y.slice(s![0..min_rank]) == index.slice(s![0..min_rank]))
+                    .ok_or_else(|| anyhow!("cannot find index in tensor layout"))
+                    .map(|i| translation_indices.push(i.try_into().unwrap()));
+            }
+            Ok(())
+        };
+        if self.is_sparse() {
+            for index in self.indices.iter() {
+                find_index(index)?;
+            }
+        } else if self.is_dense() {
+            (0..self.shape.product())
+                .map(|i| Layout::unravel_index(i, &self.shape))
+                .map(|x| find_index(&x))
+                .collect::<Result<Vec<()>>>()?;
+        } else if self.is_diagonal() {
+            for i in 0..i64::try_from(self.shape[0]).unwrap() {
+                let index = Index::zeros(self.rank()) + i;
+                find_index(&index)?;
+            }
+        } else {
+            return Err(anyhow!("cannot translate layout, unknown layout kind"));
+        }
+
+        // check we dont have a trivial translation (i.e. index in position i is translated to index in position i)
+        if translation_indices.iter().enumerate().all(|(i, &j)| i == j.try_into().unwrap()) {
+            return Err(anyhow!("cannot translate layout, translation is trivial"));
+        }
+        Ok(translation_indices)
+    }
+
+    // calculate the broadcast indices (into the tensor) for a given block layout
+    fn broadcast_indices(&self, layout: &Layout) -> Vec<Index> {
+        let mut broadcast_indices = Vec::new();
+        let base = Index::zeros(self.rank());
+        if layout.rank() <= self.rank() {
+            broadcast_indices.push(base);
+        }
+        let bc_shape = layout.shape.slice(s![self.rank()..]).to_owned();
+        broadcast_indices.extend((0..bc_shape.product()).map(|x| 
+            ndarray::concatenate![ndarray::Axis(0), base, Layout::unravel_index(x, &bc_shape)]
+        ));
+        broadcast_indices
+    }
+
+    // calculate the number of broadcast indices for a given block layout
+    fn nbroadcast_indices(&self, layout: &Layout) -> usize {
+        if layout.rank() <= self.rank() {
+            return 0;
+        }
+        let bc_shape = layout.shape.slice(s![self.rank()..]).to_owned();
+        bc_shape.product()
     }
 
     // contract_last_axis contracts the last axis of the layout, returning a new layout with the last axis contracted.
@@ -481,8 +562,12 @@ impl<'s> TensorBlock<'s> {
         self.layout.is_diagonal()
     }
     
-    pub fn layout(&self) -> &Layout {
-        self.layout.as_ref()
+    pub fn layout(&self) -> &RcLayout {
+        &self.layout
+    }
+
+    pub fn expr_layout(&self) -> &RcLayout {
+        &self.expr_layout
     }
 }
 
@@ -705,6 +790,19 @@ impl<'s> Env<'s> {
                 is_state_dependent: self.is_tensor_state_dependent(var),
             },
         );
+        for block in var.elmts() {
+            if let Some(name) = block.name {
+                self.vars.insert(
+                    name,
+                    EnvVar {
+                        layout: block.layout().clone(),
+                        is_algebraic: true,
+                        is_time_dependent: self.is_tensor_time_dependent(var),
+                        is_state_dependent: self.is_tensor_state_dependent(var),
+                    },
+                );
+            }
+        }
     }
 
 
@@ -1059,80 +1157,96 @@ impl<'s> Env<'s> {
 
 
 // there are three different layouts:
-// 1. the data layout is a mapping from tensors to the index of the first element in the data array. Each tensor in the data layout is a contiguous array of nnz elements
-// 2. the layout layout is a mapping from Layout to the index of the first element in the data array. Only sparse layouts are stored, and each sparse layout is a contiguous array of nnz*rank elements
-// 3. the contraction layout is a mapping from layout from-to pairs to the index of the first element in the data array. Only contraction pairs are stored, and each contraction pair is a contiguous array of nnz elements where nnz is the number of non-zero elements in the from layout
+// 1. the data layout is a mapping from tensors to the index of the first element in the data array. 
+//    Each tensor in the data layout is a contiguous array of nnz elements
+// 2. the layout layout is a mapping from Layout to the index of the first element in the indices array. 
+//    Only sparse layouts are stored, and each sparse layout is a contiguous array of nnz*rank elements
+// 3. the translation layout is a mapping from layout from-to pairs to the index of the first element in the indices array. 
+//    Each contraction pair is an array of nnz-from elements, each representing the indices of the "to" tensor that will be summed into.
 #[derive(Debug)]
 pub struct DataLayout {
     data_index_map: HashMap<String, usize>,
-    data_length: usize,
-    layout_index_map: HashMap<Layout, usize>,
-    layout_length: usize,
-    contraction_index_map: HashMap<(String, String), usize>,
+    layout_index_map: HashMap<RcLayout, usize>,
+    translate_index_map: HashMap<(RcLayout, RcLayout), usize>,
+    data: Vec<f64>,
+    indices: Vec<i64>,
 }
 
 impl DataLayout {
+    fn add_tensor_to_data_layout(&mut self, tensor: &Tensor, i: usize) -> usize {
+        self.data_index_map.insert(tensor.name.to_string(), i);
+        i + tensor.nnz()
+    }
     pub fn new(model: &DiscreteModel) -> Self {
-        
-        let mut tensor_map = HashMap::new();
         let mut data_index_map = HashMap::new();
         let mut layout_index_map = HashMap::new();
-        let mut i = 0usize;
-        let mut ilayout = 0usize;
+        let mut translate_index_map = HashMap::new();
+        let mut data = Vec::new();
+        let mut indices = Vec::new();
 
-        data_index_map.insert("inputs".to_string(), i);
-        i += model.inputs.nnz();
+        let add_tensor = |tensor: &Tensor| {
+            data_index_map.insert(tensor.name.to_string(), data.len());
+            data.extend(vec![0.0; tensor.nnz()]);
+            if tensor.layout().is_sparse() {
+                layout_index_map.insert(tensor.layout.clone(), indices.len());
+                for indice in tensor.layout().indices() {
+                    indices.extend(indice.iter().cloned());
+                }
+                for blk in tensor.elmts() {
+                    translate_index_map.insert((blk.expr_layout.clone(), blk.layout.clone()), indices.len());
+                    let mut translation = blk.expr_layout().translate(blk.layout(), &blk.start, &tensor.layout()).unwrap_or_else(|e| panic!("{}", e));
+                    indices.append(&mut translation);
+                }
+            }
+        };
 
-        for dfn in model.time_indep_defns.iter().chain(model.time_dep_defns.iter()) {
-            data_index_map.insert(dfn.name.to_string(), i);
-            tensor_map.insert(dfn.name.to_string(), &dfn);
-            i += dfn.nnz();
-        }
+        model.inputs.iter().for_each(add_tensor);
+        model.time_indep_defns.iter().for_each(add_tensor);
+        model.time_dep_defns.iter().for_each(add_tensor);
+        add_tensor(&model.state);
+        model.state_dep_defns.iter().for_each(add_tensor);
+        add_tensor(&model.lhs);
+        add_tensor(&model.rhs);
 
-        data_index_map.insert("states".to_string(), i);
-        i += model.state.nnz();
-
-        for dfn in model.state_dep_defns.iter() {
-            data_index_map.insert(dfn.name.to_string(), i);
-            tensor_map.insert(dfn.name.to_string(), &dfn);
-            i += dfn.nnz();
-        }
-
-        data_index_map.insert(model.lhs.name.to_string(), i);
-        i += model.lhs.nnz();
-
-        data_index_map.insert(model.rhs.name.to_string(), i);
-        i += model.rhs.nnz();
-
-        let data_length = i;
-
-        Self { data_index_map, data_length }
+        Self { data_index_map, layout_index_map, data, indices, translate_index_map }
     }
     
-    pub fn data_length(&self) -> usize {
-        self.data_length
-    }
-
     // get the index of the data array for the given tensor name
     pub fn get_data_index(&self, name: &str) -> Option<usize> {
         self.data_index_map.get(name).map(|i| *i)
     }
 
+    pub fn get_layout_index(&self, layout: &RcLayout) -> Option<usize> {
+        self.layout_index_map.get(layout).map(|i| *i)
+    }
+
+    pub fn get_translation_index(&self, from: &RcLayout, to: &RcLayout) -> Option<usize> {
+        self.translate_index_map.get(&(from.clone(), to.clone())).map(|i| *i)
+    }
+
+    pub fn data(&self) -> &[f64] {
+        self.data.as_ref()
+    }
+
+    pub fn indices(&self) -> &[i64] {
+        self.indices.as_ref()
+    }
 }
 
 
 #[derive(Debug)]
 // F(t, u, u_dot) = G(t, u)
 pub struct DiscreteModel<'s> {
-    pub name: &'s str,
-    pub lhs: Tensor<'s>,
-    pub rhs: Tensor<'s>,
-    pub out: Tensor<'s>,
-    pub time_indep_defns: Vec<Tensor<'s>>,
-    pub time_dep_defns: Vec<Tensor<'s>>,
-    pub state_dep_defns: Vec<Tensor<'s>>,
-    pub inputs: Vec<Tensor<'s>>,
-    pub state: Tensor<'s>,
+    name: &'s str,
+    lhs: Tensor<'s>,
+    rhs: Tensor<'s>,
+    out: Tensor<'s>,
+    time_indep_defns: Vec<Tensor<'s>>,
+    time_dep_defns: Vec<Tensor<'s>>,
+    state_dep_defns: Vec<Tensor<'s>>,
+    inputs: Vec<Tensor<'s>>,
+    state: Tensor<'s>,
+    is_algebraic: Vec<bool>,
 }
 
 impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
@@ -1160,6 +1274,7 @@ impl<'s> DiscreteModel<'s> {
             state_dep_defns: Vec::new(),
             inputs: Vec::new(),
             state: Tensor::new_empty("u"),
+            is_algebraic: Vec::new(),
         }
     }
 
@@ -1332,7 +1447,7 @@ impl<'s> DiscreteModel<'s> {
                         "out" => {
                             read_out = true;
                             if let Some(built) = Self::build_array(tensor, &mut env) {
-                                if built.shape.len() > 1 {
+                                if built.rank() > 1 {
                                     env.errs.push(ValidationError::new(
                                         format!("output shape must be a scalar or 1D vector"),
                                         tensor_ast.span,
@@ -1361,19 +1476,23 @@ impl<'s> DiscreteModel<'s> {
                 }
             }
         }
-        // set is_algebraic for every state based on env
-        for s in &mut ret.states.elmts {
-            let env_entry = env.get(s.name).unwrap();
-            s.is_algebraic = env_entry.is_algebraic();
-        }
-        // check that we've read all the required arrays
 
-        let span_all = if ast.is_empty() && ast.first().unwrap().span.is_some() {
+        // set is_algebraic for every state based on env
+        for i in 0..ret.state.elmts().len() {
+            let s = ret.state.elmts()[i];
+            if let Some(name) = s.name {
+                let env_entry = env.get(name).unwrap();
+                ret.is_algebraic.push(env_entry.is_algebraic());
+            }
+        }
+        
+        // check that we've read all the required arrays
+        let span_all = if model.tensors.is_empty() {
             None
         } else {
             Some(StringSpan {
-                pos_start: ast.first().unwrap().span.unwrap().pos_start,
-                pos_end: ast.last().unwrap().span.unwrap().pos_start,
+                pos_start: model.tensors.first().unwrap().span.unwrap().pos_start,
+                pos_end: model.tensors.last().unwrap().span.unwrap().pos_start,
             })
         };
         if !read_state {
@@ -1436,8 +1555,8 @@ impl<'s> DiscreteModel<'s> {
             _ => panic!("equation for state var should be rate eqn or standard eqn"),
         };
         (
-            TensorBlock::new_dense_vector(0, state.dim, Ast { kind: f_astkind, span: ast_eqn.span }),
-            TensorBlock::new_dense_vector(0, state.dim, Ast { kind: g_astkind, span: ast_eqn.span }),
+            TensorBlock::new_dense_vector(None, 0, state.dim, Ast { kind: f_astkind, span: ast_eqn.span }),
+            TensorBlock::new_dense_vector(None, 0, state.dim, Ast { kind: g_astkind, span: ast_eqn.span }),
         )
     }
     fn state_to_u0(state_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
@@ -1447,11 +1566,11 @@ impl<'s> DiscreteModel<'s> {
         } else {
             Ast { kind: AstKind::new_num(0.0), span: None }
         };
-        TensorBlock::new_dense_vector(0, state.dim, init)
+        TensorBlock::new_dense_vector(Some(state.name), 0, state.dim, init)
     }
     fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
         let defn = defn_cell.borrow();
-        let tsr_blk = TensorBlock::new_dense_vector(0, defn.dim, defn.expression.as_ref().unwrap().clone());
+        let tsr_blk = TensorBlock::new_dense_vector(None, 0, defn.dim, defn.expression.as_ref().unwrap().clone());
         Tensor::new(defn.name, vec![tsr_blk], vec!['i'])
     }
 
@@ -1459,7 +1578,7 @@ impl<'s> DiscreteModel<'s> {
         let input = input_cell.borrow();
         assert!(input.is_independent());
         assert!(!input.is_time_dependent());
-        Tensor::new(input.name, vec![TensorBlock::new_dense_vector(0, input.dim, Ast { kind: AstKind::new_name(input.name), span: None })], vec!['i'])
+        Tensor::new(input.name, vec![TensorBlock::new_dense_vector(None, 0, input.dim, Ast { kind: AstKind::new_name(input.name), span: None })], vec!['i'])
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
         let output = output_cell.borrow();
@@ -1473,7 +1592,7 @@ impl<'s> DiscreteModel<'s> {
                 None
             },
         };
-        TensorBlock::new_dense_vector(0, output.dim, expr)
+        TensorBlock::new_dense_vector(None, 0, output.dim, expr)
     }
     pub fn from(model: &ModelInfo<'s>) -> DiscreteModel<'s> {
         let (time_varying_unknowns, const_unknowns): (
@@ -1527,6 +1646,7 @@ impl<'s> DiscreteModel<'s> {
         let mut g_elmts: Vec<TensorBlock> = Vec::new();
         let mut curr_index = 0;
         let mut init_states: Vec<TensorBlock> = Vec::new();
+        let mut is_algebraic = Vec::new();
         for state in states.iter() {
             let mut elmt = DiscreteModel::state_to_elmt(state);
             elmt.0.start[0] = i64::try_from(curr_index).unwrap();
@@ -1536,6 +1656,7 @@ impl<'s> DiscreteModel<'s> {
             curr_index = curr_index + elmt.0.layout().shape[0];
             f_elmts.push(elmt.0);
             g_elmts.push(elmt.1);
+            is_algebraic.push(state.borrow().is_algebraic().unwrap());
             init_states.push(init_state);
         }
         let state = Tensor::new("u", init_states, vec!['i']);
@@ -1583,6 +1704,7 @@ impl<'s> DiscreteModel<'s> {
             time_indep_defns,
             time_dep_defns,
             state_dep_defns,
+            is_algebraic,
         }
     }
 }

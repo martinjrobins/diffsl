@@ -318,8 +318,8 @@ mod tests {
         let tensor = model.tensors[3].kind.as_tensor().unwrap();
         assert_eq!(tensor.name, "u");
         assert_eq!(tensor.elmts.len(), 2);
-        assert_eq!(tensor.elmts[0].as_assignment().unwrap().lhs.to_string(), "y");
-        assert_eq!(tensor.elmts[0].as_assignment().unwrap().rhs.to_string(), "1");
+        assert_eq!(tensor.elmts[0].kind.as_assignment().unwrap().name, "y");
+        assert_eq!(tensor.elmts[0].kind.as_assignment().unwrap().expr.to_string(), "1");
     }
 
 

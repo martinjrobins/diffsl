@@ -17,6 +17,11 @@ u_i {
     y,
 }
 
+dudt_i {
+    dxdt
+    dydt,
+}
+
 RHS_i { 
     p * 2 + g * x,
     y,
@@ -27,7 +32,7 @@ RHS_AUG_i {
 }
 
 F_i {
-    dudt,
+    dxdt,
     0,
 }
 

@@ -38,7 +38,7 @@ enum LayoutKind {
 // a sparsity pattern for a multidimensional tensor. A tensor can be sparse, diagonal or dense, as given by the kind field.
 // A tensor can also have n_dense_axes axes which are dense, these are the last n_dense_axes axes of the tensor. So for example,
 // you could have a 2D sparse tensor with 1 dense axis, combining to give a tensor of rank 3 (i.e. the shape is length 3).
-// indices are kept in row major order, so the last index is the fastest changing index.
+// indices are kept in column major order, so the first index is the fastest changing index.
 #[derive(Debug, Clone, PartialEq)]
 struct Layout {
     indices: Vec<Index>,
@@ -49,12 +49,25 @@ struct Layout {
 
 impl Layout {
     
+    // column major order
     fn unravel_index(index: usize, shape: &Shape) -> Index {
+
         let mut idx = index;
         let mut res = Index::zeros(shape.len());
         for i in 0..shape.len() {
             res[i] = i64::try_from(idx % shape[i]).unwrap();
             idx = idx / shape[i];
+        }
+        res
+    }
+
+    // column major order
+    fn ravel_index(index: &Index, shape: &Shape) -> usize {
+        let mut res = 0;
+        let mut stride = 1;
+        for i in 0..shape.len() {
+            res += usize::try_from(index[i]).unwrap() * stride;
+            stride *= shape[i];
         }
         res
     }
@@ -67,52 +80,80 @@ impl Layout {
     // into. The intermidiate block layout is used to determine if the
     // expression layout is contracted by one axis, or broadcast to one or more
     // axes.
-    // TODO: don't think we really need the blk layout since we only use the rank and its the same as the tensor?
+    // 
+    // if the tensor layout is sparse, then the translation indices are
+    // calculated by searching for the index in the tensor layout that matches
+    // the index in the expression layout. If there is a contraction then only
+    // the first n indices are compared, where n is the rank of the block
+    // layout.
+    // 
+    // if the tensor layout is dense, then we assume that the block layout is
+    // also dense. If the expression layout is dense we return an Err as this is
+    // a trivial case. If the expression layout is diagonal we also return Err
+    // as this is not supported. If the expression layout is sparse, then we
+    // loop throught the nz's in the expression and calculate the translation
+    // index given the index of each nz.
     fn translate(&self, blk_layout: &Layout, blk_start: &Index, tensor_layout: &Layout) -> Result<Vec<usize>> {
         if self.rank() > blk_layout.rank() + 1 {
             return Err(anyhow!("cannot contract by more than one axis"));
         }
-        // we assume that we only need to translate to a sparse layout
-        if !tensor_layout.is_sparse() {
-            return Err(anyhow!("can only translate to a sparse layout"));
-        }
-
-        let mut translation_indices: Vec<usize> = Vec::new();
-        // calculate the broadcast indices and add the block start position
-        let broadcast_indices = self.broadcast_indices(blk_layout);
-        broadcast_indices.iter_mut().for_each(|x| *x += blk_start);
-        let min_rank = min(self.rank(), blk_layout.rank());
-        let find_index = |x: &Index| -> Result<()> {
-            for bc_index in &broadcast_indices {
-                let index = x + bc_index;
-                tensor_layout.indices.iter().position(|y| y.slice(s![0..min_rank]) == index.slice(s![0..min_rank]))
-                    .ok_or_else(|| anyhow!("cannot find index in tensor layout"))
-                    .map(|i| translation_indices.push(i));
+        let translation_indices = 
+        if tensor_layout.is_sparse() {
+            let mut translation_indices: Vec<usize> = Vec::new();
+            // calculate the broadcast indices and add the block start position
+            let mut broadcast_indices = self.broadcast_indices(blk_layout);
+            broadcast_indices.iter_mut().for_each(|x| *x += blk_start);
+            let min_rank = min(self.rank(), blk_layout.rank());
+            let mut find_index = |x: &Index| -> Result<()> {
+                for bc_index in &broadcast_indices {
+                    let index = x + bc_index;
+                    tensor_layout.indices.iter().position(|y| y.slice(s![0..min_rank]) == index.slice(s![0..min_rank]))
+                        .ok_or_else(|| anyhow!("cannot find index in tensor layout"))
+                        .map(|i| translation_indices.push(i));
+                }
+                Ok(())
+            };
+            if self.is_sparse() {
+                for index in self.indices.iter() {
+                    find_index(index)?;
+                }
+            } else if self.is_dense() {
+                (0..self.shape.product())
+                    .map(|i| Layout::unravel_index(i, &self.shape))
+                    .map(|x| find_index(&x))
+                    .collect::<Result<Vec<()>>>()?;
+            } else if self.is_diagonal() {
+                for i in 0..i64::try_from(self.shape[0]).unwrap() {
+                    let index = Index::zeros(self.rank()) + i;
+                    find_index(&index)?;
+                }
+            } else {
+                return Err(anyhow!("cannot translate layout, unknown layout kind"));
             }
-            Ok(())
-        };
-        if self.is_sparse() {
-            for index in self.indices.iter() {
-                find_index(index)?;
+            translation_indices
+        } else if tensor_layout.is_dense() {
+            if self.is_dense() {
+                return Err(anyhow!("cannot translate layout, translation is trivial"));
+            } else if self.is_diagonal() {
+                return Err(anyhow!("cannot translate layout, diagonal layout not supported"));
+            } else if self.is_sparse() {
+                // this should just be a contraction
+                let min_rank = min(self.rank(), blk_layout.rank());
+                let translation_indices = self.indices.iter().map(|x| {
+                    let index = x.slice(s![0..min_rank]).into_owned();
+                    Self::ravel_index(&index, &tensor_layout.shape)
+                }).collect::<Vec<usize>>();
+                translation_indices
+            } else {
+                return Err(anyhow!("cannot translate layout, unknown layout kind"));
             }
-        } else if self.is_dense() {
-            (0..self.shape.product())
-                .map(|i| Layout::unravel_index(i, &self.shape))
-                .map(|x| find_index(&x))
-                .collect::<Result<Vec<()>>>()?;
-        } else if self.is_diagonal() {
-            for i in 0..i64::try_from(self.shape[0]).unwrap() {
-                let index = Index::zeros(self.rank()) + i;
-                find_index(&index)?;
-            }
+        } else if tensor_layout.is_diagonal() {
+            return Err(anyhow!("cannot translate layout, diagonal layout not supported"));
         } else {
             return Err(anyhow!("cannot translate layout, unknown layout kind"));
-        }
+        };
 
-        // check we dont have a trivial translation (i.e. index in position i is translated to index in position i)
-        if translation_indices.iter().enumerate().all(|(i, &j)| i == j) {
-            return Err(anyhow!("cannot translate layout, translation is trivial"));
-        }
+        // TODO: check we dont have a trivial translation (i.e. index in position i is translated to index in position i)
         Ok(translation_indices)
     }
 
@@ -416,11 +457,11 @@ impl Layout {
         Ok(())
     }
 
-    fn rank(&self) -> usize {
+    pub fn rank(&self) -> usize {
         self.shape.len()
     }
 
-    fn dense(shape: Shape) -> Self {
+    pub fn dense(shape: Shape) -> Self {
         Self {
             indices: Vec::new(),
             shape,
@@ -428,7 +469,7 @@ impl Layout {
             n_dense_axes: 0,
         }
     }
-    fn diagonal(shape: Shape) -> Self {
+    pub fn diagonal(shape: Shape) -> Self {
         Self {
             indices: Vec::new(),
             shape,
@@ -436,7 +477,7 @@ impl Layout {
             n_dense_axes: 0,
         }
     }
-    fn sparse(indices: Vec<Index>, shape: Shape) -> Self {
+    pub fn sparse(indices: Vec<Index>, shape: Shape) -> Self {
         Self {
             indices,
             shape,
@@ -445,7 +486,7 @@ impl Layout {
         }
     }
 
-    fn nnz(&self) -> usize {
+    pub fn nnz(&self) -> usize {
         let n_dense: usize = self.shape.slice(s![self.rank() - self.n_dense_axes..]).iter().product();
         if self.is_dense() {
             self.shape.iter().product()
@@ -456,15 +497,15 @@ impl Layout {
         }
     }
 
-    fn indices(&self) -> &Vec<Index> {
+    pub fn indices(&self) -> &Vec<Index> {
         &self.indices
     }
 
-    fn shape(&self) -> &Shape {
+    pub fn shape(&self) -> &Shape {
         &self.shape
     }
 
-    fn kind(&self) -> &LayoutKind {
+    pub fn kind(&self) -> &LayoutKind {
         &self.kind
     }
 }
@@ -572,6 +613,10 @@ impl<'s> TensorBlock<'s> {
 
     pub fn name(&self) -> Option<&str> {
         self.name
+    }
+
+    pub fn indices(&self) -> &[char] {
+        self.indices.as_ref()
     }
 }
 
@@ -1164,6 +1209,7 @@ impl<'s> Env<'s> {
 //    Only sparse layouts are stored, and each sparse layout is a contiguous array of nnz*rank elements
 // 3. the translation layout is a mapping from layout from-to pairs to the index of the first element in the indices array. 
 //    Each contraction pair is an array of nnz-from elements, each representing the indices of the "to" tensor that will be summed into.
+// We also store a mapping from tensor names to their layout, so that we can easily look up the layout of a tensor
 #[derive(Debug)]
 pub struct DataLayout {
     data_index_map: HashMap<String, usize>,
@@ -1171,6 +1217,7 @@ pub struct DataLayout {
     translate_index_map: HashMap<(RcLayout, RcLayout), usize>,
     data: Vec<f64>,
     indices: Vec<i32>,
+    layout_map: HashMap<String, RcLayout>,
 }
 
 impl DataLayout {
@@ -1184,21 +1231,28 @@ impl DataLayout {
         let mut translate_index_map = HashMap::new();
         let mut data = Vec::new();
         let mut indices = Vec::new();
+        let mut layout_map = HashMap::new();
 
         let mut add_tensor = |tensor: &Tensor| {
+            layout_map.insert(tensor.name.to_string(), tensor.layout.clone());
             data_index_map.insert(tensor.name.to_string(), data.len());
             data.extend(vec![0.0; tensor.nnz()]);
             if tensor.layout().is_sparse() {
+                // only need to store the layout for sparse tensors
                 layout_index_map.insert(tensor.layout.clone(), indices.len());
                 for indice in tensor.layout().indices() {
                     indices.extend(indice.iter().map(|i| i32::try_from(*i).unwrap()));
                 }
-                for blk in tensor.elmts() {
+            }
+
+            // add the translation layout for each block if it exists
+            for blk in tensor.elmts() {
+                let translation_result = blk.expr_layout().translate(blk.layout(), &blk.start, &tensor.layout());
+                if let Ok(translation) = translation_result {
                     translate_index_map.insert((blk.expr_layout.clone(), blk.layout.clone()), indices.len());
-                    let translation = blk.expr_layout().translate(blk.layout(), &blk.start, &tensor.layout()).unwrap_or_else(|e| panic!("{}", e));
                     indices.extend(translation.into_iter().map(|i| i32::try_from(i).unwrap()));
                 }
-            }
+            } 
         };
 
         model.inputs.iter().for_each(add_tensor);
@@ -1209,7 +1263,12 @@ impl DataLayout {
         add_tensor(&model.lhs);
         add_tensor(&model.rhs);
 
-        Self { data_index_map, layout_index_map, data, indices, translate_index_map }
+        Self { data_index_map, layout_index_map, data, indices, translate_index_map, layout_map }
+    }
+    
+    // get the layout of a tensor by name
+    pub fn get_layout(&self, name: &str) -> Option<&RcLayout> {
+        self.layout_map.get(name)
     }
     
     // get the index of the data array for the given tensor name
@@ -1784,6 +1843,10 @@ impl<'s> DiscreteModel<'s> {
 
     pub fn rhs(&self) -> &Tensor<'s> {
         &self.rhs
+    }
+
+    pub fn name(&self) -> &str {
+        self.name
     }
 }
 

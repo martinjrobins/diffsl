@@ -35,7 +35,6 @@ struct CodeGen<'ctx> {
     fpm: PassManager<FunctionValue<'ctx>>,
     ee: ExecutionEngine<'ctx>,
     variables: HashMap<String, PointerValue<'ctx>>,
-    layouts: HashMap<String, PointerValue<'ctx>>,
     functions: HashMap<String, FunctionValue<'ctx>>,
     fn_value_opt: Option<FunctionValue<'ctx>>,
     real_type: FloatType<'ctx>,
@@ -162,7 +161,7 @@ impl<'ctx> CodeGen<'ctx> {
             None => self.create_entry_block_builder().build_alloca(res_type, a.name()),
         };
         let elmt = a.elmts().first().unwrap();
-        let float_value = self.jit_compile_expr(&elmt.expr(), None, a.name())?;
+        let float_value = self.jit_compile_expr(&elmt.expr(), &[], elmt, None)?;
         self.builder.build_store(res_ptr, float_value);
         Ok(res_ptr)
     }
@@ -170,9 +169,7 @@ impl<'ctx> CodeGen<'ctx> {
     fn jit_compile_array(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
         if a.rank() == 0 {
             self.jit_compile_scalar(a, res_ptr_opt)
-        } else if a.rank() == 1 && a.layout().is_dense() {
-            self.jit_compile_dense_vector(a, res_ptr_opt)
-        } else if a.rank() > 1 && a.layout().is_dense() {
+        } else if a.layout().is_dense() {
             self.jit_compile_dense_tensor(a, res_ptr_opt)
         } else if a.layout().is_diagonal() {
             self.jit_compile_diagonal_tensor(a, res_ptr_opt)
@@ -183,18 +180,98 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    fn jit_compile_dense_block(&mut self, tensor: &Tensor, elmt_index: usize, res_ptr: &PointerValue<'ctx>, res_index: &IntValue<'ctx>) {
-        let elmt = &tensor.elmts()[elmt_index];
-        let elmt_name = elmt.name().unwrap_or_else(|| format!("{}-{}", tensor.name(), elmt_index).as_str());
+    fn jit_compile_diagonal_tensor(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
+        let res_type = self.real_type;
+        let res_ptr = match res_ptr_opt {
+            Some(ptr) => ptr,
+            None => self.create_entry_block_builder().build_alloca(res_type, a.name()),
+        };
         let int_type = self.context.i64_type();
+        let mut res_index = int_type.const_int(0, false);
+        for (i, blk) in a.elmts().iter().enumerate() {
+            let name = blk.name().unwrap_or(format!("{}-{}", a.name(), i).as_str());
+            if blk.expr_layout().is_dense() {
+                return Err(anyhow!("dense blocks not supported in diagonal tensors"));`
+            } else if blk.expr_layout().is_diagonal() {
+                res_index = self.jit_compile_diagonal_block(name, blk, res_ptr, res_index, None)?;
+            } else if blk.expr_layout().is_sparse() {
+                return Err(anyhow!("sparse blocks not supported in diagonal tensors"));`
+            } else {
+                return Err(anyhow!("unsupported block layout: {:?}", blk.expr_layout()));
+            }
+        }
+        Ok(res_ptr)
+    }
+
+    fn jit_compile_sparse_tensor(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
+        let res_type = self.real_type;
+        let res_ptr = match res_ptr_opt {
+            Some(ptr) => ptr,
+            None => self.create_entry_block_builder().build_alloca(res_type, a.name()),
+        };
+        let int_type = self.context.i64_type();
+        let mut res_index = int_type.const_int(0, false);
+
+        jit_zero_out_sparse_tensor(res_ptr, res_index, translate_index, self.real_type);
+        for (i, blk) in a.elmts().iter().enumerate() {
+            let name = blk.name().unwrap_or(format!("{}-{}", a.name(), i).as_str());
+            let translate_index_opt = self.layout.get_translation_index(blk.expr_layout(), blk.layout());
+            assert!(translate_index_opt.is_some());
+            if blk.expr_layout().is_dense() {
+                res_index = self.jit_compile_dense_block(name, blk, res_ptr, res_index, translate_index_opt)?;
+            } else if blk.expr_layout().is_diagonal() {
+                res_index = self.jit_compile_diagonal_block(name, blk, res_ptr, res_index, translate_index_opt)?;
+            } else if blk.expr_layout().is_sparse() {
+                res_index = self.jit_compile_sparse_block(name, blk, res_ptr, res_index, translate_index_opt)?;
+            } else {
+                return Err(anyhow!("unsupported block layout: {:?}", blk.expr_layout()));
+            }
+        }
+        Ok(res_ptr)
+    }
+    
+    // use jit_compile_dense_block to compile all the blocks in a tensor
+    fn jit_compile_dense_tensor(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
+        let res_type = self.real_type;
+        let res_ptr = match res_ptr_opt {
+            Some(ptr) => ptr,
+            None => self.create_entry_block_builder().build_alloca(res_type, a.name()),
+        };
+        let int_type = self.context.i64_type();
+        let mut res_index = int_type.const_int(0, false);
+        for (i, blk) in a.elmts().iter().enumerate() {
+            let name = blk.name().unwrap_or(format!("{}-{}", a.name(), i).as_str());
+            if blk.expr_layout().is_dense() {
+                res_index = self.jit_compile_dense_block(name, blk, res_ptr, res_index, None)?;
+            } else if blk.expr_layout().is_diagonal() {
+                res_index = self.jit_compile_diagonal_block(name, blk, res_ptr, res_index, None)?;
+            } else if blk.expr_layout().is_sparse() {
+                let translate_index_opt = self.layout.get_translation_index(elmt.expr_layout(), elmt.layout());
+                if let Some(translate_index) = translate_index_opt {
+                    jit_zero_out_dense_block(res_ptr, res_index, translate_index, self.real_type);
+                }
+                res_index = self.jit_compile_sparse_block(name, blk, res_ptr, res_index, translate_index_opt)?;
+            } else {
+                return Err(anyhow!("unsupported block layout: {:?}", blk.expr_layout()));
+            }
+        }
+        Ok(res_ptr)
+    }
+
+    // for dense blocks we can loop through the nested loops to calculate the index, then we compile the expression passing in this index
+    fn jit_compile_dense_block(&mut self, name: &str, elmt: &TensorBlock, res_ptr: PointerValue<'ctx>, res_index: IntValue<'ctx>, translate_index_opt: Option<usize>) -> Result<IntValue<'ctx>> {
+        let int_type = self.context.i64_type();
+
         
         let mut preblock = self.builder.get_insert_block().unwrap();
-        let rank = tensor.rank();
+        let rank = elmt.rank();
+        let mut elmt_index = int_type.const_int(0, false);
+        let elmt_shape = elmt.shape().mapv(|n| int_type.const_int(n.try_into().unwrap(), false));
 
         // setup indices, loop through the nested loops
-        let indices = Vec::new();
+        let mut indices = Vec::new();
         for i in 0..rank {
-            let block = self.context.append_basic_block(self.fn_value(), elmt_name);
+            let block = self.context.append_basic_block(self.fn_value(), name);
             self.builder.build_unconditional_branch(block);
             self.builder.position_at_end(block);
 
@@ -207,52 +284,136 @@ impl<'ctx> CodeGen<'ctx> {
         }
         
         // loop body - eval expression
-        let indices_int: Vec<_> = indices.iter().map(|i| i.as_basic_value().into_int_value()).collect();
-        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), tensor, elmt_index)?;
+        let indices_int: Vec<IntValue> = indices.iter().map(|i| i.as_basic_value().into_int_value()).collect();
+        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
 
         // loop body - store result
-        let elmt_indices_ptr = unsafe { self.builder.build_in_bounds_gep(*res_ptr, &[curr_index_int], elmt_name) };
-        let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[curr_index_int], elmt_name) };
+        let this_res_index = self.builder.build_int_add(res_index, elmt_index, name);
+        let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[this_res_index], name) };
         self.builder.build_store(resi_ptr, float_value);
         
+        // increment elmt index
+        let one = int_type.const_int(1, false);
+        elmt_index = self.builder.build_int_add(elmt_index, one, name);
 
         // unwind the nested loops
         for i in (0..rank).rev() {
             // increment index
-            let one = int_type.const_int(1, false);
-            let next_index = self.builder.build_int_add(indices_int[i], one, elmt_name);
+            let next_index = self.builder.build_int_add(indices_int[i], one, name);
             indices[i].add_incoming(&[(&next_index, preblock)]);
 
             // loop condition
-            let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, nnz_val, elmt_name);
-            let block = self.context.append_basic_block(self.fn_value(), elmt_name);
+            let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, elmt_shape[i], name);
+            let block = self.context.append_basic_block(self.fn_value(), name);
             self.builder.build_conditional_branch(loop_while, preblock, block);
             self.builder.position_at_end(block);
             preblock = block;
         }
+        Ok(this_res_index)
+    }
+    
+    // for sparse blocks we can loop through the non-zero elements and extract the index from the layout, then we compile the expression passing in this index
+    // TODO: havn't implemented contractions yet
+    fn jit_compile_sparse_block(&mut self, name: &str, elmt: &TensorBlock, res_ptr: PointerValue<'ctx>, res_index: IntValue<'ctx>, translate_index_opt: Option<usize>) -> Result<IntValue<'ctx>> {
+        let int_type = self.context.i64_type();
+        
+        let mut preblock = self.builder.get_insert_block().unwrap();
+        let layout_index = self.layout.get_layout_index(elmt.layout()).unwrap();
+
+        // loop through the non-zero elements
+        let block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_unconditional_branch(block);
+        self.builder.position_at_end(block);
+
+        let start_index = int_type.const_int(0, false);
+        let end_index = int_type.const_int(elmt.expr_layout().nnz().try_into().unwrap(), false);
+        let curr_index = self.builder.build_phi(int_type, "i");
+        curr_index.add_incoming(&[(&start_index, preblock)]);
+        
+        // loop body - load index from layout
+        let elmt_index = curr_index.as_basic_value().into_int_value();
+        let indices_int: Vec<IntValue> = (0..elmt.expr_layout().rank()).map(|i| {
+            let layout_index_plus_offset = int_type.const_int((layout_index + i).try_into().unwrap(), false);
+            let curr_index = self.builder.build_int_add(elmt_index, layout_index_plus_offset, name);
+            let ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("indices"), &[curr_index], name) };
+            self.builder.build_load(ptr, name).into_int_value()
+        }).collect();
+        
+        // loop body - eval expression
+        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, elmt_index)?;
+
+        // loop body - store result
+        let this_res_index = self.builder.build_int_add(res_index, elmt_index, name);
+        let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[this_res_index], name) };
+        self.builder.build_store(resi_ptr, float_value);
+        
+        // increment loop index
+        let one = int_type.const_int(1, false);
+        let next_index = self.builder.build_int_add(elmt_index, one, name);
+        curr_index.add_incoming(&[(&next_index, block)]);
+
+        // loop condition
+        let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, end_index, name);
+        let post_block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_conditional_branch(loop_while, block, post_block);
+        self.builder.position_at_end(post_block);
+
+        Ok(this_res_index)
+    }
+    
+    // for diagonal blocks we can loop through the diagonal elements and the index is just the same for each element, then we compile the expression passing in this index
+    fn jit_compile_diagonal_block(&mut self, name: &str, elmt: &TensorBlock, res_ptr: PointerValue<'ctx>, res_index: IntValue<'ctx>, translate_index_opt: Option<usize>) -> Result<IntValue<'ctx>> {
+        let int_type = self.context.i64_type();
+        
+        let mut preblock = self.builder.get_insert_block().unwrap();
+        let layout_index = self.layout.get_layout_index(elmt.layout()).unwrap();
+
+        // loop through the non-zero elements
+        let block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_unconditional_branch(block);
+        self.builder.position_at_end(block);
+
+        let start_index = int_type.const_int(0, false);
+        let end_index = int_type.const_int(elmt.expr_layout().nnz().try_into().unwrap(), false);
+        let curr_index = self.builder.build_phi(int_type, "i");
+        curr_index.add_incoming(&[(&start_index, preblock)]);
+        
+        // loop body - index is just the same for each element
+        let elmt_index = curr_index.as_basic_value().into_int_value();
+        let indices_int: Vec<IntValue> = (0..elmt.expr_layout().rank()).map(|i| {
+            elmt_index.clone()
+        }).collect();
+        
+        // loop body - eval expression
+        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, elmt_index)?;
+
+        // loop body - store result
+        let this_res_index = self.builder.build_int_add(res_index, elmt_index, name);
+        let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[this_res_index], name) };
+        self.builder.build_store(resi_ptr, float_value);
+        
+        // increment loop index
+        let one = int_type.const_int(1, false);
+        let next_index = self.builder.build_int_add(elmt_index, one, name);
+        curr_index.add_incoming(&[(&next_index, block)]);
+
+        // loop condition
+        let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, end_index, name);
+        let post_block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_conditional_branch(loop_while, block, post_block);
+        self.builder.position_at_end(post_block);
+
+        Ok(this_res_index)
     }
 
-    fn jit_compile_dense_tensor(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
-        let nnz = u64::try_from(a.nnz()).unwrap();
-        let nnz_val = self.context.i32_type().const_int(nnz, false);
-        let rank = a.rank();
-        let res_ptr = match res_ptr_opt {
-            Some(ptr) => ptr,
-            None => self.create_entry_block_builder().build_array_alloca(self.real_type, nnz_val, a.name()),
-        };
-        for (i, elmt) in a.elmts().iter().enumerate() {
-            
-        }
-        Ok(res_ptr)
-    }
 
-    fn jit_compile_expr(&mut self, expr: &Ast, index: &[IntValue<'ctx>], tensor: &Tensor, elmt_index: usize) -> Result<FloatValue<'ctx>> {
-        let name_string = format!("{}-{}", tensor.name(), elmt_index);
-        let name= name_string.as_str();
+
+    fn jit_compile_expr(&mut self, expr: &Ast, index: &[IntValue<'ctx>], elmt: &TensorBlock, elmt_index: Option<IntValue<'ctx>>) -> Result<FloatValue<'ctx>> {
+        let name= elmt.name().unwrap();
         match &expr.kind {
             AstKind::Binop(binop) => {
-                let lhs = self.jit_compile_expr(binop.left.as_ref(), index, tensor, elmt_index)?;
-                let rhs = self.jit_compile_expr(binop.right.as_ref(), index, tensor, elmt_index)?;
+                let lhs = self.jit_compile_expr(binop.left.as_ref(), index, elmt, elmt_index)?;
+                let rhs = self.jit_compile_expr(binop.right.as_ref(), index, elmt, elmt_index)?;
                 match binop.op {
                     '*' => Ok(self.builder.build_float_mul(lhs, rhs, name)),
                     '/' => Ok(self.builder.build_float_div(lhs, rhs, name)),
@@ -262,7 +423,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             },
             AstKind::Monop(monop) => {
-                let child = self.jit_compile_expr(monop.child.as_ref(), index, tensor, elmt_index)?;
+                let child = self.jit_compile_expr(monop.child.as_ref(), index, elmt, elmt_index)?;
                 match monop.op {
                     '-' => Ok(self.builder.build_float_neg(child, name)),
                     unknown => Err(anyhow!("unknown monop op '{}'", unknown))
@@ -273,7 +434,7 @@ impl<'ctx> CodeGen<'ctx> {
                     Some(function) => {
                         let mut args: Vec<BasicMetadataValueEnum> = Vec::new();
                         for arg in call.args.iter() {
-                            let arg_val = self.jit_compile_expr(arg.as_ref(), index, tensor, elmt_index)?;
+                            let arg_val = self.jit_compile_expr(arg.as_ref(), index, elmt, elmt_index)?;
                             args.push(BasicMetadataValueEnum::FloatValue(arg_val));
                         }
                         let ret_value = self.builder.build_call(function, args.as_slice(), name)
@@ -285,40 +446,56 @@ impl<'ctx> CodeGen<'ctx> {
                 
             },
             AstKind::CallArg(arg) => {
-                self.jit_compile_expr(&arg.expression, index, tensor, elmt_index)
+                self.jit_compile_expr(&arg.expression, index, elmt, elmt_index)
             },
             AstKind::Number(value) => Ok(self.real_type.const_float(*value)),
             AstKind::IndexedName(iname) => {
-                let ptr = self.get_var(iname.name.as_str()).expect("variable not found");
-                let value_ptr = if tensor.is_dense() {
-                    // nnz index is the product of the index elements
-                    let nnz_index = index.iter().map(|i| {
-                        let layout_ptr = self.layouts.get(iname.name.as_str()).expect("variable not found");
-                        self.builder.build_load(layout_ptr, iname.name.as_str()).into_int_value()
-                    }).fold(None, |acc, i| {
-                        match acc {
-                            Some(acc) => Some(self.builder.build_int_mul(acc, i, name)),
-                            None => Some(i)
-                        }
-                    });
-                    match nnz_index {
-                        Some(i) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], name) },
-                        None => *ptr,
+                let ptr = self.get_param(iname.name);
+                let layout = self.layout.get_layout(iname.name).unwrap();
+                let iname_elmt_index = if layout.is_dense() {
+                    // permute indices based on the index chars of this tensor
+                    let mut no_transform = true;
+                    let mut iname_index = Vec::new();
+                    for (i, c) in iname.indices.iter().enumerate() {
+                        let pi = elmt.indices().iter().position(|x| x == c).unwrap();
+                        iname_index.push(index[pi]);
+                        no_transform = no_transform && pi == i;
                     }
+                    if no_transform && elmt.expr_layout().is_dense() {
+                        // no permutation and everything is dense, just return the pointer corresponding to elem_index
+                        elmt_index
+                    } else {
+                        // calculate the element index using iname_index and the shape of the tensor
+                        let rank = layout.shape().len();
+                        let mut iname_elmt_index = iname_index.last().unwrap().clone();
+                        let mut stride = 1u64;
+                        for i in (0..iname_index.len() - 1).rev() {
+                            let iname_i = iname_index[i];
+                            stride *= layout.shape()[i + 1].into();
+                            let stride_intval = self.context.i64_type().const_int(stride, false);
+                            let stride_mul_i = self.builder.build_int_mul(stride_intval, iname_i, name);
+                            iname_elmt_index = self.builder.build_int_add(iname_elmt_index, stride_mul_i, name);
+                        }
+                        Some(iname_elmt_index)
+                    }
+                } else if layout.is_sparse() {
+                    // must have come from jit_compile_sparse_block, so we can just use the elmt_index
+                    elmt_index
+                } else if layout.is_diagonal() {
+                    // must have come from jit_compile_diagonal_block, so we can just use the elmt_index
+                    elmt_index
                 } else {
-                    let layout_ptr = self.layouts.get(iname.name.as_str()).expect("variable not found");
-                    let tensor_index = 0..tensor.rank().map(|axis| {
-                        let ptr = unsafe { self.builder.build_in_bounds_gep(*layout_ptr, &[axis * tensor.nnz() + i], name) };
-                        self.builder.build_load(layout_ptr, iname.name.as_str()).into_int_value()
-                    }.collect<Vec<_>>();
-                    let value_ptr = unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], iname.name.as_str()) }
-                }
-                
-                Ok(self.builder.build_load(value_ptr, iname.name.as_str()).into_float_value())
+                    panic!("unexpected layout");
+                };
+                let value_ptr = match iname_elmt_index {
+                    Some(index) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[index], name) },
+                    None => *ptr
+                };
+                Ok(self.builder.build_load(value_ptr, name).into_float_value())
             },
             AstKind::Name(name) => {
-                let tensor = 
-                let ptr = self.get_var(*name).expect("variable not found");
+                // must be a scalar, just load the value
+                let ptr = self.get_param(name);
                 Ok(self.builder.build_load(*ptr, name).into_float_value())
             },
             AstKind::Index(_) => todo!(),
@@ -681,11 +858,8 @@ impl<'ctx> Sundials<'ctx> {
     }
 
     pub fn from_discrete_model<'m>(model: &'m DiscreteModel, context: &'ctx inkwell::context::Context, options: Options) -> Result<Sundials<'ctx>> {
-        let number_of_states = i64::try_from(model.len_state()).unwrap();
-        let number_of_parameters = i64::try_from(model.len_inputs()).unwrap();
-        let time_indep_data_nnz= model.time_indep_defns.iter().map(|defn| i64::try_from(defn.nnz()).unwrap()).collect::<Vec<_>>();
-        let number_of_outputs = i64::try_from(model.len_output()).unwrap();
-        let module = context.create_module(model.name);
+        let number_of_states = i64::try_from(model.state().shape()[0]).unwrap();
+        let module = context.create_module(model.name());
         let fpm = PassManager::create(&module);
         fpm.add_instruction_combining_pass();
         fpm.add_reassociate_pass();

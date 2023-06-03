@@ -212,19 +212,26 @@ impl<'ctx> CodeGen<'ctx> {
         let int_type = self.context.i64_type();
         let mut res_index = int_type.const_int(0, false);
 
-        jit_zero_out_sparse_tensor(res_ptr, res_index, translate_index, self.real_type);
-        for (i, blk) in a.elmts().iter().enumerate() {
+        // if we have a single block with the same expr layout as the tensor, we don't need to translate
+        if a.elmts().len() == 1 && a.elmts()[0].expr_layout() == a.layout_ptr() {
+            let blk = a.elmts().first().unwrap();
             let name = blk.name().unwrap_or(format!("{}-{}", a.name(), i).as_str());
-            let translate_index_opt = self.layout.get_translation_index(blk.expr_layout(), blk.layout());
-            assert!(translate_index_opt.is_some());
-            if blk.expr_layout().is_dense() {
-                res_index = self.jit_compile_dense_block(name, blk, res_ptr, res_index, translate_index_opt)?;
-            } else if blk.expr_layout().is_diagonal() {
-                res_index = self.jit_compile_diagonal_block(name, blk, res_ptr, res_index, translate_index_opt)?;
-            } else if blk.expr_layout().is_sparse() {
-                res_index = self.jit_compile_sparse_block(name, blk, res_ptr, res_index, translate_index_opt)?;
-            } else {
-                return Err(anyhow!("unsupported block layout: {:?}", blk.expr_layout()));
+            self.jit_compile_sparse_block(name, blk, res_ptr, res_index, None);
+        } else {
+            jit_zero_out_sparse_tensor(res_ptr, res_index, translate_index, self.real_type);
+            for (i, blk) in a.elmts().iter().enumerate() {
+                let name = blk.name().unwrap_or(format!("{}-{}", a.name(), i).as_str());
+                let translate_index_opt = self.layout.get_translation_index(blk.expr_layout(), blk.layout());
+                assert!(translate_index_opt.is_some());
+                if blk.expr_layout().is_dense() {
+                    res_index = self.jit_compile_dense_block(name, blk, res_ptr, res_index, translate_index_opt)?;
+                } else if blk.expr_layout().is_diagonal() {
+                    res_index = self.jit_compile_diagonal_block(name, blk, res_ptr, res_index, translate_index_opt)?;
+                } else if blk.expr_layout().is_sparse() {
+                    res_index = self.jit_compile_sparse_block(name, blk, res_ptr, res_index, translate_index_opt)?;
+                } else {
+                    return Err(anyhow!("unsupported block layout: {:?}", blk.expr_layout()));
+                }
             }
         }
         Ok(res_ptr)

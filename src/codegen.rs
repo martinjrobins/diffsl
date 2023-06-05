@@ -1,3 +1,4 @@
+use inkwell::basic_block::BasicBlock;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::passes::PassManager;
 use inkwell::types::{FloatType, BasicMetadataTypeEnum, BasicTypeEnum};
@@ -18,7 +19,7 @@ use anyhow::{Result, anyhow};
 
 
 use crate::ast::{Ast, AstKind};
-use crate::discretise::{DiscreteModel, Tensor, DataLayout, TensorBlock};
+use crate::discretise::{DiscreteModel, Tensor, DataLayout, TensorBlock, Translation, TranslationFrom, TranslationTo};
 
 /// Convenience type alias for the `sum` function.
 ///
@@ -176,9 +177,34 @@ impl<'ctx> CodeGen<'ctx> {
         } else if a.layout().is_sparse() {
             self.jit_compile_sparse_tensor(a, res_ptr_opt)
         } else {
-            Err(anyhow!("unsupported tensor layout: {:?}", a.layout())
+            Err(anyhow!("unsupported tensor layout: {:?}", a.layout()))
         }
     }
+
+
+    fn jit_compile_tensor(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
+        // treat scalar as a special case
+        if a.rank() == 0 {
+            return self.jit_compile_scalar(a, res_ptr_opt)
+        }
+
+        let res_type = self.real_type;
+        let res_ptr = match res_ptr_opt {
+            Some(ptr) => ptr,
+            None => self.create_entry_block_builder().build_alloca(res_type, a.name()),
+        };
+        let int_type = self.context.i64_type();
+        let mut res_index = int_type.const_int(0, false);
+
+        for (i, blk) in a.elmts().iter().enumerate() {
+            let translation = Translation::new(blk.expr_layout(), blk.layout(), blk.start(), a.layout_ptr());
+            let name = blk.name().unwrap_or(format!("{}-{}", a.name(), i).as_str());
+            let translate_index_opt = self.layout.get_translation_index(blk.expr_layout(), blk.layout(), blk.start(), a.layout_ptr());
+            self.jit_compile_block(name, blk, res_ptr, res_index, translate_index_opt);
+        }
+        Ok(res_ptr)
+    }
+
 
     fn jit_compile_diagonal_tensor(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
         let res_type = self.real_type;
@@ -265,22 +291,54 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(res_ptr)
     }
 
-    // for dense blocks we can loop through the nested loops to calculate the index, then we compile the expression passing in this index
-    fn jit_compile_dense_block(&mut self, name: &str, elmt: &TensorBlock, res_ptr: PointerValue<'ctx>, res_index: IntValue<'ctx>, translate_index_opt: Option<usize>) -> Result<IntValue<'ctx>> {
-        let int_type = self.context.i64_type();
 
+    fn jit_compile_block(&mut self, name: &str, tensor: &Tensor, elmt: &TensorBlock, res_ptr: PointerValue<'ctx>) -> Result<IntValue<'ctx>> {
+        let translation = Translation::new(elmt.expr_layout(), elmt.layout(), elmt.start(), tensor.layout_ptr());
+        
+        if elmt.expr_layout().is_dense() {
+            self.jit_compile_dense_block(name, elmt, res_ptr, &translation)
+        } else if elmt.expr_layout().is_diagonal() {
+            self.jit_compile_diagonal_block(name, elmt, res_ptr, &translation)
+        } else if elmt.expr_layout().is_sparse() {
+        
+            self.jit_compile_sparse_block(name, elmt, res_ptr, &translation)
+        } else {
+            return Err(anyhow!("unsupported block layout: {:?}", elmt.expr_layout()));
+        }
+
+    }
+
+    // for dense blocks we can loop through the nested loops to calculate the index, then we compile the expression passing in this index
+    fn jit_compile_dense_block(&mut self, name: &str, elmt: &TensorBlock, res_ptr: PointerValue<'ctx>, translation: &Translation) -> Result<IntValue<'ctx>> {
+        let int_type = self.context.i64_type();
         
         let mut preblock = self.builder.get_insert_block().unwrap();
         let rank = elmt.rank();
-        let mut elmt_index = int_type.const_int(0, false);
+        let one = int_type.const_int(1, false);
+        let zero = int_type.const_int(0, false);
         let elmt_shape = elmt.shape().mapv(|n| int_type.const_int(n.try_into().unwrap(), false));
 
         // setup indices, loop through the nested loops
         let mut indices = Vec::new();
+
+        // allocate the store index
+        let store_index_ptr = self.builder.build_alloca(int_type, "store_index");
+
+        // allocate the contract sum if needed
+        let (contract_sum, contract_by) = if let TranslationFrom::DenseContraction { contract_by, contract_len } = translation.source {
+            (Some(self.builder.build_alloca(self.real_type, "contract_sum")), contract_by)
+        } else {
+            (None, 0)
+        };
+
         for i in 0..rank {
             let block = self.context.append_basic_block(self.fn_value(), name);
             self.builder.build_unconditional_branch(block);
             self.builder.position_at_end(block);
+
+            if i == rank - contract_by && contract_sum.is_some() {
+                self.builder.build_store(contract_sum.unwrap(), self.real_type.const_zero());
+            }
 
             let start_index = int_type.const_int(0, false);
             let curr_index = self.builder.build_phi(int_type, format!["i{}", i].as_str());
@@ -289,25 +347,29 @@ impl<'ctx> CodeGen<'ctx> {
             indices.push(curr_index);
             preblock = block;
         }
-        
-        // loop body - eval expression
-        let indices_int: Vec<IntValue> = indices.iter().map(|i| i.as_basic_value().into_int_value()).collect();
-        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
 
-        // loop body - store result
-        let this_res_index = self.builder.build_int_add(res_index, elmt_index, name);
-        let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[this_res_index], name) };
-        self.builder.build_store(resi_ptr, float_value);
+        // load store index
+        let store_index = self.builder.build_load(store_index_ptr, "store_index").into_int_value();
+
+        let indices_int: Vec<IntValue> = indices.iter().map(|i| i.as_basic_value().into_int_value()).collect();
+        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(store_index))?;
+
+        preblock = self.jit_compile_broadcast_or_contract_block(name, elmt, store_index, res_ptr, translation, &preblock)?;
         
-        // increment elmt index
-        let one = int_type.const_int(1, false);
-        elmt_index = self.builder.build_int_add(elmt_index, one, name);
+        // increment store index 
+        let new_store_index = self.builder.build_int_add(store_index, one, "store_index");
+        self.builder.build_store(store_index_ptr, new_store_index);
 
         // unwind the nested loops
         for i in (0..rank).rev() {
             // increment index
             let next_index = self.builder.build_int_add(indices_int[i], one, name);
             indices[i].add_incoming(&[(&next_index, preblock)]);
+
+            if i == rank - contract_by && contract_sum.is_some() {
+                let contract_sum_value= self.builder.build_load(contract_sum.unwrap(), "contract_sum").into_float_value();
+                self.jit_compile_store(name, elmt, elmt_index, contract_sum_value, res_ptr, translation)?;
+            }
 
             // loop condition
             let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, elmt_shape[i], name);
@@ -322,6 +384,10 @@ impl<'ctx> CodeGen<'ctx> {
     // for sparse blocks we can loop through the non-zero elements and extract the index from the layout, then we compile the expression passing in this index
     // TODO: havn't implemented contractions yet
     fn jit_compile_sparse_block(&mut self, name: &str, elmt: &TensorBlock, res_ptr: PointerValue<'ctx>, res_index: IntValue<'ctx>, translate_index_opt: Option<usize>) -> Result<IntValue<'ctx>> {
+        if translation.is_contraction() {
+            jit_zero_block(res_ptr, res_index, translate_index, self.real_type);
+        }
+
         let int_type = self.context.i64_type();
         
         let mut preblock = self.builder.get_insert_block().unwrap();
@@ -413,7 +479,79 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(this_res_index)
     }
 
+    fn jit_compile_broadcast_or_contract_block(&mut self, name: &str, elmt: &TensorBlock, elmt_index: IntValue<'ctx>, res_ptr: PointerValue<'ctx>, translation: &Translation, pre_block: &BasicBlock<'ctx>) -> Result<BasicBlock<'ctx>> {
+        let int_type = self.context.i64_type();
+        let one = int_type.const_int(1, false);
+        let zero = int_type.const_int(0, false);
+        match translation.source {
+            TranslationFrom::Broadcast { broadcast_by, broadcast_len } => {
+                let bcast_start_index = zero;
+                let bcast_end_index = int_type.const_int(broadcast_len.try_into().unwrap(), false);
 
+                // setup loop block
+                let bcast_block = self.context.append_basic_block(self.fn_value(), name);
+                self.builder.build_unconditional_branch(bcast_block);
+                self.builder.position_at_end(bcast_block);
+                let bcast_index = self.builder.build_phi(int_type, "broadcast_index");
+                bcast_index.add_incoming(&[(&bcast_start_index, preblock)]);
+
+                // store value
+                self.jit_compile_store(name, elmt, elmt_index, float_value, res_ptr, translation)?;
+
+                // increment index
+                let bcast_next_index= self.builder.build_int_add(bcast_index.as_basic_value().into_int_value(), one, name);
+                bcast_index.add_incoming(&[(&bcast_next_index, bcast_block)]);
+
+                // loop condition
+                let bcast_cond = self.builder.build_int_compare(IntPredicate::ULT, bcast_index.as_basic_value().into_int_value(), bcast_end_index, "broadcast_cond");
+                let post_bcast_block = self.context.append_basic_block(self.fn_value(), name);
+                self.builder.build_conditional_branch(bcast_cond, bcast_block, post_bcast_block);
+                self.builder.position_at_end(post_bcast_block);
+
+                // return the current block for later
+                Some(post_bcast_block)
+
+            },
+            TranslationFrom::DenseContraction { contract_by, contract_len } {
+                let contract_sum_value= self.builder.build_load(contract_sum.unwrap(), "contract_sum").into_float_value();
+                let updated_contract_sum_value = self.builder.build_float_add(contract_sum_value, float_value, "contract_sum");
+                self.builder.build_store(contract_sum.unwrap(), updated_contract_sum_value);
+                Some(pre_block)
+
+            },
+            TranslationFrom::ElementWise => {
+                self.jit_compile_store(name, elmt, elmt_index, float_value, res_ptr, translation)?;
+                Some(pre_block)
+            },
+            _ => Err(anyhow!("Invalid translation"))),
+        }
+    }
+
+
+    fn jit_compile_store(&mut self, name: &str, elmt: &TensorBlock, elmt_index: IntValue<'ctx>, float_value: FloatValue<'ctx>, res_ptr: PointerValue<'ctx>, translation: &Translation) -> Result<()> {
+        let translate_index = self.layout.get_translation_index(elmt.expr_layout(), elmt.layout_ptr()).unwrap();
+        let int_type = self.context.i64_type();
+        let rank = elmt.layout().rank();
+        let res_index = match translation.to {
+            TranslationTo::Contiguous { start, end } => {
+                let start_const = int_type.const_int(start.try_into().unwrap(), false);
+                self.builder.build_int_add(start_const, elmt_index, name)
+            },
+            TranslationTo::Sparse { indices } => {
+                // load store index from layout
+                let translate_store_index = translate_index + translation.get_to_index_in_data_layout();
+                let translate_store_index = int_type.const_int(translate_store_index.try_into().unwrap(), false);
+                let rank_const = int_type.const_int(rank.try_into().unwrap(), false);
+                let elmt_index_strided = self.builder.build_int_mul(elmt_index, rank_const, name);
+                let curr_index = self.builder.build_int_add(elmt_index_strided, translate_store_index, name);
+                let ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("indices"), &[curr_index], name) };
+                self.builder.build_load(ptr, name).into_int_value()
+            },
+        };
+        let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[res_index], name) };
+        self.builder.build_store(resi_ptr, float_value);
+        Ok(())
+    }
 
     fn jit_compile_expr(&mut self, expr: &Ast, index: &[IntValue<'ctx>], elmt: &TensorBlock, elmt_index: Option<IntValue<'ctx>>) -> Result<FloatValue<'ctx>> {
         let name= elmt.name().unwrap();

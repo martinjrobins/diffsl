@@ -30,7 +30,7 @@ use crate::error::ValidationErrors;
 
 
 #[derive(Debug, Clone, PartialEq)]
-enum TranslationFrom {
+pub enum TranslationFrom {
     // contraction over a dense expression. contract by the last `contract_by` axes, which are of len `contract_len`
     DenseContraction{ contract_by: usize, contract_len: usize },
 
@@ -109,7 +109,7 @@ impl TranslationFrom {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum TranslationTo {
+pub enum TranslationTo {
     // indices in the target tensor nz array are contiguous and start/end at the given indices
     Contiguous{ start: usize, end: usize },
 
@@ -152,13 +152,13 @@ impl TranslationTo {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct Translation {
-    source: TranslationFrom,
-    target: TranslationTo,
+pub struct Translation {
+    pub source: TranslationFrom,
+    pub target: TranslationTo,
 }
 
 impl Translation {
-    fn new(source: RcLayout, via: RcLayout, target_start: &Index, target: RcLayout) -> Self {
+    pub fn new(source: &RcLayout, via: &RcLayout, target_start: &Index, target: &RcLayout) -> Self {
         let source_layout = source.borrow();
         let target_layout = target.borrow();
         let via_layout = via.borrow();
@@ -176,6 +176,16 @@ impl Translation {
             ret.extend(indices.iter().map(|i| *i as i32));
         }
         ret
+    }
+    pub fn get_from_index_in_data_layout(&self) -> usize {
+        0
+    }
+    pub fn get_to_index_in_data_layout(&self) -> usize {
+        if let TranslationFrom::SparseContraction { contract_by, contract_start_indices, contract_end_indices } = &self.source {
+            contract_start_indices.len() * 2
+        } else {
+            0
+        }
     }
 }
 

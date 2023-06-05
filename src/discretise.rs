@@ -2,8 +2,8 @@ use anyhow::Result;
 use anyhow::anyhow;
 use ndarray::s;
 use core::panic;
+use std::borrow::Borrow;
 use std::cell::RefCell;
-use std::cmp::min;
 use std::ops::Deref;
 use std::hash::Hash;
 use std::cmp::max;
@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hasher;
 use std::rc::Rc;
+use std::vec;
 
 use itertools::chain;
 use ndarray::Array1;
@@ -53,10 +54,18 @@ enum TranslationFrom {
 impl TranslationFrom {
     // traslate from source layout (an expression) via an intermediary target layout (a tensor block)
     fn new(source: &Layout, target: &Layout) -> Self {
-        let broadcast_by = target.rank() - Layout::min_rank_for_broadcast(source.shape());
+        let mut min_rank_for_broadcast = source.rank();
+        for i in (0..source.rank()).rev() {
+            if source.shape()[i] != target.shape()[i] {
+                assert!(source.shape()[i] == 1);
+                min_rank_for_broadcast = i + 1;
+                break;
+            }
+        }
+        let broadcast_by = target.rank() - min_rank_for_broadcast;
         let broadcast_len = target.shape().slice(s![broadcast_by..]).iter().product();
         let contract_by = source.rank() - source.rank();
-        let is_broadcast = source.rank() <= target.rank() && source.shape() != target.shape();
+        let is_broadcast = broadcast_by > 0;
         let is_contraction = source.rank() > target.rank();
 
 
@@ -68,10 +77,11 @@ impl TranslationFrom {
             let mut contract_start_indices = vec![0];
             let mut contract_end_indices = Vec::new();
             let monitor_axis = source.rank() - contract_by - 1;
-            let mut current_monitor_axis_value = source.indices()[0][monitor_axis];
+            let indices: Vec<Index> = source.indices().collect();
+            let mut current_monitor_axis_value = indices[0][monitor_axis];
             // the indices are held in row major order, so the last index is the fastest changing index
-            for i in 1..source.indices().len() {
-                let index = &source.indices()[i];
+            for i in 1..indices.len() {
+                let index = indices[i];
                 let monitor_axis_value = index[monitor_axis];
                 if monitor_axis_value != current_monitor_axis_value {
                     contract_start_indices.push(i);
@@ -79,7 +89,7 @@ impl TranslationFrom {
                     current_monitor_axis_value = monitor_axis_value;
                 }
             }
-            contract_end_indices.push(source.indices().len());
+            contract_end_indices.push(indices.len());
             Self::SparseContraction{ contract_by, contract_start_indices, contract_end_indices }
         } else if is_broadcast {
             Self::Broadcast{ broadcast_by, broadcast_len }
@@ -108,29 +118,27 @@ enum TranslationTo {
 }
 
 impl TranslationTo {
-    // translate_from is the TranslationFrom info
     // start is the index of the first element in the target tensor
-    // source is the layout of the expression 
-    // via is the layout of the target tensor block
+    // sourse is the layout of the target tensor block
     // target is the layout of the target tensor
-    fn new(translate_from: &TranslationFrom, start: &Index, source: &Layout, via: &Layout, target: &Layout) -> Self {
-        if target.is_dense() {
-            let start = target.nnz_index(start);
-            let end = start + source.nnz();
-            TranslationTo::Contiguous{ start, end }
-        } else if target.is_diagonal() {
-            let start = target.nnz_index(start);
+    fn new(start: &Index, source: &Layout, target: &Layout) -> Self {
+        if target.is_dense() || target.is_diagonal() {
+            let start = target.find_nnz_index(start).unwrap();
             let end = start + source.nnz();
             TranslationTo::Contiguous{ start, end }
         } else if target.is_sparse() {
-            // calculate the broadcast indices and add the block start position so these are relative to the tensor layout
-            let mut broadcast_indices = source.broadcast_indices(via);
-            broadcast_indices.iter_mut().for_each(|x| *x += start);
-            let mut indices = Vec::new();
-            for index in broadcast_indices.indices.iter() {
-                source.find_index_sparse(index tensor_layout).unwrap());
+            let indices: Vec<usize> = source.indices().map(|index| {
+                target.find_nnz_index(&(index + start)).unwrap()
+            }).collect();
+            // check if the indices are contiguous
+            let contiguous = indices.windows(2).all(|w| w[1] == w[0] + 1);
+            if contiguous {
+                let start = indices[0];
+                let end = indices[indices.len() - 1];
+                TranslationTo::Contiguous{ start, end }
+            } else {
+                TranslationTo::Sparse{ indices }
             }
-            TranslationTo::Sparse{ indices }
         } else {
             panic!("invalid target layout")
         }
@@ -150,9 +158,24 @@ struct Translation {
 }
 
 impl Translation {
-    fn new(source: TranslationFrom, source_layout: &Layout, target: TranslationTo) -> Self {
-        assert!(source.nnz_after_translate(source_layout) == target.nnz_after_translate());
-        Self { source, target }
+    fn new(source: RcLayout, via: RcLayout, target_start: &Index, target: RcLayout) -> Self {
+        let source_layout = source.borrow();
+        let target_layout = target.borrow();
+        let via_layout = via.borrow();
+        let from = TranslationFrom::new(source_layout, via_layout);
+        let to = TranslationTo::new(target_start, via_layout, target_layout);
+        assert!(from.nnz_after_translate(source_layout) == to.nnz_after_translate());
+        Self { source: from, target: to}
+    }
+    fn to_data_layout(&self) -> Vec<i32> {
+        let mut ret = Vec::new();
+        if let TranslationFrom::SparseContraction { contract_by, contract_start_indices, contract_end_indices } = &self.source {
+            ret.extend(contract_start_indices.iter().chain(contract_end_indices.iter()).map(|i| *i as i32));
+        }
+        if let TranslationTo::Sparse { indices } = &self.target {
+            ret.extend(indices.iter().map(|i| *i as i32));
+        }
+        ret
     }
 }
 
@@ -200,217 +223,6 @@ impl Layout {
             stride *= shape[i];
         }
         res
-    }
-
-    // calculate the translation indices going from an expression layout (self)
-    // to a target tensor layout, via a given intermediate block layout and
-    // start position. The translation indices are a vector of length equal to
-    // the number of nnz in the expression layout multiplied by the length of
-    // the broadcast, where each element is the index in the tensor layout where
-    // the result of the expression is summed into. The intermidiate block
-    // layout is used to determine if the expression layout is contracted by one
-    // axis, or broadcast to one or more axes.
-    // 
-    // if the tensor layout is sparse, then the translation indices are
-    // calculated by searching for the index in the tensor layout that matches
-    // the index in the expression layout. If there is a contraction then only
-    // the first n indices are compared, where n is the rank of the block
-    // layout.
-    // 
-    // if the tensor layout is dense, then we assume that the block layout is
-    // also dense. If the expression layout is dense we return an Err as this is
-    // a trivial case. If the expression layout is diagonal we also return Err
-    // as this is not supported. If the expression layout is sparse, then we
-    // loop throught the nz's * broadcasts in the expression and calculate the
-    // translation index given the index of each nz.
-    // 
-    // if the tensor layout is dense and there is a broadcast from the expression layout to the tensor layout, then we
-    //
-    fn translate(expr_layout_ptr: RcLayout, blk_layout_ptr: RcLayout, blk_start: &Index, tensor_layout_ptr: RcLayout) -> Option<Translation> {
-        let expr_layout = expr_layout_ptr.borrow();
-        let blk_layout = blk_layout_ptr.borrow();
-        let tensor_layout = tensor_layout_ptr.borrow();
-        let mut blk_end = blk_start.clone();
-        blk_end[0] += blk_layout.shape[0];
-        let start = blk_start.product().try_into().unwrap();
-        let end = blk_end.product().try_into().unwrap();
-
-        // trivial case
-        if expr_layout_ptr == tensor_layout_ptr {
-            return Some(Translation::no_translation(start, end));
-        }
-
-        // calculate the broadcast indices and add the block start position so these are relative to the tensor layout
-        let mut broadcast_indices = expr_layout.broadcast_indices(blk_layout);
-        broadcast_indices.iter_mut().for_each(|x| *x += blk_start);
-        let broadcast_len = broadcast_indices.len();
-        let broadcast_by = blk_layout - Self::min_rank_for_broadcast(expr_layout.shape());
-        let contract_by = expr_layout.rank() - blk_layout.rank();
-        let is_broadcast = expr_layout.rank() <= blk_layout.rank() && expr_layout.shape() != blk_layout.shape();
-        let is_contraction = expr_layout.rank() > blk_layout.rank();
-
-        let translation = 
-        if tensor_layout.is_sparse() {
-            let mut indices: Vec<usize> = Vec::new();
-            if expr_layout.is_sparse() {
-                for index in expr_layout.indices.iter() {
-                    indices.append(&mut expr_layout.find_index_sparse(index, &mut broadcast_indices, tensor_layout).unwrap());
-                }
-            } else if expr_layout.is_dense() {
-                for i in 0..expr_layout.shape.product() {
-                    let index = Self::unravel_index(i, &expr_layout.shape);
-                    indices.append(&mut expr_layout.find_index_sparse(&index, &mut broadcast_indices, tensor_layout).unwrap());
-                }
-            } else if expr_layout.is_diagonal() {
-                for i in 0..i64::try_from(expr_layout.shape[0]).unwrap() {
-                    let index = Index::zeros(expr_layout.rank()) + i;
-                    indices.append(&mut expr_layout.find_index_sparse(&index, &mut broadcast_indices, tensor_layout).unwrap());
-                }
-            } else {
-                panic!("unknown layout kind")
-            }
-
-            if !(is_broadcast || is_contraction) {
-                Translation::sparse_rearrangement(start, end, indices)
-            } else if (is_broadcast) {
-                let broadcast_by = expr_layout.broadcast_indices(blk_layout).len();
-                let broadcast_len = indices.len();
-                Translation::sparse_broadcast(start, end, indices, broadcast_by, broadcast_len)
-
-            }
-        } else if tensor_layout.is_dense() {
-            let mut translation_indices: Vec<usize> = Vec::new();
-            
-            if expr_layout.is_dense() {
-                if !(is_broadcast || is_contraction) {
-                    // blocks always concatinated along the first axis
-                    Translation::None{ start: blk_start.product(), end: blk_end.product() }
-                } else if is_broadcast {
-                    let broadcast_by = expr_layout.broadcast_indices(blk_layout).len();
-                    // check that the expr nnz * n_broadcasts is equal to the tensor nnz
-                    assert!(expr_layout.nnz() * broadcast_by == end - start);
-                    Translation::DenseBroadcast { start: blk_start.product(), end: blk_end.product(), broadcast_by }
-                } else if is_contraction {
-                    // check that contraction makes sense
-                    let contract_by = blk_layout.shape().slice(s![0..expr_layout.rank()]).product();
-                    assert!(usize::try_from(end - start).unwrap() * contract_by == expr_layout.nnz());
-                    Translation::DenseContraction { start: blk_start, end: blk_end, contract_by }
-                } else {
-                    panic!("unknown translation kind")
-                }
-            } else if expr_layout.is_diagonal() {
-                return Err(anyhow!("cannot translate layout, diagonal layout not supported"));
-            } else if expr_layout.is_sparse() {
-                for index in expr_layout.indices.iter() {
-                    translation_indices.append(&mut expr_layout.find_index_dense(index, &mut broadcast_indices, tensor_layout).unwrap());
-                }
-            } else {
-                return Err(anyhow!("cannot translate layout, unknown layout kind"));
-            }
-        } else if tensor_layout.is_diagonal() {
-            return Err(anyhow!("cannot translate layout, diagonal layout not supported"));
-        } else {
-            return Err(anyhow!("cannot translate layout, unknown layout kind"));
-        };
-
-        // TODO: check we dont have a trivial translation (i.e. index in position i is translated to index in position i)
-        Ok(translation_indices)
-    }
-
-    // given an index in the current layout and a set of broadcast_indices, calculate the index in the given layout
-    // this function assumes the to layout is sparse
-    // so the rank of the broadcast indices is the rank of the to layouts. The leading self.rank() elements of the 
-    // braodcast indices are zero, so we are free to edit these
-    fn find_index_sparse(&self, index: &Index, broadcast_indices: &mut Vec<Index>, layout: &Layout) -> Result<Vec<usize>> {
-        // either augment the index with zeros or truncate the index according to the rank of the layout
-        let mut index = if self.rank() < layout.rank() {
-            let mut aug_index = Index::zeros(layout.rank());
-            for i in 0..self.rank() {
-                aug_index[i] = index[i];
-            }
-            aug_index
-        } else {
-            index.slice(s![0..layout.rank()]).to_owned()
-        };
-        // the broadcast indices are zero so can just set these
-        broadcast_indices.iter_mut().map(|bc_index| {
-            for i in 0..self.rank() {
-                bc_index[i] = index[i];
-            }
-            layout.indices.iter().position(|y| y == bc_index)
-        }).collect::<Option<Vec<usize>>>().ok_or_else(|| anyhow!("cannot find index in layout"))
-    }
-
-    // given an index in the current layout and a set of broadcast_indices, calculate the index in the given layout
-    // this function assumes the to layout is dense
-    fn find_index_dense(&self, index: &Index, broadcast_indices: &mut Vec<Index>, layout: &Layout) -> Result<Vec<usize>> {
-        // either augment the index with zeros or truncate the index according to the rank of the layout
-        let mut index = if self.rank() < layout.rank() {
-            let mut aug_index = Index::zeros(layout.rank());
-            for i in 0..self.rank() {
-                aug_index[i] = index[i];
-            }
-            aug_index
-        } else {
-            index.slice(s![0..layout.rank()]).to_owned()
-        };
-        // the broadcast indices are zero so can just set these
-        broadcast_indices.iter_mut().map(|bc_index| {
-            for i in 0..self.rank() {
-                bc_index[i] = index[i];
-            }
-            let layout_index = Self::ravel_index(bc_index, layout.shape());
-
-            // check that the index makes sense
-            if layout_index > 0 && layout_index < layout.nnz() {
-                Some(layout_index)
-            } else {
-                None
-            }
-        }).collect::<Option<Vec<usize>>>().ok_or_else(|| anyhow!("cannot find index in layout"))
-    }
-
-    // given a shape, calculate the minimum rank wrt broadcasting (i.e. ignoring the trailing 1s)
-    fn min_rank_for_broadcast(shape: &Shape) -> usize {
-        let mut rank = 0;
-        for i in (0..shape.len()).rev() {
-            if shape[i] == 1 {
-                rank += 1;
-            } else {
-                break;
-            }
-        }
-        rank
-    }
-
-    // calculate the broadcast indices for a given layout from this layout
-    // e.g. broadcast: if this layout is [2], and the given layout is [2, 3], then the broadcast indices are [0, 0], [0, 1], [0, 2]
-    // e.g. broadcast: if this layout is [2, 1], and the given layout is [2, 3], then the broadcast indices are [0, 0], [0, 1], [0, 2]
-    // e.g. nothing: if this layout is [2], and the given layout is [2], then the broadcast indices are [0]
-    // e.g. contraction: if this layout is [2, 3], and the given layout is [2], then the broadcast indices are [0]
-    fn broadcast_indices(&self, layout: &Layout) -> Vec<Index> {
-        let mut broadcast_indices = Vec::new();
-        let mut base_rank = Self::min_rank_for_broadcast(self.shape());
-        // check that the shapes are compatible
-        assert!(&layout.shape == &self.shape.slice(s![base_rank..]));
-        let base = Index::zeros(base_rank);
-        if layout.rank() <= base_rank {
-            broadcast_indices.push(base);
-        }
-        let bc_shape = layout.shape.slice(s![base_rank..]).to_owned();
-        broadcast_indices.extend((0..bc_shape.product()).map(|x| 
-            ndarray::concatenate![ndarray::Axis(0), base, Layout::unravel_index(x, &bc_shape)]
-        ));
-        broadcast_indices
-    }
-
-    // calculate the number of broadcast indices for a given block layout
-    fn nbroadcast_indices(&self, layout: &Layout) -> usize {
-        if layout.rank() <= self.rank() {
-            return 0;
-        }
-        let bc_shape = layout.shape.slice(s![self.rank()..]).to_owned();
-        bc_shape.product()
     }
 
     // contract_last_axis contracts the last axis of the layout, returning a new layout with the last axis contracted.
@@ -679,7 +491,7 @@ impl Layout {
         if self.is_sparse() {
             // if this layout is sparse then convert the other and extend the indices
             let sparse_other = other.into_sparse();
-            self.indices.extend(sparse_other.indices().iter().map(|x| x + start));
+            self.indices.extend(sparse_other.indices().map(|x| x + start));
         } else {
             // if the other layout is sparse then we need to convert to sparse
             let sparse_self = self.into_sparse();
@@ -730,8 +542,60 @@ impl Layout {
         }
     }
 
-    pub fn indices(&self) -> &Vec<Index> {
-        &self.indices
+    pub fn indices(&self) -> impl Iterator<Item = Index> + '_ {
+        match self.kind {
+            LayoutKind::Dense => {
+                let f = Box::new(move |i| {
+                    Self::unravel_index(i, &self.shape)
+                });
+                (0..self.shape.product()).map(f as Box<dyn Fn(usize) -> Index>)
+            },
+            LayoutKind::Diagonal => {
+                let f = Box::new(move |i| {
+                    Index::zeros(self.rank()) + i64::try_from(i).unwrap()
+                });
+                (0..self.shape[0]).map(f as Box<dyn Fn(usize) -> Index>)
+            },
+            LayoutKind::Sparse => {
+                let f = Box::new(move |i| {
+                    let index: &Index = self.indices.get(i).unwrap();
+                    index.clone()
+                });
+                (0..self.nnz()).map(f as Box<dyn Fn(usize) -> Index>)
+            }
+        }
+    }
+
+    fn to_data_layout(&self) -> Vec<i32> {
+        let mut data_layout = vec![];
+        if self.is_sparse() {
+            for index in self.indices() {
+                data_layout.extend(index.iter().map(|&x| x as i32));
+            }
+        }
+        data_layout
+    }
+
+    // returns the index in the nnz array corresponding to the given index
+    fn find_nnz_index(&self, index: &Index) -> Option<usize> {
+        match self.kind {
+            LayoutKind::Sparse => self.indices.iter().position(|x| x == index),
+            LayoutKind::Dense =>  {
+                let valid_index = ndarray::Zip::from(index).and(self.shape()).all(|&a, &b| a < b.try_into().unwrap());
+                if valid_index {
+                    Some(Self::ravel_index(index, self.shape()))
+                } else {
+                    None
+                }
+            },
+            LayoutKind::Diagonal => {
+                if index.iter().all(|&x| x == index[0]) && index[0] < self.shape[0].try_into().unwrap() {
+                    Some(index[0].try_into().unwrap())
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     pub fn shape(&self) -> &Shape {
@@ -1467,24 +1331,20 @@ impl DataLayout {
         let mut layout_map = HashMap::new();
 
         let mut add_tensor = |tensor: &Tensor| {
+            // insert the data (non-zeros) for each tensor
             layout_map.insert(tensor.name.to_string(), tensor.layout.clone());
             data_index_map.insert(tensor.name.to_string(), data.len());
             data.extend(vec![0.0; tensor.nnz()]);
-            if tensor.layout().is_sparse() {
-                // only need to store the layout for sparse tensors
-                layout_index_map.insert(tensor.layout.clone(), indices.len());
-                for indice in tensor.layout().indices() {
-                    indices.extend(indice.iter().map(|i| i32::try_from(*i).unwrap()));
-                }
-            }
 
-            // add the translation layout for each block if it exists
+            // insert the layout info for each tensor
+            layout_index_map.insert(tensor.layout, indices.len());
+            indices.extend(tensor.layout.to_data_layout());
+
+            // add the translation info for each block-tensor pair
             for blk in tensor.elmts() {
-                let translation_result = Layout::translate(blk.layout, &blk.start, &tensor.layout);
-                if let Some(translation) = translation_result {
-                    translate_index_map.insert((blk.expr_layout.clone(), blk.layout.clone()), indices.len());
-                    indices.extend(translation.into_iter().map(|i| i32::try_from(i).unwrap()));
-                }
+                let translation = Translation::new(blk.expr_layout, blk.layout, &blk.start, tensor.layout);
+                translate_index_map.insert((blk.expr_layout, tensor.layout), indices.len());
+                indices.extend(translation.to_data_layout());
             } 
         };
 
@@ -1862,7 +1722,7 @@ impl<'s> DiscreteModel<'s> {
     }
     
     fn state_to_elmt(state_cell: &Rc<RefCell<Variable<'s>>>) -> (TensorBlock<'s>, TensorBlock<'s>) {
-        let state = state_cell.borrow();
+        let state = state_cell.as_ref().borrow();
         let ast_eqn = if let Some(eqn) = &state.equation {
             eqn.clone()
         } else {
@@ -1885,7 +1745,7 @@ impl<'s> DiscreteModel<'s> {
         )
     }
     fn state_to_u0(state_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
-        let state = state_cell.borrow();
+        let state = state_cell.as_ref().borrow();
         let init = if state.has_initial_condition() {
             state.init_conditions[0].equation.clone()
         } else {
@@ -1894,24 +1754,24 @@ impl<'s> DiscreteModel<'s> {
         TensorBlock::new_dense_vector(Some(state.name), 0, state.dim, init)
     }
     fn state_to_dudt0(state_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
-        let state = state_cell.borrow();
+        let state = state_cell.as_ref().borrow();
         let init = Ast { kind: AstKind::new_num(0.0), span: None };
         TensorBlock::new_dense_vector(Some(format!("d{}dt", state.name).as_str()), 0, state.dim, init)
     }
     fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
-        let defn = defn_cell.borrow();
+        let defn = defn_cell.as_ref().borrow();
         let tsr_blk = TensorBlock::new_dense_vector(None, 0, defn.dim, defn.expression.as_ref().unwrap().clone());
         Tensor::new(defn.name, vec![tsr_blk], vec!['i'])
     }
 
     fn state_to_input(input_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
-        let input = input_cell.borrow();
+        let input = input_cell.as_ref().borrow();
         assert!(input.is_independent());
         assert!(!input.is_time_dependent());
         Tensor::new(input.name, vec![TensorBlock::new_dense_vector(None, 0, input.dim, Ast { kind: AstKind::new_name(input.name), span: None })], vec!['i'])
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
-        let output = output_cell.borrow();
+        let output = output_cell.as_ref().borrow();
         let expr = Ast {
             kind: AstKind::new_name(output.name),
             span: if output.is_definition() {
@@ -1932,11 +1792,11 @@ impl<'s> DiscreteModel<'s> {
             .unknowns
             .iter()
             .cloned()
-            .partition(|var| var.borrow().is_time_dependent());
+            .partition(|var| var.as_ref().borrow().is_time_dependent());
 
         let states: Vec<Rc<RefCell<Variable>>> = time_varying_unknowns
             .iter()
-            .filter(|v| v.borrow().is_state())
+            .filter(|v| v.as_ref().borrow().is_state())
             .cloned()
             .collect();
 
@@ -1947,7 +1807,7 @@ impl<'s> DiscreteModel<'s> {
             .definitions
             .iter()
             .cloned()
-            .partition(|v| v.borrow().is_dependent_on_state());
+            .partition(|v| v.as_ref().borrow().is_dependent_on_state());
 
         let (time_dep_defns, const_defns): (
             Vec<Rc<RefCell<Variable>>>,
@@ -1955,7 +1815,7 @@ impl<'s> DiscreteModel<'s> {
         ) = state_indep_defns
             .iter()
             .cloned()
-            .partition(|v| v.borrow().is_time_dependent());
+            .partition(|v| v.as_ref().borrow().is_time_dependent());
 
         let mut out_array_elmts: Vec<TensorBlock> =
             chain(time_varying_unknowns.iter(), model.definitions.iter())
@@ -1989,7 +1849,7 @@ impl<'s> DiscreteModel<'s> {
             curr_index = curr_index + elmt.0.layout().shape[0];
             f_elmts.push(elmt.0);
             g_elmts.push(elmt.1);
-            is_algebraic.push(state.borrow().is_algebraic().unwrap());
+            is_algebraic.push(state.as_ref().borrow().is_algebraic().unwrap());
             init_dudts.push(init_dudt);
             init_states.push(init_state);
         }

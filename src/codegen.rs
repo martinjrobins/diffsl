@@ -3,7 +3,7 @@ use inkwell::intrinsics::Intrinsic;
 use inkwell::passes::PassManager;
 use inkwell::types::{FloatType, BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{PointerValue, FloatValue, FunctionValue, IntValue, BasicMetadataValueEnum, BasicValueEnum};
-use inkwell::{OptimizationLevel, AddressSpace, IntPredicate, data_layout};
+use inkwell::{OptimizationLevel, AddressSpace, IntPredicate};
 use inkwell::builder::Builder;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
@@ -70,29 +70,29 @@ impl<'ctx> CodeGen<'ctx> {
         for blk in u.elmts() {
             let ptr = self.variables.get("u").unwrap();
             let i = self.context.i32_type().const_int(data_index.try_into().unwrap(), false);
-            let alloca = unsafe { self.create_entry_block_builder().build_in_bounds_gep(*ptr, &[i], blk.name().unwrap()) };
+            unsafe { self.create_entry_block_builder().build_in_bounds_gep(*ptr, &[i], blk.name().unwrap()) };
             data_index += blk.nnz();
         }
         data_index = 0;
         for blk in dudt.elmts() {
             let ptr = self.variables.get("dudt").unwrap();
             let i = self.context.i32_type().const_int(data_index.try_into().unwrap(), false);
-            let alloca = unsafe { self.create_entry_block_builder().build_in_bounds_gep(*ptr, &[i], blk.name().unwrap()) };
+            unsafe { self.create_entry_block_builder().build_in_bounds_gep(*ptr, &[i], blk.name().unwrap()) };
             data_index += blk.nnz();
         }
     }
     fn insert_tensor(&mut self, tensor: &Tensor) {
-        let ptr = self.variables.get("data").unwrap();
+        let ptr = self.variables.get("data").unwrap().clone();
         let mut data_index = self.layout.get_data_index(tensor.name()).unwrap();
         let i = self.context.i32_type().const_int(data_index.try_into().unwrap(), false);
-        let alloca = unsafe { self.create_entry_block_builder().build_in_bounds_gep(*ptr, &[i], tensor.name()) };
+        let alloca = unsafe { self.create_entry_block_builder().build_in_bounds_gep(ptr, &[i], tensor.name()) };
         self.variables.insert(tensor.name().to_owned(), alloca);
         
         //insert any named blocks
         for blk in tensor.elmts() {
             if let Some(name) = blk.name() {
                 let i = self.context.i32_type().const_int(data_index.try_into().unwrap(), false);
-                let alloca = unsafe { self.create_entry_block_builder().build_in_bounds_gep(*ptr, &[i], name) };
+                let alloca = unsafe { self.create_entry_block_builder().build_in_bounds_gep(ptr, &[i], name) };
                 self.variables.insert(name.to_owned(), alloca);
             }
             // named blocks only supported for rank <= 1, so we can just add the nnz to get the next data index
@@ -193,16 +193,11 @@ impl<'ctx> CodeGen<'ctx> {
         };
 
         // set up the tensor storage pointer and index into this data
-        let int_type = self.context.i64_type();
         self.tensor_ptr_opt = Some(res_ptr);
 
-        let int_type = self.context.i64_type();
-        let mut res_index = int_type.const_int(0, false);
-
         for (i, blk) in a.elmts().iter().enumerate() {
-            let translation = Translation::new(blk.expr_layout(), blk.layout(), blk.start(), a.layout_ptr());
-            let name = blk.name().unwrap_or(format!("{}-{}", a.name(), i).as_str());
-            let translate_index_opt = self.layout.get_translation_index(blk.expr_layout(), blk.layout());
+            let default = format!("{}-{}", a.name(), i);
+            let name = blk.name().unwrap_or(default.as_str());
             self.jit_compile_block(name, a, blk);
         }
         Ok(res_ptr)
@@ -332,7 +327,7 @@ impl<'ctx> CodeGen<'ctx> {
 
 
         // loop through each contraction 
-        let mut block = self.context.append_basic_block(self.fn_value(), name);
+        let block = self.context.append_basic_block(self.fn_value(), name);
         self.builder.build_unconditional_branch(block);
         self.builder.position_at_end(block);
 
@@ -412,11 +407,11 @@ impl<'ctx> CodeGen<'ctx> {
 
         let int_type = self.context.i64_type();
         
-        let mut preblock = self.builder.get_insert_block().unwrap();
+        let preblock = self.builder.get_insert_block().unwrap();
         let layout_index = self.layout.get_layout_index(elmt.layout()).unwrap();
 
         // loop through the non-zero elements
-        let block = self.context.append_basic_block(self.fn_value(), name);
+        let mut block = self.context.append_basic_block(self.fn_value(), name);
         self.builder.build_unconditional_branch(block);
         self.builder.position_at_end(block);
 
@@ -437,7 +432,7 @@ impl<'ctx> CodeGen<'ctx> {
         // loop body - eval expression
         let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
 
-        preblock = self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation, preblock)?;
+        block = self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation, block)?;
 
         // increment loop index
         let one = int_type.const_int(1, false);
@@ -457,8 +452,7 @@ impl<'ctx> CodeGen<'ctx> {
     fn jit_compile_diagonal_block(&mut self, name: &str, elmt: &TensorBlock, translation: &Translation) -> Result<()> {
         let int_type = self.context.i64_type();
         
-        let mut preblock = self.builder.get_insert_block().unwrap();
-        let layout_index = self.layout.get_layout_index(elmt.layout()).unwrap();
+        let preblock = self.builder.get_insert_block().unwrap();
 
         // loop through the non-zero elements
         let mut block = self.context.append_basic_block(self.fn_value(), name);
@@ -472,7 +466,7 @@ impl<'ctx> CodeGen<'ctx> {
         
         // loop body - index is just the same for each element
         let elmt_index = curr_index.as_basic_value().into_int_value();
-        let indices_int: Vec<IntValue> = (0..elmt.expr_layout().rank()).map(|i| {
+        let indices_int: Vec<IntValue> = (0..elmt.expr_layout().rank()).map(|_| {
             elmt_index.clone()
         }).collect();
         
@@ -544,12 +538,12 @@ impl<'ctx> CodeGen<'ctx> {
         let translate_index = self.layout.get_translation_index(elmt.expr_layout(), elmt.layout()).unwrap();
         let int_type = self.context.i64_type();
         let rank = elmt.layout().rank();
-        let res_index = match translation.target {
-            TranslationTo::Contiguous { start, end } => {
-                let start_const = int_type.const_int(start.try_into().unwrap(), false);
+        let res_index = match &translation.target {
+            TranslationTo::Contiguous { start, end: _ } => {
+                let start_const = int_type.const_int((*start).try_into().unwrap(), false);
                 self.builder.build_int_add(start_const, store_index, name)
             },
-            TranslationTo::Sparse { indices } => {
+            TranslationTo::Sparse { indices: _ } => {
                 // load store index from layout
                 let translate_store_index = translate_index + translation.get_to_index_in_data_layout();
                 let translate_store_index = int_type.const_int(translate_store_index.try_into().unwrap(), false);
@@ -623,7 +617,6 @@ impl<'ctx> CodeGen<'ctx> {
                         elmt_index
                     } else {
                         // calculate the element index using iname_index and the shape of the tensor
-                        let rank = layout.shape().len();
                         let mut iname_elmt_index = iname_index.last().unwrap().clone();
                         let mut stride = 1u64;
                         for i in (0..iname_index.len() - 1).rev() {
@@ -825,8 +818,8 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         // F and G
-        let lhs_ptr = self.jit_compile_tensor(&model.lhs(), Some(*self.get_var(model.lhs())))?;
-        let rhs_ptr = self.jit_compile_tensor(&model.rhs(), Some(*self.get_var(model.rhs())))?;
+        self.jit_compile_tensor(&model.lhs(), Some(*self.get_var(model.lhs())))?;
+        self.jit_compile_tensor(&model.rhs(), Some(*self.get_var(model.rhs())))?;
         
         // compute residual here as dummy array
         let residual = model.residual();

@@ -81,7 +81,7 @@ impl TranslationFrom {
             let mut current_monitor_axis_value = indices[0][monitor_axis];
             // the indices are held in row major order, so the last index is the fastest changing index
             for i in 1..indices.len() {
-                let index = indices[i];
+                let index = &indices[i];
                 let monitor_axis_value = index[monitor_axis];
                 if monitor_axis_value != current_monitor_axis_value {
                     contract_start_indices.push(i);

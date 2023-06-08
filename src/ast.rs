@@ -175,7 +175,7 @@ impl <'a> fmt::Display for Tensor<'a> {
             }
         }
         write!(f, " {{\n")?;
-        for (i, elmt) in self.elmts.iter().enumerate() {
+        for elmt in self.elmts.iter() {
             write!(f, "{},\n", elmt)?;
         }
         Ok(())
@@ -618,7 +618,7 @@ impl<'a> Ast<'a> {
                 monop.child.collect_indices(indices);
             }
             AstKind::Call(call) => {
-                for c in call.args {
+                for c in &call.args {
                     c.collect_indices(indices);
                 }
             }
@@ -644,7 +644,7 @@ impl<'a> Ast<'a> {
             AstKind::TensorElmt(elmt) => {
                 elmt.expr.collect_indices(indices);
             },
-            AstKind::Name(found_name) => (),
+            AstKind::Name(_) => (),
             AstKind::DsModel(_) => (),
             AstKind::Number(_) => (),
             AstKind::Integer(_) => (),
@@ -757,10 +757,6 @@ impl<'a> fmt::Display for Ast<'a> {
             AstKind::Slice(slice) => {
                 write!(f, "{}:{}", slice.lower.to_string(), slice.upper.to_string())
             }
-            AstKind::Tensor(a) => {
-                let elmt_strs: Vec<String> = a.elmts.iter().map(|elmt| elmt.to_string()).collect();
-                write!(f, "{} {{\n{}\n}}", a.name, elmt_strs.join(",\n"))
-            },
             AstKind::TensorElmt(elmt) => {
                 if let Some(indices) = &elmt.indices {
                     write!(f, "{} {}", indices.to_string(), elmt.expr.to_string())

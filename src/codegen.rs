@@ -11,7 +11,7 @@ use ndarray::{Array1, Array2, ShapeBuilder};
 use sundials_sys::{realtype, N_Vector, IDAGetNonlinSolvStats, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit, IDAGetConsistentIC, IDAGetReturnFlagName};
 use std::collections::HashMap;
 use std::io::Write;
-use std::{io};
+use std::io;
 use std::ffi::{c_void, CStr, c_int};
 use std::ptr::{null_mut};
 use std::iter::{zip};
@@ -19,15 +19,15 @@ use anyhow::{Result, anyhow};
 
 
 use crate::ast::{Ast, AstKind};
-use crate::discretise::{DiscreteModel, Tensor, DataLayout, TensorBlock, Translation, TranslationFrom, TranslationTo};
+use crate::discretise::{DiscreteModel, Tensor, DataLayout, TensorBlock, Translation, TranslationFrom, TranslationTo, Layout};
 
 /// Convenience type alias for the `sum` function.
 ///
 /// Calling this is innately `unsafe` because there's no guarantee it doesn't
 /// do `unsafe` operations internally.
-type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *const realtype, rr: *mut realtype);
+type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, rr: *mut realtype);
 type U0Func = unsafe extern "C" fn(data: *mut realtype, u: *mut realtype, up: *mut realtype);
-type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *const realtype, out: *mut realtype);
+type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype);
 
 struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
@@ -46,6 +46,9 @@ struct CodeGen<'ctx> {
 
 impl<'ctx> CodeGen<'ctx> {
     fn insert_data(&mut self, model: &DiscreteModel) {
+        for tensor in model.inputs() {
+            self.insert_tensor(tensor);
+        }
         for tensor in model.time_indep_defns() {
             self.insert_tensor(tensor);
         }
@@ -55,6 +58,9 @@ impl<'ctx> CodeGen<'ctx> {
         for tensor in model.state_dep_defns() {
             self.insert_tensor(tensor);
         }
+        self.insert_tensor(model.out());
+        self.insert_tensor(model.lhs());
+        self.insert_tensor(model.rhs());
     }
     fn insert_param(&mut self, name: &str, value: PointerValue<'ctx>) {
         self.variables.insert(name.to_owned(), value);
@@ -174,21 +180,6 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(res_ptr)
     }
     
-    fn jit_compile_array(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
-        if a.rank() == 0 {
-            self.jit_compile_scalar(a, res_ptr_opt)
-        } else if a.layout().is_dense() {
-            self.jit_compile_dense_tensor(a, res_ptr_opt)
-        } else if a.layout().is_diagonal() {
-            self.jit_compile_diagonal_tensor(a, res_ptr_opt)
-        } else if a.layout().is_sparse() {
-            self.jit_compile_sparse_tensor(a, res_ptr_opt)
-        } else {
-            Err(anyhow!("unsupported tensor layout: {:?}", a.layout()))
-        }
-    }
-
-
     fn jit_compile_tensor(&mut self, a: &Tensor, res_ptr_opt: Option<PointerValue<'ctx>>)  -> Result<PointerValue<'ctx>> {
         // treat scalar as a special case
         if a.rank() == 0 {
@@ -204,7 +195,6 @@ impl<'ctx> CodeGen<'ctx> {
         // set up the tensor storage pointer and index into this data
         let int_type = self.context.i64_type();
         self.tensor_ptr_opt = Some(res_ptr);
-        self.tensor_index_opt = Some(self.builder.build_alloca(int_type, "store_index"));
 
         let int_type = self.context.i64_type();
         let mut res_index = int_type.const_int(0, false);
@@ -226,8 +216,14 @@ impl<'ctx> CodeGen<'ctx> {
         } else if elmt.expr_layout().is_diagonal() {
             self.jit_compile_diagonal_block(name, elmt, &translation)
         } else if elmt.expr_layout().is_sparse() {
-        
-            self.jit_compile_sparse_block(name, elmt, &translation)
+            match translation.source {
+                TranslationFrom::SparseContraction { .. } => {
+                    self.jit_compile_sparse_contraction_block(name, elmt, &translation)
+                },
+                _ => {
+                    self.jit_compile_sparse_block(name, elmt, &translation)
+                }
+            }
         } else {
             return Err(anyhow!("unsupported block layout: {:?}", elmt.expr_layout()));
         }
@@ -290,7 +286,7 @@ impl<'ctx> CodeGen<'ctx> {
             let new_contract_sum_value = self.builder.build_float_add(contract_sum_value, float_value, "new_contract_sum");
             self.builder.build_store(contract_sum.unwrap(), new_contract_sum_value);
         } else {
-            preblock = self.jit_compile_broadcast_and_store(name, elmt, expr_index, float_value, translation, preblock)?;
+            preblock = self.jit_compile_broadcast_and_store(name, elmt, float_value, expr_index, translation, preblock)?;
 
         }
         
@@ -302,7 +298,8 @@ impl<'ctx> CodeGen<'ctx> {
 
             if i == rank - contract_by && contract_sum.is_some() {
                 let contract_sum_value= self.builder.build_load(contract_sum.unwrap(), "contract_sum").into_float_value();
-                let store_index = self.builder.build_int_unsigned_div(expr_index, contract_len, name);
+                let contract_len_value = int_type.const_int(contract_len.try_into().unwrap(), false);
+                let store_index = self.builder.build_int_unsigned_div(expr_index, contract_len_value, name);
                 self.jit_compile_store(name, elmt, store_index, contract_sum_value, translation)?;
             }
 
@@ -315,13 +312,103 @@ impl<'ctx> CodeGen<'ctx> {
         }
         Ok(())
     }
+
+
+    fn jit_compile_sparse_contraction_block(&mut self, name: &str, elmt: &TensorBlock, translation: &Translation) -> Result<()> {
+        match translation.source {
+            TranslationFrom::SparseContraction {..} => {},
+            _ => {
+                panic!("expected sparse contraction")
+            }
+        }
+        let int_type = self.context.i64_type();
+        
+        let preblock = self.builder.get_insert_block().unwrap();
+        let layout_index = self.layout.get_layout_index(elmt.layout()).unwrap();
+        let translation_index = self.layout.get_translation_index(elmt.expr_layout(), elmt.layout()).unwrap();
+        let translation_index = translation_index + translation.get_from_index_in_data_layout();
+
+        let contract_sum_ptr = self.builder.build_alloca(self.real_type, "contract_sum");
+
+
+        // loop through each contraction 
+        let mut block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_unconditional_branch(block);
+        self.builder.position_at_end(block);
+
+        let contract_index = self.builder.build_phi(int_type, "i");
+        let final_contract_index = int_type.const_int(elmt.layout().nnz().try_into().unwrap(), false);
+        contract_index.add_incoming(&[(&int_type.const_int(0, false), preblock)]);
+
+        let start_index = self.builder.build_int_add(
+            int_type.const_int(translation_index.try_into().unwrap(), false),
+            self.builder.build_int_mul(
+                int_type.const_int(2, false),
+                contract_index.as_basic_value().into_int_value(),
+                name,
+            ),
+            name
+        );
+        let end_index = self.builder.build_int_add(
+            start_index,
+            int_type.const_int(1, false),
+            name
+        );
+        let start_ptr = unsafe { self.builder.build_gep(*self.get_param("indices"), &[start_index], "start_index_ptr") };
+        let start_contract= self.builder.build_load(start_ptr, "start").into_int_value();
+        let end_ptr = unsafe { self.builder.build_gep(*self.get_param("indices"), &[end_index], "end_index_ptr") };
+        let end_contract = self.builder.build_load(end_ptr, "end").into_int_value();
+
+        // loop through each element in the contraction
+        let contract_block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_unconditional_branch(contract_block);
+        self.builder.position_at_end(contract_block);
+
+        self.builder.build_store(contract_sum_ptr, self.real_type.const_float(0.0));
+
+        let elmt_index_phi = self.builder.build_phi(int_type, "j");
+        elmt_index_phi.add_incoming(&[(&start_contract, block)]);
+
+        // loop body - load index from layout
+        let elmt_index = elmt_index_phi.as_basic_value().into_int_value();
+        let indices_int: Vec<IntValue> = (0..elmt.expr_layout().rank()).map(|i| {
+            let layout_index_plus_offset = int_type.const_int((layout_index + i).try_into().unwrap(), false);
+            let curr_index = self.builder.build_int_add(elmt_index, layout_index_plus_offset, name);
+            let ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("indices"), &[curr_index], name) };
+            self.builder.build_load(ptr, name).into_int_value()
+        }).collect();
+        
+        // loop body - eval expression and increment sum
+        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
+        let contract_sum_value = self.builder.build_load(contract_sum_ptr, "contract_sum").into_float_value();
+        let contract_sum_value = self.builder.build_float_add(contract_sum_value, float_value, "contract_sum");
+        self.builder.build_store(contract_sum_ptr, contract_sum_value);
+
+        // increment contract loop index
+        let next_elmt_index = self.builder.build_int_add(elmt_index, int_type.const_int(1, false), name);
+        elmt_index_phi.add_incoming(&[(&next_elmt_index, contract_block)]);
+
+        // contract loop condition
+        let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_elmt_index, end_contract, name);
+        let post_contract_block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_conditional_branch(loop_while, contract_block, post_contract_block);
+        self.builder.position_at_end(post_contract_block);
+
+        // increment outer loop index
+        let next_contract_index = self.builder.build_int_add(contract_index.as_basic_value().into_int_value(), int_type.const_int(1, false), name);
+        contract_index.add_incoming(&[(&next_contract_index, post_contract_block)]);
+
+        // outer loop condition
+        let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_contract_index, final_contract_index, name);
+        let post_block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_conditional_branch(loop_while, block, post_block);
+
+        Ok(())
+    }
     
     // for sparse blocks we can loop through the non-zero elements and extract the index from the layout, then we compile the expression passing in this index
     // TODO: havn't implemented contractions yet
-    fn jit_compile_sparse_block(&mut self, name: &str, elmt: &TensorBlock, res_ptr: PointerValue<'ctx>, res_index: IntValue<'ctx>, translate_index_opt: Option<usize>) -> Result<IntValue<'ctx>> {
-        if translation.is_contraction() {
-            jit_zero_block(res_ptr, res_index, translate_index, self.real_type);
-        }
+    fn jit_compile_sparse_block(&mut self, name: &str, elmt: &TensorBlock, translation: &Translation) -> Result<()> {
 
         let int_type = self.context.i64_type();
         
@@ -348,13 +435,10 @@ impl<'ctx> CodeGen<'ctx> {
         }).collect();
         
         // loop body - eval expression
-        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, elmt_index)?;
+        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
 
-        // loop body - store result
-        let this_res_index = self.builder.build_int_add(res_index, elmt_index, name);
-        let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[this_res_index], name) };
-        self.builder.build_store(resi_ptr, float_value);
-        
+        preblock = self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation, preblock)?;
+
         // increment loop index
         let one = int_type.const_int(1, false);
         let next_index = self.builder.build_int_add(elmt_index, one, name);
@@ -366,18 +450,18 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_conditional_branch(loop_while, block, post_block);
         self.builder.position_at_end(post_block);
 
-        Ok(this_res_index)
+        Ok(())
     }
     
     // for diagonal blocks we can loop through the diagonal elements and the index is just the same for each element, then we compile the expression passing in this index
-    fn jit_compile_diagonal_block(&mut self, name: &str, elmt: &TensorBlock, res_ptr: PointerValue<'ctx>, res_index: IntValue<'ctx>, translate_index_opt: Option<usize>) -> Result<IntValue<'ctx>> {
+    fn jit_compile_diagonal_block(&mut self, name: &str, elmt: &TensorBlock, translation: &Translation) -> Result<()> {
         let int_type = self.context.i64_type();
         
         let mut preblock = self.builder.get_insert_block().unwrap();
         let layout_index = self.layout.get_layout_index(elmt.layout()).unwrap();
 
         // loop through the non-zero elements
-        let block = self.context.append_basic_block(self.fn_value(), name);
+        let mut block = self.context.append_basic_block(self.fn_value(), name);
         self.builder.build_unconditional_branch(block);
         self.builder.position_at_end(block);
 
@@ -393,12 +477,10 @@ impl<'ctx> CodeGen<'ctx> {
         }).collect();
         
         // loop body - eval expression
-        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, elmt_index)?;
+        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
 
         // loop body - store result
-        let this_res_index = self.builder.build_int_add(res_index, elmt_index, name);
-        let resi_ptr = unsafe { self.builder.build_in_bounds_gep(res_ptr, &[this_res_index], name) };
-        self.builder.build_store(resi_ptr, float_value);
+        block = self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation, block)?;
         
         // increment loop index
         let one = int_type.const_int(1, false);
@@ -411,7 +493,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_conditional_branch(loop_while, block, post_block);
         self.builder.position_at_end(post_block);
 
-        Ok(this_res_index)
+        Ok(())
     }
 
     fn jit_compile_broadcast_and_store(&mut self, name: &str, elmt: &TensorBlock, float_value: FloatValue<'ctx>, expr_index: IntValue<'ctx>, translation: &Translation, pre_block: BasicBlock<'ctx>) -> Result<BasicBlock<'ctx>> {
@@ -449,7 +531,7 @@ impl<'ctx> CodeGen<'ctx> {
                 Ok(post_bcast_block)
 
             },
-            TranslationFrom::ElementWise => {
+            TranslationFrom::ElementWise | TranslationFrom::DiagonalContraction { .. } => {
                 self.jit_compile_store(name, elmt, expr_index, float_value, translation)?;
                 Ok(pre_block)
             },
@@ -546,7 +628,8 @@ impl<'ctx> CodeGen<'ctx> {
                         let mut stride = 1u64;
                         for i in (0..iname_index.len() - 1).rev() {
                             let iname_i = iname_index[i];
-                            stride *= layout.shape()[i + 1].into();
+                            let shapei: u64 = layout.shape()[i + 1].try_into().unwrap();
+                            stride *= shapei;
                             let stride_intval = self.context.i64_type().const_int(stride, false);
                             let stride_mul_i = self.builder.build_int_mul(stride_intval, iname_i, name);
                             iname_elmt_index = self.builder.build_int_add(iname_elmt_index, stride_mul_i, name);
@@ -599,19 +682,6 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    fn data_inputs_alloca(&mut self) -> PointerValue<'ctx> {
-        let ptr = self.get_var("data").unwrap();
-        let i = self.context.i32_type().const_int(0, false);
-        unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], "inputs") }
-    }
-    
-    fn data_alloca(&mut self, tensor: &Tensor) -> PointerValue<'ctx> {
-        let ptr = self.get_var("data").unwrap();
-        let data_index = self.layout.get_data_index(tensor.name()).unwrap();
-        let i = self.context.i32_type().const_int(data_index.try_into().unwrap(), false);
-        unsafe { self.builder.build_in_bounds_gep(*ptr, &[i], tensor.name()) }
-    }
-    
     fn jit<T>(&self, function: FunctionValue) -> Result<JitFunction<'ctx, T>> 
     where T: UnsafeFunctionPointer
     {
@@ -650,11 +720,11 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_data(model);
 
         for a in model.time_dep_defns() {
-            self.jit_compile_array(a, Some(*self.get_var(a)))?;
+            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
         }
 
-        self.jit_compile_array(&model.state(), Some(*self.get_param("u0")))?;
-        self.jit_compile_array(&model.state_dot(), Some(*self.get_param("dotu0")))?;
+        self.jit_compile_tensor(&model.state(), Some(*self.get_param("u0")))?;
+        self.jit_compile_tensor(&model.state_dot(), Some(*self.get_param("dotu0")))?;
 
         self.builder.build_return(None);
 
@@ -696,15 +766,15 @@ impl<'ctx> CodeGen<'ctx> {
 
         // calculate time dependant definitions
         for tensor in model.time_dep_defns() {
-            self.jit_compile_array(tensor, Some(*self.get_var(tensor)))?;
+            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
         }
 
         // calculate time dependant definitions
         for a in model.time_dep_defns() {
-            self.jit_compile_array(a, Some(*self.get_var(a)))?;
+            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
         }
 
-        self.jit_compile_array(model.out(), Some(*self.get_var(model.out())))?;
+        self.jit_compile_tensor(model.out(), Some(*self.get_var(model.out())))?;
         self.builder.build_return(None);
 
         if function.verify(true) {
@@ -746,23 +816,23 @@ impl<'ctx> CodeGen<'ctx> {
 
         // calculate time dependant definitions
         for tensor in model.time_dep_defns() {
-            self.jit_compile_array(tensor, Some(*self.get_var(tensor)))?;
+            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
         }
 
         // calculate time dependant definitions
         for a in model.time_dep_defns() {
-            self.jit_compile_array(a, Some(*self.get_var(a)))?;
+            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
         }
 
         // F and G
-        let lhs_ptr = self.jit_compile_array(&model.lhs(), Some(*self.get_var(model.lhs())))?;
-        let rhs_ptr = self.jit_compile_array(&model.rhs(), Some(*self.get_var(model.rhs())))?;
+        let lhs_ptr = self.jit_compile_tensor(&model.lhs(), Some(*self.get_var(model.lhs())))?;
+        let rhs_ptr = self.jit_compile_tensor(&model.rhs(), Some(*self.get_var(model.rhs())))?;
         
         // compute residual here as dummy array
         let residual = model.residual();
 
-        let res_ptr = self.get_param("rr").unwrap();
-        let _res_ptr = self.jit_compile_array(&residual, Some(*res_ptr))?;
+        let res_ptr = self.get_param("rr");
+        let _res_ptr = self.jit_compile_tensor(&residual, Some(*res_ptr))?;
         self.builder.build_return(None);
 
         if function.verify(true) {
@@ -807,9 +877,7 @@ impl Options {
 struct SundialsData<'ctx> {
     number_of_states: usize,
     number_of_parameters: usize,
-    number_of_outputs: usize,
     yy: N_Vector,
-    out: N_Vector,
     yp: N_Vector, 
     avtol: N_Vector,
     data: N_Vector,
@@ -826,16 +894,24 @@ struct SundialsData<'ctx> {
 }
 
 impl<'ctx> SundialsData<'ctx> {
-    pub fn get_tensor_data(&self, name: &str) -> Option<*const realtype> {
+    pub fn get_tensor_data(&self, name: &str) -> Option<&[realtype]> {
         let index = self.data_layout.get_data_index(name)?;
+        let nnz = self.data_layout.get_data_length(name)?;
         unsafe {
-            Some(N_VGetArrayPointer(self.data).offset(index.try_into().unwrap()))
+            Some(std::slice::from_raw_parts(
+                N_VGetArrayPointer(self.data).offset(index.try_into().unwrap()),
+                nnz
+            ))
         }
     }
-    pub fn get_tensor_data_mut(&self, name: &str) -> Option<*mut realtype> {
+    pub fn get_tensor_data_mut(&self, name: &str) -> Option<&mut [realtype]> {
         let index = self.data_layout.get_data_index(name)?;
+        let nnz = self.data_layout.get_data_length(name)?;
         unsafe {
-            Some(N_VGetArrayPointer(self.data).offset(index.try_into().unwrap()))
+            Some(std::slice::from_raw_parts_mut(
+                N_VGetArrayPointer(self.data).offset(index.try_into().unwrap()),
+                nnz
+            ))
         }
     }
     pub fn get_data_ptr_mut(&self) -> *mut realtype {
@@ -908,10 +984,7 @@ impl<'ctx> Sundials<'ctx> {
         let mut res = Array1::zeros(number_of_states);
         unsafe {
             let rr = N_VNew_Serial(i64::try_from(number_of_states).unwrap());
-            let inputs_ptr = self.data.get_tensor_data_mut("inputs").unwrap();
-            for i in 0..number_of_inputs {
-                *inputs_ptr.add(i) = inputs[i]; 
-            }
+            self.data.get_tensor_data_mut("inputs").unwrap().copy_from_slice(inputs.as_slice().unwrap());
             let u0_ptr = N_VGetArrayPointer(self.data.yy);
             let up0_ptr = N_VGetArrayPointer(self.data.yp);
             for i in 0..number_of_states {
@@ -935,6 +1008,7 @@ impl<'ctx> Sundials<'ctx> {
 
     pub fn from_discrete_model<'m>(model: &'m DiscreteModel, context: &'ctx inkwell::context::Context, options: Options) -> Result<Sundials<'ctx>> {
         let number_of_states = i64::try_from(model.state().shape()[0]).unwrap();
+        let number_of_parameters = model.inputs().iter().fold(0, |acc, input| acc + i64::try_from(input.shape()[0]).unwrap());
         let module = context.create_module(model.name());
         let fpm = PassManager::create(&module);
         fpm.add_instruction_combining_pass();
@@ -961,12 +1035,13 @@ impl<'ctx> Sundials<'ctx> {
             variables: HashMap::new(),
             functions: HashMap::new(),
             fn_value_opt: None,
+            tensor_ptr_opt: None,
             layout: DataLayout::new(model),
         };
 
-        let set_u0 = codegen.compile_set_u0(model, layout)?;
-        let residual = codegen.compile_residual(model, layout)?;
-        let calc_out = codegen.compile_calc_out(model, layout)?;
+        let set_u0 = codegen.compile_set_u0(model)?;
+        let residual = codegen.compile_residual(model)?;
+        let calc_out = codegen.compile_calc_out(model)?;
 
         set_u0.print_to_stderr();
         residual.print_to_stderr();
@@ -983,12 +1058,11 @@ impl<'ctx> Sundials<'ctx> {
 
             // allocate vectors
             let yy = N_VNew_Serial(number_of_states);
-            let out = N_VNew_Serial(number_of_outputs);
-            let yp = N_VNew_Serial(i64::from(number_of_states));
+            let yp = N_VNew_Serial(number_of_states);
             let avtol = N_VNew_Serial(i64::from(number_of_states));
             let id = N_VNew_Serial(i64::from(number_of_states));
 
-            let data = N_VNew_Serial(data_layout.data_length().try_into().unwrap());
+            let data = N_VNew_Serial(data_layout.data().len().try_into().unwrap());
 
             let mut yy_s: Vec<N_Vector> = Vec::new();
             let mut yp_s: Vec<N_Vector> = Vec::new();
@@ -1080,8 +1154,12 @@ impl<'ctx> Sundials<'ctx> {
             SUNLinSolInitialize(linear_solver);
 
             let id_val = N_VGetArrayPointer(id);
-            for (ii, state) in model.states.elmts().iter().enumerate() {
-                *id_val.add(ii) = if state.is_algebraic() { 0.0 } else { 1.0 };
+            for (state_blk, &is_algebraic) in model.state().elmts().iter().zip(model.is_algebraic().iter()) {
+                let nnz_start = Layout::ravel_index(state_blk.start(), state_blk.layout().shape());
+                let is_alebraic_int = if is_algebraic { 1.0 } else { 0.0 };
+                for i in nnz_start..nnz_start + state_blk.nnz() {
+                    *id_val.add(i) = is_alebraic_int;
+                }
             }
 
             Self::check(IDASetId(ida_mem, id))?;
@@ -1091,10 +1169,8 @@ impl<'ctx> Sundials<'ctx> {
                 SundialsData {
                     number_of_states: usize::try_from(number_of_states).unwrap(),
                     number_of_parameters: usize::try_from(number_of_parameters).unwrap(),
-                    number_of_outputs: usize::try_from(number_of_outputs).unwrap(),
                     yy,
                     yp,
-                    out,
                     avtol,
                     data,
                     data_layout,
@@ -1120,17 +1196,14 @@ impl<'ctx> Sundials<'ctx> {
 
     pub fn solve(&mut self, times: &Array1<f64>, inputs: &Array1<f64>) -> Result<Array2<f64>> {
         let number_of_timesteps = times.len();
-        let number_of_inputs = inputs.len();
-        assert_eq!(number_of_inputs, self.data.number_of_parameters);
+        let data_out = self.data.get_tensor_data("out").unwrap();
+        let data_inputs = self.data.get_tensor_data_mut("inputs").unwrap();
+        data_inputs.copy_from_slice(inputs.as_slice().unwrap());
 
-        let mut out_return = Array2::zeros((number_of_timesteps, self.data.number_of_outputs).f());
+        let mut out_return = Array2::zeros((number_of_timesteps, data_out.len()).f());
 
         unsafe {
-            let inputs_ptr = self.data.get_tensor_data_mut("inputs").unwrap();
             let data_ptr_mut = self.data.get_data_ptr_mut();
-            for (i, &v) in inputs.iter().enumerate() {
-                *inputs_ptr.add(i) = v; 
-            }
 
             let yval = N_VGetArrayPointer(self.data.yy);
             let ypval = N_VGetArrayPointer(self.data.yp);
@@ -1156,11 +1229,9 @@ impl<'ctx> Sundials<'ctx> {
                 N_VGetArrayPointer(self.data.yy), 
                 N_VGetArrayPointer(self.data.yp), 
                 data_ptr_mut,
-                N_VGetArrayPointer(self.data.out)
             );
-            let outval = N_VGetArrayPointer(self.data.out);
-            for j in 0..self.data.number_of_outputs {
-                out_return[[0, j]] = *outval.add(j);
+            for j in 0..data_out.len() {
+                out_return[[0, j]] = data_out[j];
             }
             
             //for j in 0..self.data.number_of_parameters {
@@ -1187,11 +1258,9 @@ impl<'ctx> Sundials<'ctx> {
                     N_VGetArrayPointer(self.data.yy), 
                     N_VGetArrayPointer(self.data.yp), 
                     data_ptr_mut,
-                    N_VGetArrayPointer(self.data.out)
                 );
-                let outval = N_VGetArrayPointer(self.data.out);
-                for j in 0..self.data.number_of_outputs {
-                    out_return[[t_i, j]] = *outval.add(j);
+                for j in 0..data_out.len() {
+                    out_return[[t_i, j]] = data_out[j];
                 }
                 //for j in 0..self.data.number_of_parameters {
                 //    for k in 0..self.data.number_of_states {
@@ -1271,7 +1340,6 @@ impl<'ctx> Sundials<'ctx> {
             N_VDestroy(self.data.avtol);
             N_VDestroy(self.data.yy);
             N_VDestroy(self.data.yp);
-            N_VDestroy(self.data.out);
             N_VDestroy(self.data.id);
             for (&yy_si, &yp_si) in zip(&self.data.yy_s, &self.data.yp_s) {
                 N_VDestroy(yy_si);

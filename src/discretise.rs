@@ -90,6 +90,8 @@ impl TranslationFrom {
                 }
             }
             contract_end_indices.push(indices.len());
+            assert!(contract_start_indices.len() == contract_end_indices.len());
+            assert!(contract_start_indices.len() == target.nnz());
             Self::SparseContraction{ contract_by, contract_start_indices, contract_end_indices }
         } else if is_broadcast {
             Self::Broadcast{ broadcast_by, broadcast_len }
@@ -170,7 +172,7 @@ impl Translation {
     fn to_data_layout(&self) -> Vec<i32> {
         let mut ret = Vec::new();
         if let TranslationFrom::SparseContraction { contract_by, contract_start_indices, contract_end_indices } = &self.source {
-            ret.extend(contract_start_indices.iter().chain(contract_end_indices.iter()).map(|i| *i as i32));
+            ret.extend(contract_start_indices.iter().zip(contract_end_indices.iter()).flat_map(|(start, end)| vec![i32::try_from(*start).unwrap(), i32::try_from(*end).unwrap()]));
         }
         if let TranslationTo::Sparse { indices } = &self.target {
             ret.extend(indices.iter().map(|i| *i as i32));
@@ -203,7 +205,7 @@ enum LayoutKind {
 // you could have a 2D sparse tensor with 1 dense axis, combining to give a tensor of rank 3 (i.e. the shape is length 3).
 // indices are kept in row major order, so the last index is the fastest changing index.
 #[derive(Debug, Clone, PartialEq)]
-struct Layout {
+pub struct Layout {
     indices: Vec<Index>,
     shape: Shape,
     kind: LayoutKind,
@@ -213,7 +215,7 @@ struct Layout {
 impl Layout {
     
     // row major order
-    fn unravel_index(index: usize, shape: &Shape) -> Index {
+    pub fn unravel_index(index: usize, shape: &Shape) -> Index {
 
         let mut idx = index;
         let mut res = Index::zeros(shape.len());
@@ -225,7 +227,7 @@ impl Layout {
     }
 
     // row major order
-    fn ravel_index(index: &Index, shape: &Shape) -> usize {
+    pub fn ravel_index(index: &Index, shape: &Shape) -> usize {
         let mut res = 0;
         let mut stride = 1;
         for i in (0..shape.len()).rev() {
@@ -1320,6 +1322,7 @@ impl<'s> Env<'s> {
 #[derive(Debug)]
 pub struct DataLayout {
     data_index_map: HashMap<String, usize>,
+    data_length_map: HashMap<String, usize>,
     layout_index_map: HashMap<RcLayout, usize>,
     translate_index_map: HashMap<(RcLayout, RcLayout), usize>,
     data: Vec<f64>,
@@ -1334,6 +1337,7 @@ impl DataLayout {
     }
     pub fn new(model: &DiscreteModel) -> Self {
         let mut data_index_map = HashMap::new();
+        let mut data_length_map = HashMap::new();
         let mut layout_index_map = HashMap::new();
         let mut translate_index_map = HashMap::new();
         let mut data = Vec::new();
@@ -1344,6 +1348,7 @@ impl DataLayout {
             // insert the data (non-zeros) for each tensor
             layout_map.insert(tensor.name.to_string(), tensor.layout.clone());
             data_index_map.insert(tensor.name.to_string(), data.len());
+            data_length_map.insert(tensor.name.to_string(), tensor.nnz());
             data.extend(vec![0.0; tensor.nnz()]);
 
             // insert the layout info for each tensor
@@ -1352,7 +1357,7 @@ impl DataLayout {
 
             // add the translation info for each block-tensor pair
             for blk in tensor.elmts() {
-                let translation = Translation::new(blk.expr_layout, blk.layout, &blk.start, tensor.layout);
+                let translation = Translation::new(blk.expr_layout(), blk.layout(), &blk.start, tensor.layout_ptr());
                 translate_index_map.insert((blk.expr_layout, tensor.layout), indices.len());
                 indices.extend(translation.to_data_layout());
             } 
@@ -1365,8 +1370,9 @@ impl DataLayout {
         model.state_dep_defns.iter().for_each(add_tensor);
         add_tensor(&model.lhs);
         add_tensor(&model.rhs);
+        add_tensor(&model.out);
 
-        Self { data_index_map, layout_index_map, data, indices, translate_index_map, layout_map }
+        Self { data_index_map, layout_index_map, data, indices, translate_index_map, layout_map, data_length_map }
     }
     
     // get the layout of a tensor by name
@@ -1377,6 +1383,10 @@ impl DataLayout {
     // get the index of the data array for the given tensor name
     pub fn get_data_index(&self, name: &str) -> Option<usize> {
         self.data_index_map.get(name).map(|i| *i)
+    }
+
+    pub fn get_data_length(&self, name: &str) -> Option<usize> {
+        self.data_length_map.get(name).map(|i| *i)
     }
 
     pub fn get_layout_index(&self, layout: &RcLayout) -> Option<usize> {
@@ -1950,6 +1960,10 @@ impl<'s> DiscreteModel<'s> {
 
     pub fn name(&self) -> &str {
         self.name
+    }
+
+    pub fn is_algebraic(&self) -> &[bool] {
+        self.is_algebraic.as_ref()
     }
 }
 

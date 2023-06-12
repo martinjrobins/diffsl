@@ -198,7 +198,7 @@ impl<'ctx> CodeGen<'ctx> {
         for (i, blk) in a.elmts().iter().enumerate() {
             let default = format!("{}-{}", a.name(), i);
             let name = blk.name().unwrap_or(default.as_str());
-            self.jit_compile_block(name, a, blk);
+            self.jit_compile_block(name, a, blk)?;
         }
         Ok(res_ptr)
     }

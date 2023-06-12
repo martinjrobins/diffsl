@@ -297,6 +297,12 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
+    pub fn to_ds_model(self) -> Option<DsModel<'a>> {
+        match self {
+            AstKind::DsModel(m) => Some(m),
+            _ => None,
+        }
+    }
     pub fn as_domain(&self) -> Option<&Domain> {
         match self {
             AstKind::Domain(m) => Some(m),

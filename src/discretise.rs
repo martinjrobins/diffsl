@@ -101,11 +101,11 @@ impl TranslationFrom {
     }
     fn nnz_after_translate(&self, layout: &Layout) -> usize {
         match self {
-            TranslationFrom::DenseContraction{ contract_by, contract_len } => layout.nnz() / contract_len,
-            TranslationFrom::DiagonalContraction{ contract_by} => layout.nnz(),
-            TranslationFrom::SparseContraction{ contract_by, contract_start_indices, contract_end_indices } => contract_start_indices.len(),
+            TranslationFrom::DenseContraction{ contract_by: _, contract_len } => layout.nnz() / contract_len,
+            TranslationFrom::DiagonalContraction{ contract_by: _} => layout.nnz(),
+            TranslationFrom::SparseContraction{ contract_by: _, contract_start_indices, contract_end_indices: _ } => contract_start_indices.len(),
             TranslationFrom::ElementWise => layout.nnz(),
-            TranslationFrom::Broadcast{ broadcast_by, broadcast_len } => layout.nnz() * broadcast_len,
+            TranslationFrom::Broadcast{ broadcast_by: _, broadcast_len } => layout.nnz() * broadcast_len,
         }
     }
 }
@@ -171,7 +171,7 @@ impl Translation {
     }
     fn to_data_layout(&self) -> Vec<i32> {
         let mut ret = Vec::new();
-        if let TranslationFrom::SparseContraction { contract_by, contract_start_indices, contract_end_indices } = &self.source {
+        if let TranslationFrom::SparseContraction { contract_by: _, contract_start_indices, contract_end_indices } = &self.source {
             ret.extend(contract_start_indices.iter().zip(contract_end_indices.iter()).flat_map(|(start, end)| vec![i32::try_from(*start).unwrap(), i32::try_from(*end).unwrap()]));
         }
         if let TranslationTo::Sparse { indices } = &self.target {
@@ -183,7 +183,7 @@ impl Translation {
         0
     }
     pub fn get_to_index_in_data_layout(&self) -> usize {
-        if let TranslationFrom::SparseContraction { contract_by, contract_start_indices, contract_end_indices } = &self.source {
+        if let TranslationFrom::SparseContraction { contract_by: _, contract_start_indices, contract_end_indices: _ } = &self.source {
             contract_start_indices.len() * 2
         } else {
             0
@@ -193,7 +193,7 @@ impl Translation {
 
 
 #[derive(Debug, Clone, PartialEq)]
-enum LayoutKind {
+pub enum LayoutKind {
     Dense,
     Diagonal,
     Sparse,
@@ -313,7 +313,7 @@ impl Layout {
     }
     
     // create a new layout by broadcasting a list of layouts
-    fn broadcast(layouts: &[Layout]) -> Result<Layout> {
+    fn broadcast(mut layouts: Vec<Layout>) -> Result<Layout> {
         // the shapes of the layouts must be broadcastable
         let shapes = layouts.iter().map(|x| &x.shape).collect::<Vec<_>>();
         let shape = match broadcast_shapes(&shapes[..]) {
@@ -323,17 +323,10 @@ impl Layout {
                 return Err(anyhow!("cannot broadcast shapes [{}]", shapes_str));
             }
         };
-        let rank = shape.len();
-        
-        // if the final shape has greater rank than any of the layouts, then add dense axes to those layouts
-        // make sure to also update the shape of the layout
-        for layout in layouts {
-            layout.n_dense_axes += rank - layout.rank();
-            layout.shape = shape;
-        }
 
-        let indices = layouts[0].indices;
-        let n_dense_axes = layouts[0].n_dense_axes;
+        let last_layout = layouts.pop().unwrap();
+        let indices = last_layout.indices;
+        let n_dense_axes = last_layout.n_dense_axes;
 
         // if there are any diagonal layouts then the result is diagonal, all the layouts must be diagonal and have the same number of dense axes
         if layouts.iter().any(|x| x.is_diagonal()) {
@@ -344,7 +337,7 @@ impl Layout {
                 return Err(anyhow!("cannot broadcast diagonal layouts with different numbers of dense axes"));
             } 
             return Ok(Layout {
-                indices,
+                indices: indices,
                 shape,
                 kind: LayoutKind::Diagonal,
                 n_dense_axes,
@@ -355,7 +348,7 @@ impl Layout {
         if layouts.iter().any(|x| x.is_sparse()) {
             for layout in layouts {
                 if layout.is_sparse() {
-                    if layout.indices != indices {
+                    if layout.indices.len() != indices.len() || layout.indices.iter().zip(indices.iter()).any(|(x, y)| x != y) {
                         return Err(anyhow!("cannot broadcast layouts with different sparsity patterns"));
                     }
                     if layout.n_dense_axes != n_dense_axes {
@@ -364,7 +357,7 @@ impl Layout {
                 }
             }
             return Ok(Layout {
-                indices,
+                indices: indices,
                 shape,
                 kind: LayoutKind::Sparse,
                 n_dense_axes,
@@ -374,7 +367,7 @@ impl Layout {
         // must be all dense here
         let kind = LayoutKind::Dense;
         Ok(Layout {
-            indices,
+            indices: indices,
             shape,
             kind,
             n_dense_axes,
@@ -402,16 +395,6 @@ impl Layout {
         new_self
     }
     
-    fn to_sparse(&mut self) {
-        if self.is_dense() {
-            self.kind = LayoutKind::Sparse;
-            self.indices = (0..self.shape.iter().product()).map(|x| Self::unravel_index(x, &self.shape)).collect();
-        } else if self.is_diagonal() {
-            self.kind = LayoutKind::Sparse;
-            self.indices = (0..i64::try_from(self.shape[0]).unwrap()).map(|x| Index::zeros(self.rank()) + x).collect();
-        }
-    }
-
     fn new_empty(rank: usize) -> Self {
         Layout {
             indices: vec![],
@@ -431,11 +414,12 @@ impl Layout {
     }
 
     fn new_dense(shape: Shape) -> Self {
+        let n_dense_axes = shape.len();
         Layout {
             indices: vec![],
             shape,
             kind: LayoutKind::Dense,
-            n_dense_axes: shape.len(),
+            n_dense_axes,
         }
     }
     
@@ -622,7 +606,7 @@ impl Layout {
 
 // RcLayout is a wrapper for Rc<Layout> that implements Hash and PartialEq based on ptr equality
 #[derive(Debug)]
-struct RcLayout(Rc<Layout>);
+pub struct RcLayout(Rc<Layout>);
 impl Hash for RcLayout {
     fn hash<H: Hasher>(&self, state: &mut H) {
         Rc::as_ptr(&self.0).hash(state);
@@ -657,7 +641,7 @@ impl RcLayout {
 #[derive(Debug, Clone)]
 // F(t, u, u_dot) = G(t, u)
 pub struct TensorBlock<'s> {
-    name: Option<&'s str>,
+    name: Option<String>,
     start: Index,
     indices: Vec<char>,
     layout: RcLayout,
@@ -666,7 +650,7 @@ pub struct TensorBlock<'s> {
 }
 
 impl<'s> TensorBlock<'s> {
-    pub fn new(name: Option<&'s str>, start: Index, indices: Vec<char>, layout: RcLayout, expr_layout: RcLayout, expr: Ast<'s>) -> Self {
+    pub fn new(name: Option<String>, start: Index, indices: Vec<char>, layout: RcLayout, expr_layout: RcLayout, expr: Ast<'s>) -> Self {
         Self {
             name,
             start,
@@ -676,7 +660,7 @@ impl<'s> TensorBlock<'s> {
             expr,
         }
     }
-    pub fn new_dense_vector(name: Option<&'s str>, start: i64, shape: usize, expr: Ast<'s>) -> Self {
+    pub fn new_dense_vector(name: Option<String>, start: i64, shape: usize, expr: Ast<'s>) -> Self {
         let layout = RcLayout::new(Layout::dense(Shape::from_vec(vec![shape])));
         Self {
             name,
@@ -720,8 +704,11 @@ impl<'s> TensorBlock<'s> {
         &self.expr_layout
     }
 
-    pub fn name(&self) -> Option<&str> {
-        self.name
+    pub fn name(& self) -> Option<&str> {
+        match &self.name {
+            Some(name) => Some(name.as_str()),
+            None => None,
+        }
     }
 
     pub fn indices(&self) -> &[char] {
@@ -784,7 +771,7 @@ impl<'s> Tensor<'s> {
     pub fn new(name: &'s str, elmts: Vec<TensorBlock<'s>>, indices: Vec<char>) -> Self {
         let rank = elmts.iter().fold(0, |acc, i| max(acc, i.rank()));
         let layout = elmts.iter().fold(Layout::new_empty(rank), |mut acc, i| {
-            acc.append(i.layout(), i.start());
+            acc.append(i.layout(), i.start()).unwrap();
             acc
         });
         let layout = RcLayout::new(layout);
@@ -809,7 +796,7 @@ impl<'s> Tensor<'s> {
         self.name
     }
 
-    pub fn elmts(&self) -> &[TensorBlock] {
+    pub fn elmts(&self) -> &[TensorBlock<'s>] {
         self.elmts.as_ref()
     }
     
@@ -870,9 +857,9 @@ impl EnvVar {
     }
 }
 
-struct Env<'s> {
+struct Env {
     errs: ValidationErrors,
-    vars: HashMap<&'s str, EnvVar>,
+    vars: HashMap<String, EnvVar>,
 }
 
 pub fn broadcast_shapes(shapes: &[&Shape]) -> Option<Shape> {
@@ -902,11 +889,11 @@ pub fn can_broadcast_to(to_shape: &Shape, from_shape: &Shape) -> bool {
     bc_shape.is_some() && bc_shape.unwrap() == *to_shape
 }
 
-impl<'s> Env<'s> {
+impl Env {
     pub fn new() -> Self {
         let mut vars = HashMap::new();
         vars.insert(
-            "t",
+            "t".to_string(),
             EnvVar {
                 layout: RcLayout::new(Layout::new_scalar()),
                 is_time_dependent: true,
@@ -938,9 +925,9 @@ impl<'s> Env<'s> {
         })
     }
 
-    pub fn push_var(&mut self, var: &Tensor<'s>) {
+    pub fn push_var(&mut self, var: &Tensor) {
         self.vars.insert(
-            var.name,
+            var.name().to_string(),
             EnvVar {
                 layout: var.layout_ptr().clone(),
                 is_algebraic: true,
@@ -948,34 +935,33 @@ impl<'s> Env<'s> {
                 is_state_dependent: self.is_tensor_state_dependent(var),
             },
         );
-        for block in var.elmts() {
-            if let Some(name) = block.name {
-                self.vars.insert(
-                    name,
-                    EnvVar {
-                        layout: block.layout().clone(),
-                        is_algebraic: true,
-                        is_time_dependent: self.is_tensor_time_dependent(var),
-                        is_state_dependent: self.is_tensor_state_dependent(var),
-                    },
-                );
-            }
-        }
+    }
+
+    pub fn push_var_blk(&mut self, var: &Tensor, var_blk: &TensorBlock) {
+        self.vars.insert(
+            var_blk.name().unwrap().to_string(),
+            EnvVar {
+                layout: var_blk.layout().clone(),
+                is_algebraic: true,
+                is_time_dependent: self.is_tensor_time_dependent(var),
+                is_state_dependent: self.is_tensor_state_dependent(var),
+            },
+        );
     }
 
 
     fn get(&self, name: &str) -> Option<&EnvVar> {
         self.vars.get(name)
     }
-    fn get_layout_binary_op(
+    fn get_layout_binary_op<'s>(
         &mut self,
         left: &Ast<'s>,
         right: &Ast<'s>,
         indices: &Vec<char>,
     ) -> Option<Layout> {
-        let mut left_layout = self.get_layout(left, indices)?;
-        let mut right_layout = self.get_layout(right, indices)?;
-        match Layout::broadcast(&[left_layout, right_layout]) {
+        let left_layout = self.get_layout(left, indices)?;
+        let right_layout = self.get_layout(right, indices)?;
+        match Layout::broadcast(vec![left_layout, right_layout]) {
             Ok(layout) => Some(layout),
             Err(e) => {
                 self.errs.push(ValidationError::new(
@@ -985,43 +971,6 @@ impl<'s> Env<'s> {
                 None
             }
         }
-    }
-    fn get_layout_dot(
-        &mut self,
-        call: &Call<'s>,
-        ast: &Ast<'s>,
-        indices: &Vec<char>,
-    ) -> Option<Layout> {
-        if call.args.len() != 1 {
-            self.errs.push(ValidationError::new(
-                format!(
-                    "time derivative dot call expects 1 argument, got {}",
-                    call.args.len()
-                ),
-                ast.span,
-            ));
-            return None;
-        }
-        let arg = &call.args[0];
-        let arg_layout = self.get_layout(arg, indices)?;
-        if arg_layout.rank() != 1 {
-            self.errs.push(ValidationError::new(
-                format!(
-                    "time derivative dot call expects 1D argument, got {}D",
-                    arg_layout.rank()
-                ),
-                ast.span,
-            ));
-            return None;
-        }
-        let depends_on = arg.get_dependents();
-        // for each state variable, set is_algebraic to false
-        for dep in depends_on {
-            if let Some(var) = self.vars.get_mut(dep) {
-                var.is_algebraic = false;
-            }
-        }
-        return Some(arg_layout);
     }
 
     fn get_layout_name(
@@ -1083,13 +1032,13 @@ impl<'s> Env<'s> {
 
     
 
-    fn get_layout_call(&mut self, call: &Call<'s>, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
-        let mut layouts = call
+    fn get_layout_call(&mut self, call: &Call, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
+        let layouts = call
             .args
             .iter()
             .map(|c| self.get_layout(c, indices))
             .collect::<Option<Vec<Layout>>>()?;
-        match Layout::broadcast(layouts.as_slice()) {
+        match Layout::broadcast(layouts) {
             Ok(layout) => Some(layout),
             Err(e) => {
                 self.errs.push(ValidationError::new(
@@ -1101,7 +1050,7 @@ impl<'s> Env<'s> {
         }    
     }
 
-    pub fn get_layout(&mut self, ast: &Ast<'s>, indices: &Vec<char>) -> Option<Layout> {
+    pub fn get_layout(&mut self, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
         match &ast.kind {
             AstKind::Assignment(a) => self.get_layout(a.expr.as_ref(), indices),
             AstKind::Binop(binop) => {
@@ -1129,7 +1078,7 @@ impl<'s> Env<'s> {
     
 
     // returns a tuple of (expr_layout, elmt_layout) giving the layouts of the expression and the tensor element.)
-    fn get_layout_tensor_elmt(&mut self, elmt: &TensorElmt<'s>, indices: &Vec<char>) -> Option<(Layout, Layout)> {
+    fn get_layout_tensor_elmt(&mut self, elmt: &TensorElmt, indices: &Vec<char>) -> Option<(Layout, Layout)> {
         let expr_indices = elmt.expr.get_indices();
         // get any indices from the expression that do not appear in 'indices' and add them to 'indices' to a new vector
         let mut new_indices = indices.clone();
@@ -1275,7 +1224,7 @@ impl<'s> Env<'s> {
                         ));
                         return None;
                     } else {
-                        expr_layout    
+                        expr_layout.clone()    
                     }
                 },
                 LayoutKind::Diagonal => {
@@ -1293,18 +1242,6 @@ impl<'s> Env<'s> {
             elmt_layout
         };
 
-        // now broadcast the expr_layout and the elmt_layout to get the final layout
-        let layouts = vec![expr_layout, elmt_layout];
-        let elmt_layout = match Layout::broadcast(&[expr_layout, elmt_layout]) {
-            Ok(layout) => layout,
-            Err(e) => {
-                self.errs.push(ValidationError::new(
-                    format!("{}", e),
-                    elmt.expr.span,
-                ));
-                return None;
-            }
-        };
         
         Some((expr_layout, elmt_layout))
     }
@@ -1331,10 +1268,7 @@ pub struct DataLayout {
 }
 
 impl DataLayout {
-    fn add_tensor_to_data_layout(&mut self, tensor: &Tensor, i: usize) -> usize {
-        self.data_index_map.insert(tensor.name.to_string(), i);
-        i + tensor.nnz()
-    }
+
     pub fn new(model: &DiscreteModel) -> Self {
         let mut data_index_map = HashMap::new();
         let mut data_length_map = HashMap::new();
@@ -1352,22 +1286,22 @@ impl DataLayout {
             data.extend(vec![0.0; tensor.nnz()]);
 
             // insert the layout info for each tensor
-            layout_index_map.insert(tensor.layout, indices.len());
+            layout_index_map.insert(tensor.layout.clone(), indices.len());
             indices.extend(tensor.layout.to_data_layout());
 
             // add the translation info for each block-tensor pair
             for blk in tensor.elmts() {
                 let translation = Translation::new(blk.expr_layout(), blk.layout(), &blk.start, tensor.layout_ptr());
-                translate_index_map.insert((blk.expr_layout, tensor.layout), indices.len());
+                translate_index_map.insert((blk.expr_layout.clone(), tensor.layout.clone()), indices.len());
                 indices.extend(translation.to_data_layout());
             } 
         };
 
-        model.inputs.iter().for_each(add_tensor);
-        model.time_indep_defns.iter().for_each(add_tensor);
-        model.time_dep_defns.iter().for_each(add_tensor);
+        model.inputs.iter().for_each(&mut add_tensor);
+        model.time_indep_defns.iter().for_each(&mut add_tensor);
+        model.time_dep_defns.iter().for_each(&mut add_tensor);
         add_tensor(&model.state);
-        model.state_dep_defns.iter().for_each(add_tensor);
+        model.state_dep_defns.iter().for_each(&mut add_tensor);
         add_tensor(&model.lhs);
         add_tensor(&model.rhs);
         add_tensor(&model.out);
@@ -1492,31 +1426,8 @@ impl<'s> DiscreteModel<'s> {
     }
 
     
-    fn build_domain(domain_ast: &Ast<'s>, env: &mut Env<'s>) -> (f64, f64) {
-        let domain = domain_ast.kind.as_domain().unwrap();
-        match &domain.range.kind {
-            AstKind::Range(r) => (r.lower, r.upper),
-            AstKind::Name(name) => match *name {
-                "R" => (-f64::INFINITY, f64::INFINITY),
-                _ => {
-                    env.errs.push(ValidationError::new(
-                        format!("Unknown domain {}", name),
-                        domain_ast.span,
-                    ));
-                    (-f64::INFINITY, f64::INFINITY)
-                }
-            },
-            _ => {
-                env.errs.push(ValidationError::new(
-                    format!("Unknown domain, should be a range or a name"),
-                    domain_ast.span,
-                ));
-                (-f64::INFINITY, f64::INFINITY)
-            }
-        }
-    }
 
-    fn build_array(array: &ast::Tensor<'s>, env: &mut Env<'s>) -> Option<Tensor<'s>> {
+    fn build_array(array: &ast::Tensor<'s>, env: &mut Env) -> Option<Tensor<'s>> {
         let rank = array.indices.len();
         let mut elmts = Vec::new();
         let mut start = Index::zeros(rank);
@@ -1540,8 +1451,8 @@ impl<'s> DiscreteModel<'s> {
                                 ));
                             }
                         }
-                        let (name, expr) = if let AstKind::Assignment(a) = &te.expr.kind {
-                            (Some(a.name), a.expr.clone())
+                        let (name, _expr) = if let AstKind::Assignment(a) = &te.expr.kind {
+                            (Some(String::from(a.name)), a.expr.clone())
                         } else {
                             (None, te.expr.clone())
                         };
@@ -1552,17 +1463,27 @@ impl<'s> DiscreteModel<'s> {
                                 a.span,
                             ));
                         }
-                        elmts.push(TensorBlock::new(name, start.clone(), array.indices, RcLayout::new(elmt_layout), RcLayout::new(expr_layout), *te.expr.clone()));
-                        tensor_layout.append(&elmt_layout, &start);
+                        if let Err(e) = tensor_layout.append(&elmt_layout, &start) {
+                            env.errs.push(ValidationError::new(
+                                e.to_string(),
+                                a.span,
+                            ));
+                        }
                         start += &elmt_layout.shape().mapv(|x| i64::try_from(x).unwrap());
+                        elmts.push(TensorBlock::new(name, start.clone(), array.indices.clone(), RcLayout::new(elmt_layout), RcLayout::new(expr_layout), *te.expr.clone()));
                     }
                 },
                 _ => unreachable!("unexpected expression in tensor definition"),
             }
         }
-        let tensor = Tensor::new(array.name, elmts, array.indices);
+        let tensor = Tensor::new(array.name, elmts, array.indices.clone());
         if nerrs == env.errs.len() {
             env.push_var(&tensor);
+            for block in tensor.elmts().iter() {
+                if let Some(_name) = block.name() {
+                    env.push_var_blk(&tensor, block);
+                }
+            }
         }
         Some(tensor)
     }
@@ -1586,7 +1507,7 @@ impl<'s> DiscreteModel<'s> {
         }
     }
 
-    pub fn build(name: &'s str, model: &ast::DsModel) -> Result<Self, ValidationErrors> {
+    pub fn build(name: &'s str, model: &'s ast::DsModel) -> Result<Self, ValidationErrors> {
         let mut env = Env::new();
         let mut ret = Self::new(name);
         let mut read_state = false;
@@ -1594,7 +1515,7 @@ impl<'s> DiscreteModel<'s> {
         let mut read_out = false;
         let mut span_f = None;
         let mut span_g = None;
-        for (i, tensor_ast) in model.tensors.iter().enumerate() {
+        for tensor_ast in model.tensors.iter() {
             match tensor_ast.kind.as_array() {
                 None => env.errs.push(ValidationError::new(
                     "not an array".to_string(),
@@ -1681,8 +1602,8 @@ impl<'s> DiscreteModel<'s> {
 
         // set is_algebraic for every state based on env
         for i in 0..ret.state.elmts().len() {
-            let s = ret.state.elmts()[i];
-            if let Some(name) = s.name {
+            let s = &ret.state.elmts()[i];
+            if let Some(name) = s.name() {
                 let env_entry = env.get(name).unwrap();
                 ret.is_algebraic.push(env_entry.is_algebraic());
             }
@@ -1750,7 +1671,7 @@ impl<'s> DiscreteModel<'s> {
         };
         let (f_astkind, g_astkind) = match ast_eqn.kind {
             AstKind::RateEquation(eqn) => (
-                AstKind::new_name(format!("d{}dt", state.name).as_str()),
+                AstKind::new_name(state.name),
                 eqn.rhs.kind,
             ),
             AstKind::Equation(eqn) => (
@@ -1771,12 +1692,12 @@ impl<'s> DiscreteModel<'s> {
         } else {
             Ast { kind: AstKind::new_num(0.0), span: None }
         };
-        TensorBlock::new_dense_vector(Some(state.name), 0, state.dim, init)
+        TensorBlock::new_dense_vector(Some(state.name.to_owned()), 0, state.dim, init)
     }
     fn state_to_dudt0(state_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
         let state = state_cell.as_ref().borrow();
         let init = Ast { kind: AstKind::new_num(0.0), span: None };
-        TensorBlock::new_dense_vector(Some(format!("d{}dt", state.name).as_str()), 0, state.dim, init)
+        TensorBlock::new_dense_vector(Some(format!("d{}dt", state.name)), 0, state.dim, init)
     }
     fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
         let defn = defn_cell.as_ref().borrow();
@@ -1878,7 +1799,7 @@ impl<'s> DiscreteModel<'s> {
 
         let mut inputs: Vec<Tensor> = Vec::new();
         for input in const_unknowns.iter() {
-            let mut inp = DiscreteModel::state_to_input(input);
+            let inp = DiscreteModel::state_to_input(input);
             inputs.push(inp);
         }
 
@@ -1894,19 +1815,7 @@ impl<'s> DiscreteModel<'s> {
             .iter()
             .map(DiscreteModel::dfn_to_array)
             .collect();
-        let lhs_shape = &f_elmts
-            .last()
-            .unwrap()
-            .start
-            .mapv(|x| usize::try_from(x).unwrap())
-            + f_elmts.last().unwrap().layout().shape();
         let lhs =  Tensor::new("F", f_elmts, vec!['i']);
-        let rhs_shape = &g_elmts
-            .last()
-            .unwrap()
-            .start
-            .mapv(|x| usize::try_from(x).unwrap())
-            + g_elmts.last().unwrap().layout().shape();
         let rhs = Tensor::new("G", g_elmts, vec!['i']);
         let name = model.name;
         DiscreteModel {

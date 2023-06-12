@@ -247,8 +247,8 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
 
 pub fn parse_string(text: &str) -> Result<ast::DsModel, Error<Rule>> {
     let main = DsParser::parse(Rule::main, &text)?.next().unwrap();
-    let model = parse_value(main).kind.as_ds_model().unwrap();
-    return Ok(*model);
+    let model = parse_value(main).kind.to_ds_model().unwrap();
+    Ok(model)
 }
 
 #[cfg(test)]

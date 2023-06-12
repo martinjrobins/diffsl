@@ -1932,16 +1932,19 @@ mod tests {
     #[test]
     fn discrete_logistic_model() {
         const TEXT: &str = "
-            in_i {
-                r -> [0, inf],
-                k -> [0, inf],
-            }
+            in = [r, k]
+            r { 1 }
+            k { 1 }
             u_i {
-                y -> R = 1,
-                z -> R,
+                y = 1,
+                z,
+            }
+            dudt_i {
+                dydt,
+                dzdt,
             }
             F_i {
-                dot(y),
+                dydt,
                 0,
             }
             G_i {

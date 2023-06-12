@@ -5,7 +5,7 @@ tensor     = { name_ij ~ "{" ~ tensor_elmt? ~ (DELIM~ tensor_elmt)* ~ DELIM? ~ "
 indices   = { "(" ~ indice ~ ("," ~ indice)* ~ ")" ~ ":" }
 indice      = { integer ~ ( range_sep ~ integer )? }
 tensor_elmt = { indices? ~ (assignment | expression) }
-assignment = { name_ij ~ "=" ~ expression }
+assignment = { name ~ "=" ~ expression }
 expression = { sign? ~ term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }
 factor     = { call | real | integer | name_ij | "(" ~ expression ~ ")" }

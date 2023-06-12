@@ -224,6 +224,17 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             }
         },
 
+        // assignment = { name_ij ~ "=" ~ expression }
+        Rule::assignment => {
+            let mut inner = pair.into_inner();
+            let name = parse_name(inner.next().unwrap());
+            let expr = Box::new(parse_value(inner.next().unwrap()));
+            Ast { 
+                kind: AstKind::Assignment(ast::Assignment { name, expr }),
+                span 
+            }
+        },
+
         // tensor_elmt = { indices? ~ (assignment | expression) }
         Rule::tensor_elmt =>  {
             let mut inner = pair.into_inner();
@@ -247,7 +258,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
 
 pub fn parse_string(text: &str) -> Result<ast::DsModel, Error<Rule>> {
     let main = DsParser::parse(Rule::main, &text)?.next().unwrap();
-    let model = parse_value(main).kind.to_ds_model().unwrap();
+    let model = parse_value(main.into_inner().next().unwrap()).kind.to_ds_model().unwrap();
     Ok(model)
 }
 

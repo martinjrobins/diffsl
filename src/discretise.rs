@@ -768,13 +768,7 @@ impl<'s> Tensor<'s> {
     }
 
     
-    pub fn new(name: &'s str, elmts: Vec<TensorBlock<'s>>, indices: Vec<char>) -> Self {
-        let rank = elmts.iter().fold(0, |acc, i| max(acc, i.rank()));
-        let layout = elmts.iter().fold(Layout::new_empty(rank), |mut acc, i| {
-            acc.append(i.layout(), i.start()).unwrap();
-            acc
-        });
-        let layout = RcLayout::new(layout);
+    pub fn new(name: &'s str, elmts: Vec<TensorBlock<'s>>, layout: RcLayout, indices: Vec<char>) -> Self {
         Self {
             name,
             elmts,
@@ -858,6 +852,7 @@ impl EnvVar {
 }
 
 struct Env {
+    current_span: Option<StringSpan>,
     errs: ValidationErrors,
     vars: HashMap<String, EnvVar>,
 }
@@ -904,6 +899,7 @@ impl Env {
         Env {
             errs: ValidationErrors::new(),
             vars,
+            current_span: None,
         }
     }
     pub fn is_tensor_time_dependent(&self, tensor: &Tensor) -> bool {
@@ -1245,6 +1241,14 @@ impl Env {
         
         Some((expr_layout, elmt_layout))
     }
+
+    fn current_span(&self) -> Option<StringSpan> {
+        self.current_span
+    }
+
+    fn set_current_span(&mut self, current_span: Option<StringSpan>) {
+        self.current_span = current_span;
+    }
 }
 
 
@@ -1438,7 +1442,6 @@ impl<'s> DiscreteModel<'s> {
                 array.elmts[1].span,
             ));
         }
-        let mut tensor_layout = Layout::new_empty(rank);
         for a in &array.elmts {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
@@ -1463,12 +1466,7 @@ impl<'s> DiscreteModel<'s> {
                                 a.span,
                             ));
                         }
-                        if let Err(e) = tensor_layout.append(&elmt_layout, &start) {
-                            env.errs.push(ValidationError::new(
-                                e.to_string(),
-                                a.span,
-                            ));
-                        }
+                        
                         start += &elmt_layout.shape().mapv(|x| i64::try_from(x).unwrap());
                         elmts.push(TensorBlock::new(name, start.clone(), array.indices.clone(), RcLayout::new(elmt_layout), RcLayout::new(expr_layout), *te.expr.clone()));
                     }
@@ -1476,16 +1474,35 @@ impl<'s> DiscreteModel<'s> {
                 _ => unreachable!("unexpected expression in tensor definition"),
             }
         }
-        let tensor = Tensor::new(array.name, elmts, array.indices.clone());
-        if nerrs == env.errs.len() {
-            env.push_var(&tensor);
-            for block in tensor.elmts().iter() {
-                if let Some(_name) = block.name() {
-                    env.push_var_blk(&tensor, block);
+        // create tensor 
+        if elmts.is_empty() {
+            env.errs.push(ValidationError::new(
+                format!("tensor {} has no elements", array.name),
+                env.current_span()
+            ));
+            None
+        } else {
+            let tensor_layout =  elmts.iter().skip(1).fold(elmts[0].layout(), |acc, elmt| {
+                if let Err(e) = acc.append(&elmt.layout(), &elmt.start()) {
+                    env.errs.push(ValidationError::new(
+                        e.to_string(),
+                        a.span,
+                    ));
+                }
+                acc
+            });
+            let tensor = Tensor::new(array.name, elmts, tensor_layout, array.indices.clone());
+            // if there are no errors, add the tensor to the environment
+            if nerrs == env.errs.len() {
+                env.push_var(&tensor);
+                for block in tensor.elmts().iter() {
+                    if let Some(_name) = block.name() {
+                        env.push_var_blk(&tensor, block);
+                    }
                 }
             }
+            Some(tensor)
         }
-        Some(tensor)
     }
 
 
@@ -1516,6 +1533,7 @@ impl<'s> DiscreteModel<'s> {
         let mut span_f = None;
         let mut span_g = None;
         for tensor_ast in model.tensors.iter() {
+            env.set_current_span(tensor_ast.span);
             match tensor_ast.kind.as_array() {
                 None => env.errs.push(ValidationError::new(
                     "not an array".to_string(),
@@ -2007,10 +2025,7 @@ mod tests {
     #[test]
     fn logistic_model_with_matrix() {
         const TEXT: &str = "
-            in_i {
-                r -> [0, inf],
-                k -> [0, inf],
-            }
+            in = [r, k]
             sm_ij {
                 (0..2, 0..2): 1,
             }
@@ -2020,8 +2035,8 @@ mod tests {
                 (3, 3): 1,
             }
             u_i {
-                y -> R**2 = 1,
-                z -> R**2,
+                (0:2): y = 1,
+                (0:2): z,
             }
             rhs_i {
                 (r * y_i) * (1 - (y_i / k)),
@@ -2058,9 +2073,7 @@ mod tests {
     #[test]
     fn param_error() {
         const TEXT: &str = "
-            in_i {
-                2 * 1
-            }
+            in = [bub]
             u_i {
                 y -> R,
             }

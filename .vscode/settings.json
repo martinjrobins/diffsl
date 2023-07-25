@@ -1,3 +1,6 @@
 {
-  "rust-analyzer.debug.engineSettings": {"cppvsdbg": {"visualizerFile":"${workspaceFolder}/.vscode/custom.natvis"}}
+  "rust-analyzer.debug.engineSettings": {"cppvsdbg": {"visualizerFile":"${workspaceFolder}/.vscode/custom.natvis"}},
+  "lldb.launch.initCommands": [
+    "command script import ${workspaceFolder}/.vscode/formatter.py"
+  ],
 }

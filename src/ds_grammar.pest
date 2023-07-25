@@ -1,7 +1,7 @@
 main       = { SOI ~ model ~ EOI }
 model      = { inputs? ~ tensor* }
-inputs     = { "in" ~ "=" ~ "[" ~ name ~ ("," ~ name)* ~ "]" }
-tensor     = { name_ij ~ "{" ~ tensor_elmt? ~ (DELIM~ tensor_elmt)* ~ DELIM? ~ "}" }
+inputs     = { "in" ~ "=" ~ "[" ~ name? ~ (DELIM ~ name)* ~ DELIM? ~ "]" }
+tensor     = { name_ij ~ "{" ~ tensor_elmt? ~ (DELIM ~ tensor_elmt)* ~ DELIM? ~ "}" }
 indices   = { "(" ~ indice ~ ("," ~ indice)* ~ ")" ~ ":" }
 indice      = { integer ~ ( range_sep ~ integer )? }
 tensor_elmt = { indices? ~ (assignment | expression) }

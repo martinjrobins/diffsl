@@ -277,11 +277,6 @@ impl Layout {
             }
         }
 
-        // can't permute a diagonal layout
-        if self.is_diagonal() {
-            return Err(anyhow!("cannot permute a diagonal layout"));
-        }
-
         // for a sparse tensor, can only permute the sparse axes
         if self.is_sparse() {
             for i in self.rank() - self.n_dense_axes..self.rank() {
@@ -324,40 +319,44 @@ impl Layout {
             }
         };
 
-        let last_layout = layouts.pop().unwrap();
-        let indices = last_layout.indices;
-        let n_dense_axes = last_layout.n_dense_axes;
-
         // if there are any diagonal layouts then the result is diagonal, all the layouts must be diagonal and have the same number of dense axes
         if layouts.iter().any(|x| x.is_diagonal()) {
             if layouts.iter().any(|x| !x.is_diagonal()) {
                 return Err(anyhow!("cannot broadcast diagonal and non-diagonal layouts"));
             }
-            if layouts.iter().any(|x| x.n_dense_axes != n_dense_axes) {
+            if layouts.iter().any(|x| x.n_dense_axes != layouts[0].n_dense_axes) {
                 return Err(anyhow!("cannot broadcast diagonal layouts with different numbers of dense axes"));
             } 
             return Ok(Layout {
-                indices: indices,
+                indices: Vec::new(),
                 shape,
                 kind: LayoutKind::Diagonal,
-                n_dense_axes,
+                n_dense_axes: layouts[0].n_dense_axes,
             });
         }
         // if there are any sparse layouts then the result is sparse, and the indicies of all sparse layouts must be identical and have the same number of dense axis. 
         // sparse layouts can be combined with dense layouts.
         if layouts.iter().any(|x| x.is_sparse()) {
-            for layout in layouts {
+            let mut indices = None;
+            let mut n_dense_axes = 0;
+            for _i in 0..layouts.len() {
+                let layout = layouts.pop().unwrap();
                 if layout.is_sparse() {
-                    if layout.indices.len() != indices.len() || layout.indices.iter().zip(indices.iter()).any(|(x, y)| x != y) {
-                        return Err(anyhow!("cannot broadcast layouts with different sparsity patterns"));
-                    }
-                    if layout.n_dense_axes != n_dense_axes {
-                        return Err(anyhow!("cannot broadcast layouts with different numbers of dense axes"));
+                    if indices.is_none() {
+                        indices = Some(layout.indices);
+                        n_dense_axes = layout.n_dense_axes;
+                    } else {
+                        if layout.indices.len() != indices.as_ref().unwrap().len() || layout.indices.iter().zip(indices.as_ref().unwrap().iter()).any(|(x, y)| x != y) {
+                            return Err(anyhow!("cannot broadcast layouts with different sparsity patterns"));
+                        }
+                        if layout.n_dense_axes != n_dense_axes {
+                            return Err(anyhow!("cannot broadcast layouts with different numbers of dense axes"));
+                        }
                     }
                 }
             }
             return Ok(Layout {
-                indices: indices,
+                indices: indices.unwrap(),
                 shape,
                 kind: LayoutKind::Sparse,
                 n_dense_axes,
@@ -365,13 +364,7 @@ impl Layout {
         }
         
         // must be all dense here
-        let kind = LayoutKind::Dense;
-        Ok(Layout {
-            indices: indices,
-            shape,
-            kind,
-            n_dense_axes,
-        })
+        Ok(Layout::dense(shape))
     }
     pub fn is_dense(&self) -> bool {
         self.kind == LayoutKind::Dense
@@ -432,71 +425,97 @@ impl Layout {
         }
     }
 
-    // append another layout to this one along a given axis. the layout is modified in-place
-    // can only append if the ranks are the same
-    fn append(&mut self, other: &Layout, start: &Index) -> Result<()> {
-        if self.rank() != other.rank() {
-            return Err(anyhow!("cannot append layouts with different ranks"));
+    // concatenate a list of layouts along the first axis
+    fn concatenate(elmts: &[TensorBlock]) -> Result<Self> {
+        let layouts = elmts.iter().map(|x| x.layout().as_ref()).collect::<Vec<_>>();
+        let starts = elmts.iter().map(|x| x.start()).collect::<Vec<_>>();
+
+        // if there are no layouts then return an empty layout
+        if layouts.is_empty() {
+            return Ok(Layout::new_empty(0));
         }
-        
-        // number of final dense axes must be the same
-        if self.n_dense_axes != other.n_dense_axes {
-            return Err(anyhow!("cannot append layouts with different numbers of final dense axes"));
+
+        // if there is only one layout then return it
+        if layouts.len() == 1 {
+            return Ok(layouts[0].clone());
         }
+
+        // get max rank of the elmts, should be at least 1  
+        let max_rank = std::cmp::max(layouts.iter().map(|x| x.rank()).max().unwrap(), 1);
         
-        // start indices must be zero for final dense axes
-        if start.slice(s![self.rank() - self.n_dense_axes..]).iter().any(|&x| x != 0) {
-            return Err(anyhow!("start indices must be zero for final dense axes"));
-        }
-        
-        // expand shape to fit the other layout
-        let mut new_shape = self.shape.clone();
-        let rank = self.rank();
-        for i in 0..rank {
-            new_shape[i] = max(new_shape[i], other.shape[i] + usize::try_from(start[i]).unwrap());
-        }
-        
-        // if both layouts are dense then we can just update the shape and return
-        if self.is_dense() && other.is_dense() {
-            // check that the start index is zero for all axes except the first
-            if start.iter().skip(1).any(|&x| x != 0) {
-                return Err(anyhow!("can only append dense layouts with a start index of zero for all axes except the first"));
+        // get max shape of the elmts, each dim is at least 1
+        let max_shape = layouts.iter().fold(Shape::ones(max_rank), |mut acc, x| {
+            for i in 0..x.rank() {
+                acc[i] = max(acc[i], x.shape()[i]);
             }
-            self.shape = new_shape;
-            return Ok(());
-        }
-        
-        // if both layouts are diagonal and the start indices are the same then we can just update the shape and return
-        if self.is_diagonal() && other.is_diagonal() {
-            // check that the start index is on the diagonal
-            let first = start[0];
-            if start.iter().any(|&x| x != first) {
-                return Err(anyhow!("can only append diagonal layouts with a start index on the diagonal"));
+            acc
+        });
+
+        // if all layouts are dense then calculate the new shape and return
+        if layouts.iter().all(|x| x.is_dense()) {
+            // check that this shape can be broadcast into max_shape
+            for layout in layouts.iter() {
+                for i in 1..std::cmp::min(layout.rank(), max_rank) {
+                    if layout.shape[i] != 1 && layout.shape[i] != max_shape[i] {
+                        return Err(anyhow!("cannot concatenate layouts that cannot be broadcast into each other (got shapes {:?})", layouts.iter().map(|x| x.shape()).collect::<Vec<_>>()));
+                    }
+                }
             }
-            self.shape = new_shape;
-            return Ok(());
+            let mut new_shape = max_shape.clone();
+            new_shape[0] = layouts.iter().map(|x| if x.shape.dim() > 0 { x.shape[0] } else { 1 }).sum();
+            return Ok(Layout::dense(new_shape));
         }
-        
-        // if both layouts are sparse then we can just append the indices
-        if self.is_sparse() && other.is_sparse() {
-            self.indices.extend(other.indices.iter().map(|x| x + start));
-            self.shape = new_shape;
-            return Ok(());
+
+        // must be at least one diagonal or sparse layout here, get its n_dense_axes
+        let mut n_dense_axes = 0;
+        for layout in layouts.iter() {
+            if layout.is_diagonal() || layout.is_sparse() {
+                n_dense_axes = layout.n_dense_axes;
+                break;
+            }
         }
-        
-        if self.is_sparse() {
-            // if this layout is sparse then convert the other and extend the indices
-            let sparse_other = other.into_sparse();
-            self.indices.extend(sparse_other.indices().map(|x| x + start));
-        } else {
-            // if the other layout is sparse then we need to convert to sparse
-            let sparse_self = self.into_sparse();
-            self.indices = sparse_self.indices;
-            self.indices.extend(other.indices.iter().map(|x| x + start));
+
+        // check that the number of final dense axes is the same for all sparse or diagonal layouts
+        if layouts.iter().any(|x| !x.is_dense() && x.n_dense_axes != n_dense_axes) {
+            return Err(anyhow!("cannot concatenate layouts with different numbers of final dense axes"));
         }
-        self.shape = new_shape;
-        Ok(())
+
+        // check that the shapes of the final dense axes are the same for all layouts
+        if layouts.iter().any(|x| x.shape.slice(s![x.rank() - n_dense_axes..]) != layouts[0].shape.slice(s![x.rank() - n_dense_axes..])) {
+            return Err(anyhow!("cannot concatenate layouts with different shapes for the final dense axes"));
+        }
+
+        // check that the rank is the same for all layouts
+        if layouts.iter().any(|x| x.rank() != layouts[0].rank()) {
+            return Err(anyhow!("cannot concatenate layouts with different ranks"));
+        }
+
+        // if all layouts are diagonal then 
+        if layouts.iter().all(|x| x.is_diagonal()) {
+            // add up the shapes for the non-final dense axes
+            let mut new_shape = max_shape.clone(); 
+            for i in 0..layouts[0].rank() - layouts[0].n_dense_axes {
+                new_shape[i] = layouts.iter().map(|x| x.shape[i]).sum();
+            }
+            return Ok(Self {
+                shape: new_shape,
+                indices: Vec::new(),
+                kind: LayoutKind::Diagonal,
+                n_dense_axes: layouts[0].n_dense_axes,
+            });
+        }
+
+        // any other combination we convert all to sparse and concatenate
+        let mut new_layout = Layout::sparse(Vec::new(), max_shape);
+        for (layout, start) in std::iter::zip(layouts, starts) {
+            // convert to sparse
+            let to_sparse = layout.into_sparse();
+            new_layout.indices.extend(to_sparse.indices().map(|x| x + start));
+            
+        }
+        Ok(new_layout)
     }
+
 
     pub fn rank(&self) -> usize {
         self.shape.len()
@@ -718,8 +737,8 @@ impl<'s> TensorBlock<'s> {
 
 impl<'s> fmt::Display for TensorBlock<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.rank() > 1 {
-            let sep = if self.is_diagonal() { ".." } else { ":" };
+        if self.rank() > 1 || self.layout.shape != self.expr_layout.shape {
+            let sep = if self.is_diagonal() && self.expr_layout().is_dense() { ".." } else { ":" };
             write!(f, "(")?;
             for i in 0..self.rank() {
                 write!(f, "{}", self.start[i])?;
@@ -776,6 +795,23 @@ impl<'s> Tensor<'s> {
             layout,
         }
     }
+
+    pub fn new_no_layout(name: &'s str, elmts: Vec<TensorBlock<'s>>, indices: Vec<char>) -> Self {
+        if elmts.is_empty() {
+            Tensor::new("out", vec![], RcLayout::new(Layout::new_empty(0)), vec![])
+        } else {
+            let layout = Layout::concatenate(elmts.as_slice()).unwrap();
+            Tensor::new(
+                name,
+                elmts,
+                RcLayout::new(layout),
+                indices,
+            )
+        }
+    }
+
+
+
 
 
     pub fn rank(&self) -> usize {
@@ -903,6 +939,7 @@ impl Env {
         }
     }
     pub fn is_tensor_time_dependent(&self, tensor: &Tensor) -> bool {
+        if tensor.name == "u" || tensor.name == "dudt" { return true };
         tensor.elmts.iter().any(|block| {
             block
                 .expr
@@ -912,6 +949,7 @@ impl Env {
         })
     }
     pub fn is_tensor_state_dependent(&self, tensor: &Tensor) -> bool {
+        if tensor.name == "u" || tensor.name == "dudt" { return true };
         tensor.elmts.iter().any(|block| {
             block
                 .expr
@@ -1363,10 +1401,13 @@ pub struct DiscreteModel<'s> {
 
 impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.inputs.iter().fold(Ok(()), |acc, input| acc.and_then(|_| write!(f, "{}\n", input)))
+        self.inputs.iter().fold(write!(f, "in = ["), |acc, input| acc.and_then(|_| write!(f, "{},", input.name)))
+        .and_then(|_| write!(f, "]\n"))
+        .and_then(|_| self.inputs.iter().fold(Ok(()), |acc, input| acc.and_then(|_| write!(f, "{}\n", input))))
         .and_then(|_| self.time_indep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
         .and_then(|_| self.time_dep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
         .and_then(|_| write!(f, "{}\n", self.state))
+        .and_then(|_| write!(f, "{}\n", self.state_dot))
         .and_then(|_| self.state_dep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
         .and_then(|_| write!(f, "{}\n", self.lhs))
         .and_then(|_| write!(f, "{}\n", self.rhs))
@@ -1467,7 +1508,23 @@ impl<'s> DiscreteModel<'s> {
                             ));
                         }
                         
-                        start += &elmt_layout.shape().mapv(|x| i64::try_from(x).unwrap());
+                        // if the tensor indices indicates a start, use this, otherwise increment by the shape
+                        start = if let Some(elmt_indices) = te.indices.as_ref() {
+                            let given_indices_ast = &elmt_indices.kind.as_vector().unwrap().data;
+                            let given_indices: Vec<&Indice> = given_indices_ast.iter().map(|i| i.kind.as_indice().unwrap()).collect();
+                            Index::from_vec(given_indices.into_iter().map(|i| i.first.kind.as_integer().unwrap()).collect::<Vec<i64>>())
+                        } else {
+                            // increment start by the size of the 0th dimension, if scalar then increment by 1
+                            let mut new_start = start.clone();
+                            if new_start.len() > 0 {
+                                if elmt_layout.rank() == 0 {
+                                    new_start[0] += 1;
+                                } else {
+                                    new_start[0] += i64::try_from(elmt_layout.shape()[0]).unwrap();
+                                }
+                            }
+                            new_start
+                        };
                         elmts.push(TensorBlock::new(name, start.clone(), array.indices.clone(), RcLayout::new(elmt_layout), RcLayout::new(expr_layout), *te.expr.clone()));
                     }
                 },
@@ -1482,26 +1539,27 @@ impl<'s> DiscreteModel<'s> {
             ));
             None
         } else {
-            let tensor_layout =  elmts.iter().skip(1).fold(elmts[0].layout(), |acc, elmt| {
-                if let Err(e) = acc.append(&elmt.layout(), &elmt.start()) {
-                    env.errs.push(ValidationError::new(
-                        e.to_string(),
-                        a.span,
-                    ));
-                }
-                acc
-            });
-            let tensor = Tensor::new(array.name, elmts, tensor_layout, array.indices.clone());
-            // if there are no errors, add the tensor to the environment
-            if nerrs == env.errs.len() {
-                env.push_var(&tensor);
-                for block in tensor.elmts().iter() {
-                    if let Some(_name) = block.name() {
-                        env.push_var_blk(&tensor, block);
+            match Layout::concatenate(&elmts) {
+                Ok(layout) => {
+                    let tensor = Tensor::new(array.name, elmts, RcLayout::new(layout), array.indices.clone());
+                    if nerrs == env.errs.len() {
+                        env.push_var(&tensor);
+                        for block in tensor.elmts().iter() {
+                            if let Some(_name) = block.name() {
+                                env.push_var_blk(&tensor, block);
+                            }
+                        }
                     }
+                    Some(tensor)
+                },
+                Err(e) => {
+                    env.errs.push(ValidationError::new(
+                        format!("{}", e),
+                        env.current_span()
+                    ));
+                    None
                 }
             }
-            Some(tensor)
         }
     }
 
@@ -1594,16 +1652,25 @@ impl<'s> DiscreteModel<'s> {
                                         tensor_ast.span,
                                     ));
                                 }
-                                print!("built out: {:#?}", built);
                                 ret.out = built;
                             }
                         }
                         _name => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
+                                let is_input = model.inputs.iter().any(|name| *name == _name);
                                 if let Some(env_entry) = env.get(built.name) {
                                     let dependent_on_state = env_entry.is_state_dependent();
                                     let dependent_on_time = env_entry.is_time_dependent();
-                                    if !dependent_on_time {
+                                    if is_input {
+                                        // inputs must be constants
+                                        if dependent_on_time || dependent_on_state {
+                                            env.errs.push(ValidationError::new(
+                                                format!("input {} must be constant", built.name),
+                                                tensor_ast.span,
+                                            ));
+                                        }
+                                        ret.inputs.push(built);
+                                    } else if !dependent_on_time {
                                         ret.time_indep_defns.push(built);
                                     } else if dependent_on_time && !dependent_on_state {
                                         ret.time_dep_defns.push(built);
@@ -1618,16 +1685,18 @@ impl<'s> DiscreteModel<'s> {
             }
         }
 
+        
+
         // set is_algebraic for every state based on env
         for i in 0..ret.state.elmts().len() {
             let s = &ret.state.elmts()[i];
             if let Some(name) = s.name() {
-                let env_entry = env.get(name).unwrap();
-                ret.is_algebraic.push(env_entry.is_algebraic());
+                if let Some(env_entry) = env.get(name) {
+                    ret.is_algebraic.push(env_entry.is_algebraic());
+                }
             }
         }
         
-        // check that we've read all the required arrays
         let span_all = if model.tensors.is_empty() {
             None
         } else {
@@ -1636,6 +1705,17 @@ impl<'s> DiscreteModel<'s> {
                 pos_end: model.tensors.last().unwrap().span.unwrap().pos_start,
             })
         };
+        // check that we found all input parameters
+        for name in model.inputs.iter() {
+            if env.get(name).is_none() {
+                env.errs.push(ValidationError::new(
+                    format!("input {} is not defined", name),
+                    span_all,
+                ));
+            }
+        };
+
+        // check that we've read all the required arrays
         if !read_state {
             env.errs.push(ValidationError::new(
                 "missing 'u' array".to_string(),
@@ -1720,14 +1800,16 @@ impl<'s> DiscreteModel<'s> {
     fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
         let defn = defn_cell.as_ref().borrow();
         let tsr_blk = TensorBlock::new_dense_vector(None, 0, defn.dim, defn.expression.as_ref().unwrap().clone());
-        Tensor::new(defn.name, vec![tsr_blk], vec!['i'])
+        let layout = tsr_blk.layout().clone();
+        Tensor::new(defn.name, vec![tsr_blk], layout, vec!['i'])
     }
 
     fn state_to_input(input_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
         let input = input_cell.as_ref().borrow();
         assert!(input.is_independent());
         assert!(!input.is_time_dependent());
-        Tensor::new(input.name, vec![TensorBlock::new_dense_vector(None, 0, input.dim, Ast { kind: AstKind::new_name(input.name), span: None })], vec!['i'])
+        let elmt = TensorBlock::new_dense_vector(None, 0, input.dim, Ast { kind: AstKind::new_name(input.name), span: None });
+        Tensor::new_no_layout(input.name, vec![elmt], vec!['i'])
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
         let output = output_cell.as_ref().borrow();
@@ -1776,20 +1858,11 @@ impl<'s> DiscreteModel<'s> {
             .cloned()
             .partition(|v| v.as_ref().borrow().is_time_dependent());
 
-        let mut out_array_elmts: Vec<TensorBlock> =
+        let out_array_elmts: Vec<TensorBlock> =
             chain(time_varying_unknowns.iter(), model.definitions.iter())
                 .map(DiscreteModel::output_to_elmt)
                 .collect();
-        let mut curr_index: usize = 0;
-        for elmt in out_array_elmts.iter_mut() {
-            elmt.start[0] = i64::try_from(curr_index).unwrap();
-            curr_index = curr_index + elmt.layout().shape()[0];
-        }
-        let out_array = Tensor::new(
-            "out",
-            out_array_elmts,
-            vec!['i'],
-        );
+        let out_array = Tensor::new_no_layout("out", out_array_elmts, vec!['i']);
 
         let mut f_elmts: Vec<TensorBlock> = Vec::new();
         let mut g_elmts: Vec<TensorBlock> = Vec::new();
@@ -1812,8 +1885,8 @@ impl<'s> DiscreteModel<'s> {
             init_dudts.push(init_dudt);
             init_states.push(init_state);
         }
-        let state = Tensor::new("u", init_states, vec!['i']);
-        let state_dot = Tensor::new("dudt", init_dudts, vec!['i']);
+        let state = Tensor::new_no_layout("u", init_states, vec!['i']);
+        let state_dot = Tensor::new_no_layout("dudt", init_dudts, vec!['i']);
 
         let mut inputs: Vec<Tensor> = Vec::new();
         for input in const_unknowns.iter() {
@@ -1833,8 +1906,8 @@ impl<'s> DiscreteModel<'s> {
             .iter()
             .map(DiscreteModel::dfn_to_array)
             .collect();
-        let lhs =  Tensor::new("F", f_elmts, vec!['i']);
-        let rhs = Tensor::new("G", g_elmts, vec!['i']);
+        let lhs =  Tensor::new_no_layout("F", f_elmts, vec!['i']);
+        let rhs = Tensor::new_no_layout("G", g_elmts, vec!['i']);
         let name = model.name;
         DiscreteModel {
             name,
@@ -1950,16 +2023,16 @@ mod tests {
     #[test]
     fn discrete_logistic_model() {
         const TEXT: &str = "
-            in = [r, k]
-            r { 1 }
-            k { 1 }
+            in = [r, k, ]
+            r { 1, }
+            k { 1, }
             u_i {
                 y = 1,
-                z,
+                z = 0,
             }
             dudt_i {
-                dydt,
-                dzdt,
+                dydt = 0,
+                dzdt = 0,
             }
             F_i {
                 dydt,
@@ -1992,14 +2065,16 @@ mod tests {
     #[test]
     fn discrete_logistic_model_single_state() {
         const TEXT: &str = "
-            in {
-                r -> [0, inf],
-            }
+            in = [r, ]
+            r { 1, }    
             u {
-                y -> R = 1,
+                y = 1,
+            }
+            dudt {
+                dydt = 0,
             }
             F {
-                dot(y),
+                dydt,
             }
             G {
                 (r * y) * (1 - y),
@@ -2025,7 +2100,9 @@ mod tests {
     #[test]
     fn logistic_model_with_matrix() {
         const TEXT: &str = "
-            in = [r, k]
+            in = [r, k,]
+            r { 1, }
+            k { 1, }
             sm_ij {
                 (0..2, 0..2): 1,
             }
@@ -2036,19 +2113,23 @@ mod tests {
             }
             u_i {
                 (0:2): y = 1,
-                (0:2): z,
+                (0:2): z = 0,
+            }
+            dudt_i {
+                (0:2): dydt = 0,
+                (0:2): dzdt = 0,
             }
             rhs_i {
                 (r * y_i) * (1 - (y_i / k)),
                 (2 * y_i) - z_i,
             }
             F_i {
-                dot(y_i),
+                dydt_i,
                 0,
                 0,
             }
             G_i {
-                sum(j, I_ij * rhs_i),
+                I_ij * rhs_i,
             }
             out_i {
                 y_i,
@@ -2075,13 +2156,13 @@ mod tests {
         const TEXT: &str = "
             in = [bub]
             u_i {
-                y -> R,
+                y = 0,
             }
             F_i {
-                z -> R = 1,
+                z = k,
             }
             G {
-                y * (1 - (y / k)),
+                y * (1 - y),
                 2 * y
             }
             out_i {
@@ -2094,11 +2175,10 @@ mod tests {
                 panic!("Should have failed: {}", model)
             }
             Err(e) => {
-                assert!(e.has_error_contains("expected parameter in input"));
-                assert!(e.has_error_contains("cannot have parameters in tensor"));
+                assert!(e.has_error_contains("input bub is not defined"));
                 assert!(e.has_error_contains("cannot have more than one element in a scalar"));
                 assert!(e.has_error_contains("cannot find variable k"));
-                assert!(e.has_error_contains("F and u must have the same shape"));
+                assert!(e.has_error_contains("missing 'dudt' array"));
                 assert!(e.has_error_contains("G and u must have the same shape"));
             }
         };

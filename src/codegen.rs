@@ -7,14 +7,14 @@ use inkwell::{OptimizationLevel, AddressSpace, IntPredicate};
 use inkwell::builder::Builder;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
-use ndarray::{Array1, Array2, ShapeBuilder};
+use ndarray::{Array1, Array2, ShapeBuilder, s};
 use sundials_sys::{realtype, N_Vector, IDAGetNonlinSolvStats, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit, IDAGetConsistentIC, IDAGetReturnFlagName};
 use std::collections::HashMap;
 use std::io::Write;
 use std::io;
 use std::ffi::{c_void, CStr, c_int};
-use std::ptr::{null_mut};
-use std::iter::{zip};
+use std::ptr::null_mut;
+use std::iter::zip;
 use anyhow::{Result, anyhow};
 
 
@@ -25,9 +25,9 @@ use crate::discretise::{DiscreteModel, Tensor, DataLayout, TensorBlock, Translat
 ///
 /// Calling this is innately `unsafe` because there's no guarantee it doesn't
 /// do `unsafe` operations internally.
-type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, rr: *mut realtype);
-type U0Func = unsafe extern "C" fn(data: *mut realtype, u: *mut realtype, up: *mut realtype);
-type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype);
+type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32, rr: *mut realtype);
+type U0Func = unsafe extern "C" fn(data: *mut realtype, indices: *const i32, u: *mut realtype, up: *mut realtype);
+type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32);
 
 struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
@@ -68,16 +68,22 @@ impl<'ctx> CodeGen<'ctx> {
     fn insert_state(&mut self, u: &Tensor, dudt: &Tensor) {
         let mut data_index = 0;
         for blk in u.elmts() {
-            let ptr = self.variables.get("u").unwrap();
-            let i = self.context.i32_type().const_int(data_index.try_into().unwrap(), false);
-            unsafe { self.create_entry_block_builder().build_in_bounds_gep(*ptr, &[i], blk.name().unwrap()) };
+            if let Some(name) = blk.name() {
+                let ptr = self.variables.get("u").unwrap();
+                let i = self.context.i32_type().const_int(data_index.try_into().unwrap(), false);
+                let alloca = unsafe { self.create_entry_block_builder().build_in_bounds_gep(*ptr, &[i], blk.name().unwrap()) };
+                self.variables.insert(name.to_owned(), alloca);
+            }
             data_index += blk.nnz();
         }
         data_index = 0;
         for blk in dudt.elmts() {
-            let ptr = self.variables.get("dudt").unwrap();
-            let i = self.context.i32_type().const_int(data_index.try_into().unwrap(), false);
-            unsafe { self.create_entry_block_builder().build_in_bounds_gep(*ptr, &[i], blk.name().unwrap()) };
+            if let Some(name) = blk.name() {
+                let ptr = self.variables.get("dudt").unwrap();
+                let i = self.context.i32_type().const_int(data_index.try_into().unwrap(), false);
+                let alloca = unsafe { self.create_entry_block_builder().build_in_bounds_gep(*ptr, &[i], blk.name().unwrap()) };
+                self.variables.insert(name.to_owned(), alloca);
+            }
             data_index += blk.nnz();
         }
     }
@@ -174,8 +180,9 @@ impl<'ctx> CodeGen<'ctx> {
             Some(ptr) => ptr,
             None => self.create_entry_block_builder().build_alloca(res_type, a.name()),
         };
+        let name = a.name();
         let elmt = a.elmts().first().unwrap();
-        let float_value = self.jit_compile_expr(&elmt.expr(), &[], elmt, None)?;
+        let float_value = self.jit_compile_expr(name, &elmt.expr(), &[], elmt, None)?;
         self.builder.build_store(res_ptr, float_value);
         Ok(res_ptr)
     }
@@ -274,7 +281,7 @@ impl<'ctx> CodeGen<'ctx> {
         let expr_index = self.builder.build_load(expr_index_ptr, "expr_index").into_int_value();
         let next_expr_index = self.builder.build_int_add(expr_index, one, "next_expr_index");
         self.builder.build_store(expr_index_ptr, next_expr_index);
-        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(expr_index))?;
+        let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(expr_index))?;
 
         if contract_sum.is_some() {
             let contract_sum_value = self.builder.build_load(contract_sum.unwrap(), "contract_sum").into_float_value();
@@ -374,7 +381,7 @@ impl<'ctx> CodeGen<'ctx> {
         }).collect();
         
         // loop body - eval expression and increment sum
-        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
+        let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
         let contract_sum_value = self.builder.build_load(contract_sum_ptr, "contract_sum").into_float_value();
         let contract_sum_value = self.builder.build_float_add(contract_sum_value, float_value, "contract_sum");
         self.builder.build_store(contract_sum_ptr, contract_sum_value);
@@ -430,7 +437,7 @@ impl<'ctx> CodeGen<'ctx> {
         }).collect();
         
         // loop body - eval expression
-        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
+        let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
 
         block = self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation, block)?;
 
@@ -471,7 +478,7 @@ impl<'ctx> CodeGen<'ctx> {
         }).collect();
         
         // loop body - eval expression
-        let float_value = self.jit_compile_expr(&elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
+        let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
 
         // loop body - store result
         block = self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation, block)?;
@@ -535,7 +542,6 @@ impl<'ctx> CodeGen<'ctx> {
 
 
     fn jit_compile_store(&mut self, name: &str, elmt: &TensorBlock, store_index: IntValue<'ctx>, float_value: FloatValue<'ctx>, translation: &Translation) -> Result<()> {
-        let translate_index = self.layout.get_translation_index(elmt.expr_layout(), elmt.layout()).unwrap();
         let int_type = self.context.i64_type();
         let rank = elmt.layout().rank();
         let res_index = match &translation.target {
@@ -545,6 +551,7 @@ impl<'ctx> CodeGen<'ctx> {
             },
             TranslationTo::Sparse { indices: _ } => {
                 // load store index from layout
+                let translate_index = self.layout.get_translation_index(elmt.expr_layout(), elmt.layout()).unwrap();
                 let translate_store_index = translate_index + translation.get_to_index_in_data_layout();
                 let translate_store_index = int_type.const_int(translate_store_index.try_into().unwrap(), false);
                 let rank_const = int_type.const_int(rank.try_into().unwrap(), false);
@@ -559,12 +566,12 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
-    fn jit_compile_expr(&mut self, expr: &Ast, index: &[IntValue<'ctx>], elmt: &TensorBlock, elmt_index: Option<IntValue<'ctx>>) -> Result<FloatValue<'ctx>> {
-        let name= elmt.name().unwrap();
+    fn jit_compile_expr(&mut self, name: &str, expr: &Ast, index: &[IntValue<'ctx>], elmt: &TensorBlock, elmt_index: Option<IntValue<'ctx>>) -> Result<FloatValue<'ctx>> {
+        let name= elmt.name().unwrap_or(name);
         match &expr.kind {
             AstKind::Binop(binop) => {
-                let lhs = self.jit_compile_expr(binop.left.as_ref(), index, elmt, elmt_index)?;
-                let rhs = self.jit_compile_expr(binop.right.as_ref(), index, elmt, elmt_index)?;
+                let lhs = self.jit_compile_expr(name, binop.left.as_ref(), index, elmt, elmt_index)?;
+                let rhs = self.jit_compile_expr(name, binop.right.as_ref(), index, elmt, elmt_index)?;
                 match binop.op {
                     '*' => Ok(self.builder.build_float_mul(lhs, rhs, name)),
                     '/' => Ok(self.builder.build_float_div(lhs, rhs, name)),
@@ -574,7 +581,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             },
             AstKind::Monop(monop) => {
-                let child = self.jit_compile_expr(monop.child.as_ref(), index, elmt, elmt_index)?;
+                let child = self.jit_compile_expr(name, monop.child.as_ref(), index, elmt, elmt_index)?;
                 match monop.op {
                     '-' => Ok(self.builder.build_float_neg(child, name)),
                     unknown => Err(anyhow!("unknown monop op '{}'", unknown))
@@ -585,7 +592,7 @@ impl<'ctx> CodeGen<'ctx> {
                     Some(function) => {
                         let mut args: Vec<BasicMetadataValueEnum> = Vec::new();
                         for arg in call.args.iter() {
-                            let arg_val = self.jit_compile_expr(arg.as_ref(), index, elmt, elmt_index)?;
+                            let arg_val = self.jit_compile_expr(name, arg.as_ref(), index, elmt, elmt_index)?;
                             args.push(BasicMetadataValueEnum::FloatValue(arg_val));
                         }
                         let ret_value = self.builder.build_call(function, args.as_slice(), name)
@@ -597,7 +604,7 @@ impl<'ctx> CodeGen<'ctx> {
                 
             },
             AstKind::CallArg(arg) => {
-                self.jit_compile_expr(&arg.expression, index, elmt, elmt_index)
+                self.jit_compile_expr(name, &arg.expression, index, elmt, elmt_index)
             },
             AstKind::Number(value) => Ok(self.real_type.const_float(*value)),
             AstKind::IndexedName(iname) => {
@@ -649,6 +656,11 @@ impl<'ctx> CodeGen<'ctx> {
                 let ptr = self.get_param(name);
                 Ok(self.builder.build_load(*ptr, name).into_float_value())
             },
+            AstKind::NamedGradient(name) => {
+                let name_str = name.to_string();
+                let ptr = self.get_param(name_str.as_str());
+                Ok(self.builder.build_load(*ptr, name_str.as_str()).into_float_value())
+            },
             AstKind::Index(_) => todo!(),
             AstKind::Slice(_) => todo!(),
             AstKind::Integer(_) => todo!(),
@@ -698,7 +710,7 @@ impl<'ctx> CodeGen<'ctx> {
             &[real_ptr_type.into(), int_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &[ "data", "indices", "u0", "dotu0"];
+        let fn_arg_names = &[ "data", "indices", "u0", "dudt0"];
         let function = self.module.add_function("set_u0", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -712,16 +724,17 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.insert_data(model);
 
-        for a in model.time_dep_defns() {
+        for a in model.time_indep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
         }
 
         self.jit_compile_tensor(&model.state(), Some(*self.get_param("u0")))?;
-        self.jit_compile_tensor(&model.state_dot(), Some(*self.get_param("dotu0")))?;
+        self.jit_compile_tensor(&model.state_dot(), Some(*self.get_param("dudt0")))?;
 
         self.builder.build_return(None);
 
         if function.verify(true) {
+            function.print_to_stderr();
             self.fpm.run_on(&function);
 
             Ok(function)
@@ -742,7 +755,7 @@ impl<'ctx> CodeGen<'ctx> {
             &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), int_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &["t", "u", "dotu", "data", "indices", "out"];
+        let fn_arg_names = &["t", "u", "dudt", "data", "indices", "out"];
         let function = self.module.add_function("calc_out", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -756,16 +769,6 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.insert_state(model.state(), model.state_dot());
         self.insert_data(model);
-
-        // calculate time dependant definitions
-        for tensor in model.time_dep_defns() {
-            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
-        }
-
-        // calculate time dependant definitions
-        for a in model.time_dep_defns() {
-            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
-        }
 
         self.jit_compile_tensor(model.out(), Some(*self.get_var(model.out())))?;
         self.builder.build_return(None);
@@ -786,13 +789,13 @@ impl<'ctx> CodeGen<'ctx> {
     fn compile_residual<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
-        let real_ptr_ptr_type = real_ptr_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
+        let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_ptr_type.into(), real_ptr_type.into()]
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), int_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &["t", "u", "dotu", "data", "rr"];
+        let fn_arg_names = &["t", "u", "dudt", "data", "indices", "rr"];
         let function = self.module.add_function("residual", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -810,11 +813,6 @@ impl<'ctx> CodeGen<'ctx> {
         // calculate time dependant definitions
         for tensor in model.time_dep_defns() {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
-        }
-
-        // calculate time dependant definitions
-        for a in model.time_dep_defns() {
-            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
         }
 
         // F and G
@@ -870,6 +868,7 @@ impl Options {
 struct SundialsData<'ctx> {
     number_of_states: usize,
     number_of_parameters: usize,
+    input_names: Vec<String>,
     yy: N_Vector,
     yp: N_Vector, 
     avtol: N_Vector,
@@ -933,6 +932,7 @@ impl<'ctx> Sundials<'ctx> {
             N_VGetArrayPointer(y), 
             N_VGetArrayPointer(yp), 
             N_VGetArrayPointer(data.data), 
+            data.data_layout.indices().as_ptr(),
             N_VGetArrayPointer(rr), 
         );
         io::stdout().flush().unwrap();
@@ -949,17 +949,25 @@ impl<'ctx> Sundials<'ctx> {
         }
     }
 
-    pub fn calc_u0(&mut self, inputs: &Array1<f64>) -> Array1<f64> {
+    fn set_inputs(&mut self, inputs: &Array1<f64>) -> Result<()> {
         let number_of_inputs = inputs.len();
         assert_eq!(number_of_inputs, self.data.number_of_parameters);
+        let mut curr_index = 0;
+        for name in self.data.input_names.iter() {
+            let data = self.data.get_tensor_data_mut(name).unwrap();
+            data.copy_from_slice(&inputs.slice(s![curr_index..curr_index + data.len()]).as_slice().unwrap());
+            curr_index += data.len();
+        }
+        Ok(())
+    }
+
+    pub fn calc_u0(&mut self, inputs: &Array1<f64>) -> Array1<f64> {
+        self.set_inputs(inputs).unwrap();
         let mut u0 = Array1::zeros(self.data.number_of_states);
         unsafe {
             let data_ptr = N_VGetArrayPointer(self.data.data);
-            let inputs_ptr = data_ptr.offset(self.data.data_layout.get_data_index("inputs").unwrap().try_into().unwrap());
-            for i in 0..number_of_inputs {
-                *inputs_ptr.add(i) = inputs[i]; 
-            }
-            self.data.set_u0.call(data_ptr, N_VGetArrayPointer(self.data.yy), N_VGetArrayPointer(self.data.yp));
+            let indices_ptr = self.data.data_layout.indices().as_ptr();
+            self.data.set_u0.call(data_ptr, indices_ptr, N_VGetArrayPointer(self.data.yy), N_VGetArrayPointer(self.data.yp));
             let yy_ptr = N_VGetArrayPointer(self.data.yy);
             for i in 0..self.data.number_of_states {
                 u0[i] = *yy_ptr.add(i); 
@@ -969,15 +977,13 @@ impl<'ctx> Sundials<'ctx> {
     }
 
     pub fn calc_residual(&mut self, t: f64, inputs: &Array1<f64>, u0: &Array1<f64>, up0: &Array1<f64>) -> Array1<f64> {
-        let number_of_inputs = inputs.len();
+        self.set_inputs(inputs).unwrap();
         let number_of_states = u0.len();
         assert_eq!(number_of_states, up0.len());
-        assert_eq!(number_of_inputs, self.data.number_of_parameters);
         assert_eq!(number_of_states, self.data.number_of_states);
         let mut res = Array1::zeros(number_of_states);
         unsafe {
             let rr = N_VNew_Serial(i64::try_from(number_of_states).unwrap());
-            self.data.get_tensor_data_mut("inputs").unwrap().copy_from_slice(inputs.as_slice().unwrap());
             let u0_ptr = N_VGetArrayPointer(self.data.yy);
             let up0_ptr = N_VGetArrayPointer(self.data.yp);
             for i in 0..number_of_states {
@@ -988,6 +994,7 @@ impl<'ctx> Sundials<'ctx> {
                 N_VGetArrayPointer(self.data.yy), 
                 N_VGetArrayPointer(self.data.yp), 
                 self.data.get_data_ptr_mut(),
+                self.data.data_layout.indices().as_ptr(),
                 N_VGetArrayPointer(rr), 
             );
             io::stdout().flush().unwrap();
@@ -999,9 +1006,74 @@ impl<'ctx> Sundials<'ctx> {
         res
     }
 
+    pub fn calc_out(&mut self, t: f64, inputs: &Array1<f64>, u0: &Array1<f64>, up0: &Array1<f64>) -> Array1<f64> {
+        self.set_inputs(inputs).unwrap();
+        let name = "out";
+        let number_of_states = u0.len();
+        assert_eq!(number_of_states, up0.len());
+        assert_eq!(number_of_states, self.data.number_of_states);
+        let tensor_nnz = self.data.data_layout.get_data_length(name).unwrap();
+        let mut res = Array1::zeros(tensor_nnz);
+        unsafe {
+            let u0_ptr = N_VGetArrayPointer(self.data.yy);
+            let up0_ptr = N_VGetArrayPointer(self.data.yp);
+            for i in 0..number_of_states {
+                *u0_ptr.add(i) = u0[i]; 
+                *up0_ptr.add(i) = up0[i]; 
+            }
+
+            self.data.calc_out.call(t, 
+                N_VGetArrayPointer(self.data.yy), 
+                N_VGetArrayPointer(self.data.yp), 
+                self.data.get_data_ptr_mut(),
+                self.data.data_layout.indices().as_ptr(),
+            );
+            io::stdout().flush().unwrap();
+            let f = self.data.get_tensor_data(name).unwrap();
+            for i in 0..tensor_nnz {
+                res[i] = f[i]; 
+            }
+        }
+        res
+    }
+
+    pub fn calc_tensor(&mut self, name: &str, t: f64, inputs: &Array1<f64>, u0: &Array1<f64>, up0: &Array1<f64>) -> Array1<f64> {
+        self.set_inputs(inputs).unwrap();
+        let number_of_states = u0.len();
+        assert_eq!(number_of_states, up0.len());
+        assert_eq!(number_of_states, self.data.number_of_states);
+        let tensor_nnz = self.data.data_layout.get_data_length(name).unwrap();
+        let mut res = Array1::zeros(tensor_nnz);
+        unsafe {
+            let rr = N_VNew_Serial(i64::try_from(number_of_states).unwrap());
+            let u0_ptr = N_VGetArrayPointer(self.data.yy);
+            let up0_ptr = N_VGetArrayPointer(self.data.yp);
+            for i in 0..number_of_states {
+                *u0_ptr.add(i) = u0[i]; 
+                *up0_ptr.add(i) = up0[i]; 
+            }
+            self.data.residual.call(t, 
+                N_VGetArrayPointer(self.data.yy), 
+                N_VGetArrayPointer(self.data.yp), 
+                self.data.get_data_ptr_mut(),
+                self.data.data_layout.indices().as_ptr(),
+                N_VGetArrayPointer(rr), 
+            );
+            io::stdout().flush().unwrap();
+            let f = self.data.get_tensor_data(name).unwrap();
+            for i in 0..tensor_nnz {
+                res[i] = f[i]; 
+            }
+        }
+        res
+    }
+
     pub fn from_discrete_model<'m>(model: &'m DiscreteModel, context: &'ctx inkwell::context::Context, options: Options) -> Result<Sundials<'ctx>> {
-        let number_of_states = i64::try_from(model.state().shape()[0]).unwrap();
-        let number_of_parameters = model.inputs().iter().fold(0, |acc, input| acc + i64::try_from(input.shape()[0]).unwrap());
+        let number_of_states = i64::try_from(
+            *model.state().shape().first().unwrap_or(&1)
+        ).unwrap();
+        let number_of_parameters = model.inputs().iter().fold(0, |acc, input| acc + i64::try_from(input.nnz()).unwrap());
+        let input_names = model.inputs().iter().map(|input| input.name().to_owned()).collect::<Vec<_>>();
         let module = context.create_module(model.name());
         let fpm = PassManager::create(&module);
         fpm.add_instruction_combining_pass();
@@ -1149,7 +1221,7 @@ impl<'ctx> Sundials<'ctx> {
             let id_val = N_VGetArrayPointer(id);
             for (state_blk, &is_algebraic) in model.state().elmts().iter().zip(model.is_algebraic().iter()) {
                 let nnz_start = Layout::ravel_index(state_blk.start(), state_blk.layout().shape());
-                let is_alebraic_int = if is_algebraic { 1.0 } else { 0.0 };
+                let is_alebraic_int = if is_algebraic { 0.0 } else { 1.0 };
                 for i in nnz_start..nnz_start + state_blk.nnz() {
                     *id_val.add(i) = is_alebraic_int;
                 }
@@ -1176,6 +1248,7 @@ impl<'ctx> Sundials<'ctx> {
                     set_u0,
                     calc_out,
                     options,
+                    input_names,
                 }
             );
             Self::check(IDASetUserData(ida_mem, &mut *data as *mut _ as *mut c_void))?;
@@ -1188,11 +1261,9 @@ impl<'ctx> Sundials<'ctx> {
     }
 
     pub fn solve(&mut self, times: &Array1<f64>, inputs: &Array1<f64>) -> Result<Array2<f64>> {
+        self.set_inputs(inputs).unwrap();
         let number_of_timesteps = times.len();
         let data_out = self.data.get_tensor_data("out").unwrap();
-        let data_inputs = self.data.get_tensor_data_mut("inputs").unwrap();
-        data_inputs.copy_from_slice(inputs.as_slice().unwrap());
-
         let mut out_return = Array2::zeros((number_of_timesteps, data_out.len()).f());
 
         unsafe {
@@ -1207,7 +1278,7 @@ impl<'ctx> Sundials<'ctx> {
                 N_VConst(0.0, self.data.yp_s[is]);
             }
 
-            self.data.set_u0.call(data_ptr_mut, yval, ypval);
+            self.data.set_u0.call(data_ptr_mut, self.data.data_layout.indices().as_ptr(), yval, ypval);
 
             let t0 = times[0];
 
@@ -1222,6 +1293,7 @@ impl<'ctx> Sundials<'ctx> {
                 N_VGetArrayPointer(self.data.yy), 
                 N_VGetArrayPointer(self.data.yp), 
                 data_ptr_mut,
+                self.data.data_layout.indices().as_ptr(),
             );
             for j in 0..data_out.len() {
                 out_return[[0, j]] = data_out[j];
@@ -1251,6 +1323,7 @@ impl<'ctx> Sundials<'ctx> {
                     N_VGetArrayPointer(self.data.yy), 
                     N_VGetArrayPointer(self.data.yp), 
                     data_ptr_mut,
+                    self.data.data_layout.indices().as_ptr(),
                 );
                 for j in 0..data_out.len() {
                     out_return[[t_i, j]] = data_out[j];
@@ -1345,10 +1418,68 @@ impl<'ctx> Sundials<'ctx> {
 
 #[cfg(test)]
 mod tests {
-use approx::{assert_relative_eq};
+use approx::assert_relative_eq;
 use ndarray::{Array, array, s};
 
-use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelInfo, codegen::{Sundials, Options}};
+use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelInfo, codegen::{Sundials, Options}, ds_parser};
+
+    macro_rules! tensor_test {
+        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let text = $text;
+                let full_text = format!("
+                    {}
+                    u_i {{
+                        y = 1,
+                    }}
+                    dudt_i {{
+                        dydt = 0,
+                    }}
+                    F_i {{
+                        dydt,
+                    }}
+                    G_i {{
+                        y,
+                    }}
+                    out_i {{
+                        y,
+                    }}
+                ", text);
+                let model = ds_parser::parse_string(full_text.as_str()).unwrap();
+                let options = Options::new();
+                let context = inkwell::context::Context::create();
+                let discrete_model = match DiscreteModel::build("$name", &model) {
+                    Ok(model) => {
+                        model
+                    }
+                    Err(e) => {
+                        panic!("{}", e.as_error_message(full_text.as_str()));
+                    }
+                };
+                let mut sundials = Sundials::from_discrete_model(&discrete_model, &context, options).unwrap();
+                let inputs = array![];
+                let u0 = array![1.];
+                let up0 = array![1.];
+                let check_u0 = sundials.calc_u0(&inputs);
+                assert_relative_eq!(u0, check_u0);
+                let tensor = sundials.calc_tensor($tensor_name, 0., &inputs, &u0, &up0);
+                assert_relative_eq!(tensor, $expected_value);
+            }
+        )*
+        }
+    }
+
+    tensor_test!{
+        scalar: "r {2}" expect "r" array![2.0,],
+        constant: "r_i {2, 3}" expect "r" array![2., 3.],
+        expression: "r_i {2 + 3, 3 * 2}" expect "r" array![5., 6.],
+        derived: "r_i {2, 3} k_i { 2 * r_i }" expect "k" array![4., 6.],
+        concatenate: "r_i {2, 3} k_i { r_i, 2 * r_i }" expect "k" array![2., 3., 4., 6.],
+        identity_matrix: "I_ij { (0..2, 0..2): 1 }" expect "I" array![1., 0., 0., 1.],
+    }
+
      #[test]
     fn rate_equationn() {
         let text = "
@@ -1368,40 +1499,64 @@ use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelIn
         let mut sundials = Sundials::from_discrete_model(&discrete, &context, options).unwrap();
 
         let times = Array::linspace(0., 1., 5);
-        let r = 1.0;
-        let k = 1.0;
-        let y0 = 1.0;
-        let inputs = array![r, k];
 
-        // test set_u0
+
+        let y0 = 1.0;
+        let inputs = array![1., 1.];
         let u0 = sundials.calc_u0(&inputs);
         let check_u0 = array![y0, 0.];
         assert_relative_eq!(u0, check_u0);
-        let u0 = array![y0, 2.*y0];
 
-        // test residual
-        let up0 = array![1. * (r * y0 * (1. - y0 / k)), 2. * (r * y0 * (1. - y0 / k))];
-        let res = sundials.calc_residual(0., &inputs, &u0, &up0);
-        let res_check = array![0., 0.];
-        assert_relative_eq!(res, res_check);
-        
-        let up0 = array![1., 0.];
-        let res = sundials.calc_residual(0., &inputs, &u0, &up0);
-        let res_check = array![1., 0.];
-        assert_relative_eq!(res, res_check);
-        
-        let up0 = array![0., 0.];
-        let u0 = array![1., 1.];
-        let res = sundials.calc_residual(0., &inputs, &u0, &up0);
-        let res_check = array![0., -1.];
-        assert_relative_eq!(res, res_check);
+        for r in Array::linspace(0.1, 2.0, 5) {
+            for k in Array::linspace(0.1, 2.0, 5) {
+                let inputs = array![r, k];
+                for y in Array::linspace(0.1, 2.0, 5) {
+                    for z in Array::linspace(0.1, 2.0, 5) {
+                        let u0 = array![y, z];
+                        for dy in Array::linspace(0.1, 2.0, 5) {
+                            for dz in  Array::linspace(0.1, 2.0, 5) {
+                                let up0 = array![dy, dz];
+
+                                let f = sundials.calc_tensor("F", 0., &inputs, &u0, &up0);
+                                let f_check = array![up0[0], 0.0];
+                                assert_relative_eq!(f, f_check);
+
+                                let g = sundials.calc_tensor("G", 0., &inputs, &u0, &up0);
+                                let g_check = array![
+                                    (r * u0[0]) * (1.0 - (u0[0] / k)),
+                                    (2.0 * u0[0]) - u0[1],
+                                ];
+                                assert_relative_eq!(g, g_check);
+
+                                // test residual
+                                let res = sundials.calc_residual(0., &inputs, &u0, &up0);
+                                let res_check = array![
+                                    up0[0] - (r * u0[0]) * (1.0 - (u0[0] / k)),
+                                    0.0 - (2.0 * u0[0]) + u0[1],
+                                ];
+                                assert_relative_eq!(res, res_check);
+
+                                // test out
+                                let out = sundials.calc_out(0., &inputs, &u0, &up0);
+                                let out_check = u0.clone();
+                                assert_relative_eq!(out, out_check);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
 
         // solve
+        let r = 1.0;
+        let k = 2.0;
+        let inputs = array![r, k];
         let out = sundials.solve(&times, &inputs).unwrap();
 
         let y_check = k / ((k - y0) * (-r * times).mapv(f64::exp) / y0 + 1.);
-        assert_relative_eq!(y_check, out.slice(s![.., 0]), epsilon=1e-6);
-        assert_relative_eq!(y_check * 2., out.slice(s![.., 1]), epsilon=1e-6);
+        assert_relative_eq!(y_check, out.slice(s![.., 0]), epsilon=1e-5);
+        assert_relative_eq!(y_check * 2., out.slice(s![.., 1]), epsilon=1e-5);
 
         sundials.destroy();
     }

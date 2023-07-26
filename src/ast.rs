@@ -244,6 +244,18 @@ pub struct Slice<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct NamedGradient<'a> {
+    pub gradient_of: Box<Ast<'a>>,
+    pub gradient_wrt: Box<Ast<'a>>,
+}
+
+impl <'a> fmt::Display for NamedGradient<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "d{}d{}", self.gradient_of, self.gradient_wrt)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum AstKind<'a> {
     Model(Model<'a>),
     DsModel(DsModel<'a>),
@@ -270,6 +282,7 @@ pub enum AstKind<'a> {
     Number(f64),
     Integer(i64),
     Name(&'a str),
+    NamedGradient(NamedGradient<'a>),
 }
 
 impl<'a> AstKind<'a> {
@@ -318,6 +331,12 @@ impl<'a> AstKind<'a> {
     pub fn as_call_arg(&self) -> Option<&CallArg> {
         match self {
             AstKind::CallArg(m) => Some(m),
+            _ => None,
+        }
+    }
+    pub fn as_named_gradient(&self) -> Option<&NamedGradient> {
+        match self {
+            AstKind::NamedGradient(m) => Some(m),
             _ => None,
         }
     }
@@ -393,6 +412,12 @@ impl<'a> AstKind<'a> {
     }
     pub fn new_name(name: &'a str) -> Self {
         AstKind::Name(name)
+    }
+    pub fn new_indexed_name(name: &'a str, indices: Vec<char>) -> Self {
+        AstKind::IndexedName(IndexedName { name, indices })
+    }
+    pub fn new_time_derivative(name: &'a str) -> Self {
+        AstKind::NamedGradient(NamedGradient { gradient_of: Box::new(Ast { kind: Self::new_name(name), span:None }), gradient_wrt: Box::new(Ast { kind: Self::new_name("t"), span: None }) })
     }
     pub fn new_int(num: i64) -> Self {
         AstKind::Integer(num)
@@ -497,7 +522,11 @@ impl<'a> Ast<'a> {
                 } else {
                     AstKind::Name(name)
                 }
-            }
+            },
+            AstKind::NamedGradient(gradient) => AstKind::NamedGradient(NamedGradient {
+                gradient_of: Box::new(gradient.gradient_of.clone_and_subst(replacements)),
+                gradient_wrt: Box::new(gradient.gradient_wrt.clone_and_subst(replacements)),
+            }),
             AstKind::Model(m) => AstKind::Model(m.clone()),
             AstKind::Unknown(unknown) => AstKind::Unknown(unknown.clone()),
             AstKind::Submodel(submodel) => AstKind::Submodel(Submodel {
@@ -566,6 +595,9 @@ impl<'a> Ast<'a> {
             }
             AstKind::Name(found_name) => {
                 deps.insert(found_name);
+            }
+            AstKind::NamedGradient(gradient) => {
+                gradient.gradient_of.collect_deps(deps);
             }
             AstKind::Index(index) => {
                 index.left.collect_deps(deps);
@@ -649,6 +681,10 @@ impl<'a> Ast<'a> {
             },
             AstKind::TensorElmt(elmt) => {
                 elmt.expr.collect_indices(indices);
+            },
+            AstKind::NamedGradient(gradient) => {
+                gradient.gradient_of.collect_indices(indices);
+                gradient.gradient_wrt.collect_indices(indices);
             },
             AstKind::Name(_) => (),
             AstKind::DsModel(_) => (),
@@ -778,6 +814,7 @@ impl<'a> fmt::Display for Ast<'a> {
             AstKind::Range(range) => write!(f, "{}", range),
             AstKind::Vector(v) => write!(f, "{}", v),
             AstKind::Indice(i) => write!(f, "{}", i),
+            AstKind::NamedGradient(gradient) => write!(f, "{}", gradient),
         }
     }
 }

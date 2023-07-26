@@ -185,9 +185,10 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         //rate_equation = { "dot" ~ "(" ~ name ~ ")" ~ "+=" ~ expression }
         Rule::rate_equation => {
             let mut inner = pair.into_inner();
+            let name = parse_name(inner.next().unwrap());
             Ast {
                 kind: AstKind::RateEquation(ast::RateEquation {
-                    name: parse_name(inner.next().unwrap()),
+                    name,
                     rhs: Box::new(parse_value(inner.next().unwrap())),
                 }),
                 span,

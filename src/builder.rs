@@ -51,6 +51,7 @@ pub struct BoundaryCondition<'s> {
 #[derive(Debug)]
 pub struct Variable<'s> {
     pub name: &'s str,
+    pub time_gradient_name: String,
     pub dim: usize,
     pub bounds: (f64, f64),
     pub equation: Option<Ast<'s>>,
@@ -138,6 +139,7 @@ impl<'s> Variable<'s> {
                 };
                 Variable {
                     name: unknown.name,
+                    time_gradient_name: format!("d{}dt", unknown.name),
                     dim: 1,
                     time_index: None,
                     dependents: Vec::new(),
@@ -151,6 +153,7 @@ impl<'s> Variable<'s> {
                 let bounds = (-f64::INFINITY, f64::INFINITY);
                 Variable {
                     name: dfn.name,
+                    time_gradient_name: format!("d{}dt", dfn.name),
                     dim: 1,
                     dependents: Vec::new(),
                     bounds,
@@ -181,6 +184,7 @@ impl<'s> ModelInfo<'s> {
         let t_name = "t";
         let time = Rc::new(RefCell::new(Variable {
             name: t_name,
+            time_gradient_name: format!("d{}dt", t_name),
             dim: 1,
             bounds: (0.0, f64::INFINITY),
             equation: None,

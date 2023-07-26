@@ -166,8 +166,12 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
         // TODO: refactor inputs to an ast node
         Rule::model => {
             let mut inner = pair.into_inner();
-            let inputs = if inner.peek().unwrap().as_rule() == Rule::inputs {
-                inner.next().unwrap().into_inner().map(parse_name).collect()
+            let inputs = if inner.peek().is_some() {
+                if inner.peek().unwrap().as_rule() == Rule::inputs {
+                    inner.next().unwrap().into_inner().map(parse_name).collect()
+                } else {
+                    vec![]
+                }
             } else {
                 vec![]
             };

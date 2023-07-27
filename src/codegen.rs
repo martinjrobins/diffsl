@@ -238,7 +238,7 @@ impl<'ctx> CodeGen<'ctx> {
         let int_type = self.context.i64_type();
         
         let mut preblock = self.builder.get_insert_block().unwrap();
-        let rank = elmt.rank();
+        let expr_rank = elmt.expr_layout().rank();
         let one = int_type.const_int(1, false);
         let zero = int_type.const_int(0, false);
         let elmt_shape = elmt.shape().mapv(|n| int_type.const_int(n.try_into().unwrap(), false));
@@ -257,12 +257,12 @@ impl<'ctx> CodeGen<'ctx> {
             (None, 0, 0)
         };
 
-        for i in 0..rank {
+        for i in 0..expr_rank {
             let block = self.context.append_basic_block(self.fn_value(), name);
             self.builder.build_unconditional_branch(block);
             self.builder.position_at_end(block);
 
-            if i == rank - contract_by && contract_sum.is_some() {
+            if i == expr_rank - contract_by && contract_sum.is_some() {
                 self.builder.build_store(contract_sum.unwrap(), self.real_type.const_zero());
             }
 
@@ -293,12 +293,12 @@ impl<'ctx> CodeGen<'ctx> {
         }
         
         // unwind the nested loops
-        for i in (0..rank).rev() {
+        for i in (0..expr_rank).rev() {
             // increment index
             let next_index = self.builder.build_int_add(indices_int[i], one, name);
             indices[i].add_incoming(&[(&next_index, preblock)]);
 
-            if i == rank - contract_by && contract_sum.is_some() {
+            if i == expr_rank - contract_by && contract_sum.is_some() {
                 let contract_sum_value= self.builder.build_load(contract_sum.unwrap(), "contract_sum").into_float_value();
                 let contract_len_value = int_type.const_int(contract_len.try_into().unwrap(), false);
                 let store_index = self.builder.build_int_unsigned_div(expr_index, contract_len_value, name);
@@ -415,7 +415,7 @@ impl<'ctx> CodeGen<'ctx> {
         let int_type = self.context.i64_type();
         
         let preblock = self.builder.get_insert_block().unwrap();
-        let layout_index = self.layout.get_layout_index(elmt.layout()).unwrap();
+        let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
 
         // loop through the non-zero elements
         let mut block = self.context.append_basic_block(self.fn_value(), name);
@@ -502,7 +502,7 @@ impl<'ctx> CodeGen<'ctx> {
         let one = int_type.const_int(1, false);
         let zero = int_type.const_int(0, false);
         match translation.source {
-            TranslationFrom::Broadcast { broadcast_by, broadcast_len } => {
+            TranslationFrom::Broadcast { broadcast_by: _, broadcast_len } => {
                 let bcast_start_index = zero;
                 let bcast_end_index = int_type.const_int(broadcast_len.try_into().unwrap(), false);
 
@@ -514,8 +514,11 @@ impl<'ctx> CodeGen<'ctx> {
                 bcast_index.add_incoming(&[(&bcast_start_index, pre_block)]);
 
                 // store value
-                let broadcast_by_value = int_type.const_int(broadcast_by.try_into().unwrap(), false);
-                let store_index = self.builder.build_int_mul(expr_index, broadcast_by_value, "store_index");
+                let store_index = self.builder.build_int_add(
+                    self.builder.build_int_mul(expr_index, bcast_end_index, "store_index"),
+                    bcast_index.as_basic_value().into_int_value(),
+                    "bcast_store_index"
+                );
                 self.jit_compile_store(name, elmt, store_index, float_value, translation)?;
 
                 // increment index
@@ -734,11 +737,11 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None);
 
         if function.verify(true) {
-            function.print_to_stderr();
             self.fpm.run_on(&function);
 
             Ok(function)
         } else {
+            function.print_to_stderr();
             unsafe {
                 function.delete();
             }
@@ -774,11 +777,11 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None);
 
         if function.verify(true) {
-            function.print_to_stderr();
             self.fpm.run_on(&function);
 
             Ok(function)
         } else {
+            function.print_to_stderr();
             unsafe {
                 function.delete();
             }
@@ -827,11 +830,10 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None);
 
         if function.verify(true) {
-            function.print_to_stderr();
             self.fpm.run_on(&function);
-
             Ok(function)
         } else {
+            function.print_to_stderr();
             unsafe {
                 function.delete();
             }
@@ -1477,7 +1479,12 @@ use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelIn
         expression: "r_i {2 + 3, 3 * 2}" expect "r" array![5., 6.],
         derived: "r_i {2, 3} k_i { 2 * r_i }" expect "k" array![4., 6.],
         concatenate: "r_i {2, 3} k_i { r_i, 2 * r_i }" expect "k" array![2., 3., 4., 6.],
-        identity_matrix: "I_ij { (0..2, 0..2): 1 }" expect "I" array![1., 0., 0., 1.],
+        ones_matrix_dense: "I_ij { (0:2, 0:2): 1 }" expect "I" array![1., 1., 1., 1.],
+        identity_matrix_diagonal: "I_ij { (0..2, 0..2): 1 }" expect "I" array![1., 1.],
+        concatenate_diagonal: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2:3, 2:3): A_ij }" expect "B" array![1., 1., 1., 1.],
+        identity_matrix_sparse: "I_ij { (0, 0): 1, (1, 1): 2 }" expect "I" array![1., 2.],
+        concatenate_sparse: "A_ij { (0, 0): 1, (1, 1): 2 } B_ij { (0:2, 0:2): A_ij, (2:3, 2:3): A_ij }" expect "B" array![1., 2., 1., 2.],
+        sparse_rearrange: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 }" expect "A" array![1., 3., 2.],
     }
 
      #[test]

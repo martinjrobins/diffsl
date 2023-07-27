@@ -143,7 +143,7 @@ impl TranslationTo {
             let contiguous = indices.windows(2).all(|w| w[1] == w[0] + 1);
             if contiguous {
                 let start = indices[0];
-                let end = indices[indices.len() - 1];
+                let end = indices[indices.len() - 1] + 1;
                 TranslationTo::Contiguous{ start, end }
             } else {
                 TranslationTo::Sparse{ indices }
@@ -321,8 +321,8 @@ impl Layout {
         let shape = match broadcast_shapes(&shapes[..]) {
             Some(x) => x,
             None => {
-                let shapes_str = shapes.iter().map(|x| format!("{:?}", x)).collect::<Vec<_>>().join(", ");
-                return Err(anyhow!("cannot broadcast shapes [{}]", shapes_str));
+                let shapes_str = shapes.iter().map(|x| format!("{}", x)).collect::<Vec<_>>().join(", ");
+                return Err(anyhow!("cannot broadcast shapes: {}", shapes_str));
             }
         };
 
@@ -456,8 +456,27 @@ impl Layout {
             acc
         });
 
-        // if all layouts are dense then calculate the new shape and return
-        if layouts.iter().all(|x| x.is_dense()) {
+        // check if the layouts are contiguous on the first axis
+        // check if the layouts are contiguous on the diagonal
+        let mut is_contiguous_on_first_axis = true;
+        let mut is_contiguous_on_diagonal= true;
+        if rank > 0 {
+            let mut curr_index = 0;
+            for (start, layout) in std::iter::zip(starts.iter(), layouts.iter()) {
+
+                let mut expect_contiguous_on_first_axis = Index::zeros(rank);
+                expect_contiguous_on_first_axis[0] = curr_index;
+                is_contiguous_on_first_axis &= start == &expect_contiguous_on_first_axis;
+
+                let expect_contiguous_on_diagonal= Index::zeros(rank) + curr_index;
+                is_contiguous_on_diagonal &= start == &expect_contiguous_on_diagonal;
+
+                curr_index += if layout.rank() == 0 { 1 } else { i64::try_from(layout.shape()[0]).unwrap() };
+            }
+        }
+
+        // if all layouts are dense and contiguous then calculate the new shape and return
+        if layouts.iter().all(|x| x.is_dense()) && is_contiguous_on_first_axis {
             // check that this shape can be broadcast into max_shape
             for layout in layouts.iter() {
                 for i in 1..std::cmp::min(layout.rank(), rank) {
@@ -498,7 +517,7 @@ impl Layout {
         }
 
         // if all layouts are diagonal then 
-        if layouts.iter().all(|x| x.is_diagonal()) {
+        if layouts.iter().all(|x| x.is_diagonal()) && is_contiguous_on_diagonal {
             // add up the shapes for the non-final dense axes
             let mut new_shape = max_shape.clone(); 
             for i in 0..layouts[0].rank() - layouts[0].n_dense_axes {
@@ -512,8 +531,16 @@ impl Layout {
             });
         }
 
+        // find the maxiumum extent of the individual layouts
+        let mut max_extent = Shape::zeros(rank);
+        for (start, layout) in std::iter::zip(starts.iter(), layouts.iter()) {
+            for i in 0..layout.rank() {
+                max_extent[i] = max(max_extent[i], usize::try_from(start[i]).unwrap() + layout.shape[i]);
+            }
+        }
+
         // any other combination we convert all to sparse and concatenate
-        let mut new_layout = Layout::sparse(Vec::new(), max_shape);
+        let mut new_layout = Layout::sparse(Vec::new(), max_extent);
         for (layout, start) in std::iter::zip(layouts, starts) {
             // convert to sparse
             let to_sparse = layout.into_sparse();
@@ -529,11 +556,12 @@ impl Layout {
     }
 
     pub fn dense(shape: Shape) -> Self {
+        let n_dense_axes = shape.len();
         Self {
             indices: Vec::new(),
             shape,
             kind: LayoutKind::Dense,
-            n_dense_axes: 0,
+            n_dense_axes,
         }
     }
     pub fn diagonal(shape: Shape) -> Self {
@@ -596,6 +624,24 @@ impl Layout {
             }
         }
         data_layout
+    }
+
+    fn to_rank(&self, rank: usize) -> Option<Self> {
+        if self.rank() == rank {
+            Some(self.clone())
+        } else if self.rank() < rank {
+            let new_ranks = rank - self.rank();
+            let shape = Shape::from_iter(self.shape.iter().cloned().chain(std::iter::repeat(1).take(new_ranks)));
+            let n_dense_axes = self.n_dense_axes + new_ranks;
+            Some(Self {
+                indices: self.indices.clone(),
+                shape,
+                kind: self.kind.clone(),
+                n_dense_axes,
+            })
+        } else {
+            None
+        }
     }
 
     // returns the index in the nnz array corresponding to the given index
@@ -744,20 +790,18 @@ impl<'s> TensorBlock<'s> {
 
 impl<'s> fmt::Display for TensorBlock<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.rank() > 1 || self.layout.shape != self.expr_layout.shape {
-            let sep = if self.is_diagonal() && self.expr_layout().is_dense() { ".." } else { ":" };
-            write!(f, "(")?;
-            for i in 0..self.rank() {
-                write!(f, "{}", self.start[i])?;
-                if self.shape()[0] > 1 {
-                    write!(f, "{}{}", sep, self.start[i] + i64::try_from(self.shape()[i]).unwrap())?;
-                }
-                if i < self.rank() - 1 {
-                    write!(f, ", ")?;
-                }
+        let sep = if self.is_diagonal() && self.expr_layout().is_dense() { ".." } else { ":" };
+        write!(f, "(")?;
+        for i in 0..self.rank() {
+            write!(f, "{}", self.start[i])?;
+            if self.shape()[0] > 1 {
+                write!(f, "{}{}", sep, self.start[i] + i64::try_from(self.shape()[i]).unwrap())?;
             }
-            write!(f, "): ")?;
+            if i < self.rank() - 1 {
+                write!(f, ", ")?;
+            }
         }
+        write!(f, "): ")?;
         if self.name.is_some() {
             write!(f, "{} = ", self.name.as_ref().unwrap())?;
         }
@@ -910,13 +954,8 @@ pub fn broadcast_shapes(shapes: &[&Shape]) -> Option<Shape> {
     let max_rank = shapes.iter().map(|s| s.len()).max().unwrap();
     let mut shape = Shape::zeros(max_rank);
     for i in (0..max_rank).rev() {
-        let (mdim, compatible) = shapes.iter().map(|s| s.get(i).unwrap_or(&1)).fold(
-            (1, true),
-            |(mdim, _result), dim| {
-                let new_mdim = max(mdim, *dim);
-                (new_mdim, *dim == 1 || *dim == new_mdim)
-            },
-        );
+        let mdim = shapes.iter().map(|s| *s.get(i).unwrap_or(&1)).max().unwrap();
+        let compatible = shapes.iter().all(|s| if let Some(x) = s.get(i) { *x == mdim || *x == 1 } else { true });
         if !compatible {
             return None;
         }
@@ -985,7 +1024,7 @@ impl Env {
         self.vars.insert(
             var_blk.name().unwrap().to_string(),
             EnvVar {
-                layout: var_blk.layout().clone(),
+                layout: var_blk.expr_layout().clone(),
                 is_algebraic: true,
                 is_time_dependent: self.is_tensor_time_dependent(var),
                 is_state_dependent: self.is_tensor_state_dependent(var),
@@ -1162,23 +1201,9 @@ impl Env {
         
         // calculate the shape of the tensor element. 
         let elmt_layout = if elmt.indices.is_none() {
-
-            // If there are no indices then the rank of the expression must be 0 or 1 (i.e a scalar
-            // or a vector) and if 1 then the length of the vector is the same as the expression
-            if expr_layout.rank() == 0 {
-                Layout::new_scalar()
-            } else if expr_layout.rank() == 1 {
-                Layout::new_dense(expr_layout.shape().clone())
-            } else {
-                self.errs.push(ValidationError::new(
-                    format!(
-                        "tensor element without indices must be a scalar or vector, but expression has rank {}",
-                        expr_layout.rank()
-                    ),
-                    elmt.expr.span,
-                ));
-                return None;
-            }
+            // If there are no indices then blk layout is the same as the expression, but broadcast to the tensor rank
+            // (tensor rank given by the number of indices)
+            expr_layout.to_rank(indices.len()).unwrap()
         } else {
             // If there are indicies then the rank is determined by the number of indices, and the
             // shape is determined by the ranges of the indices
@@ -1337,15 +1362,19 @@ impl DataLayout {
             data_length_map.insert(tensor.name.to_string(), tensor.nnz());
             data.extend(vec![0.0; tensor.nnz()]);
 
-            // insert the layout info for each tensor
-            layout_index_map.insert(tensor.layout.clone(), indices.len());
-            indices.extend(tensor.layout.to_data_layout());
 
             // add the translation info for each block-tensor pair
             for blk in tensor.elmts() {
+                // need layouts of all named tensor blocks
                 if let Some(name) = blk.name() {
                     layout_map.insert(name.to_string(), blk.layout.clone());
                 }
+
+                // insert the layout info for each tensor expression
+                layout_index_map.insert(blk.expr_layout.clone(), indices.len());
+                indices.extend(blk.expr_layout.to_data_layout());
+
+                // and the translation info for each block-tensor pair
                 let translation = Translation::new(blk.expr_layout(), blk.layout(), &blk.start, tensor.layout_ptr());
                 translate_index_map.insert((blk.expr_layout.clone(), blk.layout.clone()), indices.len());
                 indices.extend(translation.to_data_layout());
@@ -1415,17 +1444,30 @@ pub struct DiscreteModel<'s> {
 
 impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.inputs.iter().fold(write!(f, "in = ["), |acc, input| acc.and_then(|_| write!(f, "{},", input.name)))
-        .and_then(|_| write!(f, "]\n"))
-        .and_then(|_| self.inputs.iter().fold(Ok(()), |acc, input| acc.and_then(|_| write!(f, "{}\n", input))))
-        .and_then(|_| self.time_indep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
-        .and_then(|_| self.time_dep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
-        .and_then(|_| write!(f, "{}\n", self.state))
-        .and_then(|_| write!(f, "{}\n", self.state_dot))
-        .and_then(|_| self.state_dep_defns.iter().fold(Ok(()), |acc, defn| acc.and_then(|_| write!(f, "{}\n", defn))))
-        .and_then(|_| write!(f, "{}\n", self.lhs))
-        .and_then(|_| write!(f, "{}\n", self.rhs))
-        .and_then(|_| write!(f, "{}\n", self.out))
+        if self.inputs.len() > 0 {
+            write!(f, "in = [")?;
+            for input in &self.inputs {
+                write!(f, "{},", input.name)?;
+            }
+            write!(f, "]\n")?;
+            for input in &self.inputs {
+                write!(f, "{}\n", input)?;
+            }
+        }
+        for defn in &self.time_indep_defns {
+            write!(f, "{}\n", defn)?;
+        }
+        for defn in &self.time_dep_defns {
+            write!(f, "{}\n", defn)?;
+        }
+        write!(f, "{}\n", self.state)?;
+        write!(f, "{}\n", self.state_dot)?;
+        for defn in &self.state_dep_defns {
+            write!(f, "{}\n", defn)?;
+        }
+        write!(f, "{}\n", self.lhs)?;
+        write!(f, "{}\n", self.rhs)?;
+        write!(f, "{}\n", self.out)
     }
 }
 
@@ -2058,8 +2100,13 @@ mod tests {
         println!("{}", discrete);
     }
 
-    macro_rules! discrete_success {
-        ($($name:ident: $text:literal,)*) => {
+    macro_rules! count {
+        () => (0usize);
+        ( $x:tt $($xs:tt)* ) => (1usize + count!($($xs)*));
+    }
+
+    macro_rules! full_model_tests {
+        ($($name:ident: $text:literal [$($error:literal,)*],)*) => {
         $(
             #[test]
             fn $name() {
@@ -2067,12 +2114,20 @@ mod tests {
                 let model = ds_parser::parse_string(model_text).unwrap();
                 match DiscreteModel::build("$name", &model) {
                     Ok(model) => {
-                        let model_str: String = format!("{}", model).chars().filter(|c| !c.is_whitespace()).collect();
-                        let text_str: String = model_text.chars().filter(|c| !c.is_whitespace()).collect();
-                        assert_eq!(model_str, text_str);
+                        if (count!($($error)*) != 0) {
+                            panic!("Should have failed: {}", model)
+                        }
                     }
                     Err(e) => {
-                        panic!("{}", e.as_error_message(model_text));
+                        if (count!($($error)*) == 0) {
+                            panic!("Should have succeeded: {}", e.as_error_message(model_text))
+                        } else {
+                            $(
+                                if !e.has_error_contains($error) {
+                                    panic!("Expected error '{}' not found in '{}'", $error, e.as_error_message(model_text));
+                                }
+                            )*
+                        }
                     }
                 };
             }
@@ -2080,7 +2135,7 @@ mod tests {
         }
     }
 
-    discrete_success! {
+    full_model_tests! (
         logistic: "
             in = [r, k, ]
             r { 1, }
@@ -2106,7 +2161,7 @@ mod tests {
                 t,
                 z,
             }
-        ",
+        " [],
         logistic_single_state: "
             in = [r, ]
             r { 1, }    
@@ -2125,7 +2180,7 @@ mod tests {
             out {
                 y,
             }
-        ",
+        " [],
         scalar_state_as_vector: "
             in = [r, ]
             r { 1, }    
@@ -2144,7 +2199,7 @@ mod tests {
             out {
                 y,
             }
-        ",
+        " [],
         logistic_matrix: "
             in = [r, k,]
             r { 1, }
@@ -2182,36 +2237,7 @@ mod tests {
                 t,
                 z_i,
             }
-        ",
-    }
-
-
-    macro_rules! discrete_fail {
-        ($($name:ident: $text:literal [$($error:literal,)*],)*) => {
-        $(
-            #[test]
-            fn $name() {
-                let model_text = $text;
-                let model = ds_parser::parse_string(model_text).unwrap();
-                match DiscreteModel::build("$name", &model) {
-                    Ok(model) => {
-                        panic!("Should have failed: {}", model)
-                    }
-                    Err(e) => {
-                        $(
-                            assert!(e.has_error_contains($error));
-                        )*
-                    }
-                };
-            }
-        )*
-        }
-    }
-
-    discrete_fail!(
-        error_input_not_defined: "in = [bub]" ["input bub is not defined",],
-        error_scalar: "r {1, 2}" ["cannot have more than one element in a scalar",],
-        error_cannot_find: "r { k }" ["cannot find variable k",],
+        " [],
         error_missing_specials: "" ["missing 'u' array", "missing 'dudt' array", "missing 'F' array", "missing 'G' array", "missing 'out' array",],
         error_state_lhs_rhs_same: "
             u_i {
@@ -2222,6 +2248,112 @@ mod tests {
                 1,
             }
         " ["G and u must have the same shape",],
+    );
 
+    
+    macro_rules! tensor_fail_tests {
+        ($($name:ident: $text:literal errors [$($error:literal,)*],)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let tensor_text = $text;
+                let model_text = format!("
+                    {}
+                    u_i {{
+                        y = 1,
+                    }}
+                    dudt_i {{
+                        dydt = 0,
+                    }}
+                    F_i {{
+                        dydt,
+                    }}
+                    G_i {{
+                        y,
+                    }}
+                    out_i {{
+                        y,
+                    }}
+                ", tensor_text);
+                let model = ds_parser::parse_string(model_text.as_str()).unwrap();
+                match DiscreteModel::build("$name", &model) {
+                    Ok(model) => {
+                        if (count!($($error)*) != 0) {
+                            panic!("Should have failed: {}", model)
+                        }
+                    }
+                    Err(e) => {
+                        if (count!($($error)*) == 0) {
+                            panic!("Should have succeeded: {}", e.as_error_message(model_text.as_str()))
+                        } else {
+                            $(
+                                if !e.has_error_contains($error) {
+                                    panic!("Expected error '{}' not found in '{}'", $error, e.as_error_message(model_text.as_str()));
+                                }
+                            )*
+                        }
+                    }
+                };
+            }
+        )*
+        }
+    }
+
+    macro_rules! tensor_tests {
+        ($($name:ident: $text:literal expect $tensor_name:literal = $tensor_string:literal,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let tensor_text = $text;
+                let model_text = format!("
+                    {}
+                    u_i {{
+                        y = 1,
+                    }}
+                    dudt_i {{
+                        dydt = 0,
+                    }}
+                    F_i {{
+                        dydt,
+                    }}
+                    G_i {{
+                        y,
+                    }}
+                    out_i {{
+                        y,
+                    }}
+                ", tensor_text);
+                let model = ds_parser::parse_string(model_text.as_str()).unwrap();
+                match DiscreteModel::build("$name", &model) {
+                    Ok(model) => {
+                        let tensor = model.time_indep_defns.iter().find(|t| t.name == $tensor_name).unwrap();
+                        let tensor_string = format!("{}", tensor).chars().filter(|c| !c.is_whitespace()).collect::<String>();
+                        let tensor_check_string = $tensor_string.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+                        assert_eq!(tensor_string, tensor_check_string);
+                    }
+                    Err(e) => {
+                        panic!("Should have succeeded: {}", e.as_error_message(model_text.as_str()))
+                    }
+                };
+            }
+        )*
+        }
+    }
+
+    tensor_fail_tests!(
+        error_input_not_defined: "in = [bub]" errors ["input bub is not defined",],
+        error_scalar: "r {1, 2}" errors ["cannot have more than one element in a scalar",],
+        error_cannot_find: "r { k }" errors ["cannot find variable k",],
+        error_different_sparsity: "A_ij { (0, 0): 1, (1, 1): 1 } B_ij { (1, 1): 1 } C_ij { A_ij + B_ij }" errors ["cannot broadcast layouts with different sparsity",],
+        error_different_shape: "a_i { 1, 2 } b_i { 1, 2, 3 } c_i { a_i + b_i }" errors ["cannot broadcast shapes: [2], [3]",],
+    );
+
+    tensor_tests!(
+        dense_vect_implicit: "A_i { 1, 2, 3 }" expect "A" = "A_i { (0): 1, (1): 2, (2): 3, }",
+        dense_vect_explicit: "A_i { (0:3): 1, (3:4): 2 }" expect "A" = "A_i { (0:3): 1, (3): 2, }",
+        dense_vect_mix: "A_i { (0:3): 1, 2 }" expect "A" = "A_i { (0:3): 1, (3): 2, }",
+        same_sparsity: "A_ij { (0, 0): 1, (1, 1): 1, } B_ij { (0, 0): 1, (1, 1): 1, } C_ij { A_ij + B_ij, }" expect "C" = "C_ij { (0:2, 0:2): A_ij + B_ij, }",
+        diagonal: "A_ij { (0..2, 0..2): 1 } " expect "A" = "A_ij { (0..2, 0..2): 1, }",
+        diagonal_within_sparse: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2, 2): 1 }" expect "B" = "B_ij { (0:2, 0:2): A_ij, (2, 2): 1, }",
     );
 }

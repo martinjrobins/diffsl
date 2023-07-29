@@ -1301,6 +1301,15 @@ impl Env {
                 old_dim = Some(dim);
                 exp_expr_shape[i] = dim;
             }
+
+            // check that the expression shape can be broadcast to the tensor element shape
+            if !can_broadcast_to(&exp_expr_shape, &expr_layout.shape()) {
+                self.errs.push(ValidationError::new(
+                    format!("cannot broadcast expression shape {} to tensor element shape {}", expr_layout.shape(), exp_expr_shape),
+                    elmt.expr.span,
+                ));
+                return None;
+            }
                 
             // tensor elmt layout is:
             // 1. dense if the expression is dense and no indices are ranges
@@ -2375,6 +2384,8 @@ mod tests {
         error_cannot_find: "r { k }" errors ["cannot find variable k",],
         error_different_sparsity: "A_ij { (0, 0): 1, (1, 1): 1 } B_ij { (1, 1): 1 } C_ij { A_ij + B_ij }" errors ["cannot broadcast layouts with different sparsity",],
         error_different_shape: "a_i { 1, 2 } b_i { 1, 2, 3 } c_i { a_i + b_i }" errors ["cannot broadcast shapes: [2], [3]",],
+        too_many_indices: "A_i { 1, 2 } B_i { (0:2): A_ij }" errors ["too many permutation indices",],
+        bcast_expr_to_elmt: "A_i { 1, 2 } B_i { (0:2): A_i, (2:3): A_i }" errors ["cannot broadcast expression shape [2] to tensor element shape [1]",],
     );
 
     tensor_tests!(

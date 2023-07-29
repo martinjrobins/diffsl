@@ -1481,10 +1481,10 @@ use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelIn
         concatenate: "r_i {2, 3} k_i { r_i, 2 * r_i }" expect "k" array![2., 3., 4., 6.],
         ones_matrix_dense: "I_ij { (0:2, 0:2): 1 }" expect "I" array![1., 1., 1., 1.],
         identity_matrix_diagonal: "I_ij { (0..2, 0..2): 1 }" expect "I" array![1., 1.],
-        concatenate_diagonal: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2:3, 2:3): A_ij }" expect "B" array![1., 1., 1., 1.],
+        concatenate_diagonal: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" array![1., 1., 1., 1.],
         identity_matrix_sparse: "I_ij { (0, 0): 1, (1, 1): 2 }" expect "I" array![1., 2.],
-        concatenate_sparse: "A_ij { (0, 0): 1, (1, 1): 2 } B_ij { (0:2, 0:2): A_ij, (2:3, 2:3): A_ij }" expect "B" array![1., 2., 1., 2.],
-        sparse_rearrange: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 }" expect "A" array![1., 3., 2.],
+        concatenate_sparse: "A_ij { (0, 0): 1, (1, 1): 2 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" array![1., 2., 1., 2.],
+        sparse_rearrange: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 }" expect "A" array![1., 2., 3.],
     }
 
      #[test]

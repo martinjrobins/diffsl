@@ -305,7 +305,7 @@ mod tests {
                 (1:3): z = 1,
             }
             F {
-                dot(y),
+                dydt,
                 0,
             }
             G {
@@ -333,8 +333,8 @@ mod tests {
         let tensor = model.tensors[3].kind.as_tensor().unwrap();
         assert_eq!(tensor.name, "u");
         assert_eq!(tensor.elmts.len(), 2);
-        assert_eq!(tensor.elmts[0].kind.as_assignment().unwrap().name, "y");
-        assert_eq!(tensor.elmts[0].kind.as_assignment().unwrap().expr.to_string(), "1");
+        assert_eq!(tensor.elmts[0].kind.as_tensor_elmt().unwrap().expr.kind.as_assignment().unwrap().name, "y");
+        assert_eq!(tensor.elmts[0].kind.as_tensor_elmt().unwrap().expr.kind.as_assignment().unwrap().expr.to_string(), "1");
     }
 
 

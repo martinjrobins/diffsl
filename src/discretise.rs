@@ -219,6 +219,33 @@ pub struct Layout {
     n_dense_axes: usize,
 }
 
+impl fmt::Display for Layout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_scalar() {
+            return Ok(());
+        }
+        write!(f, " (")?;
+        for i in 0..self.rank() {
+            let type_char = if self.is_diagonal() && i < self.rank() - self.n_dense_axes  { 
+                Some('i') 
+            } else if self.is_sparse() && i < self.rank() - self.n_dense_axes {
+                Some('s')
+            } else {
+                None 
+            };
+            if let Some(type_char) = type_char {
+                write!(f, "{}{}", self.shape()[i], type_char)?;
+            } else {
+                write!(f, "{}", self.shape()[i])?;
+            }
+            if i < self.rank() - 1 {
+                write!(f, ", ")?;
+            }
+        }
+        write!(f, ")")
+    }
+}
+
 impl Layout {
     
     // row major order
@@ -263,14 +290,38 @@ impl Layout {
             return Err(anyhow!("cannot contract last axis of a scalar"));
         }
         let new_shape = self.shape.slice(s![0..rank-1]).to_owned();
-        let mut new_indices = self.indices.clone();
+        
+        // if layout is dense just remove the last axis
+        if self.is_dense() {
+            return Ok(Layout::dense(new_shape));
+        }
 
-        // by default kind is the same, and number of dense axes reduces by 1
-        let mut new_kind = self.kind.clone();
-        let new_n_dense_axes = if self.n_dense_axes > 0 { self.n_dense_axes - 1 } else { 0 };
+        // if the layout is diagonal and there are no dense axes, then remove the last axis from the shape
+        // and the second last axis becomes dense. If we have rank <= 2 then the resultant layout is dense
+        if self.is_diagonal() {
+            if self.n_dense_axes == 0 && rank > 2 {
+                return Ok(Layout {
+                    indices: Vec::new(),
+                    shape: new_shape,
+                    kind: LayoutKind::Diagonal,
+                    n_dense_axes: self.n_dense_axes,
+                });
+            } else if self.n_dense_axes == 0 && rank <= 2 {
+                return Ok(Layout::dense(new_shape));
+            } else if self.n_dense_axes > 0 {
+                return Ok(Layout {
+                    indices: Vec::new(),
+                    shape: new_shape,
+                    kind: LayoutKind::Diagonal,
+                    n_dense_axes: self.n_dense_axes - 1,
+                });
+            }
+        }
 
-        // if the layout is sparse and there are no dense axes, then remove the last axis from each index
-        if self.is_sparse() && self.n_dense_axes == 0 {
+        // must be sparse
+        // if there are no dense axes, then remove the last axis from each index
+        if self.n_dense_axes == 0 {
+            let mut new_indices = self.indices.clone();
             for i in 0..self.indices.len() {
                 new_indices[i] = new_indices[i].slice(s![0..rank-1]).to_owned();
             }
@@ -282,18 +333,29 @@ impl Layout {
             // check if now dense
             let new_nnz = new_shape.iter().product();
             if new_indices.len() == new_nnz {
-                new_kind = LayoutKind::Dense;
-                new_indices.clear();
+                Ok(Layout {
+                    indices: new_indices,
+                    shape: new_shape,
+                    kind: LayoutKind::Dense,
+                    n_dense_axes: self.n_dense_axes,
+                })
+            } else {
+                Ok(Layout {
+                    indices: new_indices,
+                    shape: new_shape,
+                    kind: LayoutKind::Sparse,
+                    n_dense_axes: self.n_dense_axes,
+                })
             }
-            
+        } else {
+            // there are dense axes, so just remove it
+            Ok(Layout {
+                indices: Vec::new(),
+                shape: new_shape,
+                kind: LayoutKind::Sparse,
+                n_dense_axes: self.n_dense_axes - 1,
+            })
         } 
-        new_indices.pop();
-        Ok(Layout {
-            indices: new_indices,
-            shape: new_shape,
-            kind: new_kind,
-            n_dense_axes: new_n_dense_axes,
-        })
     }
 
 
@@ -379,17 +441,6 @@ impl Layout {
 
         // check for violations of sparse/dense/diagonal rules
         let n_dense_axes = if is_multiply {
-            if any_diagonal && !all_diagonal {
-                return Err(anyhow!("cannot broadcast diagonal and non-diagonal layouts, except for multiply"));
-            }
-            if any_sparse && !all_sparse {
-                return Err(anyhow!("cannot broadcast sparse and non-sparse layouts, except for multiply"));
-            }
-            if layouts.iter().any(|x| x.n_dense_axes != layouts[0].n_dense_axes) {
-                return Err(anyhow!("cannot broadcast diagonal layouts with different numbers of dense axes"));
-            } 
-            layouts[0].n_dense_axes
-        } else {
             if any_diagonal && !all_diagonal_and_dense {
                 return Err(anyhow!("cannot broadcast diagonal and non-dense layouts with multiply"));
             }
@@ -407,6 +458,17 @@ impl Layout {
                 }
             }
             n_dense_axes.unwrap()
+        } else {
+            if any_diagonal && !all_diagonal {
+                return Err(anyhow!("cannot broadcast diagonal and non-diagonal layouts, except for multiply"));
+            }
+            if any_sparse && !all_sparse {
+                return Err(anyhow!("cannot broadcast sparse and non-sparse layouts, except for multiply"));
+            }
+            if layouts.iter().any(|x| x.n_dense_axes != layouts[0].n_dense_axes) {
+                return Err(anyhow!("cannot broadcast diagonal layouts with different numbers of dense axes"));
+            } 
+            layouts[0].n_dense_axes
         };
 
         // if there are any diagonal layouts then the result is diagonal, all the layouts must be diagonal and have the same number of dense axes
@@ -586,7 +648,7 @@ impl Layout {
                 shape: new_shape,
                 indices: Vec::new(),
                 kind: LayoutKind::Diagonal,
-                n_dense_axes: layouts[0].n_dense_axes,
+                n_dense_axes,
             });
         }
 
@@ -599,7 +661,7 @@ impl Layout {
         }
 
         // any other combination we convert all to sparse and concatenate
-        let mut new_layout = Layout::sparse(Vec::new(), max_extent);
+        let mut new_layout = Layout { indices: Vec::new(), shape: max_extent, kind: LayoutKind::Sparse, n_dense_axes }; 
         for (layout, start) in std::iter::zip(layouts, starts) {
             // convert to sparse
             new_layout.indices.extend(layout.indices().map(|x| x + start));
@@ -869,31 +931,18 @@ impl<'s> TensorBlock<'s> {
 
 impl<'s> fmt::Display for TensorBlock<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let sep = if self.is_diagonal() && self.expr_layout().is_dense() { ".." } else { ":" };
         write!(f, "(")?;
         for i in 0..self.rank() {
             write!(f, "{}", self.start[i])?;
-            if self.shape()[0] > 1 {
-                write!(f, "{}{}", sep, self.start[i] + i64::try_from(self.shape()[i]).unwrap())?;
-            }
             if i < self.rank() - 1 {
                 write!(f, ", ")?;
             }
         }
-        write!(f, "): ")?;
+        write!(f, "){}: ", self.layout().as_ref())?;
         if self.name.is_some() {
-            let type_str = if self.layout.is_dense() { "dense" } else if self.layout.is_diagonal() { "diag" } else { "sparse" };
-            write!(f, "{}", self.name.as_ref().unwrap())?;
-            write!(f, " {}(", type_str)?;
-            for i in 0..self.rank() {
-                write!(f, "{}", self.shape()[i])?;
-                if i < self.rank() - 1 {
-                    write!(f, ", ")?;
-                }
-            }
-            write!(f, ") = ")?;
+            write!(f, "{} = ", self.name.as_ref().unwrap())?;
         }
-        write!(f, "{}", self.expr)
+        write!(f, "{} {}", self.expr, self.expr_layout().as_ref())
     }
 }
 
@@ -987,7 +1036,6 @@ impl<'s> Tensor<'s> {
 
 impl<'s> fmt::Display for Tensor<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let type_str = if self.layout.is_dense() { "dense" } else if self.layout.is_diagonal() { "diag" } else { "sparse" };
         if self.indices.len() > 0 {
             write!(f, "{}_", self.name)?;
             for i in 0..self.indices.len() {
@@ -996,14 +1044,7 @@ impl<'s> fmt::Display for Tensor<'s> {
         } else {
             write!(f, "{}", self.name)?;
         }
-        write!(f, " {}(", type_str)?;
-        for i in 0..self.rank() {
-            write!(f, "{}", self.shape()[i])?;
-            if i < self.rank() - 1 {
-                write!(f, ", ")?;
-            }
-        }
-        write!(f, ") {{\n")?;
+        write!(f, " {} {{\n", self.layout())?;
         for i in 0..self.elmts.len() {
             write!(f, "  {}", self.elmts[i])?;
             if i < self.elmts.len() - 1 {
@@ -1279,27 +1320,27 @@ impl Env {
             return None;
         }
 
-        let mut expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
-        
-        // if we have an additional index then we contract the last dimension of the expression layout to get the final layout
-        if new_indices.len() > indices.len() {
-            expr_layout = match expr_layout.contract_last_axis() {
-                Ok(layout) => layout,
-                Err(e) => {
-                    self.errs.push(ValidationError::new(
-                        format!("{}", e),
-                        elmt.expr.span,
-                    ));
-                    return None;
-                }
-            }
-        };
+        let expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
         
         // calculate the shape of the tensor element. 
         let elmt_layout = if elmt.indices.is_none() {
             // If there are no indices then blk layout is the same as the expression, but broadcast to the tensor rank
             // (tensor rank given by the number of indices)
-            expr_layout.to_rank(indices.len()).unwrap()
+            // if we have an additional index then we contract the last dimension of the expression layout to get the final layout
+            if new_indices.len() > indices.len() {
+                match expr_layout.contract_last_axis() {
+                    Ok(layout) => layout,
+                    Err(e) => {
+                        self.errs.push(ValidationError::new(
+                            format!("{}", e),
+                            elmt.expr.span,
+                        ));
+                        return None;
+                    }
+                }
+            } else {
+                expr_layout.to_rank(indices.len()).unwrap()
+            }
         } else {
             // If there are indicies then the rank is determined by the number of indices, and the
             // shape is determined by the ranges of the indices
@@ -2456,17 +2497,18 @@ mod tests {
     );
 
     tensor_tests!(
-        named_blk: "A_i { (0:3): y = 1, 2 }" expect "A" = "A_i dense(4) { (0:3): y dense(3) = 1, (3): 2 }",
-        dense_vect_implicit: "A_i { 1, 2, 3 }" expect "A" = "A_i dense(3) { (0): 1, (1): 2, (2): 3 }",
-        dense_vect_explicit: "A_i { (0:3): 1, (3:4): 2 }" expect "A" = "A_i dense(4) { (0:3): 1, (3): 2 }",
-        dense_vect_mix: "A_i { (0:3): 1, 2 }" expect "A" = "A_i dense(4) { (0:3): 1, (3): 2 }",
-        dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" = "A_ij dense(2,2) { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }",
-        diag_matrix: "A_ij { (0, 0): 1, (1, 1): 4 }" expect "A" = "A_ij diag(2,2) { (0, 0): 1, (1, 1): 4 }",
-        sparse_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 1): 4 }" expect "A" = "A_ij sparse(2,2) { (0, 0): 1, (0, 1): 2, (1, 1): 4 }",
-        same_sparsity: "A_i { (0): 1, (1): 1, (3): 1 } B_i { (0): 2, (1): 3, (3): 4 } C_i { A_i + B_i, }" expect "C" = "C_i sparse(4) { (0:4): A_i + B_i }",
-        diagonal: "A_ij { (0..2, 0..2): 1 } " expect "A" = "A_ij diag(2,2) { (0..2, 0..2): 1 }",
-        concat_diags: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2, 2): 1 }" expect "B" = "B_ij diag(3,3) { (0:2, 0:2): A_ij, (2, 2): 1 }",
-        sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" = "b_i dense(2) { (0:2): A_ij * x_i }",
-        diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" = "b_i dense(2) { (0:2): A_ij * x_i }",
+        named_blk: "A_i { (0:3): y = 1, 2 }" expect "A" = "A_i (4) { (0)(3): y = 1, (3)(1): 2 }",
+        dense_vect_implicit: "A_i { 1, 2, 3 }" expect "A" = "A_i (3) { (0)(1): 1, (1)(1): 2, (2)(1): 3 }",
+        dense_vect_explicit: "A_i { (0:3): 1, (3:4): 2 }" expect "A" = "A_i (4) { (0)(3): 1, (3)(1): 2 }",
+        dense_vect_mix: "A_i { (0:3): 1, 2 }" expect "A" = "A_i (4) { (0)(3): 1, (3)(1): 2 }",
+        dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" = "A_ij (2,2) { (0, 0)(1, 1): 1, (0, 1)(1, 1): 2, (1, 0)(1, 1): 3, (1, 1)(1, 1): 4 }",
+        diag_matrix: "A_ij { (0, 0): 1, (1, 1): 4 }" expect "A" = "A_ij (2i,2i) { (0, 0)(1, 1): 1, (1, 1)(1, 1): 4 }",
+        sparse_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 1): 4 }" expect "A" = "A_ij (2s,2s) { (0, 0)(1, 1): 1, (0, 1)(1, 1): 2, (1, 1)(1, 1): 4 }",
+        same_sparsity: "A_i { (0): 1, (1): 1, (3): 1 } B_i { (0): 2, (1): 3, (3): 4 } C_i { A_i + B_i, }" expect "C" = "C_i (4s) { (0)(4s): A_i + B_i (4s) }",
+        diagonal: "A_ij { (0..2, 0..2): 1 } " expect "A" = "A_ij (2i,2i) { (0, 0)(2i, 2i): 1 }",
+        concat_diags: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2, 2): 1 }" expect "B" = "B_ij (3i,3i) { (0, 0)(2i,2i): A_ij (2i, 2i), (2, 2)(1, 1): 1 }",
+        sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" = "b_i (2) { (0)(2): A_ij * x_i (2s, 2s) }",
+        diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" = "b_i (2) { (0)(2): A_ij * x_i (2i, 2i) }",
+        dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" = "b_i (2) { (0)(2): A_ij * x_i (2, 2) }",
     );
 }

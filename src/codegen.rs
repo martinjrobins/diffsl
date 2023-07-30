@@ -1485,7 +1485,9 @@ use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelIn
         identity_matrix_sparse: "I_ij { (0, 0): 1, (1, 1): 2 }" expect "I" array![1., 2.],
         concatenate_sparse: "A_ij { (0, 0): 1, (1, 1): 2 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" array![1., 2., 1., 2.],
         sparse_rearrange: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 }" expect "A" array![1., 2., 3.],
-        matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" array![3., 3.],
+        sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" array![1., 7.],
+        diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" array![1., 6.],
+        dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" array![5., 11.],
     }
 
      #[test]

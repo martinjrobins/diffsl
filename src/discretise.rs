@@ -51,19 +51,33 @@ pub enum TranslationFrom {
 
 }
 
+impl fmt::Display for TranslationFrom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TranslationFrom::DenseContraction{ contract_by, contract_len } => write!(f, "DenseContraction({}, {})", contract_by, contract_len),
+            TranslationFrom::DiagonalContraction{ contract_by } => write!(f, "DiagonalContraction({})", contract_by),
+            TranslationFrom::SparseContraction{ contract_by, contract_start_indices, contract_end_indices } => write!(f, "SparseContraction({}, {:?}, {:?})", contract_by, contract_start_indices, contract_end_indices),
+            TranslationFrom::ElementWise => write!(f, "ElementWise"),
+            TranslationFrom::Broadcast{ broadcast_by, broadcast_len } => write!(f, "Broadcast({}, {})", broadcast_by, broadcast_len),
+        }
+    }
+}
+
 impl TranslationFrom {
     // traslate from source layout (an expression) via an intermediary target layout (a tensor block)
     fn new(source: &Layout, target: &Layout) -> Self {
         let mut min_rank_for_broadcast = source.rank();
-        for i in (0..source.rank()).rev() {
-            if source.shape()[i] != target.shape()[i] {
-                assert!(source.shape()[i] == 1);
-                min_rank_for_broadcast = i + 1;
-                break;
+        if source.rank() <= target.rank() {
+            for i in (0..source.rank()).rev() {
+                if source.shape()[i] != target.shape()[i] {
+                    assert!(source.shape()[i] == 1);
+                    min_rank_for_broadcast = i + 1;
+                    break;
+                }
             }
         }
-        let broadcast_by = target.rank() - min_rank_for_broadcast;
-        let contract_by = source.rank() - source.rank();
+        let broadcast_by = if target.rank() >= min_rank_for_broadcast { target.rank() - min_rank_for_broadcast } else { 0 };
+        let contract_by = if source.rank() >= target.rank() { source.rank() - target.rank() } else { 0 };
         let is_broadcast = broadcast_by > 0;
         let is_contraction = source.rank() > target.rank();
 
@@ -119,11 +133,20 @@ impl TranslationFrom {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranslationTo {
-    // indices in the target tensor nz array are contiguous and start/end at the given indices
+    // indices in the target tensor nz array are contiguous and start/end at the given indices, end is exclusive
     Contiguous{ start: usize, end: usize },
 
     // indices in the target tensor nz array are given by the indices in the given vector
     Sparse{ indices: Vec<usize> },
+}
+
+impl fmt::Display for TranslationTo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TranslationTo::Contiguous{ start, end } => write!(f, "Contiguous({}, {})", start, end),
+            TranslationTo::Sparse{ indices } => write!(f, "Sparse{:?}", indices),
+        }
+    }
 }
 
 impl TranslationTo {
@@ -164,6 +187,12 @@ impl TranslationTo {
 pub struct Translation {
     pub source: TranslationFrom,
     pub target: TranslationTo,
+}
+
+impl fmt::Display for Translation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Translation({}, {})", self.source, self.target)
+    }
 }
 
 impl Translation {
@@ -1702,13 +1731,6 @@ impl<'s> DiscreteModel<'s> {
                         } else {
                             (None, te.expr.clone())
                         };
-                        // names are not supported for tensor elements with rank > 1
-                        if name.is_some() && rank > 1 {
-                            env.errs.push(ValidationError::new(
-                                format!("cannot assign a name to a tensor element with rank > 1"),
-                                a.span,
-                            ));
-                        }
                         
                         // if the tensor indices indicates a start, use this, otherwise increment by the shape
                         if let Some(elmt_indices) = te.indices.as_ref() {

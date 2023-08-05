@@ -641,6 +641,9 @@ impl<'a> Ast<'a> {
 
     fn collect_indices(&self, indices: &mut Vec<char>) {
         match &self.kind {
+            AstKind::Assignment(a) => {
+                a.expr.collect_indices(indices);
+            }
             AstKind::Equation(eqn) => {
                 eqn.lhs.collect_indices(indices);
                 eqn.rhs.collect_indices(indices);
@@ -697,7 +700,6 @@ impl<'a> Ast<'a> {
             AstKind::Range(_) => (),
             AstKind::Domain(_) => (),
             AstKind::IntRange(_) => (),
-            AstKind::Assignment(_) => (),
             AstKind::Vector(_) => (),
             AstKind::Indice(_) => (),
         }

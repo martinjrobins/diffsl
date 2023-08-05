@@ -1423,7 +1423,64 @@ mod tests {
 use approx::assert_relative_eq;
 use ndarray::{Array, array, s};
 
-use crate::{ms_parser::parse_string, discretise::DiscreteModel, builder::ModelInfo, codegen::{Sundials, Options}, ds_parser};
+use crate::{ms_parser::parse_string, discretise::{DiscreteModel, Translation}, builder::ModelInfo, codegen::{Sundials, Options}, ds_parser};
+
+    macro_rules! translation_test {
+        ($($name:ident: $text:literal expect $blk_name:literal = $expected_value:expr,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let text = $text;
+                let full_text = format!("
+                    {}
+                    u_i {{
+                        y = 1,
+                    }}
+                    dudt_i {{
+                        dydt = 0,
+                    }}
+                    F_i {{
+                        dydt,
+                    }}
+                    G_i {{
+                        y,
+                    }}
+                    out_i {{
+                        y,
+                    }}
+                ", text);
+                let model = ds_parser::parse_string(full_text.as_str()).unwrap();
+                let discrete_model = match DiscreteModel::build("$name", &model) {
+                    Ok(model) => {
+                        model
+                    }
+                    Err(e) => {
+                        panic!("{}", e.as_error_message(full_text.as_str()));
+                    }
+                };
+                let tensor = discrete_model.time_indep_defns().iter().find(|t| t.elmts().iter().find(|blk| blk.name() == Some($blk_name)).is_some()).unwrap();
+                let blk = tensor.elmts().iter().find(|blk| blk.name() == Some($blk_name)).unwrap();
+                let translation = Translation::new(blk.expr_layout(), blk.layout(), &blk.start(), tensor.layout_ptr());
+                assert_eq!(translation.to_string(), $expected_value);
+            }
+        )*
+        }
+    }
+
+    translation_test!{
+        elementwise_scalar: "r { y = 2}" expect "y" = "Translation(ElementWise, Contiguous(0, 1))",
+        elementwise_vector: "r_i { 1, y = 2}" expect "y" = "Translation(Broadcast(1, 1), Contiguous(1, 2))",
+        elementwise_vector2: "a_i { 1, 2 } r_i { 1, y = a_i}" expect "y" = "Translation(ElementWise, Contiguous(1, 3))",
+        broadcast_by_1: "r_i { (0:4): y = 2}" expect "y" = "Translation(Broadcast(1, 4), Contiguous(0, 4))",
+        broadcast_by_2: "r_ij { (0:4, 0:3): y = 2}" expect "y" = "Translation(Broadcast(2, 12), Contiguous(0, 12))",
+        contiguous_in_middle: "r_i { 1, (1:5): y = 2, 2, 3}" expect "y" = "Translation(Broadcast(1, 4), Contiguous(1, 5))",
+        dense_to_contiguous_sparse: "A_ij { (0, 0): 1, (1, 1): y = 2, (0, 1): 3 }" expect "y" = "Translation(Broadcast(2, 1), Contiguous(2, 3))",
+        dense_to_sparse_sparse: "A_ij { (0, 0): 1, (1:4, 1): y = 2, (2, 2): 1, (4, 4): 3 }" expect "y" = "Translation(Broadcast(2, 3), Sparse[1, 2, 4])",
+        dense_to_sparse_sparse2: "A_ij { (0, 0): 1, (1:4, 1): y = 2, (1, 2): 1, (4, 4): 3 }" expect "y" = "Translation(Broadcast(2, 3), Sparse[1, 3, 4])",
+        sparse_contraction: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 } b_i { 1, 2 } x_i { y = A_ij * b_i }" expect "y" = "Translation(SparseContraction(1, [0, 2], [2, 3]), Contiguous(0, 2))",
+        dense_contraction: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 2 } b_i { 1, 2 } x_i { y = A_ij * b_i }" expect "y" = "Translation(DenseContraction(1, 2), Contiguous(0, 2))",
+        diagonal_contraction: "A_ij { (0..2, 0..2): 1 } b_i { 1, 2 } x_i { y = A_ij * b_i }" expect "y" = "Translation(DiagonalContraction(1), Contiguous(0, 2))",
+    }
 
     macro_rules! tensor_test {
         ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {

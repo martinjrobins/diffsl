@@ -532,7 +532,7 @@ impl<'ctx> CodeGen<'ctx> {
                 bcast_index.add_incoming(&[(&bcast_next_index, bcast_block)]);
 
                 // loop condition
-                let bcast_cond = self.builder.build_int_compare(IntPredicate::ULT, bcast_index.as_basic_value().into_int_value(), bcast_end_index, "broadcast_cond");
+                let bcast_cond = self.builder.build_int_compare(IntPredicate::ULT, bcast_next_index, bcast_end_index, "broadcast_cond");
                 let post_bcast_block = self.context.append_basic_block(self.fn_value(), name);
                 self.builder.build_conditional_branch(bcast_cond, bcast_block, post_bcast_block);
                 self.builder.position_at_end(post_bcast_block);
@@ -1483,6 +1483,8 @@ use crate::{ms_parser::parse_string, discretise::{DiscreteModel, Translation}, b
         elementwise_vector2: "a_i { 1, 2 } r_i { 1, y = a_i}" expect "y" = "Translation(ElementWise, Contiguous(1, 3))",
         broadcast_by_1: "r_i { (0:4): y = 2}" expect "y" = "Translation(Broadcast(1, 4), Contiguous(0, 4))",
         broadcast_by_2: "r_ij { (0:4, 0:3): y = 2}" expect "y" = "Translation(Broadcast(2, 12), Contiguous(0, 12))",
+        sparse_rearrange_23: "r_ij { (0, 0): 1, (1, 1): y = 2, (0, 1): 3 }" expect "y" = "Translation(Broadcast(2, 1), Contiguous(2, 3))",
+        sparse_rearrange_12: "r_ij { (0, 0): 1, (1, 1): 2, (0, 1): y = 3 }" expect "y" = "Translation(Broadcast(2, 1), Contiguous(1, 2))",
         contiguous_in_middle: "r_i { 1, (1:5): y = 2, 2, 3}" expect "y" = "Translation(Broadcast(1, 4), Contiguous(1, 5))",
         dense_to_contiguous_sparse: "A_ij { (0, 0): 1, (1, 1): y = 2, (0, 1): 3 }" expect "y" = "Translation(Broadcast(2, 1), Contiguous(2, 3))",
         dense_to_sparse_sparse: "A_ij { (0, 0): 1, (1:4, 1): y = 2, (2, 2): 1, (4, 4): 3 }" expect "y" = "Translation(Broadcast(2, 3), Sparse[1, 2, 4])",
@@ -1552,7 +1554,7 @@ use crate::{ms_parser::parse_string, discretise::{DiscreteModel, Translation}, b
         concatenate_diagonal: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" array![1., 1., 1., 1.],
         identity_matrix_sparse: "I_ij { (0, 0): 1, (1, 1): 2 }" expect "I" array![1., 2.],
         concatenate_sparse: "A_ij { (0, 0): 1, (1, 1): 2 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" array![1., 2., 1., 2.],
-        sparse_rearrange: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 }" expect "A" array![1., 2., 3.],
+        sparse_rearrange: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 }" expect "A" array![1., 3., 2.],
         sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" array![1., 7.],
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" array![1., 6.],
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" array![5., 11.],

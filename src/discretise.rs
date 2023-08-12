@@ -390,21 +390,21 @@ impl Layout {
 
     // permute the axes of the layout and return a new layout
     fn permute(&self, permutation: &[usize]) -> Result<Layout> {
-        let new_rank = permutation.len();
-        // check that permutation is a valid permutation
-        if new_rank < self.min_rank() {
-            return Err(anyhow!("not enough permutation indices"));
-        }
-        if new_rank > self.rank() {
+        // check that we have the right number of permutation indices
+        if permutation.len() > self.rank() {
             return Err(anyhow!("too many permutation indices"));
         }
-        let mut permutation = permutation.to_vec();
-        permutation.sort();
-        for (i, &p) in permutation.iter().enumerate() {
-            if p != i {
-                return Err(anyhow!("permutation must be a valid permutation"));
-            }
+        // check that permutation is a valid permutation
+        if permutation.len() < self.min_rank() {
+            return Err(anyhow!("not enough permutation indices"));
         }
+
+        // if its an empty permutation then return the same layout
+        if permutation.is_empty() {
+            return Ok(self.clone());
+        }
+
+        let new_rank = permutation.iter().max().unwrap() + 1;
 
         // for a sparse tensor, can only permute the sparse axes
         if self.is_sparse() {
@@ -416,9 +416,9 @@ impl Layout {
         }
 
         // permute shape
-        let mut new_shape = self.shape.slice(s![..new_rank]).to_owned();
+        let mut new_shape = Shape::ones(new_rank);
         for (i, &p) in permutation.iter().enumerate() {
-            new_shape[i] = self.shape[p];
+            new_shape[p] = self.shape[i];
         }
 
         // permute indices
@@ -431,7 +431,11 @@ impl Layout {
         }).collect::<Vec<_>>();
 
         // reduce the number of dense axes according to the permutation
-        let n_dense_axes = max(self.n_dense_axes - (self.rank() - new_rank), 0);
+        let n_dense_axes = if self.is_dense() {
+            new_rank
+        } else {
+            self.n_dense_axes
+        };
 
         Ok(Layout {
             indices: new_indices,
@@ -800,6 +804,7 @@ impl Layout {
         if self.rank() == rank {
             Some(self.clone())
         } else if self.rank() < rank {
+            // must be increasing the rank
             let new_ranks = rank - self.rank();
             let shape = Shape::from_iter(self.shape.iter().cloned().chain(std::iter::repeat(1).take(new_ranks)));
             let n_dense_axes = self.n_dense_axes + new_ranks;
@@ -809,7 +814,18 @@ impl Layout {
                 kind: self.kind.clone(),
                 n_dense_axes,
             })
+        } else if self.min_rank() <= rank && self.rank() - rank <= self.n_dense_axes {
+            // must be reducing the rank by a number of dense axes
+            let shape = self.shape.slice(s![..rank]).to_owned();
+            let n_dense_axes = self.n_dense_axes - (self.rank() - rank);
+            Some(Self {
+                indices: self.indices.clone(),
+                shape,
+                kind: self.kind.clone(),
+                n_dense_axes,
+            })
         } else {
+            // invalid
             None
         }
     }
@@ -1332,7 +1348,7 @@ impl Env {
         // get any indices from the expression that do not appear in 'indices' and add them to 'indices' to a new vector
         let mut new_indices = indices.clone();
         for i in expr_indices {
-            if !indices.contains(&i) {
+            if !indices.contains(&i) && !new_indices.contains(&i) {
                 new_indices.push(i);
             }
         }
@@ -2529,8 +2545,8 @@ mod tests {
         same_sparsity: "A_i { (0): 1, (1): 1, (3): 1 } B_i { (0): 2, (1): 3, (3): 4 } C_i { A_i + B_i, }" expect "C" = "C_i (4s) { (0)(4s): A_i + B_i (4s) }",
         diagonal: "A_ij { (0..2, 0..2): 1 } " expect "A" = "A_ij (2i,2i) { (0, 0)(2i, 2i): 1 }",
         concat_diags: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2, 2): 1 }" expect "B" = "B_ij (3i,3i) { (0, 0)(2i,2i): A_ij (2i, 2i), (2, 2)(1, 1): 1 }",
-        sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" = "b_i (2) { (0)(2): A_ij * x_i (2s, 2s) }",
-        diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" = "b_i (2) { (0)(2): A_ij * x_i (2i, 2i) }",
-        dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" = "b_i (2) { (0)(2): A_ij * x_i (2, 2) }",
+        sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2s, 2s) }",
+        diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2i, 2i) }",
+        dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2, 2) }",
     );
 }

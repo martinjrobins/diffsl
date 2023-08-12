@@ -239,22 +239,25 @@ impl<'ctx> CodeGen<'ctx> {
         
         let mut preblock = self.builder.get_insert_block().unwrap();
         let expr_rank = elmt.expr_layout().rank();
+        let expr_shape = elmt.expr_layout().shape().mapv(|n| int_type.const_int(n.try_into().unwrap(), false));
         let one = int_type.const_int(1, false);
         let zero = int_type.const_int(0, false);
-        let elmt_shape = elmt.shape().mapv(|n| int_type.const_int(n.try_into().unwrap(), false));
 
         let expr_index_ptr = self.builder.build_alloca(int_type, "expr_index");
+        let elmt_index_ptr = self.builder.build_alloca(int_type, "elmt_index");
         self.builder.build_store(expr_index_ptr, zero);
+        self.builder.build_store(elmt_index_ptr, zero);
 
         // setup indices, loop through the nested loops
         let mut indices = Vec::new();
+        let mut blocks = Vec::new();
 
 
         // allocate the contract sum if needed
-        let (contract_sum, contract_by, contract_len) = if let TranslationFrom::DenseContraction { contract_by, contract_len} = translation.source {
-            (Some(self.builder.build_alloca(self.real_type, "contract_sum")), contract_by, contract_len)
+        let (contract_sum, contract_by) = if let TranslationFrom::DenseContraction { contract_by, contract_len: _} = translation.source {
+            (Some(self.builder.build_alloca(self.real_type, "contract_sum")), contract_by)
         } else {
-            (None, 0, 0)
+            (None, 0)
         };
 
         for i in 0..expr_rank {
@@ -262,15 +265,16 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder.build_unconditional_branch(block);
             self.builder.position_at_end(block);
 
-            if i == expr_rank - contract_by && contract_sum.is_some() {
-                self.builder.build_store(contract_sum.unwrap(), self.real_type.const_zero());
-            }
-
             let start_index = int_type.const_int(0, false);
             let curr_index = self.builder.build_phi(int_type, format!["i{}", i].as_str());
             curr_index.add_incoming(&[(&start_index, preblock)]);
 
+            if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
+                self.builder.build_store(contract_sum.unwrap(), self.real_type.const_zero());
+            }
+
             indices.push(curr_index);
+            blocks.push(block);
             preblock = block;
         }
 
@@ -279,6 +283,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // load and increment the expression index
         let expr_index = self.builder.build_load(expr_index_ptr, "expr_index").into_int_value();
+        let elmt_index = self.builder.build_load(elmt_index_ptr, "elmt_index").into_int_value();
         let next_expr_index = self.builder.build_int_add(expr_index, one, "next_expr_index");
         self.builder.build_store(expr_index_ptr, next_expr_index);
         let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(expr_index))?;
@@ -289,7 +294,8 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder.build_store(contract_sum.unwrap(), new_contract_sum_value);
         } else {
             preblock = self.jit_compile_broadcast_and_store(name, elmt, float_value, expr_index, translation, preblock)?;
-
+            let next_elmt_index = self.builder.build_int_add(elmt_index, one, "next_elmt_index");
+            self.builder.build_store(elmt_index_ptr, next_elmt_index);
         }
         
         // unwind the nested loops
@@ -298,17 +304,17 @@ impl<'ctx> CodeGen<'ctx> {
             let next_index = self.builder.build_int_add(indices_int[i], one, name);
             indices[i].add_incoming(&[(&next_index, preblock)]);
 
-            if i == expr_rank - contract_by && contract_sum.is_some() {
+            if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
                 let contract_sum_value= self.builder.build_load(contract_sum.unwrap(), "contract_sum").into_float_value();
-                let contract_len_value = int_type.const_int(contract_len.try_into().unwrap(), false);
-                let store_index = self.builder.build_int_unsigned_div(expr_index, contract_len_value, name);
-                self.jit_compile_store(name, elmt, store_index, contract_sum_value, translation)?;
+                let next_elmt_index = self.builder.build_int_add(elmt_index, one, "next_elmt_index");
+                self.builder.build_store(elmt_index_ptr, next_elmt_index);
+                self.jit_compile_store(name, elmt, elmt_index, contract_sum_value, translation)?;
             }
 
             // loop condition
-            let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, elmt_shape[i], name);
+            let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, expr_shape[i], name);
             let block = self.context.append_basic_block(self.fn_value(), name);
-            self.builder.build_conditional_branch(loop_while, preblock, block);
+            self.builder.build_conditional_branch(loop_while, blocks[i], block);
             self.builder.position_at_end(block);
             preblock = block;
         }
@@ -569,12 +575,12 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
-    fn jit_compile_expr(&mut self, name: &str, expr: &Ast, index: &[IntValue<'ctx>], elmt: &TensorBlock, elmt_index: Option<IntValue<'ctx>>) -> Result<FloatValue<'ctx>> {
+    fn jit_compile_expr(&mut self, name: &str, expr: &Ast, index: &[IntValue<'ctx>], elmt: &TensorBlock, expr_index: Option<IntValue<'ctx>>) -> Result<FloatValue<'ctx>> {
         let name= elmt.name().unwrap_or(name);
         match &expr.kind {
             AstKind::Binop(binop) => {
-                let lhs = self.jit_compile_expr(name, binop.left.as_ref(), index, elmt, elmt_index)?;
-                let rhs = self.jit_compile_expr(name, binop.right.as_ref(), index, elmt, elmt_index)?;
+                let lhs = self.jit_compile_expr(name, binop.left.as_ref(), index, elmt, expr_index)?;
+                let rhs = self.jit_compile_expr(name, binop.right.as_ref(), index, elmt, expr_index)?;
                 match binop.op {
                     '*' => Ok(self.builder.build_float_mul(lhs, rhs, name)),
                     '/' => Ok(self.builder.build_float_div(lhs, rhs, name)),
@@ -584,7 +590,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             },
             AstKind::Monop(monop) => {
-                let child = self.jit_compile_expr(name, monop.child.as_ref(), index, elmt, elmt_index)?;
+                let child = self.jit_compile_expr(name, monop.child.as_ref(), index, elmt, expr_index)?;
                 match monop.op {
                     '-' => Ok(self.builder.build_float_neg(child, name)),
                     unknown => Err(anyhow!("unknown monop op '{}'", unknown))
@@ -595,7 +601,7 @@ impl<'ctx> CodeGen<'ctx> {
                     Some(function) => {
                         let mut args: Vec<BasicMetadataValueEnum> = Vec::new();
                         for arg in call.args.iter() {
-                            let arg_val = self.jit_compile_expr(name, arg.as_ref(), index, elmt, elmt_index)?;
+                            let arg_val = self.jit_compile_expr(name, arg.as_ref(), index, elmt, expr_index)?;
                             args.push(BasicMetadataValueEnum::FloatValue(arg_val));
                         }
                         let ret_value = self.builder.build_call(function, args.as_slice(), name)
@@ -607,7 +613,7 @@ impl<'ctx> CodeGen<'ctx> {
                 
             },
             AstKind::CallArg(arg) => {
-                self.jit_compile_expr(name, &arg.expression, index, elmt, elmt_index)
+                self.jit_compile_expr(name, &arg.expression, index, elmt, expr_index)
             },
             AstKind::Number(value) => Ok(self.real_type.const_float(*value)),
             AstKind::IndexedName(iname) => {
@@ -618,15 +624,15 @@ impl<'ctx> CodeGen<'ctx> {
                     let mut no_transform = true;
                     let mut iname_index = Vec::new();
                     for (i, c) in iname.indices.iter().enumerate() {
-                        let pi = elmt.indices().iter().position(|x| x == c).unwrap();
+                        // find the position index of this index char in the tensor's index chars,
+                        // if it's not found then it must be a contraction index so is at the end
+                        let pi = elmt.indices().iter().position(|x| x == c).unwrap_or(elmt.indices().len());
                         iname_index.push(index[pi]);
                         no_transform = no_transform && pi == i;
                     }
-                    if no_transform && elmt.expr_layout().is_dense() {
-                        // no permutation and everything is dense, just return the pointer corresponding to elem_index
-                        elmt_index
-                    } else {
-                        // calculate the element index using iname_index and the shape of the tensor
+                    // calculate the element index using iname_index and the shape of the tensor
+                    // TODO: can we optimise this by using expr_index, and also including elmt_index?
+                    if iname_index.len() > 0 {
                         let mut iname_elmt_index = iname_index.last().unwrap().clone();
                         let mut stride = 1u64;
                         for i in (0..iname_index.len() - 1).rev() {
@@ -638,13 +644,17 @@ impl<'ctx> CodeGen<'ctx> {
                             iname_elmt_index = self.builder.build_int_add(iname_elmt_index, stride_mul_i, name);
                         }
                         Some(iname_elmt_index)
+                    } else {
+                        let zero = self.context.i64_type().const_int(0, false);
+                        Some(zero)
+
                     }
                 } else if layout.is_sparse() {
                     // must have come from jit_compile_sparse_block, so we can just use the elmt_index
-                    elmt_index
+                    expr_index
                 } else if layout.is_diagonal() {
                     // must have come from jit_compile_diagonal_block, so we can just use the elmt_index
-                    elmt_index
+                    expr_index
                 } else {
                     panic!("unexpected layout");
                 };
@@ -1477,9 +1487,9 @@ use crate::{ms_parser::parse_string, discretise::{DiscreteModel, Translation}, b
         dense_to_contiguous_sparse: "A_ij { (0, 0): 1, (1, 1): y = 2, (0, 1): 3 }" expect "y" = "Translation(Broadcast(2, 1), Contiguous(2, 3))",
         dense_to_sparse_sparse: "A_ij { (0, 0): 1, (1:4, 1): y = 2, (2, 2): 1, (4, 4): 3 }" expect "y" = "Translation(Broadcast(2, 3), Sparse[1, 2, 4])",
         dense_to_sparse_sparse2: "A_ij { (0, 0): 1, (1:4, 1): y = 2, (1, 2): 1, (4, 4): 3 }" expect "y" = "Translation(Broadcast(2, 3), Sparse[1, 3, 4])",
-        sparse_contraction: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 } b_i { 1, 2 } x_i { y = A_ij * b_i }" expect "y" = "Translation(SparseContraction(1, [0, 2], [2, 3]), Contiguous(0, 2))",
-        dense_contraction: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 2 } b_i { 1, 2 } x_i { y = A_ij * b_i }" expect "y" = "Translation(DenseContraction(1, 2), Contiguous(0, 2))",
-        diagonal_contraction: "A_ij { (0..2, 0..2): 1 } b_i { 1, 2 } x_i { y = A_ij * b_i }" expect "y" = "Translation(DiagonalContraction(1), Contiguous(0, 2))",
+        sparse_contraction: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 } b_i { 1, 2 } x_i { y = A_ij * b_j }" expect "y" = "Translation(SparseContraction(1, [0, 2], [2, 3]), Contiguous(0, 2))",
+        dense_contraction: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 2 } b_i { 1, 2 } x_i { y = A_ij * b_j }" expect "y" = "Translation(DenseContraction(1, 2), Contiguous(0, 2))",
+        diagonal_contraction: "A_ij { (0..2, 0..2): 1 } b_i { 1, 2 } x_i { y = A_ij * b_j }" expect "y" = "Translation(DiagonalContraction(1), Contiguous(0, 2))",
     }
 
     macro_rules! tensor_test {
@@ -1537,14 +1547,15 @@ use crate::{ms_parser::parse_string, discretise::{DiscreteModel, Translation}, b
         derived: "r_i {2, 3} k_i { 2 * r_i }" expect "k" array![4., 6.],
         concatenate: "r_i {2, 3} k_i { r_i, 2 * r_i }" expect "k" array![2., 3., 4., 6.],
         ones_matrix_dense: "I_ij { (0:2, 0:2): 1 }" expect "I" array![1., 1., 1., 1.],
+        dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" array![1., 2., 3., 4.],
         identity_matrix_diagonal: "I_ij { (0..2, 0..2): 1 }" expect "I" array![1., 1.],
         concatenate_diagonal: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" array![1., 1., 1., 1.],
         identity_matrix_sparse: "I_ij { (0, 0): 1, (1, 1): 2 }" expect "I" array![1., 2.],
         concatenate_sparse: "A_ij { (0, 0): 1, (1, 1): 2 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" array![1., 2., 1., 2.],
         sparse_rearrange: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 }" expect "A" array![1., 2., 3.],
-        sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" array![1., 7.],
-        diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" array![1., 6.],
-        dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_i }" expect "b" array![5., 11.],
+        sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" array![1., 7.],
+        diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" array![1., 6.],
+        dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" array![5., 11.],
     }
 
      #[test]

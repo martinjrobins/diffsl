@@ -1,6 +1,6 @@
 #[derive(Parser)]
 #[grammar = "ms_grammar.pest"] // relative to src
-pub(crate) struct MsParser;
+pub struct MsParser;
 
 use crate::ast::StringSpan;
 
@@ -420,3 +420,4 @@ mod tests {
         }
     }
 }
+

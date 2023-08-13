@@ -1,6 +1,6 @@
 #[derive(Parser)]
 #[grammar = "ds_grammar.pest"] // relative to src
-pub(crate) struct DsParser;
+pub struct DsParser;
 
 use crate::ast::StringSpan;
 

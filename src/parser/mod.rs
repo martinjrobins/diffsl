@@ -1,8 +1,20 @@
 pub mod ms_parser;
+use std::error::Error;
+
 pub use ms_parser::MsParser;
+
+pub fn parse_ds_string(text: &str) -> Result<ast::DsModel, Error<Rule>> {
+    ds_parser::parse_string(text)
+}
 
 pub mod ds_parser;
 pub use ds_parser::DsParser;
+
+pub fn parse_ms_string(text: &str) -> Result<ast::MsModel, Error<Rule>> {
+    ms_parser::parse_string(text)
+}
+
+use crate::ast;
 
 #[cfg(test)]
 mod tests {

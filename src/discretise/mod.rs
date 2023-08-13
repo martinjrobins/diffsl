@@ -2,11 +2,16 @@ pub mod discretise;
 pub use discretise::DiscreteModel;
 
 pub mod error;
+pub use error::{ValidationError, ValidationErrors};
 
 pub mod env;
+pub use env::Env;
+
 pub mod layout;
+pub use layout::{Layout, RcLayout};
+
 pub mod shape;
+pub use shape::Shape;
 
 pub mod tensor;
-pub use tensor::Tensor;
-pub use tensor::TensorBlock;
+pub use tensor::{Tensor, TensorBlock, Index};

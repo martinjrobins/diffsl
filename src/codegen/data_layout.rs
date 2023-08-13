@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::{layout::RcLayout, discretise::DiscreteModel, tensor::Tensor, translation::Translation};
+use crate::discretise::{RcLayout, DiscreteModel, Tensor};
+
+use super::Translation;
 
 
 

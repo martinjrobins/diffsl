@@ -1,5 +1,12 @@
+use inkwell::{execution_engine::JitFunction, passes::PassManager, OptimizationLevel};
+use ndarray::{Array1, s, Array2};
 use sundials_sys::{realtype, N_Vector, IDAGetNonlinSolvStats, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit, IDAGetConsistentIC, IDAGetReturnFlagName};
-use std::ffi::{c_void, CStr, c_int};
+use std::{ffi::{c_void, CStr, c_int}, io, collections::HashMap, iter::zip, ptr::null_mut};
+use anyhow::anyhow;
+
+use crate::discretise::{DiscreteModel, Layout};
+
+use super::{DataLayout, codegen::{ResidualFunc, U0Func, CalcOutFunc}, CodeGen};
 pub struct Options {
     atol: f64,
     rtol: f64,

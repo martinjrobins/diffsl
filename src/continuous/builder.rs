@@ -1,7 +1,6 @@
 use crate::ast;
 use crate::ast::Ast;
 use crate::ast::AstKind;
-use crate::ast::Call;
 use crate::ast::Model;
 use crate::ast::StringSpan;
 use pest::Span;
@@ -241,7 +240,7 @@ impl<'s> ModelInfo<'s> {
                 //  - the lhs is a call with a name equal to one of the variables,
                 //  - that variable has a dependent t,
                 //  - there is a number equal to the lower bound of time in the argument corresponding to time
-                if let AstKind::Call(Call { fn_name, args }) = &eqn.lhs.kind {
+                if let AstKind::Call(Ast::Call { fn_name, args }) = &eqn.lhs.kind {
                     if let Some(v_cell) = self.variables.get(fn_name) {
                         let v = v_cell.borrow();
                         if let Some(time_index) = v.time_index {
@@ -639,7 +638,7 @@ impl<'s> ModelInfo<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{builder::ModelInfo, ms_parser::parse_string};
+    use crate::{continuous::ModelInfo, parser::parse_ms_string};
 
     #[test]
     fn simple_circuit() {
@@ -652,7 +651,7 @@ mod tests {
             use resistor(v = inputVoltage)
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.variables.len(), 3);
         assert!(model_info.variables.get("i").is_some());
@@ -668,7 +667,7 @@ mod tests {
             y(0) = 1.0
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.variables.len(), 4);
         assert_eq!(model_info.errors.len(), 0);
@@ -681,7 +680,7 @@ mod tests {
             y(1) = 1.0
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert!(model_info.errors.len() > 0);
         assert!(model_info.errors.iter().any(|o| o.as_error_message(text).contains("Did you mean to set an initial condition")));
@@ -693,7 +692,7 @@ mod tests {
             dot(y) = r * y * (1 - y / k)
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.variables.len(), 4);
         assert_eq!(model_info.stmts.len(), 0);
@@ -714,7 +713,7 @@ mod tests {
             use resistorr(v = inputVoltage)
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.variables.len(), 3);
         assert_eq!(model_info.errors.len(), 2);
@@ -732,7 +731,7 @@ mod tests {
             use resistor(v = inputVoltage)
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.variables.len(), 3);
         assert_eq!(model_info.errors.len(), 0);
@@ -744,7 +743,7 @@ mod tests {
             v = i * doesnotexist
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("resistor", &models).unwrap();
         assert_eq!(model_info.variables.len(), 4);
         assert_eq!(model_info.errors.len(), 2);
@@ -759,7 +758,7 @@ mod tests {
             i(0) = 1
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("resistor", &models).unwrap();
         assert_eq!(model_info.errors.len(), 1);
         assert!(model_info.errors[0].text.contains("overdetermined initial condition") == true);

@@ -1,3 +1,9 @@
+use std::collections::HashMap;
+
+use crate::ast::{StringSpan, Ast, self};
+
+use super::{layout::RcLayout, ValidationErrors, Layout, Tensor, TensorBlock, ValidationError};
+
 struct EnvVar {
     layout: RcLayout,
     is_time_dependent: bool,
@@ -6,24 +12,24 @@ struct EnvVar {
 }
 
 impl EnvVar {
-    fn is_time_dependent(&self) -> bool {
+    pub fn is_time_dependent(&self) -> bool {
         self.is_time_dependent
     }
 
-    fn is_state_dependent(&self) -> bool {
+    pub fn is_state_dependent(&self) -> bool {
         self.is_state_dependent
     }
 
-    fn is_algebraic(&self) -> bool {
+    pub fn is_algebraic(&self) -> bool {
         self.is_algebraic
     }
 
-    fn layout(&self) -> &Layout {
+    pub fn layout(&self) -> &Layout {
         self.layout.as_ref()
     }
 }
 
-struct Env {
+pub struct Env {
     current_span: Option<StringSpan>,
     errs: ValidationErrors,
     vars: HashMap<String, EnvVar>,
@@ -48,20 +54,20 @@ impl Env {
         }
     }
     pub fn is_tensor_time_dependent(&self, tensor: &Tensor) -> bool {
-        if tensor.name == "u" || tensor.name == "dudt" { return true };
-        tensor.elmts.iter().any(|block| {
+        if tensor.name() == "u" || tensor.name() == "dudt" { return true };
+        tensor.elmts().iter().any(|block| {
             block
-                .expr
+                .expr()
                 .get_dependents()
                 .iter()
                 .any(|&dep| dep == "t" || self.vars[dep].is_time_dependent())
         })
     }
     pub fn is_tensor_state_dependent(&self, tensor: &Tensor) -> bool {
-        if tensor.name == "u" || tensor.name == "dudt" { return true };
-        tensor.elmts.iter().any(|block| {
+        if tensor.name() == "u" || tensor.name() == "dudt" { return true };
+        tensor.elmts().iter().any(|block| {
             block
-                .expr
+                .expr()
                 .get_dependents()
                 .iter()
                 .any(|&dep| dep == "u" || self.vars[dep].is_state_dependent())
@@ -93,9 +99,10 @@ impl Env {
     }
 
 
-    fn get(&self, name: &str) -> Option<&EnvVar> {
+    pub fn get(&self, name: &str) -> Option<&EnvVar> {
         self.vars.get(name)
     }
+
     fn get_layout_binary_op<'s>(
         &mut self,
         left: &Ast<'s>,
@@ -216,7 +223,7 @@ impl Env {
     
 
     // returns a tuple of (expr_layout, elmt_layout) giving the layouts of the expression and the tensor element.)
-    fn get_layout_tensor_elmt(&mut self, elmt: &TensorElmt, indices: &Vec<char>) -> Option<(Layout, Layout)> {
+    pub fn get_layout_tensor_elmt(&mut self, elmt: &TensorElmt, indices: &Vec<char>) -> Option<(Layout, Layout)> {
         let expr_indices = elmt.expr.get_indices();
         // get any indices from the expression that do not appear in 'indices' and add them to 'indices' to a new vector
         let mut new_indices = indices.clone();
@@ -379,11 +386,11 @@ impl Env {
         Some((expr_layout, elmt_layout))
     }
 
-    fn current_span(&self) -> Option<StringSpan> {
+    pub fn current_span(&self) -> Option<StringSpan> {
         self.current_span
     }
 
-    fn set_current_span(&mut self, current_span: Option<StringSpan>) {
+    pub fn set_current_span(&mut self, current_span: Option<StringSpan>) {
         self.current_span = current_span;
     }
 }

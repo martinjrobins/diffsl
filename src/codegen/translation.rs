@@ -1,5 +1,9 @@
 use std::fmt;
 
+use ndarray::s;
+
+use crate::discretise::{Layout, Index, RcLayout};
+
 
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,7 +84,7 @@ impl TranslationFrom {
             assert!(contract_start_indices.len() == target.nnz());
             Self::SparseContraction{ contract_by, contract_start_indices, contract_end_indices }
         } else if is_broadcast {
-            if target.n_dense_axes >= broadcast_by {
+            if target.n_dense_axes() >= broadcast_by {
                 let broadcast_len = target.shape().slice(s![min_rank_for_broadcast..]).iter().product();
                 Self::Broadcast{ broadcast_by, broadcast_len }
             } else if target.is_diagonal() {
@@ -202,6 +206,9 @@ impl Translation {
 
 #[cfg(test)]
 mod tests {
+    use crate::discretise::DiscreteModel;
+    use crate::parser::parse_ds_string;
+    use crate::codegen::Translation;
 
     macro_rules! translation_test {
         ($($name:ident: $text:literal expect $blk_name:literal = $expected_value:expr,)*) => {
@@ -227,7 +234,7 @@ mod tests {
                         y,
                     }}
                 ", text);
-                let model = ds_parser::parse_string(full_text.as_str()).unwrap();
+                let model = parse_ds_string(full_text.as_str()).unwrap();
                 let discrete_model = match DiscreteModel::build("$name", &model) {
                     Ok(model) => {
                         model

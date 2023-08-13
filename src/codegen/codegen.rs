@@ -20,11 +20,11 @@ use crate::codegen::{Translation, TranslationFrom, TranslationTo, DataLayout};
 ///
 /// Calling this is innately `unsafe` because there's no guarantee it doesn't
 /// do `unsafe` operations internally.
-type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32, rr: *mut realtype);
-type U0Func = unsafe extern "C" fn(data: *mut realtype, indices: *const i32, u: *mut realtype, up: *mut realtype);
-type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32);
+pub type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32, rr: *mut realtype);
+pub type U0Func = unsafe extern "C" fn(data: *mut realtype, indices: *const i32, u: *mut realtype, up: *mut realtype);
+pub type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32);
 
-struct CodeGen<'ctx> {
+pub struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
@@ -701,7 +701,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    fn jit<T>(&self, function: FunctionValue) -> Result<JitFunction<'ctx, T>> 
+    pub fn jit<T>(&self, function: FunctionValue) -> Result<JitFunction<'ctx, T>> 
     where T: UnsafeFunctionPointer
     {
         let name = function.get_name().to_str().unwrap();
@@ -715,7 +715,7 @@ impl<'ctx> CodeGen<'ctx> {
         compiled_fn
     }
 
-    fn compile_set_u0<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_set_u0<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
@@ -760,7 +760,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    fn compile_calc_out<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_calc_out<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
@@ -800,7 +800,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    fn compile_residual<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_residual<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
@@ -859,8 +859,10 @@ impl<'ctx> CodeGen<'ctx> {
 mod tests {
 use approx::assert_relative_eq;
 use ndarray::{Array, array, s};
-
-use crate::{ms_parser::parse_string, discretise::DiscreteModel, translation::Translation, builder::ModelInfo, sundials::{Sundials, Options}, ds_parser};
+use crate::continuous::ModelInfo;
+use crate::parser::{parse_ds_string, parse_ms_string};
+use crate::codegen::{Options, Sundials};
+use crate::discretise::DiscreteModel;
 
     macro_rules! tensor_test {
         ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
@@ -886,7 +888,7 @@ use crate::{ms_parser::parse_string, discretise::DiscreteModel, translation::Tra
                         y,
                     }}
                 ", text);
-                let model = ds_parser::parse_string(full_text.as_str()).unwrap();
+                let model = parse_ds_string(full_text.as_str()).unwrap();
                 let options = Options::new();
                 let context = inkwell::context::Context::create();
                 let discrete_model = match DiscreteModel::build("$name", &model) {
@@ -938,7 +940,7 @@ use crate::{ms_parser::parse_string, discretise::DiscreteModel, translation::Tra
             z = 2 * y
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
         let discrete = DiscreteModel::from(&model_info);

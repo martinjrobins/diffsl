@@ -19,22 +19,19 @@ use ndarray::Array1;
 use crate::ast;
 use crate::ast::Ast;
 use crate::ast::AstKind;
-use crate::ast::Call;
 use crate::ast::Indice;
-use crate::ast::TensorElmt;
 use crate::ast::StringSpan;
-use crate::builder::ModelInfo;
-use crate::builder::Variable;
-use crate::data_layout::DataLayout;
-use crate::error::ValidationError;
-use crate::error::ValidationErrors;
-use crate::layout::Layout;
-use crate::layout::RcLayout;
-use crate::tensor::Index;
-use crate::tensor::Tensor;
-use crate::tensor::TensorBlock;
-use crate::translation::Translation;
-use crate::env::Env;
+use crate::continuous::ModelInfo;
+use crate::continuous::Variable;
+
+use super::Env;
+use super::Index;
+use super::Layout;
+use super::RcLayout;
+use super::Tensor;
+use super::TensorBlock;
+use super::ValidationError;
+use super::ValidationErrors;
 
 
 #[derive(Debug)]
@@ -99,14 +96,6 @@ impl<'s> DiscreteModel<'s> {
         }
     }
 
-    // define data layout for storage in a single array of arrays
-    // need 1 array for each dense tensor
-    // need 2 arrays (data + layout) for each sparse tensor
-    // don't need anything for out
-    pub fn create_data_layout<'t>(&'t self) -> DataLayout {
-        DataLayout::new(self)
-    }
-
     // residual = F(t, u, u_dot) - G(t, u)
     // return a tensor equal to the residual
     pub fn residual(&self) -> Tensor<'s> {
@@ -145,9 +134,9 @@ impl<'s> DiscreteModel<'s> {
         let rank = array.indices.len();
         let mut elmts = Vec::new();
         let mut start = Index::zeros(rank);
-        let nerrs = env.errs.len();
-        if rank == 0 && array.elmts.len() > 1 {
-            env.errs.push(ValidationError::new(
+        let nerrs = env.errs().len();
+        if rank == 0 && array.elmts().len() > 1 {
+            env.errs().push(ValidationError::new(
                 format!("cannot have more than one element in a scalar"),
                 array.elmts[1].span,
             ));
@@ -158,7 +147,7 @@ impl<'s> DiscreteModel<'s> {
                     if let Some((expr_layout, elmt_layout)) = env.get_layout_tensor_elmt(&te, &array.indices) {
                         if rank == 0 && elmt_layout.rank() == 1 {
                             if elmt_layout.shape()[0] > 1 {
-                                env.errs.push(ValidationError::new(
+                                env.errs().push(ValidationError::new(
                                     format!("cannot assign an expression with rank > 1 to a scalar, rhs has shape {}", elmt_layout.shape()),
                                     a.span,
                                 ));
@@ -195,7 +184,7 @@ impl<'s> DiscreteModel<'s> {
         }
         // create tensor 
         if elmts.is_empty() {
-            env.errs.push(ValidationError::new(
+            env.errs().push(ValidationError::new(
                 format!("tensor {} has no elements", array.name),
                 env.current_span()
             ));
@@ -205,8 +194,8 @@ impl<'s> DiscreteModel<'s> {
                 Ok(layout) => {
                     let tensor = Tensor::new(array.name, elmts, RcLayout::new(layout), array.indices.clone());
                     //check that the number of indices matches the rank
-                    assert_eq!(tensor.rank(), tensor.indices.len());
-                    if nerrs == env.errs.len() {
+                    assert_eq!(tensor.rank(), tensor.indices().len());
+                    if nerrs == env.errs().len() {
                         env.push_var(&tensor);
                         for block in tensor.elmts().iter() {
                             if let Some(_name) = block.name() {
@@ -217,7 +206,7 @@ impl<'s> DiscreteModel<'s> {
                     Some(tensor)
                 },
                 Err(e) => {
-                    env.errs.push(ValidationError::new(
+                    env.errs().push(ValidationError::new(
                         format!("{}", e),
                         env.current_span()
                     ));
@@ -231,14 +220,14 @@ impl<'s> DiscreteModel<'s> {
     fn check_match(tensor1: &Tensor, tensor2: &Tensor, span: Option<StringSpan>, env: &mut Env) {
         // check shapes
         if tensor1.shape() != tensor2.shape() {
-            env.errs.push(ValidationError::new(
+            env.errs().push(ValidationError::new(
                 format!(
                     "{} and {} must have the same shape, but {} has shape {} and {} has shape {}",
-                    tensor1.name,
-                    tensor2.name,
-                    tensor1.name,
+                    tensor1.name(),
+                    tensor2.name(),
+                    tensor1.name(),
                     tensor1.shape(),
-                    tensor2.name,
+                    tensor2.name(),
                     tensor2.shape()
                 ),
                 span,
@@ -257,7 +246,7 @@ impl<'s> DiscreteModel<'s> {
         for tensor_ast in model.tensors.iter() {
             env.set_current_span(tensor_ast.span);
             match tensor_ast.kind.as_array() {
-                None => env.errs.push(ValidationError::new(
+                None => env.errs().push(ValidationError::new(
                     "not an array".to_string(),
                     tensor_ast.span,
                 )),
@@ -265,7 +254,7 @@ impl<'s> DiscreteModel<'s> {
                     let span = tensor_ast.span;
                     // if env has a tensor with the same name, error
                     if env.get(tensor.name).is_some() {
-                        env.errs.push(ValidationError::new(
+                        env.errs().push(ValidationError::new(
                             format!("{} is already defined", tensor.name),
                             span,
                         ));
@@ -277,7 +266,7 @@ impl<'s> DiscreteModel<'s> {
                                 ret.state = built;
                             }
                             if ret.state.rank() > 1 {
-                                env.errs.push(ValidationError::new(
+                                env.errs().push(ValidationError::new(
                                     "u must be a scalar or 1D vector".to_string(),
                                     span,
                                 ));
@@ -289,7 +278,7 @@ impl<'s> DiscreteModel<'s> {
                                 ret.state_dot = built;
                             }
                             if ret.state.rank() > 1 {
-                                env.errs.push(ValidationError::new(
+                                env.errs().push(ValidationError::new(
                                     "dudt must be a scalar or 1D vector".to_string(),
                                     span,
                                 ));
@@ -311,7 +300,7 @@ impl<'s> DiscreteModel<'s> {
                             read_out = true;
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 if built.rank() > 1 {
-                                    env.errs.push(ValidationError::new(
+                                    env.errs().push(ValidationError::new(
                                         format!("output shape must be a scalar or 1D vector"),
                                         tensor_ast.span,
                                     ));
@@ -322,14 +311,14 @@ impl<'s> DiscreteModel<'s> {
                         _name => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 let is_input = model.inputs.iter().any(|name| *name == _name);
-                                if let Some(env_entry) = env.get(built.name) {
+                                if let Some(env_entry) = env.get(built.name()) {
                                     let dependent_on_state = env_entry.is_state_dependent();
                                     let dependent_on_time = env_entry.is_time_dependent();
                                     if is_input {
                                         // inputs must be constants
                                         if dependent_on_time || dependent_on_state {
-                                            env.errs.push(ValidationError::new(
-                                                format!("input {} must be constant", built.name),
+                                            env.errs().push(ValidationError::new(
+                                                format!("input {} must be constant", built.name()),
                                                 tensor_ast.span,
                                             ));
                                         }
@@ -372,7 +361,7 @@ impl<'s> DiscreteModel<'s> {
         // check that we found all input parameters
         for name in model.inputs.iter() {
             if env.get(name).is_none() {
-                env.errs.push(ValidationError::new(
+                env.errs().push(ValidationError::new(
                     format!("input {} is not defined", name),
                     span_all,
                 ));
@@ -381,31 +370,31 @@ impl<'s> DiscreteModel<'s> {
 
         // check that we've read all the required arrays
         if !read_state {
-            env.errs.push(ValidationError::new(
+            env.errs().push(ValidationError::new(
                 "missing 'u' array".to_string(),
                 span_all,
             ));
         }
         if !read_dot_state {
-            env.errs.push(ValidationError::new(
+            env.errs().push(ValidationError::new(
                 "missing 'dudt' array".to_string(),
                 span_all,
             ));
         }
         if span_f.is_none() {
-            env.errs.push(ValidationError::new(
+            env.errs().push(ValidationError::new(
                 "missing 'F' array".to_string(),
                 span_all,
             ));
         }
         if span_g.is_none() {
-            env.errs.push(ValidationError::new(
+            env.errs().push(ValidationError::new(
                 "missing 'G' array".to_string(),
                 span_all,
             ));
         }
         if !read_out {
-            env.errs.push(ValidationError::new(
+            env.errs().push(ValidationError::new(
                 "missing 'out' array".to_string(),
                 span_all,
             ));
@@ -417,10 +406,10 @@ impl<'s> DiscreteModel<'s> {
             Self::check_match(&ret.rhs, &ret.state, span, &mut env);
         }
 
-        if env.errs.is_empty() {
+        if env.errs().is_empty() {
             Ok(ret)
         } else {
-            Err(env.errs)
+            Err(env.errs())
         }
     }
     
@@ -537,7 +526,7 @@ impl<'s> DiscreteModel<'s> {
         // fix out start indices
         let mut curr_index = 0;
         for elmt in out_array_elmts.iter_mut() {
-            elmt.start[0] = i64::try_from(curr_index).unwrap();
+            elmt.start()[0] = i64::try_from(curr_index).unwrap();
             curr_index += elmt.layout().shape[0];
         }
         let out_array = Tensor::new_no_layout("out", out_array_elmts, vec!['i']);
@@ -549,8 +538,8 @@ impl<'s> DiscreteModel<'s> {
         for state in states.iter() {
             let mut init_state = DiscreteModel::state_to_u0(state);
             let mut init_dudt = DiscreteModel::state_to_dudt0(state);
-            init_state.start[0] = i64::try_from(curr_index).unwrap();
-            init_dudt.start[0] = i64::try_from(curr_index).unwrap();
+            init_state.start()[0] = i64::try_from(curr_index).unwrap();
+            init_dudt.start()[0] = i64::try_from(curr_index).unwrap();
             curr_index = curr_index + init_state.layout().shape[0];
             init_dudts.push(init_dudt);
             init_states.push(init_state);
@@ -566,8 +555,8 @@ impl<'s> DiscreteModel<'s> {
         let mut is_algebraic = Vec::new();
         for state in states.iter() {
             let mut elmt = DiscreteModel::state_to_elmt(state);
-            elmt.0.start[0] = i64::try_from(curr_index).unwrap();
-            elmt.1.start[0] = i64::try_from(curr_index).unwrap();
+            elmt.0.start()[0] = i64::try_from(curr_index).unwrap();
+            elmt.1.start()[0] = i64::try_from(curr_index).unwrap();
             curr_index = curr_index + elmt.0.layout().shape[0];
             f_elmts.push(elmt.0);
             g_elmts.push(elmt.1);
@@ -655,9 +644,8 @@ impl<'s> DiscreteModel<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        builder::ModelInfo, discretise::DiscreteModel, ds_parser, ms_parser::parse_string,
-    };
+    use crate::{parser::{parse_ms_string, parse_ds_string}, continuous::ModelInfo, discretise::DiscreteModel};
+
 
     #[test]
     fn test_circuit_model() {
@@ -671,20 +659,20 @@ mod tests {
             let doubleI = 2 * i
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
         let discrete = DiscreteModel::from(&model_info);
         assert_eq!(discrete.time_indep_defns.len(), 0);
         assert_eq!(discrete.time_dep_defns.len(), 1);
-        assert_eq!(discrete.time_dep_defns[0].name, "inputVoltage");
+        assert_eq!(discrete.time_dep_defns[0].name(), "inputVoltage");
         assert_eq!(discrete.state_dep_defns.len(), 1);
-        assert_eq!(discrete.state_dep_defns[0].name, "doubleI");
-        assert_eq!(discrete.lhs.name, "F");
-        assert_eq!(discrete.rhs.name, "G");
+        assert_eq!(discrete.state_dep_defns[0].name(), "doubleI");
+        assert_eq!(discrete.lhs.name(), "F");
+        assert_eq!(discrete.rhs.name(), "G");
         assert_eq!(discrete.state.shape()[0], 1);
         assert_eq!(discrete.state.elmts().len(), 1);
-        assert_eq!(discrete.out.elmts.len(), 3);
+        assert_eq!(discrete.out.elmts().len(), 3);
         println!("{}", discrete);
     }
     #[test]
@@ -696,13 +684,13 @@ mod tests {
             z = 2 * y
         }
         ";
-        let models = parse_string(text).unwrap();
+        let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
         let discrete = DiscreteModel::from(&model_info);
-        assert_eq!(discrete.out.elmts[0].expr.to_string(), "y");
-        assert_eq!(discrete.out.elmts[1].expr.to_string(), "t");
-        assert_eq!(discrete.out.elmts[2].expr.to_string(), "z");
+        assert_eq!(discrete.out.elmts()[0].expr().to_string(), "y");
+        assert_eq!(discrete.out.elmts()[1].expr().to_string(), "t");
+        assert_eq!(discrete.out.elmts()[2].expr().to_string(), "z");
         println!("{}", discrete);
     }
 
@@ -717,7 +705,7 @@ mod tests {
             #[test]
             fn $name() {
                 let model_text = $text;
-                let model = ds_parser::parse_string(model_text).unwrap();
+                let model = parse_ds_string(model_text).unwrap();
                 match DiscreteModel::build("$name", &model) {
                     Ok(model) => {
                         if (count!($($error)*) != 0) {
@@ -881,7 +869,7 @@ mod tests {
                         y,
                     }}
                 ", tensor_text);
-                let model = ds_parser::parse_string(model_text.as_str()).unwrap();
+                let model = parse_ds_string(model_text.as_str()).unwrap();
                 match DiscreteModel::build("$name", &model) {
                     Ok(model) => {
                         if (count!($($error)*) != 0) {
@@ -929,10 +917,10 @@ mod tests {
                         y,
                     }}
                 ", tensor_text);
-                let model = ds_parser::parse_string(model_text.as_str()).unwrap();
+                let model = parse_ds_string(model_text.as_str()).unwrap();
                 match DiscreteModel::build("$name", &model) {
                     Ok(model) => {
-                        let tensor = model.time_indep_defns.iter().find(|t| t.name == $tensor_name).unwrap();
+                        let tensor = model.time_indep_defns.iter().find(|t| t.name() == $tensor_name).unwrap();
                         let tensor_string = format!("{}", tensor).chars().filter(|c| !c.is_whitespace()).collect::<String>();
                         let tensor_check_string = $tensor_string.chars().filter(|c| !c.is_whitespace()).collect::<String>();
                         assert_eq!(tensor_string, tensor_check_string);

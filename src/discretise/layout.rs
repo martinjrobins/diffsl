@@ -1,3 +1,7 @@
+use std::{ops::Deref, hash::Hasher, hash::Hash, fmt};
+
+use super::{shape::Shape, tensor::Index};
+
 
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,7 +165,7 @@ impl Layout {
 
 
     // permute the axes of the layout and return a new layout
-    fn permute(&self, permutation: &[usize]) -> Result<Layout> {
+    pub fn permute(&self, permutation: &[usize]) -> Result<Layout> {
         // check that we have the right number of permutation indices
         if permutation.len() > self.rank() {
             return Err(anyhow!("too many permutation indices"));
@@ -220,7 +224,7 @@ impl Layout {
     // create a new layout by broadcasting a list of layouts
     // typically different types of layouts cannot be broadcast together, but for multiplies we can broadcast diagonal and dense layouts
     // and sparse and dense layouts
-    fn broadcast(mut layouts: Vec<Layout>, is_multiply: bool) -> Result<Layout> {
+    pub fn broadcast(mut layouts: Vec<Layout>, is_multiply: bool) -> Result<Layout> {
         // the shapes of the layouts must be broadcastable
         let shapes = layouts.iter().map(|x| &x.shape).collect::<Vec<_>>();
         let shape = match broadcast_shapes(&shapes[..]) {
@@ -321,7 +325,7 @@ impl Layout {
         self.rank() == 0
     }
     
-    fn new_empty(rank: usize) -> Self {
+    pub fn new_empty(rank: usize) -> Self {
         Layout {
             indices: vec![],
             shape: Shape::zeros(rank),
@@ -330,7 +334,7 @@ impl Layout {
         }
     }
 
-    fn new_scalar() -> Self {
+    pub fn new_scalar() -> Self {
         Layout {
             indices: vec![],
             shape: Shape::zeros(0),
@@ -339,7 +343,7 @@ impl Layout {
         }
     }
 
-    fn new_dense(shape: Shape) -> Self {
+    pub fn new_dense(shape: Shape) -> Self {
         let n_dense_axes = shape.len();
         Layout {
             indices: vec![],
@@ -349,7 +353,7 @@ impl Layout {
         }
     }
     
-    fn new_diagonal(shape: Shape) -> Self {
+    pub fn new_diagonal(shape: Shape) -> Self {
         Layout {
             indices: vec![],
             shape,
@@ -603,7 +607,7 @@ impl Layout {
     }
 
     // returns the index in the nnz array corresponding to the given index
-    fn find_nnz_index(&self, index: &Index) -> Option<usize> {
+    pub fn find_nnz_index(&self, index: &Index) -> Option<usize> {
         match self.kind {
             LayoutKind::Sparse => self.indices.iter().position(|x| x == index),
             LayoutKind::Dense =>  {
@@ -660,10 +664,10 @@ impl Deref for RcLayout {
     }
 }
 impl RcLayout {
-    fn new(layout: Layout) -> Self {
+    pub fn new(layout: Layout) -> Self {
         Self(Rc::new(layout))
     }
-    fn as_ref(&self) -> &Layout {
+    pub fn as_ref(&self) -> &Layout {
         &self.0
     }
 }

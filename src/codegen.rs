@@ -235,7 +235,7 @@ impl<'ctx> CodeGen<'ctx> {
 
     // for dense blocks we can loop through the nested loops to calculate the index, then we compile the expression passing in this index
     fn jit_compile_dense_block(&mut self, name: &str, elmt: &TensorBlock, translation: &Translation) -> Result<()> {
-        let int_type = self.context.i64_type();
+        let int_type = self.context.i32_type();
         
         let mut preblock = self.builder.get_insert_block().unwrap();
         let expr_rank = elmt.expr_layout().rank();
@@ -329,10 +329,10 @@ impl<'ctx> CodeGen<'ctx> {
                 panic!("expected sparse contraction")
             }
         }
-        let int_type = self.context.i64_type();
+        let int_type = self.context.i32_type();
         
         let preblock = self.builder.get_insert_block().unwrap();
-        let layout_index = self.layout.get_layout_index(elmt.layout()).unwrap();
+        let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
         let translation_index = self.layout.get_translation_index(elmt.expr_layout(), elmt.layout()).unwrap();
         let translation_index = translation_index + translation.get_from_index_in_data_layout();
 
@@ -367,40 +367,45 @@ impl<'ctx> CodeGen<'ctx> {
         let end_ptr = unsafe { self.builder.build_gep(*self.get_param("indices"), &[end_index], "end_index_ptr") };
         let end_contract = self.builder.build_load(end_ptr, "end").into_int_value();
 
+        // initialise the contract sum
+        self.builder.build_store(contract_sum_ptr, self.real_type.const_float(0.0));
+
         // loop through each element in the contraction
-        let contract_block = self.context.append_basic_block(self.fn_value(), name);
+        let contract_block = self.context.append_basic_block(self.fn_value(), format!("{}_contract", name).as_str());
         self.builder.build_unconditional_branch(contract_block);
         self.builder.position_at_end(contract_block);
 
-        self.builder.build_store(contract_sum_ptr, self.real_type.const_float(0.0));
-
-        let elmt_index_phi = self.builder.build_phi(int_type, "j");
-        elmt_index_phi.add_incoming(&[(&start_contract, block)]);
+        let expr_index_phi = self.builder.build_phi(int_type, "j");
+        expr_index_phi.add_incoming(&[(&start_contract, block)]);
 
         // loop body - load index from layout
-        let elmt_index = elmt_index_phi.as_basic_value().into_int_value();
+        let expr_index = expr_index_phi.as_basic_value().into_int_value();
+        let elmt_index_mult_rank = self.builder.build_int_mul(expr_index, int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false), name);
         let indices_int: Vec<IntValue> = (0..elmt.expr_layout().rank()).map(|i| {
             let layout_index_plus_offset = int_type.const_int((layout_index + i).try_into().unwrap(), false);
-            let curr_index = self.builder.build_int_add(elmt_index, layout_index_plus_offset, name);
+            let curr_index = self.builder.build_int_add(elmt_index_mult_rank, layout_index_plus_offset, name);
             let ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("indices"), &[curr_index], name) };
             self.builder.build_load(ptr, name).into_int_value()
         }).collect();
         
         // loop body - eval expression and increment sum
-        let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
+        let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(expr_index))?;
         let contract_sum_value = self.builder.build_load(contract_sum_ptr, "contract_sum").into_float_value();
-        let contract_sum_value = self.builder.build_float_add(contract_sum_value, float_value, "contract_sum");
-        self.builder.build_store(contract_sum_ptr, contract_sum_value);
+        let new_contract_sum_value = self.builder.build_float_add(contract_sum_value, float_value, "new_contract_sum");
+        self.builder.build_store(contract_sum_ptr, new_contract_sum_value);
 
         // increment contract loop index
-        let next_elmt_index = self.builder.build_int_add(elmt_index, int_type.const_int(1, false), name);
-        elmt_index_phi.add_incoming(&[(&next_elmt_index, contract_block)]);
+        let next_elmt_index = self.builder.build_int_add(expr_index, int_type.const_int(1, false), name);
+        expr_index_phi.add_incoming(&[(&next_elmt_index, contract_block)]);
 
         // contract loop condition
         let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_elmt_index, end_contract, name);
         let post_contract_block = self.context.append_basic_block(self.fn_value(), name);
         self.builder.build_conditional_branch(loop_while, contract_block, post_contract_block);
         self.builder.position_at_end(post_contract_block);
+
+        // store the result
+        self.jit_compile_store(name, elmt, contract_index.as_basic_value().into_int_value(), new_contract_sum_value, translation)?;
 
         // increment outer loop index
         let next_contract_index = self.builder.build_int_add(contract_index.as_basic_value().into_int_value(), int_type.const_int(1, false), name);
@@ -410,6 +415,7 @@ impl<'ctx> CodeGen<'ctx> {
         let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_contract_index, final_contract_index, name);
         let post_block = self.context.append_basic_block(self.fn_value(), name);
         self.builder.build_conditional_branch(loop_while, block, post_block);
+        self.builder.position_at_end(post_block);
 
         Ok(())
     }
@@ -418,11 +424,10 @@ impl<'ctx> CodeGen<'ctx> {
     // TODO: havn't implemented contractions yet
     fn jit_compile_sparse_block(&mut self, name: &str, elmt: &TensorBlock, translation: &Translation) -> Result<()> {
 
-        let int_type = self.context.i64_type();
+        let int_type = self.context.i32_type();
         
         let preblock = self.builder.get_insert_block().unwrap();
         let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
-
         // loop through the non-zero elements
         let mut block = self.context.append_basic_block(self.fn_value(), name);
         self.builder.build_unconditional_branch(block);
@@ -435,9 +440,10 @@ impl<'ctx> CodeGen<'ctx> {
         
         // loop body - load index from layout
         let elmt_index = curr_index.as_basic_value().into_int_value();
+        let elmt_index_mult_rank = self.builder.build_int_mul(elmt_index, int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false), name);
         let indices_int: Vec<IntValue> = (0..elmt.expr_layout().rank()).map(|i| {
             let layout_index_plus_offset = int_type.const_int((layout_index + i).try_into().unwrap(), false);
-            let curr_index = self.builder.build_int_add(elmt_index, layout_index_plus_offset, name);
+            let curr_index = self.builder.build_int_add(elmt_index_mult_rank, layout_index_plus_offset, name);
             let ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("indices"), &[curr_index], name) };
             self.builder.build_load(ptr, name).into_int_value()
         }).collect();
@@ -463,7 +469,7 @@ impl<'ctx> CodeGen<'ctx> {
     
     // for diagonal blocks we can loop through the diagonal elements and the index is just the same for each element, then we compile the expression passing in this index
     fn jit_compile_diagonal_block(&mut self, name: &str, elmt: &TensorBlock, translation: &Translation) -> Result<()> {
-        let int_type = self.context.i64_type();
+        let int_type = self.context.i32_type();
         
         let preblock = self.builder.get_insert_block().unwrap();
 
@@ -504,7 +510,7 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn jit_compile_broadcast_and_store(&mut self, name: &str, elmt: &TensorBlock, float_value: FloatValue<'ctx>, expr_index: IntValue<'ctx>, translation: &Translation, pre_block: BasicBlock<'ctx>) -> Result<BasicBlock<'ctx>> {
-        let int_type = self.context.i64_type();
+        let int_type = self.context.i32_type();
         let one = int_type.const_int(1, false);
         let zero = int_type.const_int(0, false);
         match translation.source {
@@ -551,7 +557,7 @@ impl<'ctx> CodeGen<'ctx> {
 
 
     fn jit_compile_store(&mut self, name: &str, elmt: &TensorBlock, store_index: IntValue<'ctx>, float_value: FloatValue<'ctx>, translation: &Translation) -> Result<()> {
-        let int_type = self.context.i64_type();
+        let int_type = self.context.i32_type();
         let rank = elmt.layout().rank();
         let res_index = match &translation.target {
             TranslationTo::Contiguous { start, end: _ } => {
@@ -639,13 +645,13 @@ impl<'ctx> CodeGen<'ctx> {
                             let iname_i = iname_index[i];
                             let shapei: u64 = layout.shape()[i + 1].try_into().unwrap();
                             stride *= shapei;
-                            let stride_intval = self.context.i64_type().const_int(stride, false);
+                            let stride_intval = self.context.i32_type().const_int(stride, false);
                             let stride_mul_i = self.builder.build_int_mul(stride_intval, iname_i, name);
                             iname_elmt_index = self.builder.build_int_add(iname_elmt_index, stride_mul_i, name);
                         }
                         Some(iname_elmt_index)
                     } else {
-                        let zero = self.context.i64_type().const_int(0, false);
+                        let zero = self.context.i32_type().const_int(0, false);
                         Some(zero)
 
                     }
@@ -1555,7 +1561,8 @@ use crate::{ms_parser::parse_string, discretise::{DiscreteModel, Translation}, b
         identity_matrix_sparse: "I_ij { (0, 0): 1, (1, 1): 2 }" expect "I" array![1., 2.],
         concatenate_sparse: "A_ij { (0, 0): 1, (1, 1): 2 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" array![1., 2., 1., 2.],
         sparse_rearrange: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 }" expect "A" array![1., 3., 2.],
-        sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" array![1., 7.],
+        sparse_expression: "A_ij { (0, 0): 1, (0, 1): 2, (1, 1): 3 } B_ij { 2 * A_ij }" expect "B" array![2., 4., 6.],
+        sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" array![1., 8.],
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" array![1., 6.],
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" array![5., 11.],
     }

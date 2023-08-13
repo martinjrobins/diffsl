@@ -2,11 +2,21 @@ extern crate pest;
 #[macro_use]
 extern crate pest_derive;
 
-pub mod ms_parser;
-pub mod ds_parser;
+pub mod parser;
+pub mod continuous;
+pub mod discrete;
+pub mod codegen;
+
 pub mod ast;
 pub mod builder;
 pub mod discretise;
+pub mod translation;
+pub mod layout;
+pub mod tensor;
+pub mod data_layout;
+pub mod shape;
+pub mod sundials;
+pub mod env;
 pub mod codegen;
 pub mod error;
 

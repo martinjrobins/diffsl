@@ -1,5 +1,5 @@
 #[derive(Parser)]
-#[grammar = "ms_grammar.pest"] // relative to src
+#[grammar = "parser/ms_grammar.pest"] // relative to src
 pub struct MsParser;
 
 use crate::ast::StringSpan;

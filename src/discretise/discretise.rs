@@ -1,20 +1,11 @@
 use anyhow::Result;
-use anyhow::anyhow;
-use ndarray::s;
 use core::panic;
-use std::borrow::Borrow;
 use std::cell::RefCell;
-use std::ops::Deref;
-use std::hash::Hash;
-use std::cmp::max;
-use std::collections::HashMap;
 use std::fmt;
-use std::hash::Hasher;
 use std::rc::Rc;
 use std::vec;
 
 use itertools::chain;
-use ndarray::Array1;
 
 use crate::ast;
 use crate::ast::Ast;
@@ -110,20 +101,20 @@ impl<'s> DiscreteModel<'s> {
             span: None,
         };
         let name = "residual";
-        let indices = self.lhs.indices().clone();
+        let indices = self.lhs.indices().to_vec();
         let layout = self.lhs.layout_ptr().clone();
         let elmts = vec![
-            TensorBlock {
-                name: None,
-                expr: Ast {
+            TensorBlock::new(
+                None,
+                Index::from_vec(vec![0]),
+                indices.clone(),
+                self.lhs.layout_ptr().clone(),
+                self.lhs.layout_ptr().clone(),
+                Ast {
                     kind: AstKind::new_binop('-', lhs, rhs),
                     span: None,
                 },
-                start: Index::from_vec(vec![0]),
-                indices,
-                layout: self.lhs.layout_ptr().clone(),
-                expr_layout: self.lhs.layout_ptr().clone(),
-            }
+            )
         ];
         Tensor::new(name, elmts, layout, indices)
     }
@@ -131,23 +122,23 @@ impl<'s> DiscreteModel<'s> {
     
 
     fn build_array(array: &ast::Tensor<'s>, env: &mut Env) -> Option<Tensor<'s>> {
-        let rank = array.indices.len();
+        let rank = array.indices().len();
         let mut elmts = Vec::new();
         let mut start = Index::zeros(rank);
         let nerrs = env.errs().len();
         if rank == 0 && array.elmts().len() > 1 {
-            env.errs().push(ValidationError::new(
+            env.errs_mut().push(ValidationError::new(
                 format!("cannot have more than one element in a scalar"),
-                array.elmts[1].span,
+                array.elmts()[1].span,
             ));
         }
-        for a in &array.elmts {
+        for a in array.elmts() {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
-                    if let Some((expr_layout, elmt_layout)) = env.get_layout_tensor_elmt(&te, &array.indices) {
+                    if let Some((expr_layout, elmt_layout)) = env.get_layout_tensor_elmt(&te, array.indices()) {
                         if rank == 0 && elmt_layout.rank() == 1 {
                             if elmt_layout.shape()[0] > 1 {
-                                env.errs().push(ValidationError::new(
+                                env.errs_mut().push(ValidationError::new(
                                     format!("cannot assign an expression with rank > 1 to a scalar, rhs has shape {}", elmt_layout.shape()),
                                     a.span,
                                 ));
@@ -171,7 +162,7 @@ impl<'s> DiscreteModel<'s> {
                             i64::try_from(elmt_layout.shape()[0]).unwrap()
                         };
                         
-                        elmts.push(TensorBlock::new(name, start.clone(), array.indices.clone(), RcLayout::new(elmt_layout), RcLayout::new(expr_layout), *expr));
+                        elmts.push(TensorBlock::new(name, start.clone(), array.indices().to_vec(), RcLayout::new(elmt_layout), RcLayout::new(expr_layout), *expr));
 
                         // increment start index
                         if start.len() > 0 {
@@ -184,15 +175,16 @@ impl<'s> DiscreteModel<'s> {
         }
         // create tensor 
         if elmts.is_empty() {
-            env.errs().push(ValidationError::new(
-                format!("tensor {} has no elements", array.name),
-                env.current_span()
+            let span = env.current_span().to_owned();
+            env.errs_mut().push(ValidationError::new(
+                format!("tensor {} has no elements", array.name()),
+                span 
             ));
             None
         } else {
             match Layout::concatenate(&elmts, rank) {
                 Ok(layout) => {
-                    let tensor = Tensor::new(array.name, elmts, RcLayout::new(layout), array.indices.clone());
+                    let tensor = Tensor::new(array.name(), elmts, RcLayout::new(layout), array.indices().to_vec());
                     //check that the number of indices matches the rank
                     assert_eq!(tensor.rank(), tensor.indices().len());
                     if nerrs == env.errs().len() {
@@ -206,9 +198,10 @@ impl<'s> DiscreteModel<'s> {
                     Some(tensor)
                 },
                 Err(e) => {
-                    env.errs().push(ValidationError::new(
+                    let span = env.current_span().to_owned();
+                    env.errs_mut().push(ValidationError::new(
                         format!("{}", e),
-                        env.current_span()
+                        span 
                     ));
                     None
                 }
@@ -220,7 +213,7 @@ impl<'s> DiscreteModel<'s> {
     fn check_match(tensor1: &Tensor, tensor2: &Tensor, span: Option<StringSpan>, env: &mut Env) {
         // check shapes
         if tensor1.shape() != tensor2.shape() {
-            env.errs().push(ValidationError::new(
+            env.errs_mut().push(ValidationError::new(
                 format!(
                     "{} and {} must have the same shape, but {} has shape {} and {} has shape {}",
                     tensor1.name(),
@@ -246,27 +239,27 @@ impl<'s> DiscreteModel<'s> {
         for tensor_ast in model.tensors.iter() {
             env.set_current_span(tensor_ast.span);
             match tensor_ast.kind.as_array() {
-                None => env.errs().push(ValidationError::new(
+                None => env.errs_mut().push(ValidationError::new(
                     "not an array".to_string(),
                     tensor_ast.span,
                 )),
                 Some(tensor) => {
                     let span = tensor_ast.span;
                     // if env has a tensor with the same name, error
-                    if env.get(tensor.name).is_some() {
-                        env.errs().push(ValidationError::new(
-                            format!("{} is already defined", tensor.name),
+                    if env.get(tensor.name()).is_some() {
+                        env.errs_mut().push(ValidationError::new(
+                            format!("{} is already defined", tensor.name()),
                             span,
                         ));
                     }
-                    match tensor.name {
+                    match tensor.name() {
                         "u" => {
                             read_state = true;
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 ret.state = built;
                             }
                             if ret.state.rank() > 1 {
-                                env.errs().push(ValidationError::new(
+                                env.errs_mut().push(ValidationError::new(
                                     "u must be a scalar or 1D vector".to_string(),
                                     span,
                                 ));
@@ -278,7 +271,7 @@ impl<'s> DiscreteModel<'s> {
                                 ret.state_dot = built;
                             }
                             if ret.state.rank() > 1 {
-                                env.errs().push(ValidationError::new(
+                                env.errs_mut().push(ValidationError::new(
                                     "dudt must be a scalar or 1D vector".to_string(),
                                     span,
                                 ));
@@ -300,7 +293,7 @@ impl<'s> DiscreteModel<'s> {
                             read_out = true;
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 if built.rank() > 1 {
-                                    env.errs().push(ValidationError::new(
+                                    env.errs_mut().push(ValidationError::new(
                                         format!("output shape must be a scalar or 1D vector"),
                                         tensor_ast.span,
                                     ));
@@ -317,7 +310,7 @@ impl<'s> DiscreteModel<'s> {
                                     if is_input {
                                         // inputs must be constants
                                         if dependent_on_time || dependent_on_state {
-                                            env.errs().push(ValidationError::new(
+                                            env.errs_mut().push(ValidationError::new(
                                                 format!("input {} must be constant", built.name()),
                                                 tensor_ast.span,
                                             ));
@@ -361,7 +354,7 @@ impl<'s> DiscreteModel<'s> {
         // check that we found all input parameters
         for name in model.inputs.iter() {
             if env.get(name).is_none() {
-                env.errs().push(ValidationError::new(
+                env.errs_mut().push(ValidationError::new(
                     format!("input {} is not defined", name),
                     span_all,
                 ));
@@ -370,31 +363,31 @@ impl<'s> DiscreteModel<'s> {
 
         // check that we've read all the required arrays
         if !read_state {
-            env.errs().push(ValidationError::new(
+            env.errs_mut().push(ValidationError::new(
                 "missing 'u' array".to_string(),
                 span_all,
             ));
         }
         if !read_dot_state {
-            env.errs().push(ValidationError::new(
+            env.errs_mut().push(ValidationError::new(
                 "missing 'dudt' array".to_string(),
                 span_all,
             ));
         }
         if span_f.is_none() {
-            env.errs().push(ValidationError::new(
+            env.errs_mut().push(ValidationError::new(
                 "missing 'F' array".to_string(),
                 span_all,
             ));
         }
         if span_g.is_none() {
-            env.errs().push(ValidationError::new(
+            env.errs_mut().push(ValidationError::new(
                 "missing 'G' array".to_string(),
                 span_all,
             ));
         }
         if !read_out {
-            env.errs().push(ValidationError::new(
+            env.errs_mut().push(ValidationError::new(
                 "missing 'out' array".to_string(),
                 span_all,
             ));
@@ -409,7 +402,7 @@ impl<'s> DiscreteModel<'s> {
         if env.errs().is_empty() {
             Ok(ret)
         } else {
-            Err(env.errs())
+            Err(env.errs().to_owned())
         }
     }
     
@@ -526,8 +519,8 @@ impl<'s> DiscreteModel<'s> {
         // fix out start indices
         let mut curr_index = 0;
         for elmt in out_array_elmts.iter_mut() {
-            elmt.start()[0] = i64::try_from(curr_index).unwrap();
-            curr_index += elmt.layout().shape[0];
+            elmt.start_mut()[0] = i64::try_from(curr_index).unwrap();
+            curr_index += elmt.layout().shape()[0];
         }
         let out_array = Tensor::new_no_layout("out", out_array_elmts, vec!['i']);
 
@@ -538,9 +531,9 @@ impl<'s> DiscreteModel<'s> {
         for state in states.iter() {
             let mut init_state = DiscreteModel::state_to_u0(state);
             let mut init_dudt = DiscreteModel::state_to_dudt0(state);
-            init_state.start()[0] = i64::try_from(curr_index).unwrap();
-            init_dudt.start()[0] = i64::try_from(curr_index).unwrap();
-            curr_index = curr_index + init_state.layout().shape[0];
+            init_state.start_mut()[0] = i64::try_from(curr_index).unwrap();
+            init_dudt.start_mut()[0] = i64::try_from(curr_index).unwrap();
+            curr_index = curr_index + init_state.layout().shape()[0];
             init_dudts.push(init_dudt);
             init_states.push(init_state);
         }
@@ -555,9 +548,9 @@ impl<'s> DiscreteModel<'s> {
         let mut is_algebraic = Vec::new();
         for state in states.iter() {
             let mut elmt = DiscreteModel::state_to_elmt(state);
-            elmt.0.start()[0] = i64::try_from(curr_index).unwrap();
-            elmt.1.start()[0] = i64::try_from(curr_index).unwrap();
-            curr_index = curr_index + elmt.0.layout().shape[0];
+            elmt.0.start_mut()[0] = i64::try_from(curr_index).unwrap();
+            elmt.1.start_mut()[0] = i64::try_from(curr_index).unwrap();
+            curr_index = curr_index + elmt.0.layout().shape()[0];
             f_elmts.push(elmt.0);
             g_elmts.push(elmt.1);
             is_algebraic.push(state.as_ref().borrow().is_algebraic().unwrap());

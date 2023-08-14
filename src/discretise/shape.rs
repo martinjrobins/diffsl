@@ -1,3 +1,5 @@
+use ndarray::Array1;
+
 
 
 pub type Shape = Array1<usize>;

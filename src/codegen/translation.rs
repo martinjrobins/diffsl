@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, borrow::Borrow};
 
 use ndarray::s;
 

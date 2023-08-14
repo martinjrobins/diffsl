@@ -1,5 +1,5 @@
 #[derive(Parser)]
-#[grammar = "ds_grammar.pest"] // relative to src
+#[grammar = "parser/ds_grammar.pest"] // relative to src
 pub struct DsParser;
 
 use crate::ast::StringSpan;
@@ -282,9 +282,9 @@ mod tests {
         assert_eq!(model.inputs.len(), 0);
         assert_eq!(model.tensors.len(), 1);
         let tensor = model.tensors[0].kind.as_tensor().unwrap();
-        assert_eq!(tensor.name, "test");
-        assert_eq!(tensor.elmts.len(), 1);
-        let tensor_elmt = tensor.elmts[0].kind.as_tensor_elmt().unwrap();
+        assert_eq!(tensor.name(), "test");
+        assert_eq!(tensor.elmts().len(), 1);
+        let tensor_elmt = tensor.elmts()[0].kind.as_tensor_elmt().unwrap();
         assert!(tensor_elmt.indices.is_none());
         assert_eq!(tensor_elmt.expr.kind.as_real().unwrap(), 1.0);
     }
@@ -322,19 +322,19 @@ mod tests {
         assert_eq!(model.tensors.len(), 7);
         assert_eq!(model.inputs.len(), 2);
         let tensor = model.tensors[0].kind.as_tensor().unwrap();
-        assert_eq!(tensor.name, "r");
-        assert_eq!(tensor.elmts.len(), 1);
+        assert_eq!(tensor.name(), "r");
+        assert_eq!(tensor.elmts().len(), 1);
         let tensor = model.tensors[2].kind.as_tensor().unwrap();
-        assert_eq!(tensor.name, "I");
-        assert_eq!(tensor.elmts.len(), 3);
-        assert_eq!(tensor.elmts[0].kind.as_tensor_elmt().unwrap().indices.as_ref().unwrap().kind.as_vector().unwrap().data.len(), 2);
-        assert_eq!(tensor.elmts[0].kind.as_tensor_elmt().unwrap().expr.to_string(), "1");
-        assert_eq!(tensor.elmts[1].kind.as_tensor_elmt().unwrap().expr.to_string(), "1");
+        assert_eq!(tensor.name(), "I");
+        assert_eq!(tensor.elmts().len(), 3);
+        assert_eq!(tensor.elmts()[0].kind.as_tensor_elmt().unwrap().indices.as_ref().unwrap().kind.as_vector().unwrap().data.len(), 2);
+        assert_eq!(tensor.elmts()[0].kind.as_tensor_elmt().unwrap().expr.to_string(), "1");
+        assert_eq!(tensor.elmts()[1].kind.as_tensor_elmt().unwrap().expr.to_string(), "1");
         let tensor = model.tensors[3].kind.as_tensor().unwrap();
-        assert_eq!(tensor.name, "u");
-        assert_eq!(tensor.elmts.len(), 2);
-        assert_eq!(tensor.elmts[0].kind.as_tensor_elmt().unwrap().expr.kind.as_assignment().unwrap().name, "y");
-        assert_eq!(tensor.elmts[0].kind.as_tensor_elmt().unwrap().expr.kind.as_assignment().unwrap().expr.to_string(), "1");
+        assert_eq!(tensor.name(), "u");
+        assert_eq!(tensor.elmts().len(), 2);
+        assert_eq!(tensor.elmts()[0].kind.as_tensor_elmt().unwrap().expr.kind.as_assignment().unwrap().name, "y");
+        assert_eq!(tensor.elmts()[0].kind.as_tensor_elmt().unwrap().expr.kind.as_assignment().unwrap().expr.to_string(), "1");
     }
 
 

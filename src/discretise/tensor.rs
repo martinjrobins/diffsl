@@ -1,3 +1,11 @@
+use std::fmt;
+
+use ndarray::Array1;
+
+use crate::ast::Ast;
+
+use super::{RcLayout, Layout, Shape};
+
 
 pub type Index = Array1<i64>;
 
@@ -40,7 +48,7 @@ impl<'s> TensorBlock<'s> {
     }
 
     pub fn shape(&self) -> &Shape {
-        &self.layout.shape
+        &self.layout.shape()
     }
 
     pub fn start(&self) -> &Index {
@@ -76,6 +84,10 @@ impl<'s> TensorBlock<'s> {
 
     pub fn indices(&self) -> &[char] {
         self.indices.as_ref()
+    }
+
+    pub fn start_mut(&mut self) -> &mut Index {
+        &mut self.start
     }
 }
 
@@ -181,6 +193,10 @@ impl<'s> Tensor<'s> {
 
     pub fn layout(&self) -> &Layout {
         self.layout.as_ref()
+    }
+
+    pub fn set_name(&mut self, name: &'s str) {
+        self.name = name;
     }
 }
 

@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
-use crate::ast::{StringSpan, Ast, self};
+use ndarray::s;
 
-use super::{layout::RcLayout, ValidationErrors, Layout, Tensor, TensorBlock, ValidationError};
+use crate::ast::{StringSpan, Ast, self, AstKind};
 
-struct EnvVar {
+use super::{layout::RcLayout, ValidationErrors, Layout, Tensor, TensorBlock, ValidationError, Shape, can_broadcast_to, LayoutKind};
+
+pub struct EnvVar {
     layout: RcLayout,
     is_time_dependent: bool,
     is_state_dependent: bool,
@@ -183,7 +185,7 @@ impl Env {
 
     
 
-    fn get_layout_call(&mut self, call: &Call, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
+    fn get_layout_call(&mut self, call: &ast::Call, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
         let layouts = call
             .args
             .iter()
@@ -223,10 +225,10 @@ impl Env {
     
 
     // returns a tuple of (expr_layout, elmt_layout) giving the layouts of the expression and the tensor element.)
-    pub fn get_layout_tensor_elmt(&mut self, elmt: &TensorElmt, indices: &Vec<char>) -> Option<(Layout, Layout)> {
+    pub fn get_layout_tensor_elmt(&mut self, elmt: &ast::TensorElmt, indices: &[char]) -> Option<(Layout, Layout)> {
         let expr_indices = elmt.expr.get_indices();
         // get any indices from the expression that do not appear in 'indices' and add them to 'indices' to a new vector
-        let mut new_indices = indices.clone();
+        let mut new_indices = indices.to_vec();
         for i in expr_indices {
             if !indices.contains(&i) && !new_indices.contains(&i) {
                 new_indices.push(i);
@@ -275,7 +277,7 @@ impl Env {
             // make sure the number of indices matches the number of dimensions
             let elmt_indices = elmt.indices.as_ref().unwrap();
             let given_indices_ast = &elmt_indices.kind.as_vector().unwrap().data;
-            let given_indices: Vec<&Indice> = given_indices_ast.iter().map(|i| i.kind.as_indice().unwrap()).collect();
+            let given_indices: Vec<&ast::Indice> = given_indices_ast.iter().map(|i| i.kind.as_indice().unwrap()).collect();
             if given_indices.len() != indices.len() {
                 self.errs.push(ValidationError::new(
                     format!(
@@ -392,5 +394,13 @@ impl Env {
 
     pub fn set_current_span(&mut self, current_span: Option<StringSpan>) {
         self.current_span = current_span;
+    }
+
+    pub fn errs(&self) -> &ValidationErrors {
+        &self.errs
+    }
+
+    pub fn errs_mut(&mut self) -> &mut ValidationErrors {
+        &mut self.errs
     }
 }

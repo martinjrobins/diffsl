@@ -160,9 +160,23 @@ pub struct Model<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Tensor<'a> {
-    pub name: &'a str,
-    pub indices: Vec<char>,
-    pub elmts: Vec<Box<Ast<'a>>>,
+    name: &'a str,
+    indices: Vec<char>,
+    elmts: Vec<Box<Ast<'a>>>,
+}
+
+impl<'a> Tensor<'a> {
+    pub fn elmts(&self) -> &[Box<Ast<'a>>] {
+        self.elmts.as_ref()
+    }
+
+    pub fn name(&self) -> &'a str {
+        self.name
+    }
+
+    pub fn indices(&self) -> &[char] {
+        self.indices.as_ref()
+    }
 }
 
 impl <'a> fmt::Display for Tensor<'a> {

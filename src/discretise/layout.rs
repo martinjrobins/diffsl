@@ -1,6 +1,8 @@
-use std::{ops::Deref, hash::Hasher, hash::Hash, fmt};
+use std::{ops::Deref, hash::Hasher, hash::Hash, fmt, rc::Rc};
+use anyhow::{Result, anyhow};
+use ndarray::s;
 
-use super::{shape::Shape, tensor::Index};
+use super::{shape::Shape, tensor::Index, broadcast_shapes, TensorBlock};
 
 
 
@@ -89,7 +91,7 @@ impl Layout {
     }
 
     // contract_last_axis contracts the last axis of the layout, returning a new layout with the last axis contracted.
-    fn contract_last_axis(&self) -> Result<Layout> {
+    pub fn contract_last_axis(&self) -> Result<Layout> {
         let rank = self.rank();
         if rank == 0 {
             return Err(anyhow!("cannot contract last axis of a scalar"));
@@ -381,7 +383,7 @@ impl Layout {
         // get max shape of the elmts, each dim is at least 1
         let max_shape = layouts.iter().fold(Shape::ones(rank), |mut acc, x| {
             for i in 0..x.rank() {
-                acc[i] = max(acc[i], x.shape()[i]);
+                acc[i] = std::cmp::max(acc[i], x.shape()[i]);
             }
             acc
         });
@@ -465,7 +467,7 @@ impl Layout {
         let mut max_extent = Shape::zeros(rank);
         for (start, layout) in std::iter::zip(starts.iter(), layouts.iter()) {
             for i in 0..layout.rank() {
-                max_extent[i] = max(max_extent[i], usize::try_from(start[i]).unwrap() + layout.shape[i]);
+                max_extent[i] = std::cmp::max(max_extent[i], usize::try_from(start[i]).unwrap() + layout.shape[i]);
             }
         }
 
@@ -566,7 +568,7 @@ impl Layout {
         }
     }
 
-    fn to_data_layout(&self) -> Vec<i32> {
+    pub fn to_data_layout(&self) -> Vec<i32> {
         let mut data_layout = vec![];
         if self.is_sparse() {
             for index in self.indices() {
@@ -576,7 +578,7 @@ impl Layout {
         data_layout
     }
 
-    fn to_rank(&self, rank: usize) -> Option<Self> {
+    pub fn to_rank(&self, rank: usize) -> Option<Self> {
         if self.rank() == rank {
             Some(self.clone())
         } else if self.rank() < rank {
@@ -634,6 +636,10 @@ impl Layout {
 
     pub fn kind(&self) -> &LayoutKind {
         &self.kind
+    }
+
+    pub fn n_dense_axes(&self) -> usize {
+        self.n_dense_axes
     }
 }
 

@@ -1,8 +1,8 @@
 use inkwell::{execution_engine::JitFunction, passes::PassManager, OptimizationLevel};
-use ndarray::{Array1, s, Array2};
+use ndarray::{Array1, s, Array2, ShapeBuilder};
 use sundials_sys::{realtype, N_Vector, IDAGetNonlinSolvStats, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit, IDAGetConsistentIC, IDAGetReturnFlagName};
-use std::{ffi::{c_void, CStr, c_int}, io, collections::HashMap, iter::zip, ptr::null_mut};
-use anyhow::anyhow;
+use std::{ffi::{c_void, CStr, c_int}, io::{self, Write}, collections::HashMap, iter::zip, ptr::null_mut};
+use anyhow::{anyhow, Result};
 
 use crate::discretise::{DiscreteModel, Layout};
 
@@ -256,20 +256,7 @@ impl<'ctx> Sundials<'ctx> {
         let ee = module.create_jit_execution_engine(OptimizationLevel::None).unwrap();
         let real_type = context.f64_type();
         let real_type_str = "f64";
-        let mut codegen = CodeGen {
-            context: &context,
-            module,
-            builder: context.create_builder(),
-            fpm,
-            ee,
-            real_type,
-            real_type_str: real_type_str.to_owned(),
-            variables: HashMap::new(),
-            functions: HashMap::new(),
-            fn_value_opt: None,
-            tensor_ptr_opt: None,
-            layout: DataLayout::new(model),
-        };
+        let mut codegen = CodeGen::new(model, &context, module, fpm, ee, real_type, real_type_str);
 
         let set_u0 = codegen.compile_set_u0(model)?;
         let residual = codegen.compile_residual(model)?;
@@ -283,7 +270,7 @@ impl<'ctx> Sundials<'ctx> {
         let residual = codegen.jit::<ResidualFunc>(residual)?;
         let calc_out = codegen.jit::<CalcOutFunc>(calc_out)?;
 
-        let data_layout = model.create_data_layout();
+        let data_layout = DataLayout::new(model);
         
         unsafe {
             let ida_mem = IDACreate();

@@ -40,6 +40,23 @@ pub struct CodeGen<'ctx> {
 }
 
 impl<'ctx> CodeGen<'ctx> {
+    pub fn new(model: &DiscreteModel, context: &'ctx inkwell::context::Context, module: Module<'ctx>, fpm: PassManager<FunctionValue<'ctx>>, ee: ExecutionEngine<'ctx>, real_type: FloatType<'ctx>, real_type_str: &str) -> Self {
+        Self {
+            context: &context,
+            module,
+            builder: context.create_builder(),
+            fpm,
+            ee,
+            real_type,
+            real_type_str: real_type_str.to_owned(),
+            variables: HashMap::new(),
+            functions: HashMap::new(),
+            fn_value_opt: None,
+            tensor_ptr_opt: None,
+            layout: DataLayout::new(model),
+        }
+    }
+
     fn insert_data(&mut self, model: &DiscreteModel) {
         for tensor in model.inputs() {
             self.insert_tensor(tensor);

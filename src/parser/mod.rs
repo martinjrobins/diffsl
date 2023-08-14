@@ -30,7 +30,7 @@ mod tests {
 
     const MS_FILENAMES: &[&str] = &["test_circuit.ms", "test_fishers.ms", "test_pk.ms"];
 
-    const BASE_DIR: &str = "src";
+    const BASE_DIR: &str = "src/parser";
 
     #[test]
     fn parse_examples() {

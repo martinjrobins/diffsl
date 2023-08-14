@@ -166,6 +166,8 @@ pub struct Tensor<'a> {
 }
 
 impl<'a> Tensor<'a> {
+    pub fn new(name: &'a str, indices: Vec<char>, elmts: Vec<Box<Ast<'a>>>) -> Self { Self { name, indices, elmts } }
+
     pub fn elmts(&self) -> &[Box<Ast<'a>>] {
         self.elmts.as_ref()
     }

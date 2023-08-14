@@ -194,7 +194,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             };
             let elmts = inner.map(|v| Box::new(parse_value(v))).collect();
             Ast { 
-                kind: AstKind::Tensor(ast::Tensor { name, elmts, indices }),
+                kind: AstKind::Tensor(ast::Tensor::new(name, indices, elmts)),
                 span 
             }
         },

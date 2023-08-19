@@ -5,7 +5,6 @@ use inkwell::types::{FloatType, BasicMetadataTypeEnum, BasicTypeEnum, IntType};
 use inkwell::values::{PointerValue, FloatValue, FunctionValue, IntValue, BasicMetadataValueEnum, BasicValueEnum};
 use inkwell::{AddressSpace, IntPredicate};
 use inkwell::builder::Builder;
-use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
 use std::collections::HashMap;
 use anyhow::{Result, anyhow};
@@ -26,10 +25,9 @@ pub type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, 
 
 pub struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
-    pub module: Module<'ctx>,
+    module: Module<'ctx>,
     builder: Builder<'ctx>,
     fpm: PassManager<FunctionValue<'ctx>>,
-    ee: ExecutionEngine<'ctx>,
     variables: HashMap<String, PointerValue<'ctx>>,
     functions: HashMap<String, FunctionValue<'ctx>>,
     fn_value_opt: Option<FunctionValue<'ctx>>,
@@ -42,13 +40,22 @@ pub struct CodeGen<'ctx> {
 }
 
 impl<'ctx> CodeGen<'ctx> {
-    pub fn new(model: &DiscreteModel, context: &'ctx inkwell::context::Context, module: Module<'ctx>, fpm: PassManager<FunctionValue<'ctx>>, ee: ExecutionEngine<'ctx>, real_type: FloatType<'ctx>, real_type_str: &str) -> Self {
+    pub fn new(model: &DiscreteModel, context: &'ctx inkwell::context::Context, module: Module<'ctx>, real_type: FloatType<'ctx>, real_type_str: &str) -> Self {
+        let fpm = PassManager::create(&module);
+                fpm.add_instruction_combining_pass();
+                fpm.add_reassociate_pass();
+                fpm.add_gvn_pass();
+                fpm.add_cfg_simplification_pass();
+                fpm.add_basic_alias_analysis_pass();
+                fpm.add_promote_memory_to_register_pass();
+                fpm.add_instruction_combining_pass();
+                fpm.add_reassociate_pass();
+                fpm.initialize();
         Self {
             context: &context,
             module,
             builder: context.create_builder(),
             fpm,
-            ee,
             real_type,
             real_type_str: real_type_str.to_owned(),
             variables: HashMap::new(),
@@ -707,18 +714,6 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    pub fn jit<T>(&self, name: &str) -> Result<JitFunction<'ctx, T>> 
-    where T: UnsafeFunctionPointer
-    {
-        let maybe_fn = unsafe { self.ee.get_function::<T>(name) };
-        let compiled_fn = match maybe_fn {
-            Ok(f) => Ok(f),
-            Err(err) => {
-                Err(anyhow!("Error during jit for {}: {}", name, err))
-            },
-        };
-        compiled_fn
-    }
     
     fn clear(&mut self) {
         self.variables.clear();
@@ -876,6 +871,10 @@ impl<'ctx> CodeGen<'ctx> {
             }
             Err(anyhow!("Invalid generated function."))
         }
+    }
+
+    pub fn module(&self) -> &Module<'ctx> {
+        &self.module
     }
 }
 

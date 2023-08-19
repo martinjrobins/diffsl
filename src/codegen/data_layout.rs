@@ -85,6 +85,17 @@ impl DataLayout {
         self.data_index_map.get(name).map(|i| *i)
     }
 
+    pub fn get_tensor_data(&self, name: &str) -> Option<&[f64]> {
+        let index = self.get_data_index(name)?;
+        let nnz = self.get_data_length(name)?;
+        Some(&self.data()[index..index+nnz])
+    }
+    pub fn get_tensor_data_mut(&self, name: &str) -> Option<&mut [f64]> {
+        let index = self.get_data_index(name)?;
+        let nnz = self.get_data_length(name)?;
+        Some(&mut self.data_mut()[index..index+nnz])
+    }
+
     pub fn get_data_length(&self, name: &str) -> Option<usize> {
         self.data_length_map.get(name).map(|i| *i)
     }
@@ -99,6 +110,10 @@ impl DataLayout {
 
     pub fn data(&self) -> &[f64] {
         self.data.as_ref()
+    }
+
+    pub fn data_mut(&self) -> &mut [f64] {
+        self.data.as_mut_slice()
     }
 
     pub fn indices(&self) -> &[i32] {

@@ -1,12 +1,12 @@
 use inkwell::{execution_engine::JitFunction, passes::PassManager, OptimizationLevel};
 use ndarray::{Array1, s, Array2, ShapeBuilder};
 use sundials_sys::{realtype, N_Vector, IDAGetNonlinSolvStats, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit, IDAGetConsistentIC, IDAGetReturnFlagName};
-use std::{ffi::{c_void, CStr, c_int}, io::{self, Write}, iter::zip, ptr::null_mut};
+use std::{ffi::{c_void, CStr, c_int}, io::{self, Write}, iter::zip, ptr::null_mut, slice};
 use anyhow::{anyhow, Result};
 
 use crate::discretise::{DiscreteModel, Layout};
 
-use super::{DataLayout, codegen::{ResidualFunc, U0Func, CalcOutFunc}, CodeGen, ObjectCode};
+use super::{DataLayout, codegen::{ResidualFunc, U0Func, CalcOutFunc}, CodeGen, Compiler};
 pub struct Options {
     atol: f64,
     rtol: f64,
@@ -32,76 +32,40 @@ impl Options {
 }
 
 
-struct SundialsData<'ctx> {
+struct SundialsData {
     number_of_states: usize,
     number_of_parameters: usize,
-    input_names: Vec<String>,
     yy: N_Vector,
     yp: N_Vector, 
     avtol: N_Vector,
     data: N_Vector,
-    data_layout: DataLayout,
     yy_s: Vec<N_Vector>, 
     yp_s: Vec<N_Vector>,
     id: N_Vector,
     jacobian: SUNMatrix,
     linear_solver: SUNLinearSolver, 
-    residual: JitFunction<'ctx, ResidualFunc>,
-    set_u0: JitFunction<'ctx, U0Func>,
-    calc_out: JitFunction<'ctx, CalcOutFunc>,
     options: Options,
+    compiler: Compiler,
 }
 
-impl<'ctx> SundialsData<'ctx> {
-    pub fn get_tensor_data(&self, name: &str) -> Option<&[realtype]> {
-        let index = self.data_layout.get_data_index(name)?;
-        let nnz = self.data_layout.get_data_length(name)?;
-        unsafe {
-            Some(std::slice::from_raw_parts(
-                N_VGetArrayPointer(self.data).offset(index.try_into().unwrap()),
-                nnz
-            ))
-        }
-    }
-    pub fn get_tensor_data_mut(&self, name: &str) -> Option<&mut [realtype]> {
-        let index = self.data_layout.get_data_index(name)?;
-        let nnz = self.data_layout.get_data_length(name)?;
-        unsafe {
-            Some(std::slice::from_raw_parts_mut(
-                N_VGetArrayPointer(self.data).offset(index.try_into().unwrap()),
-                nnz
-            ))
-        }
-    }
-    pub fn get_data_ptr_mut(&self) -> *mut realtype {
-        unsafe {
-            N_VGetArrayPointer(self.data)
-        }
-    }
-}
-
-pub struct Sundials<'ctx> {
+pub struct Sundials {
     ida_mem: *mut c_void, // pointer to memory
-    data: Box<SundialsData<'ctx>>,
+    data: Box<SundialsData>,
 }
 
-impl<'ctx> Sundials<'ctx> {
-    unsafe extern "C" fn sresidual(
+impl Sundials {
+    extern "C" fn sresidual(
         t: realtype,
         y: N_Vector,
         yp: N_Vector,
         rr: N_Vector,
         user_data: *mut c_void,
     ) -> i32 {
-        let data = & *(user_data as *mut SundialsData);
-
-        data.residual.call(t, 
-            N_VGetArrayPointer(y), 
-            N_VGetArrayPointer(yp), 
-            N_VGetArrayPointer(data.data), 
-            data.data_layout.indices().as_ptr(),
-            N_VGetArrayPointer(rr), 
-        );
+        let data = unsafe { & *(user_data as *mut SundialsData) };
+        let yy_slice = unsafe { slice::from_raw_parts(N_VGetArrayPointer(y), data.number_of_states) };
+        let yp_slice = unsafe { slice::from_raw_parts(N_VGetArrayPointer(yp), data.number_of_states) };
+        let rr_slice = unsafe { slice::from_raw_parts_mut(N_VGetArrayPointer(rr), data.number_of_states) };
+        data.compiler.residual(t, yy_slice, yp_slice, rr_slice)?;
         io::stdout().flush().unwrap();
         0
     }   
@@ -235,21 +199,11 @@ impl<'ctx> Sundials<'ctx> {
         res
     }
 
-    pub fn from_discrete_model<'m>(model: &'m DiscreteModel, context: &'ctx inkwell::context::Context, options: Options) -> Result<Sundials<'ctx>> {
-        let number_of_states = i64::try_from(
-            *model.state().shape().first().unwrap_or(&1)
-        ).unwrap();
-        let number_of_parameters = model.inputs().iter().fold(0, |acc, input| acc + i64::try_from(input.nnz()).unwrap());
-        let input_names = model.inputs().iter().map(|input| input.name().to_owned()).collect::<Vec<_>>();
+    pub fn from_discrete_model<'m>(model: &'m DiscreteModel, options: Options) -> Result<Sundials> {
+        let compiler = Compiler::from_discrete_model(model).unwrap();
+        let number_of_states = compiler.number_of_states() as i64;
+        let number_of_parameters = compiler.number_of_parameters();
 
-        let code = ObjectCode::from_discrete_model(model).unwrap();
-
-        let set_u0 = code.jit_u0()?;
-        let residual = code.jit_residual()?;
-        let calc_out = code.jit_calc_out()?;
-
-        let data_layout = DataLayout::new(model);
-        
         unsafe {
             let ida_mem = IDACreate();
 
@@ -264,8 +218,8 @@ impl<'ctx> Sundials<'ctx> {
             let mut yy_s: Vec<N_Vector> = Vec::new();
             let mut yp_s: Vec<N_Vector> = Vec::new();
             for _ in 0..number_of_parameters {
-                yy_s.push(N_VNew_Serial(i64::from(number_of_parameters)));
-                yp_s.push(N_VNew_Serial(i64::from(number_of_parameters)));
+                yy_s.push(N_VNew_Serial(i64::from(number_of_states)));
+                yp_s.push(N_VNew_Serial(i64::from(number_of_states)));
             }
 
             // set tolerances

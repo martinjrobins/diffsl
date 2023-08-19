@@ -17,7 +17,7 @@ pest_derive = ">=2.1.0"
 itertools = ">=0.10.3"
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm14-0"] }
 sundials-sys = { version = ">=0.2.3", features = ["idas"] }
-
+ouroboros = ">=0.17"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 

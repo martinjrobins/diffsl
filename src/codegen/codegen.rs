@@ -1,7 +1,7 @@
 use inkwell::basic_block::BasicBlock;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::passes::PassManager;
-use inkwell::types::{FloatType, BasicMetadataTypeEnum, BasicTypeEnum};
+use inkwell::types::{FloatType, BasicMetadataTypeEnum, BasicTypeEnum, IntType};
 use inkwell::values::{PointerValue, FloatValue, FunctionValue, IntValue, BasicMetadataValueEnum, BasicValueEnum};
 use inkwell::{AddressSpace, IntPredicate};
 use inkwell::builder::Builder;
@@ -26,7 +26,7 @@ pub type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, 
 
 pub struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
-    module: Module<'ctx>,
+    pub module: Module<'ctx>,
     builder: Builder<'ctx>,
     fpm: PassManager<FunctionValue<'ctx>>,
     ee: ExecutionEngine<'ctx>,
@@ -36,6 +36,8 @@ pub struct CodeGen<'ctx> {
     tensor_ptr_opt: Option<PointerValue<'ctx>>,
     real_type: FloatType<'ctx>,
     real_type_str: String,
+    int_type: IntType<'ctx>,
+    int_type_str: String,
     layout: DataLayout,
 }
 
@@ -54,7 +56,13 @@ impl<'ctx> CodeGen<'ctx> {
             fn_value_opt: None,
             tensor_ptr_opt: None,
             layout: DataLayout::new(model),
+            int_type: context.i32_type(),
+            int_type_str: "i32".to_owned(),
         }
+    }
+
+    pub fn write_bitcode_to_path(&self, path: &std::path::Path) {
+        self.module.write_bitcode_to_path(path);
     }
 
     fn insert_data(&mut self, model: &DiscreteModel) {
@@ -247,7 +255,7 @@ impl<'ctx> CodeGen<'ctx> {
 
     // for dense blocks we can loop through the nested loops to calculate the index, then we compile the expression passing in this index
     fn jit_compile_dense_block(&mut self, name: &str, elmt: &TensorBlock, translation: &Translation) -> Result<()> {
-        let int_type = self.context.i32_type();
+        let int_type = self.int_type;
         
         let mut preblock = self.builder.get_insert_block().unwrap();
         let expr_rank = elmt.expr_layout().rank();
@@ -341,7 +349,7 @@ impl<'ctx> CodeGen<'ctx> {
                 panic!("expected sparse contraction")
             }
         }
-        let int_type = self.context.i32_type();
+        let int_type = self.int_type;
         
         let preblock = self.builder.get_insert_block().unwrap();
         let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
@@ -436,7 +444,7 @@ impl<'ctx> CodeGen<'ctx> {
     // TODO: havn't implemented contractions yet
     fn jit_compile_sparse_block(&mut self, name: &str, elmt: &TensorBlock, translation: &Translation) -> Result<()> {
 
-        let int_type = self.context.i32_type();
+        let int_type = self.int_type;
         
         let preblock = self.builder.get_insert_block().unwrap();
         let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
@@ -481,7 +489,7 @@ impl<'ctx> CodeGen<'ctx> {
     
     // for diagonal blocks we can loop through the diagonal elements and the index is just the same for each element, then we compile the expression passing in this index
     fn jit_compile_diagonal_block(&mut self, name: &str, elmt: &TensorBlock, translation: &Translation) -> Result<()> {
-        let int_type = self.context.i32_type();
+        let int_type = self.int_type;
         
         let preblock = self.builder.get_insert_block().unwrap();
 
@@ -522,7 +530,7 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn jit_compile_broadcast_and_store(&mut self, name: &str, elmt: &TensorBlock, float_value: FloatValue<'ctx>, expr_index: IntValue<'ctx>, translation: &Translation, pre_block: BasicBlock<'ctx>) -> Result<BasicBlock<'ctx>> {
-        let int_type = self.context.i32_type();
+        let int_type = self.int_type;
         let one = int_type.const_int(1, false);
         let zero = int_type.const_int(0, false);
         match translation.source {
@@ -569,7 +577,7 @@ impl<'ctx> CodeGen<'ctx> {
 
 
     fn jit_compile_store(&mut self, name: &str, elmt: &TensorBlock, store_index: IntValue<'ctx>, float_value: FloatValue<'ctx>, translation: &Translation) -> Result<()> {
-        let int_type = self.context.i32_type();
+        let int_type = self.int_type;
         let rank = elmt.layout().rank();
         let res_index = match &translation.target {
             TranslationTo::Contiguous { start, end: _ } => {
@@ -698,6 +706,19 @@ impl<'ctx> CodeGen<'ctx> {
             _ => panic!("unexprected astkind"),
         }
     }
+
+    pub fn jit<T>(&self, name: &str) -> Result<JitFunction<'ctx, T>> 
+    where T: UnsafeFunctionPointer
+    {
+        let maybe_fn = unsafe { self.ee.get_function::<T>(name) };
+        let compiled_fn = match maybe_fn {
+            Ok(f) => Ok(f),
+            Err(err) => {
+                Err(anyhow!("Error during jit for {}: {}", name, err))
+            },
+        };
+        compiled_fn
+    }
     
     fn clear(&mut self) {
         self.variables.clear();
@@ -718,19 +739,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    pub fn jit<T>(&self, function: FunctionValue) -> Result<JitFunction<'ctx, T>> 
-    where T: UnsafeFunctionPointer
-    {
-        let name = function.get_name().to_str().unwrap();
-        let maybe_fn = unsafe { self.ee.get_function::<T>(name) };
-        let compiled_fn = match maybe_fn {
-            Ok(f) => Ok(f),
-            Err(err) => {
-                Err(anyhow!("Error during jit for {}: {}", name, err))
-            },
-        };
-        compiled_fn
-    }
+    
 
     pub fn compile_set_u0<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();

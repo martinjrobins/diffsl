@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 
 use crate::discretise::{DiscreteModel, Layout};
 
-use super::{DataLayout, codegen::{ResidualFunc, U0Func, CalcOutFunc}, CodeGen};
+use super::{DataLayout, codegen::{ResidualFunc, U0Func, CalcOutFunc}, CodeGen, ObjectCode};
 pub struct Options {
     atol: f64,
     rtol: f64,
@@ -241,34 +241,12 @@ impl<'ctx> Sundials<'ctx> {
         ).unwrap();
         let number_of_parameters = model.inputs().iter().fold(0, |acc, input| acc + i64::try_from(input.nnz()).unwrap());
         let input_names = model.inputs().iter().map(|input| input.name().to_owned()).collect::<Vec<_>>();
-        let module = context.create_module(model.name());
-        let fpm = PassManager::create(&module);
-        fpm.add_instruction_combining_pass();
-        fpm.add_reassociate_pass();
-        fpm.add_gvn_pass();
-        fpm.add_cfg_simplification_pass();
-        fpm.add_basic_alias_analysis_pass();
-        fpm.add_promote_memory_to_register_pass();
-        fpm.add_instruction_combining_pass();
-        fpm.add_reassociate_pass();
 
-        fpm.initialize();
-        let ee = module.create_jit_execution_engine(OptimizationLevel::None).unwrap();
-        let real_type = context.f64_type();
-        let real_type_str = "f64";
-        let mut codegen = CodeGen::new(model, &context, module, fpm, ee, real_type, real_type_str);
+        let code = ObjectCode::from_discrete_model(model).unwrap();
 
-        let set_u0 = codegen.compile_set_u0(model)?;
-        let residual = codegen.compile_residual(model)?;
-        let calc_out = codegen.compile_calc_out(model)?;
-
-        set_u0.print_to_stderr();
-        residual.print_to_stderr();
-        calc_out.print_to_stderr();
-
-        let set_u0 = codegen.jit::<U0Func>(set_u0)?;
-        let residual = codegen.jit::<ResidualFunc>(residual)?;
-        let calc_out = codegen.jit::<CalcOutFunc>(calc_out)?;
+        let set_u0 = code.jit_u0()?;
+        let residual = code.jit_residual()?;
+        let calc_out = code.jit_calc_out()?;
 
         let data_layout = DataLayout::new(model);
         

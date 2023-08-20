@@ -1,12 +1,11 @@
-use inkwell::{execution_engine::JitFunction, passes::PassManager, OptimizationLevel};
-use ndarray::{Array1, s, Array2, ShapeBuilder};
+use ndarray::{Array1, Array2, ShapeBuilder};
 use sundials_sys::{realtype, N_Vector, IDAGetNonlinSolvStats, IDA_SUCCESS, IDA_ROOT_RETURN, IDA_YA_YDP_INIT, IDA_NORMAL, IDASolve, IDAGetIntegratorStats, IDASetStopTime, IDACreate, N_VNew_Serial, N_VGetArrayPointer, N_VConst, IDAInit, IDACalcIC, IDASVtolerances, IDASetUserData, SUNLinSolInitialize, IDASetId, SUNMatrix, SUNLinearSolver, SUNDenseMatrix, PREC_NONE, PREC_LEFT, SUNLinSol_Dense, SUNLinSol_SPBCGS, SUNLinSol_SPFGMR, SUNLinSol_SPGMR, SUNLinSol_SPTFQMR, IDASetLinearSolver, SUNLinSolFree, SUNMatDestroy, N_VDestroy, IDAFree, IDAReInit, IDAGetConsistentIC, IDAGetReturnFlagName};
 use std::{ffi::{c_void, CStr, c_int}, io::{self, Write}, iter::zip, ptr::null_mut, slice};
 use anyhow::{anyhow, Result};
 
 use crate::discretise::{DiscreteModel, Layout};
 
-use super::{DataLayout, codegen::{ResidualFunc, U0Func, CalcOutFunc}, CodeGen, Compiler};
+use super::Compiler;
 pub struct Options {
     atol: f64,
     rtol: f64,
@@ -38,7 +37,6 @@ struct SundialsData {
     yy: N_Vector,
     yp: N_Vector, 
     avtol: N_Vector,
-    data: N_Vector,
     yy_s: Vec<N_Vector>, 
     yp_s: Vec<N_Vector>,
     id: N_Vector,
@@ -61,11 +59,11 @@ impl Sundials {
         rr: N_Vector,
         user_data: *mut c_void,
     ) -> i32 {
-        let data = unsafe { & *(user_data as *mut SundialsData) };
+        let data = unsafe { &mut *(user_data as *mut SundialsData) };
         let yy_slice = unsafe { slice::from_raw_parts(N_VGetArrayPointer(y), data.number_of_states) };
         let yp_slice = unsafe { slice::from_raw_parts(N_VGetArrayPointer(yp), data.number_of_states) };
         let rr_slice = unsafe { slice::from_raw_parts_mut(N_VGetArrayPointer(rr), data.number_of_states) };
-        data.compiler.residual(t, yy_slice, yp_slice, rr_slice)?;
+        data.compiler.residual(t, yy_slice, yp_slice, rr_slice).unwrap();
         io::stdout().flush().unwrap();
         0
     }   
@@ -80,124 +78,6 @@ impl Sundials {
         }
     }
 
-    fn set_inputs(&mut self, inputs: &Array1<f64>) -> Result<()> {
-        let number_of_inputs = inputs.len();
-        assert_eq!(number_of_inputs, self.data.number_of_parameters);
-        let mut curr_index = 0;
-        for name in self.data.input_names.iter() {
-            let data = self.data.get_tensor_data_mut(name).unwrap();
-            data.copy_from_slice(&inputs.slice(s![curr_index..curr_index + data.len()]).as_slice().unwrap());
-            curr_index += data.len();
-        }
-        Ok(())
-    }
-
-    pub fn calc_u0(&mut self, inputs: &Array1<f64>) -> Array1<f64> {
-        self.set_inputs(inputs).unwrap();
-        let mut u0 = Array1::zeros(self.data.number_of_states);
-        unsafe {
-            let data_ptr = N_VGetArrayPointer(self.data.data);
-            let indices_ptr = self.data.data_layout.indices().as_ptr();
-            self.data.set_u0.call(data_ptr, indices_ptr, N_VGetArrayPointer(self.data.yy), N_VGetArrayPointer(self.data.yp));
-            let yy_ptr = N_VGetArrayPointer(self.data.yy);
-            for i in 0..self.data.number_of_states {
-                u0[i] = *yy_ptr.add(i); 
-            }
-        }
-        u0
-    }
-
-    pub fn calc_residual(&mut self, t: f64, inputs: &Array1<f64>, u0: &Array1<f64>, up0: &Array1<f64>) -> Array1<f64> {
-        self.set_inputs(inputs).unwrap();
-        let number_of_states = u0.len();
-        assert_eq!(number_of_states, up0.len());
-        assert_eq!(number_of_states, self.data.number_of_states);
-        let mut res = Array1::zeros(number_of_states);
-        unsafe {
-            let rr = N_VNew_Serial(i64::try_from(number_of_states).unwrap());
-            let u0_ptr = N_VGetArrayPointer(self.data.yy);
-            let up0_ptr = N_VGetArrayPointer(self.data.yp);
-            for i in 0..number_of_states {
-                *u0_ptr.add(i) = u0[i]; 
-                *up0_ptr.add(i) = up0[i]; 
-            }
-            self.data.residual.call(t, 
-                N_VGetArrayPointer(self.data.yy), 
-                N_VGetArrayPointer(self.data.yp), 
-                self.data.get_data_ptr_mut(),
-                self.data.data_layout.indices().as_ptr(),
-                N_VGetArrayPointer(rr), 
-            );
-            io::stdout().flush().unwrap();
-            let rr_ptr = N_VGetArrayPointer(rr);
-            for i in 0..self.data.number_of_states {
-                res[i] = *rr_ptr.add(i); 
-            }
-        }
-        res
-    }
-
-    pub fn calc_out(&mut self, t: f64, inputs: &Array1<f64>, u0: &Array1<f64>, up0: &Array1<f64>) -> Array1<f64> {
-        self.set_inputs(inputs).unwrap();
-        let name = "out";
-        let number_of_states = u0.len();
-        assert_eq!(number_of_states, up0.len());
-        assert_eq!(number_of_states, self.data.number_of_states);
-        let tensor_nnz = self.data.data_layout.get_data_length(name).unwrap();
-        let mut res = Array1::zeros(tensor_nnz);
-        unsafe {
-            let u0_ptr = N_VGetArrayPointer(self.data.yy);
-            let up0_ptr = N_VGetArrayPointer(self.data.yp);
-            for i in 0..number_of_states {
-                *u0_ptr.add(i) = u0[i]; 
-                *up0_ptr.add(i) = up0[i]; 
-            }
-
-            self.data.calc_out.call(t, 
-                N_VGetArrayPointer(self.data.yy), 
-                N_VGetArrayPointer(self.data.yp), 
-                self.data.get_data_ptr_mut(),
-                self.data.data_layout.indices().as_ptr(),
-            );
-            io::stdout().flush().unwrap();
-            let f = self.data.get_tensor_data(name).unwrap();
-            for i in 0..tensor_nnz {
-                res[i] = f[i]; 
-            }
-        }
-        res
-    }
-
-    pub fn calc_tensor(&mut self, name: &str, t: f64, inputs: &Array1<f64>, u0: &Array1<f64>, up0: &Array1<f64>) -> Array1<f64> {
-        self.set_inputs(inputs).unwrap();
-        let number_of_states = u0.len();
-        assert_eq!(number_of_states, up0.len());
-        assert_eq!(number_of_states, self.data.number_of_states);
-        let tensor_nnz = self.data.data_layout.get_data_length(name).unwrap();
-        let mut res = Array1::zeros(tensor_nnz);
-        unsafe {
-            let rr = N_VNew_Serial(i64::try_from(number_of_states).unwrap());
-            let u0_ptr = N_VGetArrayPointer(self.data.yy);
-            let up0_ptr = N_VGetArrayPointer(self.data.yp);
-            for i in 0..number_of_states {
-                *u0_ptr.add(i) = u0[i]; 
-                *up0_ptr.add(i) = up0[i]; 
-            }
-            self.data.residual.call(t, 
-                N_VGetArrayPointer(self.data.yy), 
-                N_VGetArrayPointer(self.data.yp), 
-                self.data.get_data_ptr_mut(),
-                self.data.data_layout.indices().as_ptr(),
-                N_VGetArrayPointer(rr), 
-            );
-            io::stdout().flush().unwrap();
-            let f = self.data.get_tensor_data(name).unwrap();
-            for i in 0..tensor_nnz {
-                res[i] = f[i]; 
-            }
-        }
-        res
-    }
 
     pub fn from_discrete_model<'m>(model: &'m DiscreteModel, options: Options) -> Result<Sundials> {
         let compiler = Compiler::from_discrete_model(model).unwrap();
@@ -212,8 +92,6 @@ impl Sundials {
             let yp = N_VNew_Serial(number_of_states);
             let avtol = N_VNew_Serial(i64::from(number_of_states));
             let id = N_VNew_Serial(i64::from(number_of_states));
-
-            let data = N_VNew_Serial(data_layout.data().len().try_into().unwrap());
 
             let mut yy_s: Vec<N_Vector> = Vec::new();
             let mut yp_s: Vec<N_Vector> = Vec::new();
@@ -323,18 +201,13 @@ impl Sundials {
                     yy,
                     yp,
                     avtol,
-                    data,
-                    data_layout,
                     yy_s,
                     yp_s,
                     id,
                     jacobian,
                     linear_solver,
-                    residual,
-                    set_u0,
-                    calc_out,
                     options,
-                    input_names,
+                    compiler,
                 }
             );
             Self::check(IDASetUserData(ida_mem, &mut *data as *mut _ as *mut c_void))?;
@@ -347,16 +220,14 @@ impl Sundials {
     }
 
     pub fn solve(&mut self, times: &Array1<f64>, inputs: &Array1<f64>) -> Result<Array2<f64>> {
-        self.set_inputs(inputs).unwrap();
+        self.data.compiler.set_inputs(inputs.as_slice().unwrap()).unwrap();
         let number_of_timesteps = times.len();
-        let data_out = self.data.get_tensor_data("out").unwrap();
-        let mut out_return = Array2::zeros((number_of_timesteps, data_out.len()).f());
+        let number_of_outputs = self.data.compiler.number_of_outputs();
+        let mut out_return = Array2::zeros((number_of_timesteps, number_of_outputs).f());
 
         unsafe {
-            let data_ptr_mut = self.data.get_data_ptr_mut();
-
-            let yval = N_VGetArrayPointer(self.data.yy);
-            let ypval = N_VGetArrayPointer(self.data.yp);
+            let y_slice = slice::from_raw_parts_mut(N_VGetArrayPointer(self.data.yy), self.data.number_of_states);
+            let yp_slice = slice::from_raw_parts_mut(N_VGetArrayPointer(self.data.yp), self.data.number_of_states);
             let mut ys_val: Vec<*mut f64> = Vec::new();
             for is in 0..self.data.number_of_parameters {
                 ys_val.push(N_VGetArrayPointer(self.data.yy_s[is]));
@@ -364,7 +235,7 @@ impl Sundials {
                 N_VConst(0.0, self.data.yp_s[is]);
             }
 
-            self.data.set_u0.call(data_ptr_mut, self.data.data_layout.indices().as_ptr(), yval, ypval);
+            self.data.compiler.set_u0(y_slice, yp_slice).unwrap();
 
             let t0 = times[0];
 
@@ -374,15 +245,13 @@ impl Sundials {
 
             Self::check(IDAGetConsistentIC(self.ida_mem, self.data.yy, self.data.yp))?;
             
-            self.data.calc_out.call(
-                t0, 
-                N_VGetArrayPointer(self.data.yy), 
-                N_VGetArrayPointer(self.data.yp), 
-                data_ptr_mut,
-                self.data.data_layout.indices().as_ptr(),
-            );
-            for j in 0..data_out.len() {
-                out_return[[0, j]] = data_out[j];
+            self.data.compiler.calc_out(t0, y_slice, yp_slice).unwrap();
+
+            {
+                let data_out = self.data.compiler.get_tensor_data("out").unwrap();
+                for j in 0..data_out.len() {
+                    out_return[[0, j]] = data_out[j];
+                }
             }
             
             //for j in 0..self.data.number_of_parameters {
@@ -404,15 +273,13 @@ impl Sundials {
                 //    IDAGetSens(self.ida_mem, & mut tret as *mut realtype, self.data.yy_s.as_mut_ptr());
                 //}
 
-                self.data.calc_out.call(
-                    tret, 
-                    N_VGetArrayPointer(self.data.yy), 
-                    N_VGetArrayPointer(self.data.yp), 
-                    data_ptr_mut,
-                    self.data.data_layout.indices().as_ptr(),
-                );
-                for j in 0..data_out.len() {
-                    out_return[[t_i, j]] = data_out[j];
+                self.data.compiler.calc_out(t_next, y_slice, yp_slice).unwrap();
+
+                {
+                    let data_out = self.data.compiler.get_tensor_data("out").unwrap();
+                    for j in 0..data_out.len() {
+                        out_return[[t_i, j]] = data_out[j];
+                    }
                 }
                 //for j in 0..self.data.number_of_parameters {
                 //    for k in 0..self.data.number_of_states {
@@ -499,5 +366,50 @@ impl Sundials {
             }
             IDAFree(&mut self.ida_mem as *mut *mut c_void);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use approx::assert_relative_eq;
+    use ndarray::{Array, array, s};
+    use crate::continuous::ModelInfo;
+    use crate::discretise::DiscreteModel;
+    use crate::parser::parse_ms_string;
+    use crate::codegen::{Options, Sundials};
+    
+    #[test]
+    fn rate_equationn() {
+        let text = "
+        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t), z(t)) { 
+            dot(y) = r * y * (1 - y / k)
+            y(0) = 1.0
+            z = 2 * y
+        }
+        ";
+        let models = parse_ms_string(text).unwrap();
+        let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
+        assert_eq!(model_info.errors.len(), 0);
+        let discrete = DiscreteModel::from(&model_info);
+        println!("{}", discrete);
+        let options = Options::new();
+        let mut sundials = Sundials::from_discrete_model(&discrete, options).unwrap();
+
+        let times = Array::linspace(0., 1., 5);
+
+
+
+        // solve
+        let y0 = 1.0;
+        let r = 1.0;
+        let k = 2.0;
+        let inputs = array![r, k];
+        let out = sundials.solve(&times, &inputs).unwrap();
+
+        let y_check = k / ((k - y0) * (-r * times).mapv(f64::exp) / y0 + 1.);
+        assert_relative_eq!(y_check, out.slice(s![.., 0]), epsilon=1e-5);
+        assert_relative_eq!(y_check * 2., out.slice(s![.., 1]), epsilon=1e-5);
+
+        sundials.destroy();
     }
 }

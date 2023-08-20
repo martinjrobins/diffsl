@@ -90,7 +90,7 @@ impl DataLayout {
         let nnz = self.get_data_length(name)?;
         Some(&self.data()[index..index+nnz])
     }
-    pub fn get_tensor_data_mut(&self, name: &str) -> Option<&mut [f64]> {
+    pub fn get_tensor_data_mut(&mut self, name: &str) -> Option<&mut [f64]> {
         let index = self.get_data_index(name)?;
         let nnz = self.get_data_length(name)?;
         Some(&mut self.data_mut()[index..index+nnz])
@@ -112,7 +112,7 @@ impl DataLayout {
         self.data.as_ref()
     }
 
-    pub fn data_mut(&self) -> &mut [f64] {
+    pub fn data_mut(&mut self) -> &mut [f64] {
         self.data.as_mut_slice()
     }
 

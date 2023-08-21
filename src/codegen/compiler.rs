@@ -7,6 +7,10 @@ use ouroboros::self_referencing;
 use crate::discretise::DiscreteModel;
 
 
+use super::codegen::GetDimsFunc;
+use super::codegen::GetOutFunc;
+use super::codegen::SetIdFunc;
+use super::codegen::SetInputsFunc;
 use super::{CodeGen, codegen::{U0Func, ResidualFunc, CalcOutFunc}, data_layout::DataLayout};
 
 struct CompilerData<'ctx> {
@@ -14,6 +18,11 @@ struct CompilerData<'ctx> {
     set_u0: JitFunction<'ctx, U0Func>,
     residual: JitFunction<'ctx, ResidualFunc>,
     calc_out: JitFunction<'ctx, CalcOutFunc>,
+    set_id: JitFunction<'ctx, SetIdFunc>,
+    get_dims: JitFunction<'ctx, GetDimsFunc>,
+    set_inputs: JitFunction<'ctx, SetInputsFunc>,
+    get_out: JitFunction<'ctx, GetOutFunc>,
+
 }
 
 #[self_referencing]
@@ -49,17 +58,23 @@ impl Compiler {
                 let ee = module.create_jit_execution_engine(OptimizationLevel::None).map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
                 let mut codegen = CodeGen::new(model, &context, module, real_type, real_type_str);
 
-                let set_u0 = codegen.compile_set_u0(model)?;
-                let residual = codegen.compile_residual(model)?;
-                let calc_out = codegen.compile_calc_out(model)?;
+                let _set_u0 = codegen.compile_set_u0(model)?;
+                let _residual = codegen.compile_residual(model)?;
+                let _calc_out = codegen.compile_calc_out(model)?;
+                let _set_id = codegen.compile_set_id(model)?;
+                let _get_dims= codegen.compile_get_dims(model)?;
+                let _set_inputs = codegen.compile_set_inputs(model)?;
+                let _get_output = codegen.compile_get_tensor(model, "out")?;
 
-                set_u0.print_to_stderr();
-                residual.print_to_stderr();
-                calc_out.print_to_stderr();
 
                 let set_u0 = Compiler::jit("set_u0", &ee)?;
                 let residual = Compiler::jit("residual", &ee)?;
                 let calc_out = Compiler::jit("calc_out", &ee)?;
+                let set_id = Compiler::jit("set_id", &ee)?;
+                let get_dims= Compiler::jit("get_dims", &ee)?;
+                let set_inputs = Compiler::jit("set_inputs", &ee)?;
+                let get_out= Compiler::jit("get_out", &ee)?;
+
 
                 Ok({
                     CompilerData {
@@ -67,6 +82,10 @@ impl Compiler {
                         set_u0,
                         residual,
                         calc_out,
+                        set_id,
+                        get_dims,
+                        set_inputs,
+                        get_out,
                     }
                 })
             }
@@ -88,24 +107,6 @@ impl Compiler {
 
     pub fn get_tensor_data(&self, name: &str) -> Option<&[f64]> {
         self.borrow_data_layout().get_tensor_data(name)
-    }
-
-    pub fn set_inputs(&mut self, inputs: &[f64]) -> Result<()> {
-        let number_of_inputs = self.borrow_input_names().len();
-        if number_of_inputs != inputs.len() {
-            return Err(anyhow!("Expected {} inputs, got {}", number_of_inputs, inputs.len()));
-        }
-        self.with_mut(|compiler| {
-            let layout = compiler.data_layout;
-            let mut curr_index = 0;
-            for name in compiler.input_names.iter() {
-                let data = layout.get_tensor_data_mut(name).unwrap();
-                data.copy_from_slice(&inputs[curr_index..curr_index + data.len()]);
-                curr_index += data.len();
-            }
-        });
-        
-        Ok(())
     }
 
     pub fn set_u0(&mut self, yy: &mut [f64], yp: &mut [f64]) -> Result<()> {
@@ -167,6 +168,61 @@ impl Compiler {
             unsafe { compiler.data.calc_out.call(t, yy_ptr, yp_ptr, data_ptr, indices_ptr); }
         });
         Ok(())
+    }
+
+    /// Get various dimensions of the model
+    /// 
+    /// # Returns
+    /// 
+    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data, n_indices)`
+    pub fn get_dims(&self) -> (usize, usize, usize, usize, usize) {
+        let mut n_states = 0u32;
+        let mut n_inputs= 0u32;
+        let mut n_outputs = 0u32;
+        let mut n_data= 0u32;
+        let mut n_indices = 0u32;
+        self.with(|compiler| {
+            unsafe { compiler.data.get_dims.call(&mut n_states, &mut n_inputs, &mut n_outputs, &mut n_data, &mut n_indices); }
+        });
+        (n_states as usize, n_inputs as usize, n_outputs as usize, n_data as usize, n_indices as usize)
+    }
+
+    pub fn set_inputs(&mut self, inputs: &[f64]) -> Result<()> {
+        let (_, n_inputs, _, _, _) = self.get_dims();
+        if n_inputs != inputs.len() {
+            return Err(anyhow!("Expected {} inputs, got {}", n_inputs, inputs.len()));
+        }
+        self.with_mut(|compiler| {
+            let layout = compiler.data_layout;
+            let data_ptr = layout.data_mut().as_mut_ptr();
+            unsafe { compiler.data.set_inputs.call(inputs.as_ptr(), data_ptr); }
+        });
+        Ok(())
+    }
+
+    pub fn get_out(&self) -> &[f64] {
+        let (_, _, n_outputs, _, _) = self.get_dims();
+        let mut tensor_data_ptr: *mut f64 = std::ptr::null_mut();
+        let mut tensor_data_len = 0u32;
+        let tensor_data_ptr_ptr: *mut *mut f64 = &mut tensor_data_ptr;
+        let tensor_data_len_ptr: *mut u32 = &mut tensor_data_len;
+        self.with(|compiler| {
+            let layout = compiler.data_layout;
+            let data_ptr = layout.data().as_ptr();
+            unsafe { compiler.data.get_out.call(data_ptr, tensor_data_ptr_ptr, tensor_data_len_ptr); }
+        });
+        assert!(tensor_data_len as usize == n_outputs);
+        unsafe { std::slice::from_raw_parts(tensor_data_ptr, tensor_data_len as usize) }
+    }
+
+    pub fn set_id(&mut self, id: &mut [i32]) -> Result<()> {
+        let (n_states, _, _, _, _) = self.get_dims();
+        if n_states != id.len() {
+            return Err(anyhow!("Expected {} states, got {}", n_states, id.len()));
+        }
+        self.with_mut(|compiler| {
+            Ok(unsafe { compiler.data.set_id.call(id.as_mut_ptr()); })
+        })
     }
 
     pub fn write_object_file(&self) -> Result<()> {
@@ -304,5 +360,68 @@ mod tests {
         sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![1., 8.],
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![1., 6.],
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![5., 11.],
+    }
+
+    #[test]
+    fn test_additional_functions() {
+        let full_text = "
+            in = [k]
+            k {
+                1,
+            }
+            u_i {
+                y = 1,
+                x = 2,
+            }
+            dudt_i {
+                dydt = 0,
+                0,
+            }
+            F_i {
+                dydt,
+                x - 2,
+            }
+            G_i {
+                y,
+                x,
+            }
+            out_i {
+                y,
+                x,
+                2*x,
+            }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let mut compiler = Compiler::from_discrete_model(&discrete_model).unwrap();
+        let (n_states, n_inputs, n_outputs, n_data, n_indices) = compiler.get_dims();
+        assert_eq!(n_states, 2);
+        assert_eq!(n_inputs, 1);
+        assert_eq!(n_outputs, 3);
+        assert_eq!(n_data, compiler.borrow_data_layout().data().len());
+        assert_eq!(n_indices, compiler.borrow_data_layout().indices().len());
+
+        let inputs = vec![1.1];
+        compiler.set_inputs(inputs.as_slice()).unwrap();
+        let inputs = compiler.borrow_data_layout().get_tensor_data("k").unwrap();
+        assert_relative_eq!(inputs, vec![1.1].as_slice());
+
+        let mut id = vec![0, 0];
+        compiler.set_id(id.as_mut_slice()).unwrap();
+        assert_eq!(id, vec![1, 0]);
+
+        let mut u = vec![0., 0.];
+        let mut up = vec![0., 0.];
+        compiler.set_u0(u.as_mut_slice(), up.as_mut_slice()).unwrap();
+        assert_relative_eq!(u.as_slice(), vec![1., 2.].as_slice());
+        assert_relative_eq!(up.as_slice(), vec![0., 0.].as_slice());
+
+        let mut rr = vec![1., 1.];
+        compiler.residual(0., u.as_slice(), up.as_slice(), rr.as_mut_slice()).unwrap();
+        assert_relative_eq!(rr.as_slice(), vec![0., 0.].as_slice());
+
+        compiler.calc_out(0., u.as_slice(), up.as_slice()).unwrap();
+        let out = compiler.get_out();
+        assert_relative_eq!(out, vec![1., 2., 4.].as_slice());
     }
 }

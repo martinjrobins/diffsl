@@ -2,11 +2,12 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::passes::PassManager;
 use inkwell::types::{FloatType, BasicMetadataTypeEnum, BasicTypeEnum, IntType};
-use inkwell::values::{PointerValue, FloatValue, FunctionValue, IntValue, BasicMetadataValueEnum, BasicValueEnum};
+use inkwell::values::{PointerValue, FloatValue, FunctionValue, IntValue, BasicMetadataValueEnum, BasicValueEnum, BasicValue};
 use inkwell::{AddressSpace, IntPredicate};
 use inkwell::builder::Builder;
 use inkwell::module::Module;
 use std::collections::HashMap;
+use std::iter::zip;
 use anyhow::{Result, anyhow};
 use sundials_sys::realtype;
 
@@ -22,6 +23,12 @@ use crate::codegen::{Translation, TranslationFrom, TranslationTo, DataLayout};
 pub type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32, rr: *mut realtype);
 pub type U0Func = unsafe extern "C" fn(data: *mut realtype, indices: *const i32, u: *mut realtype, up: *mut realtype);
 pub type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32);
+pub type GetDimsFunc = unsafe extern "C" fn(states: *mut u32, inputs: *mut u32, outputs: *mut u32, data: *mut u32, indices: *const u32);
+pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const realtype, data: *mut realtype);
+pub type SetIdFunc = unsafe extern "C" fn(id: *mut i32);
+pub type GetOutFunc = unsafe extern "C" fn(data: *const realtype, tensor_data: *mut *mut realtype, tensor_size: *mut u32);
+
+
 
 pub struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
@@ -870,6 +877,237 @@ impl<'ctx> CodeGen<'ctx> {
             Err(anyhow!("Invalid generated function."))
         }
     }
+
+    pub fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<()> {
+        self.clear();
+        let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
+        let fn_type = self.context.void_type().fn_type(
+            &[int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into() ]
+            , false
+        );
+
+        let function = self.module.add_function("get_number_of_states", fn_type, None);
+        let block = self.context.append_basic_block(function, "entry");
+        let fn_arg_names = &["states", "inputs", "outputs", "data", "indices"];
+        self.builder.position_at_end(block);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+
+        let number_of_states = model.state().nnz() as u64;
+        let number_of_inputs = model.inputs().iter().fold(0, |acc, x| acc + x.nnz()) as u64;
+        let number_of_outputs = model.out().nnz() as u64;
+        let indices_len = self.layout.indices().len() as u64;
+        let data_len = self.layout.data().len() as u64;
+        self.builder.build_store(*self.get_param("states"), self.int_type.const_int(number_of_states, false));
+        self.builder.build_store(*self.get_param("inputs"), self.int_type.const_int(number_of_inputs, false));
+        self.builder.build_store(*self.get_param("outputs"), self.int_type.const_int(number_of_outputs, false));
+        self.builder.build_store(*self.get_param("indices"), self.int_type.const_int(indices_len, false));
+        self.builder.build_store(*self.get_param("data"), self.int_type.const_int(data_len, false));
+        self.builder.build_return(None);
+
+        if function.verify(true) {
+            self.fpm.run_on(&function);
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            return Err(anyhow!("Invalid generated function."))
+        }
+        Ok(())
+    }
+
+    pub fn compile_get_tensor(&mut self, model: &DiscreteModel, name: &str) -> Result<()> {
+        self.clear();
+        let real_ptr_ptr_type = self.real_type.ptr_type(AddressSpace::default()).ptr_type(AddressSpace::default());
+        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
+        let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
+        let fn_type = self.context.void_type().fn_type(
+            &[real_ptr_type.into(), real_ptr_ptr_type.into(), int_ptr_type.into()]
+            , false
+        );
+        let function_name = format!("get_{}", name);
+        let function = self.module.add_function(function_name.as_str(), fn_type, None);
+        let basic_block = self.context.append_basic_block(function, "entry");
+
+        let fn_arg_names = &["data", "tensor_data", "tensor_size"];
+        self.builder.position_at_end(basic_block);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+
+        self.insert_data(model);
+        let ptr = self.get_param(name);
+        let tensor_size = self.layout.get_layout(name).unwrap().nnz() as u64;
+        let tensor_size_value =  self.int_type.const_int(tensor_size, false);
+        self.builder.build_store(*self.get_param("tensor_data"), ptr.as_basic_value_enum());
+        self.builder.build_store(*self.get_param("tensor_size"), tensor_size_value);
+        self.builder.build_return(None);
+
+        if function.verify(true) {
+            self.fpm.run_on(&function);
+            Ok(())
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+    pub fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<()> {
+        self.clear();
+        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
+        let void_type = self.context.void_type();
+        let fn_type = void_type.fn_type(
+            &[real_ptr_type.into(), real_ptr_type.into()]
+            , false
+        );
+        let function = self.module.add_function("set_inputs", fn_type, None);
+        let mut block = self.context.append_basic_block(function, "entry");
+
+        let fn_arg_names = &["inputs", "data"];
+        self.builder.position_at_end(block);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+
+        let mut inputs_index = 0usize;
+        for input in model.inputs() {
+            let name = format!("input_{}", input.name());
+            self.insert_tensor(input);
+            let ptr = self.get_var(input);
+            // loop thru the elements of this input and set them using the inputs ptr
+            let inputs_start_index = self.int_type.const_int(inputs_index as u64, false);
+            let start_index = self.int_type.const_int(0, false);
+            let end_index = self.int_type.const_int(input.nnz().try_into().unwrap(), false);
+
+            let input_block = self.context.append_basic_block(self.fn_value(), name.as_str());
+            self.builder.build_unconditional_branch(input_block);
+            self.builder.position_at_end(input_block);
+            let index = self.builder.build_phi(self.int_type, "i");
+            index.add_incoming(&[(&start_index, block)]);
+            
+            // loop body - copy value from inputs to data
+            let curr_input_index = index.as_basic_value().into_int_value();
+            let input_ptr = unsafe { self.builder.build_in_bounds_gep(*ptr, &[curr_input_index], name.as_str()) };
+            let curr_inputs_index = self.builder.build_int_add(inputs_start_index, curr_input_index, name.as_str());
+            let inputs_ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("inputs"), &[curr_inputs_index], name.as_str()) };
+            let input_value = self.builder.build_load(inputs_ptr, name.as_str()).into_float_value();
+            self.builder.build_store(input_ptr, input_value);
+
+            // increment loop index
+            let one = self.int_type.const_int(1, false);
+            let next_index = self.builder.build_int_add(curr_input_index, one, name.as_str());
+            index.add_incoming(&[(&next_index, input_block)]);
+
+            // loop condition
+            let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, end_index, name.as_str());
+            let post_block = self.context.append_basic_block(self.fn_value(), name.as_str());
+            self.builder.build_conditional_branch(loop_while, input_block, post_block);
+            self.builder.position_at_end(post_block);
+
+            // get ready for next input
+            block = post_block;
+            inputs_index = inputs_index + input.nnz();
+        }
+        self.builder.build_return(None);
+
+        if function.verify(true) {
+            self.fpm.run_on(&function);
+            Ok(())
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+    pub fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<()> {
+        self.clear();
+        let int_ptr_type = self.int_type.ptr_type(AddressSpace::default());
+        let void_type = self.context.void_type();
+        let fn_type = void_type.fn_type(
+            &[int_ptr_type.into()]
+            , false
+        );
+        let function = self.module.add_function("set_id", fn_type, None);
+        let mut block = self.context.append_basic_block(function, "entry");
+
+        let fn_arg_names = &["id"];
+        self.builder.position_at_end(block);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+        self.insert_state(model.state(), model.state_dot());
+
+        let mut id_index = 0usize;
+        for (blk, is_algebraic) in zip(model.state().elmts(), model.is_algebraic()) {
+            let name = blk.name().unwrap_or("unknown");
+            // loop thru the elements of this state blk and set the corresponding elements of id
+            let id_start_index = self.int_type.const_int(id_index as u64, false);
+            let blk_start_index = self.int_type.const_int(0, false);
+            let blk_end_index = self.int_type.const_int(blk.nnz().try_into().unwrap(), false);
+
+            let blk_block = self.context.append_basic_block(self.fn_value(), name);
+            self.builder.build_unconditional_branch(blk_block);
+            self.builder.position_at_end(blk_block);
+            let index = self.builder.build_phi(self.int_type, "i");
+            index.add_incoming(&[(&blk_start_index, block)]);
+            
+            // loop body - copy value from inputs to data
+            let curr_blk_index = index.as_basic_value().into_int_value();
+            let curr_id_index = self.builder.build_int_add(id_start_index, curr_blk_index, name);
+            let id_ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("id"), &[curr_id_index], name) };
+            let is_algebraic_value = self.int_type.const_int(*is_algebraic as u64, false);
+            self.builder.build_store(id_ptr, is_algebraic_value);
+
+            // increment loop index
+            let one = self.int_type.const_int(1, false);
+            let next_index = self.builder.build_int_add(curr_blk_index, one, name);
+            index.add_incoming(&[(&next_index, blk_block)]);
+
+            // loop condition
+            let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, blk_end_index, name);
+            let post_block = self.context.append_basic_block(self.fn_value(), name);
+            self.builder.build_conditional_branch(loop_while, blk_block, post_block);
+            self.builder.position_at_end(post_block);
+
+            // get ready for next blk
+            block = post_block;
+            id_index = id_index + blk.nnz();
+        }
+        self.builder.build_return(None);
+
+        if function.verify(true) {
+            self.fpm.run_on(&function);
+            Ok(())
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+
 
     pub fn module(&self) -> &Module<'ctx> {
         &self.module

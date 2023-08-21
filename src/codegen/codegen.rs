@@ -25,7 +25,7 @@ pub type U0Func = unsafe extern "C" fn(data: *mut realtype, indices: *const i32,
 pub type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32);
 pub type GetDimsFunc = unsafe extern "C" fn(states: *mut u32, inputs: *mut u32, outputs: *mut u32, data: *mut u32, indices: *const u32);
 pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const realtype, data: *mut realtype);
-pub type SetIdFunc = unsafe extern "C" fn(id: *mut i32);
+pub type SetIdFunc = unsafe extern "C" fn(id: *mut u32);
 pub type GetOutFunc = unsafe extern "C" fn(data: *const realtype, tensor_data: *mut *mut realtype, tensor_size: *mut u32);
 
 
@@ -886,7 +886,7 @@ impl<'ctx> CodeGen<'ctx> {
             , false
         );
 
-        let function = self.module.add_function("get_number_of_states", fn_type, None);
+        let function = self.module.add_function("get_dims", fn_type, None);
         let block = self.context.append_basic_block(function, "entry");
         let fn_arg_names = &["states", "inputs", "outputs", "data", "indices"];
         self.builder.position_at_end(block);
@@ -933,6 +933,7 @@ impl<'ctx> CodeGen<'ctx> {
         let function_name = format!("get_{}", name);
         let function = self.module.add_function(function_name.as_str(), fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
+        self.fn_value_opt = Some(function);
 
         let fn_arg_names = &["data", "tensor_data", "tensor_size"];
         self.builder.position_at_end(basic_block);
@@ -973,6 +974,7 @@ impl<'ctx> CodeGen<'ctx> {
         );
         let function = self.module.add_function("set_inputs", fn_type, None);
         let mut block = self.context.append_basic_block(function, "entry");
+        self.fn_value_opt = Some(function);
 
         let fn_arg_names = &["inputs", "data"];
         self.builder.position_at_end(block);
@@ -993,7 +995,7 @@ impl<'ctx> CodeGen<'ctx> {
             let start_index = self.int_type.const_int(0, false);
             let end_index = self.int_type.const_int(input.nnz().try_into().unwrap(), false);
 
-            let input_block = self.context.append_basic_block(self.fn_value(), name.as_str());
+            let input_block = self.context.append_basic_block(function, name.as_str());
             self.builder.build_unconditional_branch(input_block);
             self.builder.position_at_end(input_block);
             let index = self.builder.build_phi(self.int_type, "i");
@@ -1014,7 +1016,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             // loop condition
             let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, end_index, name.as_str());
-            let post_block = self.context.append_basic_block(self.fn_value(), name.as_str());
+            let post_block = self.context.append_basic_block(function, name.as_str());
             self.builder.build_conditional_branch(loop_while, input_block, post_block);
             self.builder.position_at_end(post_block);
 
@@ -1055,7 +1057,6 @@ impl<'ctx> CodeGen<'ctx> {
             let alloca = self.function_arg_alloca(name, arg);
             self.insert_param(name, alloca);
         }
-        self.insert_state(model.state(), model.state_dot());
 
         let mut id_index = 0usize;
         for (blk, is_algebraic) in zip(model.state().elmts(), model.is_algebraic()) {
@@ -1065,7 +1066,7 @@ impl<'ctx> CodeGen<'ctx> {
             let blk_start_index = self.int_type.const_int(0, false);
             let blk_end_index = self.int_type.const_int(blk.nnz().try_into().unwrap(), false);
 
-            let blk_block = self.context.append_basic_block(self.fn_value(), name);
+            let blk_block = self.context.append_basic_block(function, name);
             self.builder.build_unconditional_branch(blk_block);
             self.builder.position_at_end(blk_block);
             let index = self.builder.build_phi(self.int_type, "i");
@@ -1075,7 +1076,8 @@ impl<'ctx> CodeGen<'ctx> {
             let curr_blk_index = index.as_basic_value().into_int_value();
             let curr_id_index = self.builder.build_int_add(id_start_index, curr_blk_index, name);
             let id_ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("id"), &[curr_id_index], name) };
-            let is_algebraic_value = self.int_type.const_int(*is_algebraic as u64, false);
+            let is_algebraic_int = if *is_algebraic { 0u32 } else { 1u32 };
+            let is_algebraic_value = self.int_type.const_int(is_algebraic_int as u64, false);
             self.builder.build_store(id_ptr, is_algebraic_value);
 
             // increment loop index
@@ -1085,7 +1087,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             // loop condition
             let loop_while = self.builder.build_int_compare(IntPredicate::ULT, next_index, blk_end_index, name);
-            let post_block = self.context.append_basic_block(self.fn_value(), name);
+            let post_block = self.context.append_basic_block(function, name);
             self.builder.build_conditional_branch(loop_while, blk_block, post_block);
             self.builder.position_at_end(post_block);
 

@@ -333,12 +333,16 @@ impl<'s> DiscreteModel<'s> {
 
         
 
-        // set is_algebraic for every state based on env
+        // set is_algebraic for every state based on equations
         for i in 0..ret.state.elmts().len() {
-            let s = &ret.state.elmts()[i];
-            if let Some(name) = s.name() {
-                if let Some(env_entry) = env.get(name) {
-                    ret.is_algebraic.push(env_entry.is_algebraic());
+            let sp = &ret.state_dot.elmts()[i];
+            let feq = ret.lhs.elmts()[i].expr();
+            let geq = ret.rhs.elmts()[i].expr();
+            let geq_deps = geq.get_dependents();
+            ret.is_algebraic.push(true);
+            if let Some(sp_name) = sp.name() {
+                if Some(sp_name) == feq.kind.as_name() && !geq_deps.contains(sp_name) {
+                    ret.is_algebraic[i] = false;
                 }
             }
         }

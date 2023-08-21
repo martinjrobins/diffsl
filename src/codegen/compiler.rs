@@ -215,7 +215,7 @@ impl Compiler {
         unsafe { std::slice::from_raw_parts(tensor_data_ptr, tensor_data_len as usize) }
     }
 
-    pub fn set_id(&mut self, id: &mut [i32]) -> Result<()> {
+    pub fn set_id(&mut self, id: &mut [u32]) -> Result<()> {
         let (n_states, _, _, _, _) = self.get_dims();
         if n_states != id.len() {
             return Err(anyhow!("Expected {} states, got {}", n_states, id.len()));
@@ -379,11 +379,11 @@ mod tests {
             }
             F_i {
                 dydt,
-                x - 2,
+                0,
             }
             G_i {
-                y,
-                x,
+                y - 1,
+                x - 2,
             }
             out_i {
                 y,

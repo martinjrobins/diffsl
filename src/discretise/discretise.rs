@@ -334,7 +334,7 @@ impl<'s> DiscreteModel<'s> {
         
 
         // set is_algebraic for every state based on equations
-        for i in 0..ret.state.elmts().len() {
+        for i in 0..std::cmp::min(ret.state_dot.elmts().len(), std::cmp::min(ret.lhs.elmts().len(), ret.rhs.elmts().len())) {
             let sp = &ret.state_dot.elmts()[i];
             let feq = ret.lhs.elmts()[i].expr();
             let geq = ret.rhs.elmts()[i].expr();

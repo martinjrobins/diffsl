@@ -25,7 +25,7 @@ pub type U0Func = unsafe extern "C" fn(data: *mut realtype, indices: *const i32,
 pub type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32);
 pub type GetDimsFunc = unsafe extern "C" fn(states: *mut u32, inputs: *mut u32, outputs: *mut u32, data: *mut u32, indices: *const u32);
 pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const realtype, data: *mut realtype);
-pub type SetIdFunc = unsafe extern "C" fn(id: *mut u32);
+pub type SetIdFunc = unsafe extern "C" fn(id: *mut realtype);
 pub type GetOutFunc = unsafe extern "C" fn(data: *const realtype, tensor_data: *mut *mut realtype, tensor_size: *mut u32);
 
 
@@ -1040,10 +1040,10 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<()> {
         self.clear();
-        let int_ptr_type = self.int_type.ptr_type(AddressSpace::default());
+        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[int_ptr_type.into()]
+            &[real_ptr_type.into()]
             , false
         );
         let function = self.module.add_function("set_id", fn_type, None);
@@ -1076,8 +1076,8 @@ impl<'ctx> CodeGen<'ctx> {
             let curr_blk_index = index.as_basic_value().into_int_value();
             let curr_id_index = self.builder.build_int_add(id_start_index, curr_blk_index, name);
             let id_ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("id"), &[curr_id_index], name) };
-            let is_algebraic_int = if *is_algebraic { 0u32 } else { 1u32 };
-            let is_algebraic_value = self.int_type.const_int(is_algebraic_int as u64, false);
+            let is_algebraic_float = if *is_algebraic { 0.0 as realtype } else { 1.0 as realtype };
+            let is_algebraic_value = self.real_type.const_float(is_algebraic_float);
             self.builder.build_store(id_ptr, is_algebraic_value);
 
             // increment loop index

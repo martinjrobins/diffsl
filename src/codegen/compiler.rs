@@ -215,7 +215,7 @@ impl Compiler {
         unsafe { std::slice::from_raw_parts(tensor_data_ptr, tensor_data_len as usize) }
     }
 
-    pub fn set_id(&mut self, id: &mut [u32]) -> Result<()> {
+    pub fn set_id(&mut self, id: &mut [f64]) -> Result<()> {
         let (n_states, _, _, _, _) = self.get_dims();
         if n_states != id.len() {
             return Err(anyhow!("Expected {} states, got {}", n_states, id.len()));
@@ -266,35 +266,26 @@ impl Compiler {
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::parse_ds_string;
+    use crate::{parser::{parse_ds_string, parse_ms_string}, continuous::ModelInfo};
     use approx::assert_relative_eq;
 
     use super::*;
 
     #[test]
     fn test_object_file() {
-        let full_text = "
-            u_i {
-                y = 1,
-            }
-            dudt_i {
-                dydt = 0,
-            }
-            F_i {
-                dydt,
-            }
-            G_i {
-                y,
-            }
-            out_i {
-                y,
-            }
+        let text = "
+        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t), z(t)) { 
+            dot(y) = r * y * (1 - y / k)
+            y(0) = 1.0
+            z = 2 * y
+        }
         ";
-        let model = parse_ds_string(full_text).unwrap();
-        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let models = parse_ms_string(text).unwrap();
+        let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
+        assert_eq!(model_info.errors.len(), 0);
+        let discrete_model = DiscreteModel::from(&model_info);
         let object = Compiler::from_discrete_model(&discrete_model).unwrap();
         object.write_object_file().unwrap();
-
     }
 
     macro_rules! tensor_test {
@@ -406,9 +397,9 @@ mod tests {
         let inputs = compiler.borrow_data_layout().get_tensor_data("k").unwrap();
         assert_relative_eq!(inputs, vec![1.1].as_slice());
 
-        let mut id = vec![0, 0];
+        let mut id = vec![0.0, 0.0];
         compiler.set_id(id.as_mut_slice()).unwrap();
-        assert_eq!(id, vec![1, 0]);
+        assert_eq!(id, vec![1.0, 0.0]);
 
         let mut u = vec![0., 0.];
         let mut up = vec![0., 0.];

@@ -225,7 +225,7 @@ impl Compiler {
         })
     }
 
-    pub fn write_object_file(&self) -> Result<()> {
+    pub fn write_object_file(&self, path: &Path) -> Result<()> {
         Target::initialize_x86(&InitializationConfig::default());
 
         let opt = OptimizationLevel::Default;
@@ -242,7 +242,6 @@ impl Compiler {
         )
         .unwrap();
 
-        let path = Path::new("main.o");
         self.with_data(|data|
             target_machine.write_to_file(data.codegen.module(), FileType::Object, &path).map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
         )
@@ -285,7 +284,8 @@ mod tests {
         assert_eq!(model_info.errors.len(), 0);
         let discrete_model = DiscreteModel::from(&model_info);
         let object = Compiler::from_discrete_model(&discrete_model).unwrap();
-        object.write_object_file().unwrap();
+        let path = Path::new("main.o");
+        object.write_object_file(path).unwrap();
     }
 
     macro_rules! tensor_test {

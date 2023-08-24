@@ -16,7 +16,6 @@ use crate::ast::AstKind;
 //sign       = @{ ("-"|"+")? }
 //factor_op  = @{ "*"|"/" }
 fn parse_sign(pair: Pair<Rule>) -> char {
-    print!("pair '{}'\n", pair.as_str());
     *pair
         .as_str()
         .chars()

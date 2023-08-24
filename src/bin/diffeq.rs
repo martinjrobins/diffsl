@@ -1,7 +1,8 @@
 
-use std::{path::Path, ffi::OsStr};
+use std::{path::Path, ffi::OsStr, process::Command};
 
 use clap::Parser;
+use anyhow::{Result, anyhow};
 use diffeq::{parser::{parse_ms_string, parse_ds_string}, continuous::ModelInfo, discretise::DiscreteModel, codegen::Compiler};
 
 /// compiles a model in continuous (.cs) or discrete (.ds) format to an object file
@@ -20,93 +21,71 @@ struct Args {
     model: Option<String>,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let cli = Args::parse();
 
     let inputfile = Path::new(&cli.input);
     let out = if let Some(out) = cli.out {
         out.clone()
     } else {
-        "out.o".to_owned()
+        "out".to_owned()
     };
-    let outfile = Path::new(&out);
+    let objectname = format!("{}.o", out);
+    let objectfile = Path::new(objectname.as_str());
     let is_discrete = inputfile.extension().unwrap_or(OsStr::new("")).to_str().unwrap() == "ds";
     let is_continuous = inputfile.extension().unwrap_or(OsStr::new("")).to_str().unwrap() == "cs";
     if !is_discrete && !is_continuous {
         panic!("Input file must have extension .ds or .cs");
     }
-    let text = match std::fs::read_to_string(inputfile) {
-        Ok(text) => {
-            text
-        }
-        Err(e) => {
-            panic!("{}", e);
-        }
-    };
+    let text = std::fs::read_to_string(inputfile)?;
     if is_continuous {
-        let models = match parse_ms_string(text.as_str()) {
-            Ok(models) => {
-                models
-            }
-            Err(e) => {
-                panic!("{}", e);
-            }
-        };
+        let models = parse_ms_string(text.as_str())?;
         let model_name = if let Some(model_name) = cli.model {
             model_name
         } else {
-            panic!("Model name must be specified for continuous models");
+            return Err(anyhow!("Model name must be specified for continuous models"));
         };
-        let model_info = match ModelInfo::build(model_name.as_str(), &models) {
-            Ok(model_info) => {
-                model_info
-            }
-            Err(e) => {
-                panic!("{}", e);
-            }
-        };
+        let model_info = ModelInfo::build(model_name.as_str(), &models).map_err(|e| anyhow!("{}", e))?;
         if model_info.errors.len() > 0 {
             for error in model_info.errors {
                 println!("{}", error.as_error_message(text.as_str()));
             }
-            panic!("Errors in model");
+            return Err(anyhow!("Errors in model"));
         }
         let model = DiscreteModel::from(&model_info);
-        let compiler = match Compiler::from_discrete_model(&model) {
-            Ok(compiler) => {
-                compiler
-            }
-            Err(e) => {
-                panic!("{}", e);
-            }
-        };
-        compiler.write_object_file(outfile).unwrap();
+        let compiler = Compiler::from_discrete_model(&model)?;
+        compiler.write_object_file(objectfile)?;
     } else {
-        let model = match parse_ds_string(text.as_str()) {
-            Ok(model) => {
-                model
-            }
-            Err(e) => {
-                panic!("{}", e);
-            }
-        };
+        let model = parse_ds_string(text.as_str())?;
         let model = match DiscreteModel::build(&cli.input, &model) {
-            Ok(model) => {
-                model
-            }
+            Ok(model) => model,
             Err(e) => {
-                panic!("{}", e.as_error_message(text.as_str()));
+                println!("{}", e.as_error_message(text.as_str()));
+                return Err(anyhow!("Errors in model"));
             }
         };
-        let compiler = match Compiler::from_discrete_model(&model) {
-            Ok(compiler) => {
-                compiler
-            }
-            Err(e) => {
-                panic!("{}", e);
-            }
-        };
-        compiler.write_object_file(outfile).unwrap();
+        let compiler = Compiler::from_discrete_model(&model)?;
+        compiler.write_object_file(objectfile)?;
     };
+    
+    // compile the object file using clang and our runtime library
+    let output = Command::new("clang")
+            .arg("-o")
+            .arg(out)
+            .arg(objectname.clone())
+            .arg("-ldiffeq_runtime")
+            .output()?;
+    
+    // clean up the object file
+    std::fs::remove_file(objectfile)?;
+    
+    if let Some(code) = output.status.code() {
+        if code != 0 {
+            println!("{}", String::from_utf8_lossy(&output.stderr));
+            return Err(anyhow!("clang returned error code {}", code));
+        }
+    }
+    Ok(())
+
 }
      

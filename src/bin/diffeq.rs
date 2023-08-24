@@ -19,6 +19,10 @@ struct Args {
     /// Model to build (only for continuous model files)
     #[arg(short, long)]
     model: Option<String>,
+    
+    /// Compile object file only
+    #[arg(short, long)]
+    compile: bool,
 }
 
 fn main() -> Result<()> {
@@ -27,10 +31,13 @@ fn main() -> Result<()> {
     let inputfile = Path::new(&cli.input);
     let out = if let Some(out) = cli.out {
         out.clone()
+    } else if cli.compile {
+        "out.o".to_owned()
     } else {
         "out".to_owned()
     };
-    let objectname = format!("{}.o", out);
+
+    let objectname = if cli.compile { out.clone() } else { format!("{}.o", out) };
     let objectfile = Path::new(objectname.as_str());
     let is_discrete = inputfile.extension().unwrap_or(OsStr::new("")).to_str().unwrap() == "ds";
     let is_continuous = inputfile.extension().unwrap_or(OsStr::new("")).to_str().unwrap() == "cs";
@@ -67,6 +74,10 @@ fn main() -> Result<()> {
         let compiler = Compiler::from_discrete_model(&model)?;
         compiler.write_object_file(objectfile)?;
     };
+    
+    if cli.compile {
+        return Ok(());
+    }
     
     // compile the object file using clang and our runtime library
     let output = Command::new("clang")

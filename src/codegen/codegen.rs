@@ -792,10 +792,10 @@ impl<'ctx> CodeGen<'ctx> {
         let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), int_ptr_type.into(), real_ptr_type.into()]
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), int_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &["t", "u", "dudt", "data", "indices", "out"];
+        let fn_arg_names = &["t", "u", "dudt", "data", "indices"];
         let function = self.module.add_function("calc_out", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);

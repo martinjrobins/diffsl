@@ -2,6 +2,7 @@ use std::path::Path;
 use anyhow::anyhow;
 
 use anyhow::Result;
+use inkwell::targets::TargetMachine;
 use inkwell::{context::Context, OptimizationLevel, targets::{TargetTriple, InitializationConfig, Target, RelocMode, CodeModel, FileType}, execution_engine::{JitFunction, ExecutionEngine, UnsafeFunctionPointer}};
 use ouroboros::self_referencing;
 use crate::discretise::DiscreteModel;
@@ -225,23 +226,53 @@ impl Compiler {
         })
     }
 
-    pub fn write_object_file(&self, path: &Path) -> Result<()> {
-        Target::initialize_x86(&InitializationConfig::default());
-
+    fn get_native_machine() -> Result<TargetMachine> {
+        Target::initialize_native(&InitializationConfig::default()).map_err(|e| anyhow!("{}", e))?;
         let opt = OptimizationLevel::Default;
         let reloc = RelocMode::Default;
         let model = CodeModel::Default;
-        let target = Target::from_name("x86-64").unwrap();
+        let target_triple = TargetMachine::get_default_triple();
+        let target  = Target::from_triple(&target_triple).unwrap();
         let target_machine = target.create_target_machine(
-            &TargetTriple::create("x86_64-pc-linux-gnu"),
-            "x86-64",
-            "+avx2",
+            &target_triple,
+            TargetMachine::get_host_cpu_name().to_str().unwrap(),
+            TargetMachine::get_host_cpu_features().to_str().unwrap(),
             opt,
             reloc,
             model
         )
         .unwrap();
+        Ok(target_machine)
+    }
 
+    fn get_wasm_machine() -> Result<TargetMachine> {
+        Target::initialize_webassembly(&InitializationConfig::default());
+        let opt = OptimizationLevel::Default;
+        let reloc = RelocMode::Default;
+        let model = CodeModel::Default;
+        let target_triple = TargetTriple::create("wasm32-unknown-emscripten");
+        let target = Target::from_triple(&target_triple).unwrap();
+        let target_machine = target.create_target_machine(
+            &target_triple,
+            "generic",
+            "",
+            opt,
+            reloc,
+            model
+        )
+        .unwrap();
+        Ok(target_machine)
+    }
+
+    pub fn write_object_file(&self, path: &Path) -> Result<()> {
+        let target_machine = Compiler::get_native_machine()?;
+        self.with_data(|data|
+            target_machine.write_to_file(data.codegen.module(), FileType::Object, &path).map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
+        )
+    }
+
+    pub fn write_wasm_object_file(&self, path: &Path) -> Result<()> {
+        let target_machine = Compiler::get_wasm_machine()?;
         self.with_data(|data|
             target_machine.write_to_file(data.codegen.module(), FileType::Object, &path).map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
         )

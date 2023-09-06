@@ -1,6 +1,6 @@
 use clap::Parser;
 use anyhow::Result;
-use diffeq::compile;
+use diffeq::{compile, CompilerOptions};
 
 /// compiles a model in continuous (.cs) or discrete (.ds) format to an object file
 #[derive(Parser, Debug)]
@@ -24,10 +24,19 @@ struct Args {
     /// Compile to WASM
     #[arg(short, long)]
     wasm: bool,
+    
+    /// Compile to standalone executable
+    #[arg(short, long)]
+    standalone: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Args::parse();
-    compile(&cli.input, cli.out.as_deref(), cli.model.as_deref(), cli.compile, cli.wasm)
+    let options = CompilerOptions {
+        compile: cli.compile,
+        wasm: cli.wasm,
+        standalone: cli.standalone,
+    };
+    compile(&cli.input, cli.out.as_deref(), cli.model.as_deref(), options)
 }
      

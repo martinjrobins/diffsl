@@ -141,7 +141,6 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
         let library_paths = library_paths_env.split(":").collect::<Vec<_>>();
         let mut runtime_path = None;
         for path in library_paths {
-            println!("checking {}", path);
             // check if the library path contains the runtime library
             let all_exist = linked_files.iter().all(|file| {
                 let file_path = Path::new(path).join(file);
@@ -155,7 +154,6 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
             return Err(anyhow!("Could not find {:?} in LIBRARY_PATH", linked_files));
         }
         let runtime_path = runtime_path.unwrap();
-        println!("using runtime path {}", runtime_path);
         let mut command = Command::new(command_name);
         command.arg("-o").arg(out).arg(objectname.clone());
         for file in linked_files {
@@ -191,8 +189,6 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
             return Err(anyhow!("{} returned error code {}", command_name, code));
         }
     }
-
-    println!("Compiled to {:?}", output);
 
     // clean up the object file
     std::fs::remove_file(objectfile)?;

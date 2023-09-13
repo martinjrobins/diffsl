@@ -366,6 +366,8 @@ mod tests {
     }
 
     tensor_test!{
+        exp_function: "r { exp(2) }" expect "r" vec![f64::exp(2.0)],
+        sigmoid_function: "r { sigmoid(0.1) }" expect "r" vec![1.0 / (1.0 + f64::exp(-0.1))],
         scalar: "r {2}" expect "r" vec![2.0,],
         constant: "r_i {2, 3}" expect "r" vec![2., 3.],
         expression: "r_i {2 + 3, 3 * 2}" expect "r" vec![5., 6.],

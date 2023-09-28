@@ -72,10 +72,10 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
     let continuous_model_info = if let Some(ast) = &continuous_ast {
         let model_info = ModelInfo::build(model_name, ast).map_err(|e| anyhow!("{}", e))?;
         if model_info.errors.len() > 0 {
-            for error in model_info.errors {
-                println!("{}", error.as_error_message(text));
-            }
-            return Err(anyhow!("Errors in model"));
+            let error_text = model_info.errors.iter().fold(String::new(), |acc, error| {
+                format!("{}\n{}", acc, error.as_error_message(text))
+            });
+            return Err(anyhow!(error_text));
         }
         Some(model_info)
     } else {
@@ -89,8 +89,7 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
         match DiscreteModel::build(model_name, ast) {
             Ok(model) => model,
             Err(e) => {
-                println!("{}", e.as_error_message(text));
-                return Err(anyhow!("Errors in model"));
+                return Err(anyhow!(e.as_error_message(text)));
             }
         }
     } else {

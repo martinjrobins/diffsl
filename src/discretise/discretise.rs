@@ -917,7 +917,7 @@ mod tests {
                 let model = parse_ds_string(model_text.as_str()).unwrap();
                 match DiscreteModel::build("$name", &model) {
                     Ok(model) => {
-                        let tensor = model.time_indep_defns.iter().find(|t| t.name() == $tensor_name).unwrap();
+                        let tensor = model.time_indep_defns.iter().chain(model.time_dep_defns.iter()).find(|t| t.name() == $tensor_name).unwrap();
                         let tensor_string = format!("{}", tensor).chars().filter(|c| !c.is_whitespace()).collect::<String>();
                         let tensor_check_string = $tensor_string.chars().filter(|c| !c.is_whitespace()).collect::<String>();
                         assert_eq!(tensor_string, tensor_check_string);
@@ -942,6 +942,7 @@ mod tests {
     );
 
     tensor_tests!(
+        time: "A_i { t }" expect "A" = "A_i (1) { (0)(1):  t }",
         named_blk: "A_i { (0:3): y = 1, 2 }" expect "A" = "A_i (4) { (0)(3): y = 1, (3)(1): 2 }",
         dense_vect_implicit: "A_i { 1, 2, 3 }" expect "A" = "A_i (3) { (0)(1): 1, (1)(1): 2, (2)(1): 3 }",
         dense_vect_explicit: "A_i { (0:3): 1, (3:4): 2 }" expect "A" = "A_i (4) { (0)(3): 1, (3)(1): 2 }",

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::discretise::{RcLayout, DiscreteModel, Tensor};
+use crate::discretise::{RcLayout, DiscreteModel, Tensor, Layout};
 
 use super::Translation;
 
@@ -71,6 +71,10 @@ impl DataLayout {
         add_tensor(&model.lhs());
         add_tensor(&model.rhs());
         add_tensor(&model.out());
+
+        // add layout info for "t"
+        let t_layout = RcLayout::new(Layout::new_scalar());
+        layout_map.insert("t".to_string(), t_layout);
 
         Self { data_index_map, layout_index_map, data, indices, translate_index_map, layout_map, data_length_map }
     }

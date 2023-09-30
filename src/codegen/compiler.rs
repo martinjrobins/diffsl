@@ -356,8 +356,10 @@ mod tests {
                 let inputs = vec![];
                 let mut u0 = vec![1.];
                 let mut up0 = vec![1.];
+                let mut res = vec![0.];
                 compiler.set_inputs(inputs.as_slice()).unwrap();
                 compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice()).unwrap();
+                compiler.residual(0., u0.as_slice(), up0.as_slice(), res.as_mut_slice()).unwrap();
                 let tensor = compiler.get_tensor_data($tensor_name).unwrap();
                 assert_relative_eq!(tensor, $expected_value.as_slice());
             }
@@ -367,6 +369,7 @@ mod tests {
 
     tensor_test!{
         exp_function: "r { exp(2) }" expect "r" vec![f64::exp(2.0)],
+        exp_function_time: "r { exp(t) }" expect "r" vec![f64::exp(0.0)],
         sigmoid_function: "r { sigmoid(0.1) }" expect "r" vec![1.0 / (1.0 + f64::exp(-0.1))],
         scalar: "r {2}" expect "r" vec![2.0,],
         constant: "r_i {2, 3}" expect "r" vec![2., 3.],

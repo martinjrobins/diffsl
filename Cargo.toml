@@ -2,9 +2,7 @@
 name = "diffeq"
 version = "0.1.0"
 edition = "2021"
-
-[lib]
-crate-type = ["cdylib", "rlib"]
+build = "src/build.rs"
 
 [[bin]]
 name = "diffeq"
@@ -23,14 +21,8 @@ sundials-sys = { version = ">=0.3", features = ["idas", "build_libraries"] }
 ouroboros = ">=0.17"
 clap = { version = "4.3.23", features = ["derive"] }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = ">=0.2"
-
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "0.3.13"
+[build-dependencies]
+bindgen = ">=0.68.1"
 
 [profile.dev]
 opt-level = 0

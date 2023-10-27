@@ -351,7 +351,7 @@ impl<'ctx> CodeGen<'ctx> {
         // unwind the nested loops
         for i in (0..expr_rank).rev() {
             // increment index
-            let next_index = self.builder.build_int_add(indices_int[i], one, name);
+            let next_index = self.builder.build_int_add(indices_int[i], one, name)?;
             indices[i].add_incoming(&[(&next_index, preblock)]);
 
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
@@ -409,7 +409,7 @@ impl<'ctx> CodeGen<'ctx> {
         );
         let end_index = self.builder.build_int_add(
             start_index,
-            int_type.const_int(1, false),
+            int_type.const_int(1, false)?,
             name
         );
         let start_ptr = unsafe { self.builder.build_gep(*self.get_param("indices"), &[start_index], "start_index_ptr") };
@@ -430,7 +430,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // loop body - load index from layout
         let expr_index = expr_index_phi.as_basic_value().into_int_value();
-        let elmt_index_mult_rank = self.builder.build_int_mul(expr_index, int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false), name);
+        let elmt_index_mult_rank = self.builder.build_int_mul(expr_index, int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false), name)?;
         let indices_int: Vec<IntValue> = (0..elmt.expr_layout().rank()).map(|i| {
             let layout_index_plus_offset = int_type.const_int((layout_index + i).try_into().unwrap(), false);
             let curr_index = self.builder.build_int_add(elmt_index_mult_rank, layout_index_plus_offset, name);
@@ -458,7 +458,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.jit_compile_store(name, elmt, contract_index.as_basic_value().into_int_value(), new_contract_sum_value, translation)?;
 
         // increment outer loop index
-        let next_contract_index = self.builder.build_int_add(contract_index.as_basic_value().into_int_value(), int_type.const_int(1, false), name);
+        let next_contract_index = self.builder.build_int_add(contract_index.as_basic_value().into_int_value(), int_type.const_int(1, false), name)?;
         contract_index.add_incoming(&[(&next_contract_index, post_contract_block)]);
 
         // outer loop condition
@@ -490,7 +490,7 @@ impl<'ctx> CodeGen<'ctx> {
         
         // loop body - load index from layout
         let elmt_index = curr_index.as_basic_value().into_int_value();
-        let elmt_index_mult_rank = self.builder.build_int_mul(elmt_index, int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false), name);
+        let elmt_index_mult_rank = self.builder.build_int_mul(elmt_index, int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false), name)?;
         let indices_int: Vec<IntValue> = (0..elmt.expr_layout().rank()).map(|i| {
             let layout_index_plus_offset = int_type.const_int((layout_index + i).try_into().unwrap(), false);
             let curr_index = self.builder.build_int_add(elmt_index_mult_rank, layout_index_plus_offset, name);
@@ -505,7 +505,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         // increment loop index
         let one = int_type.const_int(1, false);
-        let next_index = self.builder.build_int_add(elmt_index, one, name);
+        let next_index = self.builder.build_int_add(elmt_index, one, name)?;
         curr_index.add_incoming(&[(&next_index, block)]);
 
         // loop condition
@@ -547,7 +547,7 @@ impl<'ctx> CodeGen<'ctx> {
         
         // increment loop index
         let one = int_type.const_int(1, false);
-        let next_index = self.builder.build_int_add(elmt_index, one, name);
+        let next_index = self.builder.build_int_add(elmt_index, one, name)?;
         curr_index.add_incoming(&[(&next_index, block)]);
 
         // loop condition
@@ -584,7 +584,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.jit_compile_store(name, elmt, store_index, float_value, translation)?;
 
                 // increment index
-                let bcast_next_index= self.builder.build_int_add(bcast_index.as_basic_value().into_int_value(), one, name);
+                let bcast_next_index= self.builder.build_int_add(bcast_index.as_basic_value().into_int_value(), one, name)?;
                 bcast_index.add_incoming(&[(&bcast_next_index, bcast_block)]);
 
                 // loop condition
@@ -620,7 +620,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let translate_store_index = translate_index + translation.get_to_index_in_data_layout();
                 let translate_store_index = int_type.const_int(translate_store_index.try_into().unwrap(), false);
                 let rank_const = int_type.const_int(rank.try_into().unwrap(), false);
-                let elmt_index_strided = self.builder.build_int_mul(store_index, rank_const, name);
+                let elmt_index_strided = self.builder.build_int_mul(store_index, rank_const, name)?;
                 let curr_index = self.builder.build_int_add(elmt_index_strided, translate_store_index, name);
                 let ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("indices"), &[curr_index], name) };
                 self.builder.build_load(ptr, name).into_int_value()
@@ -715,7 +715,7 @@ impl<'ctx> CodeGen<'ctx> {
                     panic!("unexpected layout");
                 };
                 let value_ptr = match iname_elmt_index {
-                    Some(index) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[index], name) },
+                    Some(index) => unsafe { self.builder.build_in_bounds_gep(*ptr, &[index], name)? },
                     None => *ptr
                 };
                 Ok(self.builder.build_load(value_ptr, name).into_float_value())
@@ -1029,7 +1029,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             // increment loop index
             let one = self.int_type.const_int(1, false);
-            let next_index = self.builder.build_int_add(curr_input_index, one, name.as_str());
+            let next_index = self.builder.build_int_add(curr_input_index, one, name.as_str())?;
             index.add_incoming(&[(&next_index, input_block)]);
 
             // loop condition
@@ -1100,7 +1100,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             // increment loop index
             let one = self.int_type.const_int(1, false);
-            let next_index = self.builder.build_int_add(curr_blk_index, one, name);
+            let next_index = self.builder.build_int_add(curr_blk_index, one, name)?;
             index.add_incoming(&[(&next_index, blk_block)]);
 
             // loop condition

@@ -264,6 +264,12 @@ impl Compiler {
         Ok(target_machine)
     }
 
+    pub fn write_bitcode_to_path(&self, path: &Path) -> Result<()> {
+        self.with_data(|data|
+            data.codegen.module().write_bitcode_to_path(path).map_err(|e| anyhow::anyhow!("Error writing bitcode: {:?}", e))
+        )
+    }
+
     pub fn write_object_file(&self, path: &Path) -> Result<()> {
         let target_machine = Compiler::get_native_machine()?;
         self.with_data(|data|

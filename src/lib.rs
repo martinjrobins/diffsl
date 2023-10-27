@@ -1,3 +1,12 @@
+#![allow(
+    non_upper_case_globals,
+    non_camel_case_types,
+    non_snake_case,
+    improper_ctypes,
+    clippy::all
+)]
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
 use std::{path::Path, ffi::OsStr, process::Command, env};
 use anyhow::{Result, anyhow};
 use codegen::Compiler;
@@ -14,9 +23,11 @@ pub mod ast;
 pub mod discretise;
 pub mod continuous;
 pub mod codegen;
+pub mod enzyme;
+
 
 pub struct CompilerOptions {
-    pub compile: bool,
+    pub bytecode_only: bool,
     pub wasm: bool,
     pub standalone: bool,
 }
@@ -40,8 +51,8 @@ pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: Com
     };
     let out = if let Some(out) = out {
         out.clone()
-    } else if options.compile {
-        "out.o"
+    } else if options.bytecode_only {
+        "out.ll"
     } else {
         "out"
     };
@@ -50,12 +61,12 @@ pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: Com
 }
 
 pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOptions, is_discrete: bool) -> Result<()> {
-    let CompilerOptions { compile, wasm, standalone } = options;
+    let CompilerOptions { bytecode_only, wasm, standalone } = options;
     
     let is_continuous = !is_discrete;
 
-    let objectname = if compile { out.to_owned() } else { format!("{}.o", out) };
-    let objectfile = Path::new(objectname.as_str());
+    let bytecodename = if bytecode_only { out.to_owned() } else { format!("{}.ll", out) };
+    let bytecodefile = Path::new(bytecodename.as_str());
     
     let continuous_ast = if is_continuous {
         Some(parse_ms_string(text)?)
@@ -98,13 +109,9 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
 
     let compiler = Compiler::from_discrete_model(&discrete_model)?;
 
-    if wasm {
-        compiler.write_wasm_object_file(objectfile)?;
-    } else {
-        compiler.write_object_file(objectfile)?;
-    }
+    compiler.write_bitcode_to_path(bytecodefile);
     
-    if compile {
+    if bytecode_only {
         return Ok(());
     }
     

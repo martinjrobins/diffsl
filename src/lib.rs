@@ -99,7 +99,7 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
 
     let compiler = Compiler::from_discrete_model(&discrete_model)?;
 
-    compiler.write_bitcode_to_path(bytecodefile);
+    compiler.write_bitcode_to_path(bytecodefile)?;
     
     if bytecode_only {
         return Ok(());
@@ -151,7 +151,7 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
         }
         let runtime_path = runtime_path.unwrap();
         let mut command = Command::new(command_name);
-        command.arg("-o").arg(out).arg(objectname.clone());
+        command.arg("-o").arg(out).arg(out);
         for file in linked_files {
             command.arg(Path::new(runtime_path).join(file));
         }
@@ -163,7 +163,7 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
         command.output()
     } else {
         let mut command = Command::new(command_name);
-        command.arg("-o").arg(out).arg(objectname.clone());
+        command.arg("-o").arg(out).arg(out);
         if standalone {
             command.arg("-ldiffeq_runtime");
         } else {
@@ -185,9 +185,6 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
             return Err(anyhow!("{} returned error code {}", command_name, code));
         }
     }
-
-    // clean up the object file
-    std::fs::remove_file(objectfile)?;
 
     Ok(())
 }

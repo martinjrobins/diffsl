@@ -265,9 +265,14 @@ impl Compiler {
     }
 
     pub fn write_bitcode_to_path(&self, path: &Path) -> Result<()> {
-        self.with_data(|data|
-            data.codegen.module().write_bitcode_to_path(path).map_err(|e| anyhow::anyhow!("Error writing bitcode: {:?}", e))
-        )
+        self.with_data(|data| {
+            let result = data.codegen.module().write_bitcode_to_path(path);
+            if result {
+                Ok(())
+            } else {
+                Err(anyhow!("Error writing bitcode to path"))
+            } 
+        })
     }
 
     pub fn write_object_file(&self, path: &Path) -> Result<()> {

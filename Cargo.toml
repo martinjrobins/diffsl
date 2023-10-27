@@ -2,7 +2,6 @@
 name = "diffeq"
 version = "0.1.0"
 edition = "2021"
-build = "src/build.rs"
 
 [[bin]]
 name = "diffeq"
@@ -20,9 +19,6 @@ inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", feat
 sundials-sys = { version = ">=0.3", features = ["idas", "build_libraries"] }
 ouroboros = ">=0.17"
 clap = { version = "4.3.23", features = ["derive"] }
-
-[build-dependencies]
-bindgen = ">=0.68.1"
 
 [profile.dev]
 opt-level = 0

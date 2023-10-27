@@ -1,12 +1,3 @@
-#![allow(
-    non_upper_case_globals,
-    non_camel_case_types,
-    non_snake_case,
-    improper_ctypes,
-    clippy::all
-)]
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-
 use std::{path::Path, ffi::OsStr, process::Command, env};
 use anyhow::{Result, anyhow};
 use codegen::Compiler;
@@ -23,7 +14,6 @@ pub mod ast;
 pub mod discretise;
 pub mod continuous;
 pub mod codegen;
-pub mod enzyme;
 
 
 pub struct CompilerOptions {

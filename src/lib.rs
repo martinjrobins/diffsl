@@ -17,9 +17,53 @@ pub mod codegen;
 
 
 pub struct CompilerOptions {
-    pub bytecode_only: bool,
+    pub bitcode_only: bool,
     pub wasm: bool,
     pub standalone: bool,
+}
+
+fn is_executable_on_path(executable_name: &str) -> bool {
+    let output = Command::new("which")
+        .arg(executable_name)
+        .output()
+        .expect("failed to execute which command");
+
+    output.status.success()
+}
+
+fn find_executable<'a>(varients: &[&'a str]) -> Result<&'a str> {
+    let mut command = None;
+    for varient in varients {
+        if is_executable_on_path(varient) {
+            command = Some(varient.to_owned());
+            break;
+        }
+    }
+    match command {
+        Some(command) => Ok(command),
+        None => Err(anyhow!("Could not find any of {:?} on path", varients)),
+    }
+}
+
+
+fn find_runtime_path(libraries: &[&str] ) -> Result<String> {
+    let library_paths_env = env::var("LIBRARY_PATH").unwrap_or("".to_owned());
+    let library_paths = library_paths_env.split(":").collect::<Vec<_>>();
+    for path in library_paths {
+        // check if all librarys are in the path
+        let mut found = true;
+        for library in libraries {
+            let library_path = Path::new(path).join(library);
+            if !library_path.exists() {
+                found = false;
+                break;
+            }
+        }
+        if found {
+            return Ok(path.to_owned());
+        }
+    }
+    Err(anyhow!("Could not find {:?} in LIBRARY_PATH", libraries))
 }
 
 
@@ -41,7 +85,7 @@ pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: Com
     };
     let out = if let Some(out) = out {
         out.clone()
-    } else if options.bytecode_only {
+    } else if options.bitcode_only {
         "out.ll"
     } else {
         "out"
@@ -51,12 +95,13 @@ pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: Com
 }
 
 pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOptions, is_discrete: bool) -> Result<()> {
-    let CompilerOptions { bytecode_only, wasm, standalone } = options;
+    let CompilerOptions { bitcode_only, wasm, standalone } = options;
     
     let is_continuous = !is_discrete;
 
-    let bytecodename = if bytecode_only { out.to_owned() } else { format!("{}.ll", out) };
-    let bytecodefile = Path::new(bytecodename.as_str());
+    let bitcodename = if bitcode_only { out.to_owned() } else { format!("{}.bc", out) };
+    let bitcodefile = Path::new(bitcodename.as_str());
+    let pre_enzyme_bitcodefile = bitcodefile.with_extension("pre_enzyme.bc");
     
     let continuous_ast = if is_continuous {
         Some(parse_ms_string(text)?)
@@ -99,13 +144,42 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
 
     let compiler = Compiler::from_discrete_model(&discrete_model)?;
 
-    compiler.write_bitcode_to_path(bytecodefile)?;
+    compiler.write_bitcode_to_path(&pre_enzyme_bitcodefile)?;
     
-    if bytecode_only {
+    let opt_name_varients = ["opt-14"];
+    let opt_name = find_executable(&opt_name_varients)?;
+    let enzyme_lib_path = find_runtime_path(&["LLVMEnzyme-14.so"])?;
+    let enzyme_lib = Path::new(enzyme_lib_path.as_str()).join("LLVMEnzyme-14.so");
+
+    let output = Command::new(opt_name)
+        .arg(pre_enzyme_bitcodefile.to_str().unwrap())
+        .arg(format!("-load={}", enzyme_lib.to_str().unwrap()))
+        .arg("-enzyme")
+        .arg("--enable-new-pm=0")
+        .arg("-o").arg(bitcodefile.to_str().unwrap())
+        .arg("-S")
+        .output()?;
+    
+    if let Some(code) = output.status.code() {
+        if code != 0 {
+            println!("{}", String::from_utf8_lossy(&output.stderr));
+            return Err(anyhow!("{} returned error code {}", opt_name, code));
+        }
+    }
+    
+    // if we are only compiling to bitcode , we are done
+    if bitcode_only {
         return Ok(());
     }
     
-    let command_name = if wasm { "emcc" } else { "clang" };
+    // compile the bitcode to an object file or standalone wasm or executable
+    let emcc_varients = ["emcc"];
+    let clang_varients = ["clang", "clang-14"];
+    let command_name = if wasm { 
+        find_executable(&emcc_varients)?
+    } else { 
+        find_executable(&clang_varients)?
+    };
     
     
     // link the object file and our runtime library
@@ -133,27 +207,11 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
             linked_files.push("libdiffeq_runtime_wasm.a");
         }
         let linked_files = linked_files;
-        let library_paths_env = env::var("LIBRARY_PATH").unwrap_or("".to_owned());
-        let library_paths = library_paths_env.split(":").collect::<Vec<_>>();
-        let mut runtime_path = None;
-        for path in library_paths {
-            // check if the library path contains the runtime library
-            let all_exist = linked_files.iter().all(|file| {
-                let file_path = Path::new(path).join(file);
-                file_path.exists()
-            });
-            if all_exist {
-                runtime_path = Some(path);
-            }
-        };
-        if runtime_path.is_none() {
-            return Err(anyhow!("Could not find {:?} in LIBRARY_PATH", linked_files));
-        }
-        let runtime_path = runtime_path.unwrap();
+        let runtime_path = find_runtime_path(&linked_files)?;
         let mut command = Command::new(command_name);
         command.arg("-o").arg(out).arg(out);
         for file in linked_files {
-            command.arg(Path::new(runtime_path).join(file));
+            command.arg(Path::new(runtime_path.as_str()).join(file));
         }
         if !standalone {
             let exported_functions = exported_functions.into_iter().map(|s| format!("_{}", s)).collect::<Vec<_>>().join(",");

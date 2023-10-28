@@ -33,7 +33,7 @@ struct Args {
 fn main() -> Result<()> {
     let cli = Args::parse();
     let options = CompilerOptions {
-        bytecode_only: cli.compile,
+        bitcode_only: cli.compile,
         wasm: cli.wasm,
         standalone: cli.standalone,
     };

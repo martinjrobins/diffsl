@@ -2,20 +2,25 @@ use std::path::Path;
 use anyhow::anyhow;
 
 use anyhow::Result;
+use inkwell::memory_buffer::MemoryBuffer;
+use inkwell::module::Module;
 use inkwell::targets::TargetMachine;
 use inkwell::{context::Context, OptimizationLevel, targets::{TargetTriple, InitializationConfig, Target, RelocMode, CodeModel, FileType}, execution_engine::{JitFunction, ExecutionEngine, UnsafeFunctionPointer}};
 use ouroboros::self_referencing;
 use crate::discretise::DiscreteModel;
 
 
+use super::codegen::CalcOutGradientFunc;
 use super::codegen::GetDimsFunc;
 use super::codegen::GetOutFunc;
+use super::codegen::ResidualGradientFunc;
 use super::codegen::SetIdFunc;
 use super::codegen::SetInputsFunc;
+use super::codegen::SetInputsGradientFunc;
+use super::codegen::U0GradientFunc;
 use super::{CodeGen, codegen::{U0Func, ResidualFunc, CalcOutFunc}, data_layout::DataLayout};
 
-struct CompilerData<'ctx> {
-    codegen: CodeGen<'ctx>,
+struct JitFunctions<'ctx> {
     set_u0: JitFunction<'ctx, U0Func>,
     residual: JitFunction<'ctx, ResidualFunc>,
     calc_out: JitFunction<'ctx, CalcOutFunc>,
@@ -25,19 +30,107 @@ struct CompilerData<'ctx> {
     get_out: JitFunction<'ctx, GetOutFunc>,
 }
 
+struct JitGradFunctions<'ctx> {
+    set_u0_grad: JitFunction<'ctx, U0GradientFunc>,
+    residual_grad: JitFunction<'ctx, ResidualGradientFunc>,
+    calc_out_grad: JitFunction<'ctx, CalcOutGradientFunc>,
+    set_inputs_grad: JitFunction<'ctx, SetInputsGradientFunc>,
+}
+
+struct CompilerData<'ctx> {
+    codegen: Option<CodeGen<'ctx>>,
+    jit_functions: JitFunctions<'ctx>,
+    jit_grad_functions: Option<JitGradFunctions<'ctx>>,
+}
+
+struct Buffers {
+    data: Vec<f64>,
+    indices: Vec<i32>,
+}
+
+// if we build from a model file use a DataLayout,
+// otherwise use raw buffers
+enum CompilerDataLayout {
+    Layout(DataLayout),
+    Buffers(Buffers),
+}
+
 #[self_referencing]
 pub struct Compiler {
     context: Context,
     #[borrows(context)]
     #[not_covariant]
     data: CompilerData<'this>,
-
-    data_layout: DataLayout,
+    data_layout: CompilerDataLayout,
     number_of_states: usize,
-    input_names: Vec<String>,
+    number_of_parameters: usize,
 }
 
 impl Compiler {
+    pub fn from_bitcode(path: &Path) -> Result<Self> { 
+        let context = Context::create();
+        let buffer = MemoryBuffer::create_from_file(&path).unwrap();
+        let module = Module::parse_bitcode_from_buffer(&buffer, &context)?;
+        let ee = module.create_jit_execution_engine(OptimizationLevel::None).map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
+
+        let set_u0 = Compiler::jit("set_u0", &ee)?;
+        let residual = Compiler::jit("residual", &ee)?;
+        let calc_out = Compiler::jit("calc_out", &ee)?;
+        let set_id = Compiler::jit("set_id", &ee)?;
+        let get_dims= Compiler::jit("get_dims", &ee)?;
+        let set_inputs = Compiler::jit("set_inputs", &ee)?;
+        let get_out= Compiler::jit("get_out", &ee)?;
+
+        let set_inputs_grad = Compiler::jit("set_inputs_grad", &ee)?;
+        let calc_out_grad = Compiler::jit("calc_out_grad", &ee)?;
+        let residual_grad = Compiler::jit("residual_grad", &ee)?;
+        let set_u0_grad = Compiler::jit("set_u0_grad", &ee)?;
+
+
+        // get the number of states, inputs, outputs, data, and indices
+        let get_dims: JitFunction<'_, GetDimsFunc> = get_dims;
+        let mut n_states = 0u32;
+        let mut n_inputs= 0u32;
+        let mut n_outputs = 0u32;
+        let mut n_data= 0u32;
+        let mut n_indices = 0u32;
+        unsafe { get_dims.call(&mut n_states, &mut n_inputs, &mut n_outputs, &mut n_data, &mut n_indices); }
+
+        let buffers = Buffers {
+            data: vec![0.0; usize::try_from(n_data).unwrap()],
+            indices: vec![0; usize::try_from(n_indices).unwrap()],
+        };
+
+        CompilerTryBuilder {
+            context,
+            data_layout: CompilerDataLayout::Buffers(buffers),
+            number_of_states: usize::try_from(n_states).unwrap(),
+            number_of_parameters: usize::try_from(n_inputs).unwrap(),
+            data_builder: |context| {
+                Ok({
+                    CompilerData {
+                        codegen: None,
+                        jit_functions: JitFunctions {
+                            set_u0,
+                            residual,
+                            calc_out,
+                            set_id,
+                            get_dims,
+                            set_inputs,
+                            get_out,
+                        },
+                        jit_grad_functions: Some(JitGradFunctions {
+                            set_u0_grad,
+                            residual_grad,
+                            calc_out_grad,
+                            set_inputs_grad,
+                        }),
+                    }
+                })
+            }
+        }.try_build()
+
+    }
     pub fn from_discrete_model(model: &DiscreteModel) -> Result<Self> { 
         let number_of_states = usize::try_from(
             *model.state().shape().first().unwrap_or(&1)
@@ -45,11 +138,12 @@ impl Compiler {
         let input_names = model.inputs().iter().map(|input| input.name().to_owned()).collect::<Vec<_>>();
         let data_layout = DataLayout::new(model);
         let context = Context::create();
+        let number_of_parameters = input_names.iter().fold(0, |acc, name| acc + data_layout.get_data_length(name).unwrap());
         CompilerTryBuilder {
             context,
-            data_layout,
+            data_layout: CompilerDataLayout::Layout(data_layout),
             number_of_states,
-            input_names,
+            number_of_parameters,
             data_builder: |context| {
                 let module = context.create_module(model.name());
 
@@ -78,22 +172,25 @@ impl Compiler {
                 let set_inputs = Compiler::jit("set_inputs", &ee)?;
                 let get_out= Compiler::jit("get_out", &ee)?;
 
-
                 Ok({
                     CompilerData {
-                        codegen,
-                        set_u0,
-                        residual,
-                        calc_out,
-                        set_id,
-                        get_dims,
-                        set_inputs,
-                        get_out,
+                        Some(codegen),
+                        jit_functions: JitFunctions {
+                            set_u0,
+                            residual,
+                            calc_out,
+                            set_id,
+                            get_dims,
+                            set_inputs,
+                            get_out,
+                        },
+                        jit_grad_functions: None,
                     }
                 })
             }
         }.try_build()
     }
+
 
     fn jit<'ctx, T>(name: &str, ee: &ExecutionEngine<'ctx>) -> Result<JitFunction<'ctx, T>> 
     where T: UnsafeFunctionPointer
@@ -109,7 +206,10 @@ impl Compiler {
     }
 
     pub fn get_tensor_data(&self, name: &str) -> Option<&[f64]> {
-        self.borrow_data_layout().get_tensor_data(name)
+        match self.borrow_data_layout() {
+            CompilerDataLayout::Layout(layout) => layout.get_tensor_data(name),
+            CompilerDataLayout::Buffers(buffers) => None
+        }
     }
 
     pub fn set_u0(&mut self, yy: &mut [f64], yp: &mut [f64]) -> Result<()> {
@@ -121,11 +221,13 @@ impl Compiler {
             return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
         }
         self.with_mut(|compiler| {
-            let data_ptr = compiler.data_layout.data_mut().as_mut_ptr();
-            let indices_ptr = compiler.data_layout.indices().as_ptr();
+            let (data_ptr, indices_ptr) = match compiler.data_layout {
+                CompilerDataLayout::Layout(ref layout) => (layout.data_mut().as_mut_ptr(), layout.indices().as_ptr()),
+                CompilerDataLayout::Buffers(ref buffers) => (buffers.data.as_mut_ptr(), buffers.indices.as_ptr()),
+            };
             let yy_ptr = yy.as_mut_ptr();
             let yp_ptr = yp.as_mut_ptr();
-            unsafe { compiler.data.set_u0.call(data_ptr, indices_ptr, yy_ptr, yp_ptr); }
+            unsafe { compiler.data.jit_functions.set_u0.call(data_ptr, indices_ptr, yy_ptr, yp_ptr); }
         });
         
         Ok(())
@@ -149,7 +251,7 @@ impl Compiler {
             let yy_ptr = yy.as_ptr();
             let yp_ptr = yp.as_ptr();
             let rr_ptr = rr.as_mut_ptr();
-            unsafe { compiler.data.residual.call(t, yy_ptr, yp_ptr, data_ptr, indices_ptr, rr_ptr); }
+            unsafe { compiler.data.jit_functions.residual.call(t, yy_ptr, yp_ptr, data_ptr, indices_ptr, rr_ptr); }
         });
         Ok(())
     }
@@ -168,7 +270,7 @@ impl Compiler {
             let indices_ptr = layout.indices().as_ptr();
             let yy_ptr = yy.as_ptr();
             let yp_ptr = yp.as_ptr();
-            unsafe { compiler.data.calc_out.call(t, yy_ptr, yp_ptr, data_ptr, indices_ptr); }
+            unsafe { compiler.data.jit_functions.calc_out.call(t, yy_ptr, yp_ptr, data_ptr, indices_ptr); }
         });
         Ok(())
     }
@@ -185,7 +287,7 @@ impl Compiler {
         let mut n_data= 0u32;
         let mut n_indices = 0u32;
         self.with(|compiler| {
-            unsafe { compiler.data.get_dims.call(&mut n_states, &mut n_inputs, &mut n_outputs, &mut n_data, &mut n_indices); }
+            unsafe { compiler.data.jit_functions.get_dims.call(&mut n_states, &mut n_inputs, &mut n_outputs, &mut n_data, &mut n_indices); }
         });
         (n_states as usize, n_inputs as usize, n_outputs as usize, n_data as usize, n_indices as usize)
     }
@@ -198,7 +300,7 @@ impl Compiler {
         self.with_mut(|compiler| {
             let layout = compiler.data_layout;
             let data_ptr = layout.data_mut().as_mut_ptr();
-            unsafe { compiler.data.set_inputs.call(inputs.as_ptr(), data_ptr); }
+            unsafe { compiler.data.jit_functions.set_inputs.call(inputs.as_ptr(), data_ptr); }
         });
         Ok(())
     }
@@ -212,7 +314,7 @@ impl Compiler {
         self.with(|compiler| {
             let layout = compiler.data_layout;
             let data_ptr = layout.data().as_ptr();
-            unsafe { compiler.data.get_out.call(data_ptr, tensor_data_ptr_ptr, tensor_data_len_ptr); }
+            unsafe { compiler.data.get_out.jit_functions.call(data_ptr, tensor_data_ptr_ptr, tensor_data_len_ptr); }
         });
         assert!(tensor_data_len as usize == n_outputs);
         unsafe { std::slice::from_raw_parts(tensor_data_ptr, tensor_data_len as usize) }
@@ -224,7 +326,7 @@ impl Compiler {
             return Err(anyhow!("Expected {} states, got {}", n_states, id.len()));
         }
         self.with_mut(|compiler| {
-            Ok(unsafe { compiler.data.set_id.call(id.as_mut_ptr()); })
+            Ok(unsafe { compiler.data.jit_functions.set_id.call(id.as_mut_ptr()); })
         })
     }
 

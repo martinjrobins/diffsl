@@ -157,7 +157,6 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
         .arg("-enzyme")
         .arg("--enable-new-pm=0")
         .arg("-o").arg(bitcodefile.to_str().unwrap())
-        .arg("-S")
         .output()?;
     
     if let Some(code) = output.status.code() {
@@ -246,6 +245,70 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{parser::{parse_ds_string, parse_ms_string}, continuous::ModelInfo};
+    use approx::assert_relative_eq;
+
+    use super::*;
+
+    fn test_ds_example(example: &str) -> Compiler {
+        compile(format!("examples/{}.ds", example).as_str(), None, None, CompilerOptions {
+            bitcode_only: true,
+            wasm: false,
+            standalone: false,
+        }).unwrap()
+        let model = parse_ds_string(text.as_str()).unwrap();
+        let discrete_model = match DiscreteModel::build("name", &model) {
+            Ok(model) => {
+                model
+            }
+            Err(e) => {
+                panic!("{}", e.as_error_message(text.as_str()));
+            }
+        };
+        Compiler::from_discrete_model(&discrete_model).unwrap()
+    }
+
+    #[test]
+    fn test_logistic_ds_example(example: &str) {
+                let inputs = vec![];
+                let mut u0 = vec![1.];
+                let mut up0 = vec![1.];
+                let mut res = vec![0.];
+                compiler.set_inputs(inputs.as_slice()).unwrap();
+                compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice()).unwrap();
+                compiler.residual(0., u0.as_slice(), up0.as_slice(), res.as_mut_slice()).unwrap();
+                let tensor = compiler.get_tensor_data($tensor_name).unwrap();
+                assert_relative_eq!(tensor, $expected_value.as_slice());
+
+        assert_eq!(model_info.errors.len(), 0);
+        let discrete_model = DiscreteModel::from(&model_info);
+        let object = Compiler::from_discrete_model(&discrete_model).unwrap();
+        let path = Path::new("main.o");
+        object.write_object_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_object_file() {
+        let text = "
+        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t), z(t)) { 
+            dot(y) = r * y * (1 - y / k)
+            y(0) = 1.0
+            z = 2 * y
+        }
+        ";
+        let models = parse_ms_string(text).unwrap();
+        let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
+        assert_eq!(model_info.errors.len(), 0);
+        let discrete_model = DiscreteModel::from(&model_info);
+        let object = Compiler::from_discrete_model(&discrete_model).unwrap();
+        let path = Path::new("main.o");
+        object.write_object_file(path).unwrap();
+    }
+}
+
 
 
 

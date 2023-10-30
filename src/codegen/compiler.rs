@@ -23,7 +23,6 @@ struct CompilerData<'ctx> {
     get_dims: JitFunction<'ctx, GetDimsFunc>,
     set_inputs: JitFunction<'ctx, SetInputsFunc>,
     get_out: JitFunction<'ctx, GetOutFunc>,
-
 }
 
 #[self_referencing]
@@ -60,14 +59,17 @@ impl Compiler {
                 let mut codegen = CodeGen::new(model, &context, module, real_type, real_type_str);
 
                 let _set_u0 = codegen.compile_set_u0(model)?;
+                let _set_u0_grad = codegen.compile_gradient(_set_u0, &[false, true, false, false])?;
                 let _residual = codegen.compile_residual(model)?;
+                let _residual_grad = codegen.compile_gradient(_residual, &[true, false, false, false, true, false])?;
                 let _calc_out = codegen.compile_calc_out(model)?;
+                let _calc_out_grad = codegen.compile_gradient(_calc_out, &[true, false, false, false, true])?;
                 let _set_id = codegen.compile_set_id(model)?;
                 let _get_dims= codegen.compile_get_dims(model)?;
                 let _set_inputs = codegen.compile_set_inputs(model)?;
+                let _set_inputs_grad = codegen.compile_gradient(_set_inputs, &[false, false])?;
                 let _get_output = codegen.compile_get_tensor(model, "out")?;
-
-
+                
                 let set_u0 = Compiler::jit("set_u0", &ee)?;
                 let residual = Compiler::jit("residual", &ee)?;
                 let calc_out = Compiler::jit("calc_out", &ee)?;
@@ -388,7 +390,7 @@ mod tests {
         derived: "r_i {2, 3} k_i { 2 * r_i }" expect "k" vec![4., 6.],
         concatenate: "r_i {2, 3} k_i { r_i, 2 * r_i }" expect "k" vec![2., 3., 4., 6.],
         ones_matrix_dense: "I_ij { (0:2, 0:2): 1 }" expect "I" vec![1., 1., 1., 1.],
-        dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" vec![1., 2., 3., 4.],
+        dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" vec![1., 2., 3., 4.], 
         identity_matrix_diagonal: "I_ij { (0..2, 0..2): 1 }" expect "I" vec![1., 1.],
         concatenate_diagonal: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" vec![1., 1., 1., 1.],
         identity_matrix_sparse: "I_ij { (0, 0): 1, (1, 1): 2 }" expect "I" vec![1., 2.],

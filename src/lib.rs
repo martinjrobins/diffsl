@@ -43,13 +43,7 @@ pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: Com
     } else {
         inputfile.file_stem().unwrap().to_str().unwrap()
     };
-    let out = if let Some(out) = out {
-        out.clone()
-    } else if options.bitcode_only {
-        "out.ll"
-    } else {
-        "out"
-    };
+    let out = out.unwrap_or("out");
     let text = std::fs::read_to_string(inputfile)?;
     compile_text(text.as_str(), out, model_name, options, is_discrete)
 }
@@ -97,13 +91,14 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
     } else {
         panic!("No model found");
     };
-
     let compiler = Compiler::from_discrete_model(&discrete_model, out)?;
 
     // if we are only compiling to bitcode , we are done
     if bitcode_only {
         return Ok(());
     }
+
+    let bitcode_filename = compiler.get_bitcode_filename();
     
     // compile the bitcode to an object file or standalone wasm or executable
     let emcc_varients = ["emcc"];
@@ -142,7 +137,7 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
         let linked_files = linked_files;
         let runtime_path = find_runtime_path(&linked_files)?;
         let mut command = Command::new(command_name);
-        command.arg("-o").arg(out).arg(out);
+        command.arg("-o").arg(out).arg(bitcode_filename);
         for file in linked_files {
             command.arg(Path::new(runtime_path.as_str()).join(file));
         }

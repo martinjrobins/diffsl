@@ -61,6 +61,7 @@ pub struct Compiler {
     number_of_parameters: usize,
     number_of_outputs: usize,
     data_layout: DataLayout,
+    bitcode_filename: String,
 }
 
 impl Compiler {
@@ -73,12 +74,15 @@ impl Compiler {
         let context = Context::create();
         let number_of_parameters = input_names.iter().fold(0, |acc, name| acc + data_layout.get_data_length(name).unwrap());
         let number_of_outputs = data_layout.get_data_length("out").unwrap();
+        let bitcode_filename = format!("{}.bc", out);
+        let bitcodefile = Path::new(bitcode_filename.as_str());
         CompilerTryBuilder {
             data_layout,
             number_of_states,
             number_of_parameters,
             number_of_outputs,
             context,
+            bitcode_filename: bitcode_filename.clone(),
             data_builder: |context| {
                 let module = context.create_module(model.name());
                 let real_type = context.f64_type();
@@ -99,8 +103,6 @@ impl Compiler {
                 
                 let pre_enzyme_bitcodefilename = format!("{}.pre-enzyme.bc", out);
                 let pre_enzyme_bitcodefile = Path::new(pre_enzyme_bitcodefilename.as_str());
-                let bitcodefilename = format!("{}.bc", out);
-                let bitcodefile = Path::new(bitcodefilename.as_str());
                 codegen.module().write_bitcode_to_path(pre_enzyme_bitcodefile);
     
                 let opt_name_varients = ["opt-14"];
@@ -164,6 +166,9 @@ impl Compiler {
         }.try_build()
     }
 
+    pub fn get_bitcode_filename(&self) -> &str {
+        &self.borrow_bitcode_filename().as_str()
+    }
 
     fn jit<'ctx, T>(name: &str, ee: &ExecutionEngine<'ctx>) -> Result<JitFunction<'ctx, T>> 
     where T: UnsafeFunctionPointer

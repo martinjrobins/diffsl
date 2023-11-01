@@ -1,9 +1,10 @@
-use std::{path::Path, ffi::OsStr, process::Command, env};
+use std::{path::Path, ffi::OsStr, process::Command};
 use anyhow::{Result, anyhow};
 use codegen::Compiler;
 use continuous::ModelInfo;
 use discretise::DiscreteModel;
 use parser::{parse_ms_string, parse_ds_string};
+use utils::{find_executable, find_runtime_path};
 
 extern crate pest;
 #[macro_use]
@@ -14,6 +15,7 @@ pub mod ast;
 pub mod discretise;
 pub mod continuous;
 pub mod codegen;
+pub mod utils;
 
 
 pub struct CompilerOptions {
@@ -22,49 +24,7 @@ pub struct CompilerOptions {
     pub standalone: bool,
 }
 
-fn is_executable_on_path(executable_name: &str) -> bool {
-    let output = Command::new("which")
-        .arg(executable_name)
-        .output()
-        .expect("failed to execute which command");
 
-    output.status.success()
-}
-
-fn find_executable<'a>(varients: &[&'a str]) -> Result<&'a str> {
-    let mut command = None;
-    for varient in varients {
-        if is_executable_on_path(varient) {
-            command = Some(varient.to_owned());
-            break;
-        }
-    }
-    match command {
-        Some(command) => Ok(command),
-        None => Err(anyhow!("Could not find any of {:?} on path", varients)),
-    }
-}
-
-
-fn find_runtime_path(libraries: &[&str] ) -> Result<String> {
-    let library_paths_env = env::var("LIBRARY_PATH").unwrap_or("".to_owned());
-    let library_paths = library_paths_env.split(":").collect::<Vec<_>>();
-    for path in library_paths {
-        // check if all librarys are in the path
-        let mut found = true;
-        for library in libraries {
-            let library_path = Path::new(path).join(library);
-            if !library_path.exists() {
-                found = false;
-                break;
-            }
-        }
-        if found {
-            return Ok(path.to_owned());
-        }
-    }
-    Err(anyhow!("Could not find {:?} in LIBRARY_PATH", libraries))
-}
 
 
 pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: CompilerOptions) -> Result<()> {
@@ -98,10 +58,6 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
     let CompilerOptions { bitcode_only, wasm, standalone } = options;
     
     let is_continuous = !is_discrete;
-
-    let bitcodename = if bitcode_only { out.to_owned() } else { format!("{}.bc", out) };
-    let bitcodefile = Path::new(bitcodename.as_str());
-    let pre_enzyme_bitcodefile = bitcodefile.with_extension("pre_enzyme.bc");
     
     let continuous_ast = if is_continuous {
         Some(parse_ms_string(text)?)
@@ -142,30 +98,8 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
         panic!("No model found");
     };
 
-    let compiler = Compiler::from_discrete_model(&discrete_model)?;
+    let compiler = Compiler::from_discrete_model(&discrete_model, out)?;
 
-    compiler.write_bitcode_to_path(&pre_enzyme_bitcodefile)?;
-    
-    let opt_name_varients = ["opt-14"];
-    let opt_name = find_executable(&opt_name_varients)?;
-    let enzyme_lib_path = find_runtime_path(&["LLVMEnzyme-14.so"])?;
-    let enzyme_lib = Path::new(enzyme_lib_path.as_str()).join("LLVMEnzyme-14.so");
-
-    let output = Command::new(opt_name)
-        .arg(pre_enzyme_bitcodefile.to_str().unwrap())
-        .arg(format!("-load={}", enzyme_lib.to_str().unwrap()))
-        .arg("-enzyme")
-        .arg("--enable-new-pm=0")
-        .arg("-o").arg(bitcodefile.to_str().unwrap())
-        .output()?;
-    
-    if let Some(code) = output.status.code() {
-        if code != 0 {
-            println!("{}", String::from_utf8_lossy(&output.stderr));
-            return Err(anyhow!("{} returned error code {}", opt_name, code));
-        }
-    }
-    
     // if we are only compiling to bitcode , we are done
     if bitcode_only {
         return Ok(());
@@ -253,41 +187,37 @@ mod tests {
 
     use super::*;
 
-    fn test_ds_example(example: &str) -> Compiler {
-        compile(format!("examples/{}.ds", example).as_str(), None, None, CompilerOptions {
-            bitcode_only: true,
-            wasm: false,
-            standalone: false,
-        }).unwrap()
+    fn ds_example_compiler(example: &str) -> Compiler {
+        let text = std::fs::read_to_string(format!("examples/{}.ds", example)).unwrap();
         let model = parse_ds_string(text.as_str()).unwrap();
-        let discrete_model = match DiscreteModel::build("name", &model) {
-            Ok(model) => {
-                model
-            }
-            Err(e) => {
-                panic!("{}", e.as_error_message(text.as_str()));
-            }
-        };
-        Compiler::from_discrete_model(&discrete_model).unwrap()
+        let model = DiscreteModel::build(example, &model).unwrap_or_else(|e| panic!("{}", e.as_error_message(text.as_str())));
+        let out = format!("lib_examples_{}", example);
+        Compiler::from_discrete_model(&model, out.as_str()).unwrap()
     }
 
     #[test]
-    fn test_logistic_ds_example(example: &str) {
-                let inputs = vec![];
-                let mut u0 = vec![1.];
-                let mut up0 = vec![1.];
-                let mut res = vec![0.];
-                compiler.set_inputs(inputs.as_slice()).unwrap();
-                compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice()).unwrap();
-                compiler.residual(0., u0.as_slice(), up0.as_slice(), res.as_mut_slice()).unwrap();
-                let tensor = compiler.get_tensor_data($tensor_name).unwrap();
-                assert_relative_eq!(tensor, $expected_value.as_slice());
+    fn test_logistic_ds_example() {
+        let compiler = ds_example_compiler("logistic");
+        let r = 0.5;
+        let k = 0.5;
+        let y = 0.5;
+        let dydt = r * y * (1. - y / k);
+        let z = 2. * y;
+        let dzdt = 2. * dydt;
+        let inputs = vec![r, k];
+        let mut u0 = vec![y, z];
+        let mut up0 = vec![dydt, dzdt];
+        let mut data = compiler.get_new_data();
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
 
-        assert_eq!(model_info.errors.len(), 0);
-        let discrete_model = DiscreteModel::from(&model_info);
-        let object = Compiler::from_discrete_model(&discrete_model).unwrap();
-        let path = Path::new("main.o");
-        object.write_object_file(path).unwrap();
+        u0 = vec![y, z];
+        up0 = vec![dydt, dzdt];
+        let mut res = vec![1., 1.];
+
+        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        let expected_value = vec![0., 0.];
+        assert_relative_eq!(res.as_slice(), expected_value.as_slice());
     }
 
     #[test]
@@ -303,7 +233,7 @@ mod tests {
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
         let discrete_model = DiscreteModel::from(&model_info);
-        let object = Compiler::from_discrete_model(&discrete_model).unwrap();
+        let object = Compiler::from_discrete_model(&discrete_model, "lib_test_object_file").unwrap();
         let path = Path::new("main.o");
         object.write_object_file(path).unwrap();
     }

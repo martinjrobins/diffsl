@@ -51,6 +51,7 @@ struct SundialsData {
     linear_solver: SUNLinearSolver, 
     options: Options,
     compiler: Compiler,
+    model_data: Vec<f64>,
 }
 
 pub struct Sundials {
@@ -70,7 +71,7 @@ impl Sundials {
         let yy_slice = unsafe { slice::from_raw_parts(N_VGetArrayPointer(y), data.number_of_states) };
         let yp_slice = unsafe { slice::from_raw_parts(N_VGetArrayPointer(yp), data.number_of_states) };
         let rr_slice = unsafe { slice::from_raw_parts_mut(N_VGetArrayPointer(rr), data.number_of_states) };
-        data.compiler.residual(t, yy_slice, yp_slice, rr_slice).unwrap();
+        data.compiler.residual(t, yy_slice, yp_slice, data.model_data.as_mut_slice(), rr_slice).unwrap();
         io::stdout().flush().unwrap();
         0
     }   
@@ -87,7 +88,7 @@ impl Sundials {
 
 
     pub fn from_discrete_model<'m>(model: &'m DiscreteModel, options: Options) -> Result<Sundials> {
-        let compiler = Compiler::from_discrete_model(model).unwrap();
+        let compiler = Compiler::from_discrete_model(model, model.name()).unwrap();
         let number_of_states = compiler.number_of_states() as i64;
         let number_of_parameters = compiler.number_of_parameters();
 
@@ -201,6 +202,7 @@ impl Sundials {
             Self::check(IDASetId(ida_mem, id))?;
 
 
+            let model_data = compiler.get_new_data();
             let mut data = Box::new(
                 SundialsData {
                     number_of_states: usize::try_from(number_of_states).unwrap(),
@@ -215,6 +217,7 @@ impl Sundials {
                     linear_solver,
                     options,
                     compiler,
+                    model_data,
                 }
             );
             Self::check(IDASetUserData(ida_mem, &mut *data as *mut _ as *mut c_void))?;
@@ -227,7 +230,7 @@ impl Sundials {
     }
 
     pub fn solve(&mut self, times: &Array1<f64>, inputs: &Array1<f64>) -> Result<Array2<f64>> {
-        self.data.compiler.set_inputs(inputs.as_slice().unwrap()).unwrap();
+        self.data.compiler.set_inputs(inputs.as_slice().unwrap(), self.data.model_data.as_mut_slice()).unwrap();
         let number_of_timesteps = times.len();
         let number_of_outputs = self.data.compiler.number_of_outputs();
         let mut out_return = Array2::zeros((number_of_timesteps, number_of_outputs).f());
@@ -242,7 +245,7 @@ impl Sundials {
                 N_VConst(0.0, self.data.yp_s[is]);
             }
 
-            self.data.compiler.set_u0(y_slice, yp_slice).unwrap();
+            self.data.compiler.set_u0(y_slice, yp_slice, self.data.model_data.as_mut_slice()).unwrap();
 
             let t0 = times[0];
 
@@ -252,10 +255,10 @@ impl Sundials {
 
             Self::check(IDAGetConsistentIC(self.ida_mem, self.data.yy, self.data.yp))?;
             
-            self.data.compiler.calc_out(t0, y_slice, yp_slice).unwrap();
+            self.data.compiler.calc_out(t0, y_slice, yp_slice, self.data.model_data.as_mut_slice()).unwrap();
 
             {
-                let data_out = self.data.compiler.get_tensor_data("out").unwrap();
+                let data_out = self.data.compiler.get_tensor_data("out", self.data.model_data.as_mut_slice()).unwrap();
                 for j in 0..data_out.len() {
                     out_return[[0, j]] = data_out[j];
                 }
@@ -280,10 +283,10 @@ impl Sundials {
                 //    IDAGetSens(self.ida_mem, & mut tret as *mut realtype, self.data.yy_s.as_mut_ptr());
                 //}
 
-                self.data.compiler.calc_out(t_next, y_slice, yp_slice).unwrap();
+                self.data.compiler.calc_out(t_next, y_slice, yp_slice, self.data.model_data.as_mut_slice()).unwrap();
 
                 {
-                    let data_out = self.data.compiler.get_tensor_data("out").unwrap();
+                    let data_out = self.data.compiler.get_tensor_data("out", self.data.model_data.as_mut_slice()).unwrap();
                     for j in 0..data_out.len() {
                         out_return[[t_i, j]] = data_out[j];
                     }

@@ -186,7 +186,7 @@ mod tests {
         let text = std::fs::read_to_string(format!("examples/{}.ds", example)).unwrap();
         let model = parse_ds_string(text.as_str()).unwrap();
         let model = DiscreteModel::build(example, &model).unwrap_or_else(|e| panic!("{}", e.as_error_message(text.as_str())));
-        let out = format!("lib_examples_{}", example);
+        let out = format!("test_output/lib_examples_{}", example);
         Compiler::from_discrete_model(&model, out.as_str()).unwrap()
     }
 
@@ -228,7 +228,7 @@ mod tests {
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
         let discrete_model = DiscreteModel::from(&model_info);
-        let object = Compiler::from_discrete_model(&discrete_model, "lib_test_object_file").unwrap();
+        let object = Compiler::from_discrete_model(&discrete_model, "test_output/lib_test_object_file").unwrap();
         let path = Path::new("main.o");
         object.write_object_file(path).unwrap();
     }

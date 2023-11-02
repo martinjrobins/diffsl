@@ -553,7 +553,7 @@ mod tests {
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
         let discrete_model = DiscreteModel::from(&model_info);
-        let object = Compiler::from_discrete_model(&discrete_model, "compiler_test_object_file").unwrap();
+        let object = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_object_file").unwrap();
         let path = Path::new("main.o");
         object.write_object_file(path).unwrap();
     }
@@ -591,7 +591,7 @@ mod tests {
                         panic!("{}", e.as_error_message(full_text.as_str()));
                     }
                 };
-                let compiler = Compiler::from_discrete_model(&discrete_model, "tensor_test_$name").unwrap();
+                let compiler = Compiler::from_discrete_model(&discrete_model, concat!("test_output/compiler_tensor_test_", stringify!($name))).unwrap();
                 let inputs = vec![];
                 let mut u0 = vec![1.];
                 let mut up0 = vec![1.];
@@ -660,7 +660,7 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::from_discrete_model(&discrete_model, "compiler_test_additional_functions").unwrap();
+        let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_additional_functions").unwrap();
         let (n_states, n_inputs, n_outputs, n_data, n_indices) = compiler.get_dims();
         assert_eq!(n_states, 2);
         assert_eq!(n_inputs, 1);

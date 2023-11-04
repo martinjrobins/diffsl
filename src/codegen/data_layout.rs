@@ -37,11 +37,14 @@ impl DataLayout {
         let mut layout_map = HashMap::new();
 
         let mut add_tensor = |tensor: &Tensor| {
+            let is_state = tensor.name() == "u" || tensor.name() == "dudt";
             // insert the data (non-zeros) for each tensor
             layout_map.insert(tensor.name().to_string(), tensor.layout_ptr().clone());
-            data_index_map.insert(tensor.name().to_string(), data.len());
-            data_length_map.insert(tensor.name().to_string(), tensor.nnz());
-            data.extend(vec![0.0; tensor.nnz()]);
+            if !is_state {
+                data_index_map.insert(tensor.name().to_string(), data.len());
+                data_length_map.insert(tensor.name().to_string(), tensor.nnz());
+                data.extend(vec![0.0; tensor.nnz()]);
+            }
 
 
             // add the translation info for each block-tensor pair
@@ -87,6 +90,19 @@ impl DataLayout {
     // get the index of the data array for the given tensor name
     pub fn get_data_index(&self, name: &str) -> Option<usize> {
         self.data_index_map.get(name).map(|i| *i)
+    }
+    
+    pub fn format_data(&self, data: &[f64]) -> String {
+        let mut data_index_sorted: Vec<_> = self.data_index_map.iter().collect();
+        data_index_sorted.sort_by_key(|(_, index)| **index);
+        let mut s = String::new();
+        s += "[";
+        for (name, index) in data_index_sorted {
+            let nnz = self.data_length_map[name];
+            s += &format!("{}: {:?}, ", name, &data[*index..*index+nnz]);
+        }
+        s += "]";
+        s
     }
 
     pub fn get_tensor_data(&self, name: &str) -> Option<&[f64]> {

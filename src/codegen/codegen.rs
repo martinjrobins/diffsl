@@ -849,6 +849,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.insert_state(model.state(), model.state_dot());
         self.insert_data(model);
+        
+        for a in model.state_dep_defns() {
+            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+        }
 
         self.jit_compile_tensor(model.out(), Some(*self.get_var(model.out())))?;
         self.builder.build_return(None)?;

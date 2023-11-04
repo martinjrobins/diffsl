@@ -558,12 +558,57 @@ mod tests {
         object.write_object_file(path).unwrap();
     }
 
+    fn tensor_test_common(text: &str, tmp_loc: &str, tensor_name: &str) -> Vec<Vec<f64>> {
+        let full_text = format!("
+            {}
+        ", text);
+        let model = parse_ds_string(full_text.as_str()).unwrap();
+        let discrete_model = match DiscreteModel::build("$name", &model) {
+            Ok(model) => {
+                model
+            }
+            Err(e) => {
+                panic!("{}", e.as_error_message(full_text.as_str()));
+            }
+        };
+        let compiler = Compiler::from_discrete_model(&discrete_model, tmp_loc).unwrap();
+        let mut u0 = vec![1.];
+        let mut up0 = vec![1.];
+        let mut res = vec![0.];
+        let mut data = compiler.get_new_data();
+        let mut grad_data = Vec::new();
+        let (_n_states, n_inputs, _n_outputs, _n_data, _n_indices) = compiler.get_dims();
+        for _ in 0..n_inputs {
+            grad_data.push(compiler.get_new_data());
+        }
+        let mut results = Vec::new();
+        let inputs = vec![1.; n_inputs];
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        compiler.calc_out(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice()).unwrap();
+        results.push(compiler.get_tensor_data(tensor_name, data.as_slice()).unwrap().to_vec());
+        for i in 0..n_inputs {
+            let mut dinputs = vec![0.; n_inputs];
+            dinputs[i] = 1.0;
+            let mut ddata = compiler.get_new_data();
+            let mut du0 = vec![0.];
+            let mut dup0 = vec![0.];
+            let mut dres = vec![0.];
+            compiler.set_inputs_grad(inputs.as_slice(), dinputs.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
+            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), up0.as_mut_slice(), dup0.as_mut_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
+            compiler.residual_grad(0., u0.as_slice(), du0.as_slice(), up0.as_slice(), dup0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
+            compiler.calc_out_grad(0., u0.as_slice(), du0.as_slice(), up0.as_slice(), dup0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
+            results.push(compiler.get_tensor_data(tensor_name, ddata.as_slice()).unwrap().to_vec());
+        }
+        results
+    }
+
     macro_rules! tensor_test {
         ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
         $(
             #[test]
             fn $name() {
-                let text = $text;
                 let full_text = format!("
                     {}
                     u_i {{
@@ -581,27 +626,10 @@ mod tests {
                     out_i {{
                         y,
                     }}
-                ", text);
-                let model = parse_ds_string(full_text.as_str()).unwrap();
-                let discrete_model = match DiscreteModel::build("$name", &model) {
-                    Ok(model) => {
-                        model
-                    }
-                    Err(e) => {
-                        panic!("{}", e.as_error_message(full_text.as_str()));
-                    }
-                };
-                let compiler = Compiler::from_discrete_model(&discrete_model, concat!("test_output/compiler_tensor_test_", stringify!($name))).unwrap();
-                let inputs = vec![];
-                let mut u0 = vec![1.];
-                let mut up0 = vec![1.];
-                let mut res = vec![0.];
-                let mut data = compiler.get_new_data();
-                compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
-                compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
-                compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
-                let tensor = compiler.get_tensor_data($tensor_name, data.as_slice()).unwrap();
-                assert_relative_eq!(tensor, $expected_value.as_slice());
+                ", $text);
+                let tmp_loc = format!("test_output/compiler_tensor_test_{}", stringify!($name));
+                let results = tensor_test_common(full_text.as_str(), tmp_loc.as_str(), $tensor_name);
+                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
             }
         )*
         }
@@ -628,6 +656,51 @@ mod tests {
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![1., 6.],
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![5., 11.],
     }
+
+    macro_rules! tensor_grad_test {
+        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let full_text = format!("
+                    in = [p]
+                    p {{
+                        1,
+                    }}
+                    u_i {{
+                        y = p,
+                    }}
+                    dudt_i {{
+                        dydt = p,
+                    }}
+                    {}
+                    F_i {{
+                        dydt,
+                    }}
+                    G_i {{
+                        y,
+                    }}
+                    out_i {{
+                        y,
+                    }}
+                ", $text);
+                let tmp_loc = format!("test_output/compiler_tensor_grad_test_{}", stringify!($name));
+                let results = tensor_test_common(full_text.as_str(), tmp_loc.as_str(), $tensor_name);
+                assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+            }
+        )*
+        }
+    }
+    
+    tensor_grad_test! {
+        const_grad: "r { 3 }" expect "r" vec![0.],
+        const_vec_grad: "r_i { 3, 4 }" expect "r" vec![0., 0.],
+        input_grad: "r { 2 * p * p }" expect "r" vec![4.],
+        input_vec_grad: "r_i { 2 * p * p, 3 * p }" expect "r" vec![4., 3.],
+        state_grad: "r { 2 * y }" expect "r" vec![2.],
+        input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.],
+    }
+
 
     #[test]
     fn test_additional_functions() {

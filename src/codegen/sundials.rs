@@ -87,8 +87,8 @@ impl Sundials {
     }
 
 
-    pub fn from_discrete_model<'m>(model: &'m DiscreteModel, options: Options) -> Result<Sundials> {
-        let compiler = Compiler::from_discrete_model(model, model.name()).unwrap();
+    pub fn from_discrete_model<'m>(model: &'m DiscreteModel, options: Options, out: &str) -> Result<Sundials> {
+        let compiler = Compiler::from_discrete_model(model, out).unwrap();
         let number_of_states = compiler.number_of_states() as i64;
         let number_of_parameters = compiler.number_of_parameters();
 
@@ -403,7 +403,7 @@ mod tests {
         let discrete = DiscreteModel::from(&model_info);
         println!("{}", discrete);
         let options = Options::new();
-        let mut sundials = Sundials::from_discrete_model(&discrete, options).unwrap();
+        let mut sundials = Sundials::from_discrete_model(&discrete, options, "test_output/sundials_logistic_growth").unwrap();
 
         let times = Array::linspace(0., 1., 5);
 

@@ -14,6 +14,7 @@ use std::process::Command;
 
 
 use super::codegen::CalcOutGradientFunc;
+use super::codegen::CompileGradientArgType;
 use super::codegen::GetDimsFunc;
 use super::codegen::GetOutFunc;
 use super::codegen::ResidualGradientFunc;
@@ -90,15 +91,15 @@ impl Compiler {
                 let mut codegen = CodeGen::new(model, &context, module, real_type, real_type_str);
                 
                 let _set_u0 = codegen.compile_set_u0(model)?;
-                let _set_u0_grad = codegen.compile_gradient(_set_u0, &[false, true, false, false])?;
+                let _set_u0_grad = codegen.compile_gradient(_set_u0, &[CompileGradientArgType::Dup, CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
                 let _residual = codegen.compile_residual(model)?;
-                let _residual_grad = codegen.compile_gradient(_residual, &[true, false, false, false, true, false])?;
+                let _residual_grad = codegen.compile_gradient(_residual, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Const, CompileGradientArgType::DupNoNeed])?;
                 let _calc_out = codegen.compile_calc_out(model)?;
-                let _calc_out_grad = codegen.compile_gradient(_calc_out, &[true, false, false, false, true])?;
+                let _calc_out_grad = codegen.compile_gradient(_calc_out, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Const])?;
                 let _set_id = codegen.compile_set_id(model)?;
                 let _get_dims= codegen.compile_get_dims(model)?;
                 let _set_inputs = codegen.compile_set_inputs(model)?;
-                let _set_inputs_grad = codegen.compile_gradient(_set_inputs, &[false, false])?;
+                let _set_inputs_grad = codegen.compile_gradient(_set_inputs, &[CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
                 let _get_output = codegen.compile_get_tensor(model, "out")?;
                 
                 let pre_enzyme_bitcodefilename = format!("{}.pre-enzyme.bc", out);
@@ -701,6 +702,62 @@ mod tests {
         input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.],
     }
 
+
+    #[test]
+    fn test_repeated_grad() {
+        let full_text = "
+            in = [p]
+            p {
+                1,
+            }
+            u_i {
+                y = p,
+            }
+            dudt_i {
+                dydt = 1,
+            }
+            r {
+                2 * y * p,
+            }
+            F_i {
+                dydt,
+            }
+            G_i {
+                r,
+            }
+            out_i {
+                y,
+            }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = match DiscreteModel::build("test_repeated_grad", &model) {
+            Ok(model) => {
+                model
+            }
+            Err(e) => {
+                panic!("{}", e.as_error_message(full_text));
+            }
+        };
+        let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_repeated_grad").unwrap();
+        let mut u0 = vec![1.];
+        let mut up0 = vec![1.];
+        let mut du0 = vec![1.];
+        let mut dup0 = vec![1.];
+        let mut res = vec![0.];
+        let mut dres = vec![0.];
+        let mut data = compiler.get_new_data();
+        let mut ddata = compiler.get_new_data();
+        let (_n_states, n_inputs, _n_outputs, _n_data, _n_indices) = compiler.get_dims();
+
+        for _ in 0..3 {
+            let inputs = vec![2.; n_inputs];
+            let dinputs = vec![1.; n_inputs];
+            compiler.set_inputs_grad(inputs.as_slice(), dinputs.as_slice(), data.as_mut_slice(), ddata.as_mut_slice()).unwrap();
+            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), up0.as_mut_slice(), dup0.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice()).unwrap();
+            compiler.residual_grad(0., u0.as_slice(), du0.as_slice(), up0.as_slice(), dup0.as_slice(), data.as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
+            assert_relative_eq!(dres.as_slice(), vec![-8.].as_slice());
+        }
+    }
 
     #[test]
     fn test_additional_functions() {

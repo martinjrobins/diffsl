@@ -35,6 +35,7 @@ pub type GetOutFunc = unsafe extern "C" fn(data: *const realtype, tensor_data: *
 struct EnzymeGlobals<'ctx> {
     enzyme_dup: GlobalValue<'ctx>,
     enzyme_const: GlobalValue<'ctx>,
+    enzyme_dupnoneed: GlobalValue<'ctx>,
 }
 
 impl<'ctx> EnzymeGlobals<'ctx> {
@@ -43,8 +44,15 @@ impl<'ctx> EnzymeGlobals<'ctx> {
         Ok(Self {
             enzyme_dup: module.add_global(int_type, Some(AddressSpace::default()), "enzyme_dup"),
             enzyme_const: module.add_global(int_type, Some(AddressSpace::default()), "enzyme_const"),
+            enzyme_dupnoneed: module.add_global(int_type, Some(AddressSpace::default()), "enzyme_dupnoneed"),
         })
     }
+}
+
+pub enum CompileGradientArgType {
+    Const,
+    Dup,
+    DupNoNeed,
 }
 
 
@@ -850,9 +858,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_state(model.state(), model.state_dot());
         self.insert_data(model);
         
-        for a in model.state_dep_defns() {
-            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
-        }
+        // TODO: could split state dep defns into before and after F and G
 
         self.jit_compile_tensor(model.out(), Some(*self.get_var(model.out())))?;
         self.builder.build_return(None)?;
@@ -898,6 +904,11 @@ impl<'ctx> CodeGen<'ctx> {
         for tensor in model.time_dep_defns() {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
         }
+        
+        // TODO: could split state dep defns into before and after F and G
+        for a in model.state_dep_defns() {
+            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+        }
 
         // F and G
         self.jit_compile_tensor(&model.lhs(), Some(*self.get_var(model.lhs())))?;
@@ -922,7 +933,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
     
-    pub fn compile_gradient(&mut self, original_function: FunctionValue<'ctx>, args_is_const: &[bool]) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_gradient(&mut self, original_function: FunctionValue<'ctx>, args_type: &[CompileGradientArgType]) -> Result<FunctionValue<'ctx>> {
         self.clear();
 
         let enzyme_globals = match self.enzyme_globals {
@@ -943,10 +954,12 @@ impl<'ctx> CodeGen<'ctx> {
             enzyme_fn_type.push(self.int_type.into());
             enzyme_fn_type.push(arg.get_type().into());
 
-            if !args_is_const[i] {
-                // active args with type T in the original funciton have 3 args of type [int, T, T]
-                fn_type.push(arg.get_type().into());
-                enzyme_fn_type.push(arg.get_type().into());
+            match args_type[i] {
+                CompileGradientArgType::Dup | CompileGradientArgType::DupNoNeed => {
+                    fn_type.push(arg.get_type().into());
+                    enzyme_fn_type.push(arg.get_type().into());
+                }
+                CompileGradientArgType::Const => {},
             }
         }
         let void_type = self.context.void_type(); 
@@ -959,26 +972,42 @@ impl<'ctx> CodeGen<'ctx> {
 
         let mut enzyme_fn_args: Vec<BasicMetadataValueEnum> = vec![original_function.as_global_value().as_pointer_value().into()];
         let enzyme_const = self.builder.build_load(enzyme_globals.enzyme_const.as_pointer_value(), "enzyme_const")?;
-        let enzyme_dup= self.builder.build_load(enzyme_globals.enzyme_dup.as_pointer_value(), "enzyme_const")?;
+        let enzyme_dup= self.builder.build_load(enzyme_globals.enzyme_dup.as_pointer_value(), "enzyme_dup")?;
+        let enzyme_dupnoneed = self.builder.build_load(enzyme_globals.enzyme_dupnoneed.as_pointer_value(), "enzyme_dupnoneed")?;
         for (i, _arg) in original_function.get_param_iter().enumerate() {
             let param_index = start_param_index[i];
             let fn_arg = function.get_nth_param(param_index).unwrap();
-            if args_is_const[i] {
-                // let enzyme know its a constant arg
-                enzyme_fn_args.push(enzyme_const.into());
+            match args_type[i] {
+                CompileGradientArgType::Dup => {
+                    // let enzyme know its an active arg
+                    enzyme_fn_args.push(enzyme_dup.into());
 
-                // pass in the arg value
-                enzyme_fn_args.push(fn_arg.into());
-            } else {
-                // let enzyme know its an active arg
-                enzyme_fn_args.push(enzyme_dup.into());
+                    // pass in the arg value
+                    enzyme_fn_args.push(fn_arg.into());
 
-                // pass in the arg value
-                enzyme_fn_args.push(fn_arg.into());
+                    // pass in the darg value
+                    let fn_darg = function.get_nth_param(param_index + 1).unwrap();
+                    enzyme_fn_args.push(fn_darg.into());
+                },
+                CompileGradientArgType::DupNoNeed => {
+                    // let enzyme know its an active arg we don't need
+                    enzyme_fn_args.push(enzyme_dupnoneed.into());
 
-                // pass in the darg value
-                let fn_darg = function.get_nth_param(param_index + 1).unwrap();
-                enzyme_fn_args.push(fn_darg.into());
+                    // pass in the arg value
+                    enzyme_fn_args.push(fn_arg.into());
+
+                    // pass in the darg value
+                    let fn_darg = function.get_nth_param(param_index + 1).unwrap();
+                    enzyme_fn_args.push(fn_darg.into());
+                },
+                CompileGradientArgType::Const => {
+                    // let enzyme know its a constant arg
+                    enzyme_fn_args.push(enzyme_const.into());
+
+                    // pass in the arg value
+                    enzyme_fn_args.push(fn_arg.into());
+
+                },
             }
         }       
         

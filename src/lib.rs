@@ -1,10 +1,9 @@
-use std::{path::Path, ffi::OsStr, process::Command};
+use std::{path::Path, ffi::OsStr};
 use anyhow::{Result, anyhow};
 use codegen::Compiler;
 use continuous::ModelInfo;
 use discretise::DiscreteModel;
 use parser::{parse_ms_string, parse_ds_string};
-use utils::{find_executable, find_runtime_path};
 
 extern crate pest;
 #[macro_use]
@@ -23,8 +22,6 @@ pub struct CompilerOptions {
     pub wasm: bool,
     pub standalone: bool,
 }
-
-
 
 
 pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: CompilerOptions) -> Result<()> {
@@ -49,8 +46,6 @@ pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: Com
 }
 
 pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOptions, is_discrete: bool) -> Result<()> {
-    let CompilerOptions { bitcode_only, wasm, standalone } = options;
-    
     let is_continuous = !is_discrete;
     
     let continuous_ast = if is_continuous {
@@ -92,87 +87,12 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
         panic!("No model found");
     };
     let compiler = Compiler::from_discrete_model(&discrete_model, out)?;
-
-    // if we are only compiling to bitcode , we are done
-    if bitcode_only {
+    
+    if options.bitcode_only {
         return Ok(());
     }
-
-    let bitcode_filename = compiler.get_bitcode_filename();
     
-    // compile the bitcode to an object file or standalone wasm or executable
-    let emcc_varients = ["emcc"];
-    let clang_varients = ["clang", "clang-14"];
-    let command_name = if wasm { 
-        find_executable(&emcc_varients)?
-    } else { 
-        find_executable(&clang_varients)?
-    };
-    
-    
-    // link the object file and our runtime library
-    let output = if wasm {
-        let exported_functions = vec![
-            "Vector_destroy",
-            "Vector_create",
-            "Vector_create_with_capacity",
-            "Vector_push",
-            
-            "Options_destroy",
-            "Options_create",
-
-            "Sundials_destroy",
-            "Sundials_create",
-            "Sundials_init",
-            "Sundials_solve",
-        ];
-        let mut linked_files = vec![
-            "libdiffeq_runtime_lib_wasm.a",
-            "libsundials_idas_wasm.a",
-            "libargparse_wasm.a",
-        ];
-        if standalone {
-            linked_files.push("libdiffeq_runtime_wasm.a");
-        }
-        let linked_files = linked_files;
-        let runtime_path = find_runtime_path(&linked_files)?;
-        let mut command = Command::new(command_name);
-        command.arg("-o").arg(out).arg(bitcode_filename);
-        for file in linked_files {
-            command.arg(Path::new(runtime_path.as_str()).join(file));
-        }
-        if !standalone {
-            let exported_functions = exported_functions.into_iter().map(|s| format!("_{}", s)).collect::<Vec<_>>().join(",");
-            command.arg("-s").arg(format!("EXPORTED_FUNCTIONS={}", exported_functions));
-            command.arg("--no-entry");
-        }
-        command.output()
-    } else {
-        let mut command = Command::new(command_name);
-        command.arg("-o").arg(out).arg(out);
-        if standalone {
-            command.arg("-ldiffeq_runtime");
-        } else {
-            command.arg("-ldiffeq_runtime_lib");
-        }
-        command.output()
-    };
-
-    let output = match output {
-        Ok(output) => output,
-        Err(e) => {
-            return Err(anyhow!("Error running {}: {}", command_name, e));
-        }
-    };
-    
-    if let Some(code) = output.status.code() {
-        if code != 0 {
-            println!("{}", String::from_utf8_lossy(&output.stderr));
-            return Err(anyhow!("{} returned error code {}", command_name, code));
-        }
-    }
-
-    Ok(())
+    compiler.compile(options.standalone, options.wasm)
 }
 
 #[cfg(test)]

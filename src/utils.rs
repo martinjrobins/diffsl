@@ -38,7 +38,6 @@ pub fn find_runtime_path(libraries: &[&str] ) -> Result<String> {
         let mut found = true;
         for library in libraries {
             let library_path = Path::new(path).join(library);
-            println!("Checking {:?}", library_path);
             if !library_path.exists() {
                 found = false;
                 break;

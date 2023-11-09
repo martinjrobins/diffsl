@@ -183,14 +183,19 @@ impl Compiler {
         let enzyme_lib = Compiler::find_enzyme_lib()?;
         let out = self.borrow_output_base_filename();
         let object_filename = Compiler::get_object_filename(out);
-
-        let pre_enzyme_bitcodefilename = Compiler::get_pre_enzyme_bitcode_filename(out);
-        let output = Command::new(clang_name)
-            .arg(pre_enzyme_bitcodefilename.as_str())
+        let bitcodefilename = Compiler::get_bitcode_filename(out);
+        let mut command = Command::new(clang_name);
+        command.arg(bitcodefilename.as_str())
             .arg("-c")
             .arg(format!("-fplugin={}", enzyme_lib))
-            .arg("-o").arg(object_filename.as_str())
-            .output()?;
+            .arg("-o").arg(object_filename.as_str());
+    
+        if wasm {
+            command.arg("-target").arg("wasm32-unknown-emscripten");
+        }
+        
+        let output = command.output().unwrap();
+        
         
         if let Some(code) = output.status.code() {
             if code != 0 {
@@ -200,7 +205,7 @@ impl Compiler {
         }
         
         // link the object file and our runtime library
-        let output = if wasm {
+        let mut command = if wasm {
             let emcc_varients = ["emcc"];
             let command_name = find_executable(&emcc_varients)?;
             let exported_functions = vec![
@@ -237,27 +242,33 @@ impl Compiler {
                 command.arg("-s").arg(format!("EXPORTED_FUNCTIONS={}", exported_functions));
                 command.arg("--no-entry");
             }
-            command.output()
+            command
         } else {
             let mut command = Command::new(clang_name);
-            command.arg("-o").arg(out).arg(out);
+            command.arg("-o").arg(out).arg(object_filename.as_str());
             if standalone {
                 command.arg("-ldiffeq_runtime");
             } else {
                 command.arg("-ldiffeq_runtime_lib");
             }
-            command.output()
+            command
         };
+        
+        let output = command.output();
         
         let output = match output {
             Ok(output) => output,
             Err(e) => {
+                let args = command.get_args().map(|s| s.to_str().unwrap()).collect::<Vec<_>>().join(" ");
+                println!("{} {}", command.get_program().to_os_string().to_str().unwrap(), args);
                 return Err(anyhow!("Error linking in runtime: {}", e));
             }
         };
 
         if let Some(code) = output.status.code() {
             if code != 0 {
+                let args = command.get_args().map(|s| s.to_str().unwrap()).collect::<Vec<_>>().join(" ");
+                println!("{} {}", command.get_program().to_os_string().to_str().unwrap(), args);
                 println!("{}", String::from_utf8_lossy(&output.stderr));
                 return Err(anyhow!("Error linking in runtime, returned error code {}", code));
             }

@@ -223,9 +223,16 @@ impl Compiler {
                 "Sundials_solve",
             ];
             let mut linked_files = vec![
-                "libdiffeq_runtime_lib_wasm.a",
-                "libsundials_idas_wasm.a",
-                "libargparse_wasm.a",
+                "libdiffeq_runtime_lib.a",
+                "libsundials_idas.a",
+                "libsundials_sunlinsolklu.a",
+                "libklu.a",
+                "libamd.a",
+                "libcolamd.a",
+                "libbtf.a",
+                "libsuitesparseconfig.a",
+                "libsundials_sunmatrixsparse.a",
+                "libargparse.a",
             ];
             if standalone {
                 linked_files.push("libdiffeq_runtime_wasm.a");

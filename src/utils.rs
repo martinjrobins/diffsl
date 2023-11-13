@@ -36,7 +36,7 @@ pub fn find_runtime_path(libraries: &[&str] ) -> Result<String> {
     let emsdk_lib_paths = vec![emsdk_lib.as_str()];
     let lib_path_env = env::var("LIBRARY_PATH").unwrap_or("".to_owned());
     let library_paths = lib_path_env.split(":").collect::<Vec<_>>();
-    for path in emsdk_lib_paths.into_iter().chain(library_paths.into_iter()) {
+    for &path in emsdk_lib_paths.iter().chain(library_paths.iter()) {
         // check if all librarys are in the path
         let mut found = true;
         for library in libraries {
@@ -50,13 +50,13 @@ pub fn find_runtime_path(libraries: &[&str] ) -> Result<String> {
             return Ok(path.to_owned());
         }
     }
-    Err(anyhow!("Could not find {:?} in LIBRARY_PATH", libraries))
+    Err(anyhow!("Could not find {:?} in LIBRARY_PATH {:?}", libraries, emsdk_lib_paths.iter().chain(library_paths.iter())))
 }
 
 pub fn find_library_path(varients: &[& str]) -> Result<String> {
     let library_paths_env = env::var("LIBRARY_PATH").unwrap_or("".to_owned());
     let library_paths = library_paths_env.split(":").collect::<Vec<_>>();
-    for path in library_paths {
+    for &path in library_paths.iter() {
         // check if one of the varients is in the path
         for varient in varients {
             let library_path = Path::new(path).join(varient);
@@ -66,5 +66,5 @@ pub fn find_library_path(varients: &[& str]) -> Result<String> {
             }
         }
     }
-    Err(anyhow!("Could not find any of {:?} in LIBRARY_PATH", varients))
+    Err(anyhow!("Could not find any of {:?} in LIBRARY_PATH {:?}", varients, library_paths))
 }

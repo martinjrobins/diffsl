@@ -37,12 +37,14 @@ pub fn find_runtime_path(libraries: &[&str] ) -> Result<String> {
     let lib_path_env = env::var("LIBRARY_PATH").unwrap_or("".to_owned());
     let library_paths = lib_path_env.split(":").collect::<Vec<_>>();
     let all_paths = emsdk_lib_paths.into_iter().chain(library_paths.into_iter()).collect::<Vec<_>>();
+    let mut failed_paths = Vec::new();
     for &path in all_paths.iter() {
         // check if all librarys are in the path
         let mut found = true;
         for library in libraries {
             let library_path = Path::new(path).join(library);
             if !library_path.exists() {
+                failed_paths.push(library_path.as_os_str().to_str().unwrap().to_owned());
                 found = false;
                 break;
             }
@@ -51,7 +53,7 @@ pub fn find_runtime_path(libraries: &[&str] ) -> Result<String> {
             return Ok(path.to_owned());
         }
     }
-    Err(anyhow!("Could not find {:?} in LIBRARY_PATH {:?}", libraries, all_paths))
+    Err(anyhow!("Could not find {:?} in LIBRARY_PATH {:?}, failed to find {:?}", libraries, all_paths, failed_paths))
 }
 
 pub fn find_library_path(varients: &[& str]) -> Result<String> {

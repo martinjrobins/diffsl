@@ -359,11 +359,7 @@ impl<'a> AstKind<'a> {
     pub fn as_name(&self) -> Option<&str> {
         match self {
             AstKind::Name(n) => Some(n),
-            AstKind::IndexedName(n) => if n.indices.is_empty() {
-                Some(n.name)
-             } else {
-                None
-             },
+            AstKind::IndexedName(n) => Some(n.name),
             _ => None,
         }
     }

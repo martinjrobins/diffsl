@@ -1,5 +1,6 @@
 use std::{ops::Deref, hash::Hasher, hash::Hash, fmt, rc::Rc};
 use anyhow::{Result, anyhow};
+use itertools::Itertools;
 use ndarray::s;
 
 use super::{shape::Shape, tensor::Index, broadcast_shapes, TensorBlock};
@@ -271,13 +272,13 @@ impl Layout {
             n_dense_axes.unwrap()
         } else {
             if any_diagonal && !all_diagonal {
-                return Err(anyhow!("cannot broadcast diagonal and non-diagonal layouts, except for multiply"));
+                return Err(anyhow!("cannot broadcast diagonal and non-diagonal layouts, except for multiply. Layouts are [{}]", layouts.iter().map(|x| format!("{}", x)).join(", ")));
             }
             if any_sparse && !all_sparse {
-                return Err(anyhow!("cannot broadcast sparse and non-sparse layouts, except for multiply"));
+                return Err(anyhow!("cannot broadcast sparse and non-sparse layouts, except for multiply. Layouts are [{}]", layouts.iter().map(|x| format!("{}", x)).join(", ")));
             }
             if layouts.iter().any(|x| x.n_dense_axes != layouts[0].n_dense_axes) {
-                return Err(anyhow!("cannot broadcast diagonal layouts with different numbers of dense axes"));
+                return Err(anyhow!("cannot broadcast diagonal layouts with different numbers of dense axes. Layouts are [{}]", layouts.iter().map(|x| format!("{}", x)).join(", ")));
             } 
             layouts[0].n_dense_axes
         };

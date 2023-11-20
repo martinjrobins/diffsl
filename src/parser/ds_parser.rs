@@ -276,6 +276,9 @@ mod tests {
         const TEXT: &str = "
             test {
                 1,
+                1.0,
+                1.0e-3,
+                1e3,
             }
         ";
         let model = parse_string(TEXT).unwrap();
@@ -283,10 +286,13 @@ mod tests {
         assert_eq!(model.tensors.len(), 1);
         let tensor = model.tensors[0].kind.as_tensor().unwrap();
         assert_eq!(tensor.name(), "test");
-        assert_eq!(tensor.elmts().len(), 1);
-        let tensor_elmt = tensor.elmts()[0].kind.as_tensor_elmt().unwrap();
-        assert!(tensor_elmt.indices.is_none());
-        assert_eq!(tensor_elmt.expr.kind.as_real().unwrap(), 1.0);
+        assert_eq!(tensor.elmts().len(), 4);
+        let expect_values = vec![1.0, 1.0, 1.0e-3, 1e3];
+        for (i, elmt) in tensor.elmts().iter().enumerate() {
+            let tensor_elmt = elmt.kind.as_tensor_elmt().unwrap();
+            assert!(tensor_elmt.indices.is_none());
+            assert_eq!(tensor_elmt.expr.kind.as_real().unwrap(), expect_values[i]);
+        }
     }
 
     #[test]

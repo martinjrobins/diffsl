@@ -118,7 +118,7 @@ impl Env {
             Ok(layout) => Some(layout),
             Err(e) => {
                 self.errs.push(ValidationError::new(
-                    format!("{}", e),
+                    format!("{}. Op is {}, lhs is {}, rhs is {}.", e, op.op, left, right),
                     left.span,
                 ));
                 None

@@ -762,7 +762,15 @@ mod tests {
 
     tensor_test!{
         exp_function: "r { exp(2) }" expect "r" vec![f64::exp(2.0)],
+        pow_function: "r { pow(4, 0.5) }" expect "r" vec![2.0],
+        arcsinh_function: "r { arcsinh(0.5) }" expect "r" vec![f64::asinh(0.5)],
+        arccosh_function: "r { arccosh(2) }" expect "r" vec![f64::acosh(2.0)],
+        tanh_function: "r { tanh(0.5) }" expect "r" vec![f64::tanh(0.5)],
+        sinh_function: "r { sinh(0.5) }" expect "r" vec![f64::sinh(0.5)],
+        cosh_function: "r { cosh(0.5) }" expect "r" vec![f64::cosh(0.5)],
         exp_function_time: "r { exp(t) }" expect "r" vec![f64::exp(0.0)],
+        min_function: "r { min(2, 3) }" expect "r" vec![2.0],
+        max_function: "r { max(2, 3) }" expect "r" vec![3.0],
         sigmoid_function: "r { sigmoid(0.1) }" expect "r" vec![1.0 / (1.0 + f64::exp(-0.1))],
         scalar: "r {2}" expect "r" vec![2.0,],
         constant: "r_i {2, 3}" expect "r" vec![2., 3.],
@@ -780,6 +788,7 @@ mod tests {
         sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![1., 8.],
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![1., 6.],
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![5., 11.],
+        sparse_matrix_vect_multiply_zero_row: "A_ij { (0, 1): 2 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![4.],
     }
 
     macro_rules! tensor_grad_test {

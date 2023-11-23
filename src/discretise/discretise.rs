@@ -950,11 +950,13 @@ mod tests {
         dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" = "A_ij (2,2) { (0, 0)(1, 1): 1, (0, 1)(1, 1): 2, (1, 0)(1, 1): 3, (1, 1)(1, 1): 4 }",
         diag_matrix: "A_ij { (0, 0): 1, (1, 1): 4 }" expect "A" = "A_ij (2i,2i) { (0, 0)(1, 1): 1, (1, 1)(1, 1): 4 }",
         sparse_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 1): 4 }" expect "A" = "A_ij (2s,2s) { (0, 0)(1, 1): 1, (0, 1)(1, 1): 2, (1, 1)(1, 1): 4 }",
+        sparse_row_matrix: "A_ij { (0, 1): 2, (0, 2): 4 }" expect "A" = "A_ij (1s,3s) { (0, 1)(1, 1): 2, (0, 2)(1, 1): 4 }",
         same_sparsity: "A_i { (0): 1, (1): 1, (3): 1 } B_i { (0): 2, (1): 3, (3): 4 } C_i { A_i + B_i, }" expect "C" = "C_i (4s) { (0)(4s): A_i + B_i (4s) }",
         diagonal: "A_ij { (0..2, 0..2): 1 } " expect "A" = "A_ij (2i,2i) { (0, 0)(2i, 2i): 1 }",
         concat_diags: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2, 2): 1 }" expect "B" = "B_ij (3i,3i) { (0, 0)(2i,2i): A_ij (2i, 2i), (2, 2)(1, 1): 1 }",
         sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2s, 2s) }",
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2i, 2i) }",
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2, 2) }",
+        sparse_matrix_vect_multiply_zero_row: "A_ij { (0, 0): 1, (0, 1): 2 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (1) { (0)(1): A_ij * x_j (1, 2) }",
     );
 }

@@ -385,7 +385,7 @@ mod tests {
     use ndarray::{Array, array, s};
     use crate::continuous::ModelInfo;
     use crate::discretise::DiscreteModel;
-    use crate::parser::parse_ms_string;
+    use crate::parser::{parse_ms_string, parse_ds_string};
     use crate::codegen::{Options, Sundials};
     
     #[test]
@@ -419,6 +419,24 @@ mod tests {
         let y_check = k / ((k - y0) * (-r * times).mapv(f64::exp) / y0 + 1.);
         assert_relative_eq!(y_check, out.slice(s![.., 0]), epsilon=1e-5);
         assert_relative_eq!(y_check * 2., out.slice(s![.., 1]), epsilon=1e-5);
+
+        sundials.destroy();
+    }
+    
+    #[test]
+    fn test_example() {
+        let example = "test";
+        let text = std::fs::read_to_string(format!("examples/{}.ds", example)).unwrap();
+        let model = parse_ds_string(text.as_str()).unwrap();
+        let model = DiscreteModel::build(example, &model).unwrap_or_else(|e| panic!("{}", e.as_error_message(text.as_str())));
+        let options = Options::new();
+        let mut sundials = Sundials::from_discrete_model(&model, options, "test_output/sundials_test").unwrap();
+        let times = Array::linspace(0., 1000., 5);
+
+        // solve
+        let inputs = array![];
+        let out = sundials.solve(&times, &inputs).unwrap();
+        println!("{}", out);
 
         sundials.destroy();
     }

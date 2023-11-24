@@ -20,32 +20,40 @@ use crate::codegen::{Translation, TranslationFrom, TranslationTo, DataLayout};
 ///
 /// Calling this is innately `unsafe` because there's no guarantee it doesn't
 /// do `unsafe` operations internally.
-pub type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32, rr: *mut realtype);
-pub type ResidualGradientFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, du: *const realtype, up: *const realtype, dup: *const realtype, data: *mut realtype, ddata: *mut realtype, indices: *const i32, rr: *mut realtype, drr: *mut realtype);
-pub type U0Func = unsafe extern "C" fn(data: *mut realtype, indices: *const i32, u: *mut realtype, up: *mut realtype);
-pub type U0GradientFunc = unsafe extern "C" fn(data: *mut realtype, ddata: *mut realtype, indices: *const i32, u: *mut realtype, du: *mut realtype, up: *mut realtype, dup: *mut realtype);
-pub type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, indices: *const i32);
-pub type CalcOutGradientFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, du: *const realtype, up: *const realtype, dup: *const realtype, data: *mut realtype, ddata: *mut realtype, indices: *const i32);
-pub type GetDimsFunc = unsafe extern "C" fn(states: *mut u32, inputs: *mut u32, outputs: *mut u32, data: *mut u32, indices: *const u32);
+pub type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, rr: *mut realtype);
+pub type ResidualGradientFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, du: *const realtype, up: *const realtype, dup: *const realtype, data: *mut realtype, ddata: *mut realtype, rr: *mut realtype, drr: *mut realtype);
+pub type U0Func = unsafe extern "C" fn(data: *mut realtype, u: *mut realtype, up: *mut realtype);
+pub type U0GradientFunc = unsafe extern "C" fn(data: *mut realtype, ddata: *mut realtype, u: *mut realtype, du: *mut realtype, up: *mut realtype, dup: *mut realtype);
+pub type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype);
+pub type CalcOutGradientFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, du: *const realtype, up: *const realtype, dup: *const realtype, data: *mut realtype, ddata: *mut realtype);
+pub type GetDimsFunc = unsafe extern "C" fn(states: *mut u32, inputs: *mut u32, outputs: *mut u32, data: *mut u32);
 pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const realtype, data: *mut realtype);
 pub type SetInputsGradientFunc = unsafe extern "C" fn(inputs: *const realtype, dinputs: *const realtype, data: *mut realtype, ddata: *mut realtype);
 pub type SetIdFunc = unsafe extern "C" fn(id: *mut realtype);
 pub type GetOutFunc = unsafe extern "C" fn(data: *const realtype, tensor_data: *mut *mut realtype, tensor_size: *mut u32);
 
-struct EnzymeGlobals<'ctx> {
+struct Globals<'ctx> {
     enzyme_dup: GlobalValue<'ctx>,
     enzyme_const: GlobalValue<'ctx>,
     enzyme_dupnoneed: GlobalValue<'ctx>,
+    indices: GlobalValue<'ctx>,
 }
 
-impl<'ctx> EnzymeGlobals<'ctx> {
-    fn new(context: &'ctx inkwell::context::Context, module: &Module<'ctx>) -> Result<Self> {
+impl<'ctx> Globals<'ctx> {
+    fn new(layout: &DataLayout, context: &'ctx inkwell::context::Context, module: &Module<'ctx>) -> Result<Self> {
         let int_type = context.i32_type();
-        Ok(Self {
+        let indices_array_type = int_type.array_type(u32::try_from(layout.indices().len()).unwrap());
+        let indices_array_values = layout.indices().iter().map(|&i| int_type.const_int(i.try_into().unwrap(), false)).collect::<Vec<IntValue>>();
+        let indices_value = int_type.const_array(indices_array_values.as_slice());
+        let _int_ptr_type = int_type.ptr_type(AddressSpace::default());
+        let globals = Self {
             enzyme_dup: module.add_global(int_type, Some(AddressSpace::default()), "enzyme_dup"),
             enzyme_const: module.add_global(int_type, Some(AddressSpace::default()), "enzyme_const"),
             enzyme_dupnoneed: module.add_global(int_type, Some(AddressSpace::default()), "enzyme_dupnoneed"),
-        })
+            indices: module.add_global(indices_array_type, Some(AddressSpace::default()), "indices"),
+        };
+        globals.indices.set_initializer(&indices_value);
+        Ok(globals)
     }
 }
 
@@ -69,7 +77,7 @@ pub struct CodeGen<'ctx> {
     real_type_str: String,
     int_type: IntType<'ctx>,
     layout: DataLayout,
-    enzyme_globals: Option<EnzymeGlobals<'ctx>>,
+    globals: Option<Globals<'ctx>>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -85,7 +93,8 @@ impl<'ctx> CodeGen<'ctx> {
                 fpm.add_reassociate_pass();
                 fpm.initialize();
         let builder = context.create_builder();
-        let enzyme_globals = EnzymeGlobals::new(context, &module).ok();
+        let layout = DataLayout::new(model);
+        let globals = Globals::new(&layout, context, &module).ok();
         Self {
             context: &context,
             module,
@@ -97,9 +106,9 @@ impl<'ctx> CodeGen<'ctx> {
             functions: HashMap::new(),
             fn_value_opt: None,
             tensor_ptr_opt: None,
-            layout: DataLayout::new(model),
+            layout,
             int_type: context.i32_type(),
-            enzyme_globals,
+            globals,
         }
     }
 
@@ -124,9 +133,18 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_tensor(model.lhs());
         self.insert_tensor(model.rhs());
     }
+    
+    fn insert_indices(&mut self) {
+        let indices = self.globals.as_ref().unwrap().indices;
+        let zero = self.context.i32_type().const_int(0, false);
+        let ptr = unsafe { indices.as_pointer_value().const_in_bounds_gep(&[zero, zero]) };
+        self.variables.insert("indices".to_owned(), ptr);
+    }
+
     fn insert_param(&mut self, name: &str, value: PointerValue<'ctx>) {
         self.variables.insert(name.to_owned(), value);
     }
+
     fn insert_state(&mut self, u: &Tensor, dudt: &Tensor) {
         let mut data_index = 0;
         for blk in u.elmts() {
@@ -415,7 +433,6 @@ impl<'ctx> CodeGen<'ctx> {
         // setup indices, loop through the nested loops
         let mut indices = Vec::new();
         let mut blocks = Vec::new();
-
 
         // allocate the contract sum if needed
         let (contract_sum, contract_by) = if let TranslationFrom::DenseContraction { contract_by, contract_len: _} = translation.source {
@@ -883,7 +900,7 @@ impl<'ctx> CodeGen<'ctx> {
             &[real_ptr_type.into(), int_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &[ "data", "indices", "u0", "dudt0"];
+        let fn_arg_names = &[ "data", "u0", "dudt0"];
         let function = self.module.add_function("set_u0", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -896,6 +913,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         self.insert_data(model);
+        self.insert_indices();
 
         for a in model.time_indep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
@@ -928,7 +946,7 @@ impl<'ctx> CodeGen<'ctx> {
             &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), int_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &["t", "u", "dudt", "data", "indices"];
+        let fn_arg_names = &["t", "u", "dudt", "data"];
         let function = self.module.add_function("calc_out", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -942,6 +960,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.insert_state(model.state(), model.state_dot());
         self.insert_data(model);
+        self.insert_indices();
         
         // TODO: could split state dep defns into before and after F and G
 
@@ -970,7 +989,7 @@ impl<'ctx> CodeGen<'ctx> {
             &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), int_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &["t", "u", "dudt", "data", "indices", "rr"];
+        let fn_arg_names = &["t", "u", "dudt", "data", "rr"];
         let function = self.module.add_function("residual", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -984,6 +1003,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.insert_state(model.state(), model.state_dot());
         self.insert_data(model);
+        self.insert_indices();
 
         // calculate time dependant definitions
         for tensor in model.time_dep_defns() {
@@ -1021,9 +1041,9 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn compile_gradient(&mut self, original_function: FunctionValue<'ctx>, args_type: &[CompileGradientArgType]) -> Result<FunctionValue<'ctx>> {
         self.clear();
 
-        let enzyme_globals = match self.enzyme_globals {
+        let globals = match self.globals {
             Some(ref globals) => globals,
-            None => panic!("enzyme globals not set"),
+            None => panic!("globals not set"),
         };
         
         // construct the gradient function
@@ -1056,9 +1076,9 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.position_at_end(basic_block);
 
         let mut enzyme_fn_args: Vec<BasicMetadataValueEnum> = vec![original_function.as_global_value().as_pointer_value().into()];
-        let enzyme_const = self.builder.build_load(enzyme_globals.enzyme_const.as_pointer_value(), "enzyme_const")?;
-        let enzyme_dup= self.builder.build_load(enzyme_globals.enzyme_dup.as_pointer_value(), "enzyme_dup")?;
-        let enzyme_dupnoneed = self.builder.build_load(enzyme_globals.enzyme_dupnoneed.as_pointer_value(), "enzyme_dupnoneed")?;
+        let enzyme_const = self.builder.build_load(globals.enzyme_const.as_pointer_value(), "enzyme_const")?;
+        let enzyme_dup= self.builder.build_load(globals.enzyme_dup.as_pointer_value(), "enzyme_dup")?;
+        let enzyme_dupnoneed = self.builder.build_load(globals.enzyme_dupnoneed.as_pointer_value(), "enzyme_dupnoneed")?;
         for (i, _arg) in original_function.get_param_iter().enumerate() {
             let param_index = start_param_index[i];
             let fn_arg = function.get_nth_param(param_index).unwrap();
@@ -1131,7 +1151,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         let function = self.module.add_function("get_dims", fn_type, None);
         let block = self.context.append_basic_block(function, "entry");
-        let fn_arg_names = &["states", "inputs", "outputs", "data", "indices"];
+        let fn_arg_names = &["states", "inputs", "outputs", "data"];
         self.builder.position_at_end(block);
 
         for (i, arg) in function.get_param_iter().enumerate() {
@@ -1139,6 +1159,8 @@ impl<'ctx> CodeGen<'ctx> {
             let alloca = self.function_arg_alloca(name, arg);
             self.insert_param(name, alloca);
         }
+        
+        self.insert_indices();
 
         let number_of_states = model.state().nnz() as u64;
         let number_of_inputs = model.inputs().iter().fold(0, |acc, x| acc + x.nnz()) as u64;

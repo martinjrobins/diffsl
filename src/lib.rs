@@ -111,6 +111,52 @@ mod tests {
     }
 
     #[test]
+    fn test_test_example() {
+        let compiler = ds_example_compiler("test");
+        let inputs = vec![];
+        let mut u0 = vec![0.0; 40];
+        let mut up0 = vec![0.0; 40];
+        let mut data = compiler.get_new_data();
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
+        println!("u0: {:?}", u0);
+        println!("up0: {:?}", up0);
+        let mut id = vec![0.0; 40];
+        compiler.set_id(id.as_mut_slice()).unwrap();
+        println!("id: {:?}", id);
+
+        let mut res = vec![0.0; 40];
+
+        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        println!("res: {:?}", res);
+
+        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        println!("res: {:?}", res);
+
+        for i in 0..40 {
+            let mut dyy = vec![0.0; 40];
+            let mut dyp = vec![0.0; 40];
+            dyy[i] = 1.0;
+            dyp[i] = 1.0;
+            let mut dres = vec![-123120.0; 40];
+            let mut ddata = compiler.get_new_data();
+            compiler.residual_grad(0.0, u0.as_slice(), dyy.as_mut_slice(), up0.as_slice(), dyp.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
+            println!("dres: {:?}", dres);
+        }
+        
+        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        println!("res: {:?}", res);
+
+        let varying1 = compiler.get_tensor_data("varying1", data.as_slice());
+        println!("varying1: {:?}", varying1);
+
+
+        compiler.calc_out(0.0, u0.as_slice(), up0.as_slice(), data.as_mut_slice()).unwrap();
+        let out = compiler.get_out(data.as_mut_slice());
+        println!("out: {:?}", out);
+    }
+
+    #[test]
     fn test_logistic_ds_example() {
         let compiler = ds_example_compiler("logistic");
         let r = 0.5;

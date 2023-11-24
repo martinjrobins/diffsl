@@ -102,11 +102,11 @@ impl Compiler {
                 let mut codegen = CodeGen::new(model, &context, module, real_type, real_type_str);
                 
                 let _set_u0 = codegen.compile_set_u0(model)?;
-                let _set_u0_grad = codegen.compile_gradient(_set_u0, &[CompileGradientArgType::Dup, CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
+                let _set_u0_grad = codegen.compile_gradient(_set_u0, &[CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
                 let _residual = codegen.compile_residual(model)?;
-                let _residual_grad = codegen.compile_gradient(_residual, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Const, CompileGradientArgType::DupNoNeed])?;
+                let _residual_grad = codegen.compile_gradient(_residual, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::DupNoNeed])?;
                 let _calc_out = codegen.compile_calc_out(model)?;
-                let _calc_out_grad = codegen.compile_gradient(_calc_out, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Const])?;
+                let _calc_out_grad = codegen.compile_gradient(_calc_out, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
                 let _set_id = codegen.compile_set_id(model)?;
                 let _get_dims= codegen.compile_get_dims(model)?;
                 let _set_inputs = codegen.compile_set_inputs(model)?;
@@ -323,11 +323,10 @@ impl Compiler {
             return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
         }
         self.with_data(|compiler| {
-            let indices_ptr = self.borrow_data_layout().indices().as_ptr();
             let yy_ptr = yy.as_mut_ptr();
             let yp_ptr = yp.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
-            unsafe { compiler.jit_functions.set_u0.call(data_ptr, indices_ptr, yy_ptr, yp_ptr); }
+            unsafe { compiler.jit_functions.set_u0.call(data_ptr, yy_ptr, yp_ptr); }
         });
         Ok(())
     }
@@ -353,14 +352,13 @@ impl Compiler {
             return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
         }
         self.with_data(|compiler| {
-            let indices_ptr = self.borrow_data_layout().indices().as_ptr();
             let yy_ptr = yy.as_mut_ptr();
             let yp_ptr = yp.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
             let dyy_ptr = dyy.as_mut_ptr();
             let dyp_ptr = dyp.as_mut_ptr();
             let ddata_ptr = ddata.as_mut_ptr();
-            unsafe { compiler.jit_grad_functions.set_u0_grad.call(data_ptr, ddata_ptr, indices_ptr, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr); }
+            unsafe { compiler.jit_grad_functions.set_u0_grad.call(data_ptr, ddata_ptr, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr); }
         });
         Ok(())
     }
@@ -380,13 +378,11 @@ impl Compiler {
             return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
         }
         self.with_data(|compiler| {
-            let layout = self.borrow_data_layout();
-            let indices_ptr = layout.indices().as_ptr();
             let yy_ptr = yy.as_ptr();
             let yp_ptr = yp.as_ptr();
             let rr_ptr = rr.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
-            unsafe { compiler.jit_functions.residual.call(t, yy_ptr, yp_ptr, data_ptr, indices_ptr, rr_ptr); }
+            unsafe { compiler.jit_functions.residual.call(t, yy_ptr, yp_ptr, data_ptr, rr_ptr); }
         });
         Ok(())
     }
@@ -428,8 +424,6 @@ impl Compiler {
             return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
         }
         self.with_data(|compiler| {
-            let layout = self.borrow_data_layout();
-            let indices_ptr = layout.indices().as_ptr();
             let yy_ptr = yy.as_ptr();
             let yp_ptr = yp.as_ptr();
             let rr_ptr = rr.as_mut_ptr();
@@ -438,7 +432,7 @@ impl Compiler {
             let drr_ptr = drr.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
             let ddata_ptr = ddata.as_mut_ptr();
-            unsafe { compiler.jit_grad_functions.residual_grad.call(t, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr, data_ptr, ddata_ptr, indices_ptr, rr_ptr, drr_ptr); }
+            unsafe { compiler.jit_grad_functions.residual_grad.call(t, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr, data_ptr, ddata_ptr, rr_ptr, drr_ptr); }
         });
         Ok(())
     }
@@ -455,12 +449,10 @@ impl Compiler {
             return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
         }
         self.with_data(|compiler| {
-            let layout = self.borrow_data_layout();
-            let indices_ptr = layout.indices().as_ptr();
             let yy_ptr = yy.as_ptr();
             let yp_ptr = yp.as_ptr();
             let data_ptr = data.as_mut_ptr();
-            unsafe { compiler.jit_functions.calc_out.call(t, yy_ptr, yp_ptr, data_ptr, indices_ptr); }
+            unsafe { compiler.jit_functions.calc_out.call(t, yy_ptr, yp_ptr, data_ptr ); }
         });
         Ok(())
     }
@@ -486,15 +478,13 @@ impl Compiler {
             return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
         }
         self.with_data(|compiler| {
-            let layout = self.borrow_data_layout();
-            let indices_ptr = layout.indices().as_ptr();
             let yy_ptr = yy.as_ptr();
             let yp_ptr = yp.as_ptr();
             let data_ptr = data.as_mut_ptr();
             let dyy_ptr = dyy.as_ptr();
             let dyp_ptr = dyp.as_ptr();
             let ddata_ptr = ddata.as_mut_ptr();
-            unsafe { compiler.jit_grad_functions.calc_out_grad.call(t, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr, data_ptr, ddata_ptr, indices_ptr); }
+            unsafe { compiler.jit_grad_functions.calc_out_grad.call(t, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr, data_ptr, ddata_ptr); }
         });
         Ok(())
     }
@@ -503,21 +493,20 @@ impl Compiler {
     /// 
     /// # Returns
     /// 
-    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data, n_indices)`
-    pub fn get_dims(&self) -> (usize, usize, usize, usize, usize) {
+    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data)`
+    pub fn get_dims(&self) -> (usize, usize, usize, usize) {
         let mut n_states = 0u32;
         let mut n_inputs= 0u32;
         let mut n_outputs = 0u32;
         let mut n_data= 0u32;
-        let mut n_indices = 0u32;
         self.with(|compiler| {
-            unsafe { compiler.data.jit_functions.get_dims.call(&mut n_states, &mut n_inputs, &mut n_outputs, &mut n_data, &mut n_indices); }
+            unsafe { compiler.data.jit_functions.get_dims.call(&mut n_states, &mut n_inputs, &mut n_outputs, &mut n_data); }
         });
-        (n_states as usize, n_inputs as usize, n_outputs as usize, n_data as usize, n_indices as usize)
+        (n_states as usize, n_inputs as usize, n_outputs as usize, n_data as usize)
     }
 
     pub fn set_inputs(&self, inputs: &[f64], data: &mut [f64]) -> Result<()> {
-        let (_, n_inputs, _, _, _) = self.get_dims();
+        let (_, n_inputs, _, _) = self.get_dims();
         if n_inputs != inputs.len() {
             return Err(anyhow!("Expected {} inputs, got {}", n_inputs, inputs.len()));
         }
@@ -532,7 +521,7 @@ impl Compiler {
     }
 
     pub fn set_inputs_grad(&self, inputs: &[f64], dinputs: &[f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
-        let (_, n_inputs, _, _, _) = self.get_dims();
+        let (_, n_inputs, _, _) = self.get_dims();
         if n_inputs != inputs.len() {
             return Err(anyhow!("Expected {} inputs, got {}", n_inputs, inputs.len()));
         }
@@ -558,7 +547,7 @@ impl Compiler {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        let (_, _, n_outputs, _, _) = self.get_dims();
+        let (_, _, n_outputs, _) = self.get_dims();
         let mut tensor_data_ptr: *mut f64 = std::ptr::null_mut();
         let mut tensor_data_len = 0u32;
         let tensor_data_ptr_ptr: *mut *mut f64 = &mut tensor_data_ptr;
@@ -572,7 +561,7 @@ impl Compiler {
     }
 
     pub fn set_id(&self, id: &mut [f64]) -> Result<()> {
-        let (n_states, _, _, _, _) = self.get_dims();
+        let (n_states, _, _, _) = self.get_dims();
         if n_states != id.len() {
             return Err(anyhow!("Expected {} states, got {}", n_states, id.len()));
         }
@@ -702,7 +691,7 @@ mod tests {
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
         let mut grad_data = Vec::new();
-        let (_n_states, n_inputs, _n_outputs, _n_data, _n_indices) = compiler.get_dims();
+        let (_n_states, n_inputs, _n_outputs, _n_data) = compiler.get_dims();
         for _ in 0..n_inputs {
             grad_data.push(compiler.get_new_data());
         }
@@ -779,13 +768,16 @@ mod tests {
         concatenate: "r_i {2, 3} k_i { r_i, 2 * r_i }" expect "k" vec![2., 3., 4., 6.],
         ones_matrix_dense: "I_ij { (0:2, 0:2): 1 }" expect "I" vec![1., 1., 1., 1.],
         dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" vec![1., 2., 3., 4.], 
+        dense_vector: "x_i { (0:4): 1, (4:5): 2 }" expect "x" vec![1., 1., 1., 1., 2.],
         identity_matrix_diagonal: "I_ij { (0..2, 0..2): 1 }" expect "I" vec![1., 1.],
         concatenate_diagonal: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" vec![1., 1., 1., 1.],
         identity_matrix_sparse: "I_ij { (0, 0): 1, (1, 1): 2 }" expect "I" vec![1., 2.],
         concatenate_sparse: "A_ij { (0, 0): 1, (1, 1): 2 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" vec![1., 2., 1., 2.],
         sparse_rearrange: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 }" expect "A" vec![1., 3., 2.],
+        sparse_rearrange2: "A_ij { (0, 1): 1, (1, 1): 2, (1, 0): 3, (2, 2): 4, (2, 1): 5 }" expect "A" vec![1., 3., 2., 5., 4.],
         sparse_expression: "A_ij { (0, 0): 1, (0, 1): 2, (1, 1): 3 } B_ij { 2 * A_ij }" expect "B" vec![2., 4., 6.],
         sparse_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![1., 8.],
+        sparse_rearrange_matrix_vect_multiply: "A_ij { (0, 1): 1, (1, 1): 2, (1, 0): 3, (2, 2): 4, (2, 1): 5 } x_i { 1, 2, 3 } b_i { A_ij * x_j }" expect "b" vec![2., 7., 22.],
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![1., 6.],
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![5., 11.],
         sparse_matrix_vect_multiply_zero_row: "A_ij { (0, 1): 2 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![4.],
@@ -880,7 +872,7 @@ mod tests {
         let mut dres = vec![0.];
         let mut data = compiler.get_new_data();
         let mut ddata = compiler.get_new_data();
-        let (_n_states, n_inputs, _n_outputs, _n_data, _n_indices) = compiler.get_dims();
+        let (_n_states, n_inputs, _n_outputs, _n_data) = compiler.get_dims();
 
         for _ in 0..3 {
             let inputs = vec![2.; n_inputs];
@@ -924,12 +916,11 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_additional_functions").unwrap();
-        let (n_states, n_inputs, n_outputs, n_data, n_indices) = compiler.get_dims();
+        let (n_states, n_inputs, n_outputs, n_data) = compiler.get_dims();
         assert_eq!(n_states, 2);
         assert_eq!(n_inputs, 1);
         assert_eq!(n_outputs, 3);
         assert_eq!(n_data, compiler.data_len());
-        assert_eq!(n_indices, compiler.borrow_data_layout().indices().len());
 
         let mut data = compiler.get_new_data();
         let inputs = vec![1.1];

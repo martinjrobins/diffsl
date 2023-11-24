@@ -385,7 +385,7 @@ mod tests {
     use ndarray::{Array, array, s};
     use crate::continuous::ModelInfo;
     use crate::discretise::DiscreteModel;
-    use crate::parser::{parse_ms_string, parse_ds_string};
+    use crate::parser::parse_ms_string;
     use crate::codegen::{Options, Sundials};
     
     #[test]

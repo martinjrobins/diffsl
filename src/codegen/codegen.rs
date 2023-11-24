@@ -894,10 +894,9 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn compile_set_u0<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
-        let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[real_ptr_type.into(), int_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            &[real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
         let fn_arg_names = &[ "data", "u0", "dudt0"];
@@ -940,10 +939,9 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn compile_calc_out<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
-        let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), int_ptr_type.into()]
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
         let fn_arg_names = &["t", "u", "dudt", "data"];
@@ -984,9 +982,8 @@ impl<'ctx> CodeGen<'ctx> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
-        let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), int_ptr_type.into(), real_ptr_type.into()]
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
         let fn_arg_names = &["t", "u", "dudt", "data", "rr"];
@@ -1145,7 +1142,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.clear();
         let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
         let fn_type = self.context.void_type().fn_type(
-            &[int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into() ]
+            &[int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into()]
             , false
         );
 
@@ -1165,12 +1162,10 @@ impl<'ctx> CodeGen<'ctx> {
         let number_of_states = model.state().nnz() as u64;
         let number_of_inputs = model.inputs().iter().fold(0, |acc, x| acc + x.nnz()) as u64;
         let number_of_outputs = model.out().nnz() as u64;
-        let indices_len = self.layout.indices().len() as u64;
         let data_len = self.layout.data().len() as u64;
         self.builder.build_store(*self.get_param("states"), self.int_type.const_int(number_of_states, false))?;
         self.builder.build_store(*self.get_param("inputs"), self.int_type.const_int(number_of_inputs, false))?;
         self.builder.build_store(*self.get_param("outputs"), self.int_type.const_int(number_of_outputs, false))?;
-        self.builder.build_store(*self.get_param("indices"), self.int_type.const_int(indices_len, false))?;
         self.builder.build_store(*self.get_param("data"), self.int_type.const_int(data_len, false))?;
         self.builder.build_return(None)?;
 

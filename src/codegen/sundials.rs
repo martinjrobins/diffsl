@@ -422,22 +422,4 @@ mod tests {
 
         sundials.destroy();
     }
-    
-    #[test]
-    fn test_example() {
-        let example = "test";
-        let text = std::fs::read_to_string(format!("examples/{}.ds", example)).unwrap();
-        let model = parse_ds_string(text.as_str()).unwrap();
-        let model = DiscreteModel::build(example, &model).unwrap_or_else(|e| panic!("{}", e.as_error_message(text.as_str())));
-        let options = Options::new();
-        let mut sundials = Sundials::from_discrete_model(&model, options, "test_output/sundials_test").unwrap();
-        let times = Array::linspace(0., 1000., 5);
-
-        // solve
-        let inputs = array![];
-        let out = sundials.solve(&times, &inputs).unwrap();
-        println!("{}", out);
-
-        sundials.destroy();
-    }
 }

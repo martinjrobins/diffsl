@@ -86,7 +86,16 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             } else {
                 None
             };
-            let mut head_term = parse_value(inner.next().unwrap());
+            let mut head_term =  match sign {
+                Some(s) => Ast {
+                    kind: AstKind::Monop(ast::Monop {
+                        op: s,
+                        child: Box::new(parse_value(inner.next().unwrap())),
+                    }),
+                    span,
+                },
+                None => parse_value(inner.next().unwrap())
+            };
             while inner.peek().is_some() {
                 //term_op    = @{ "-"|"+" }
                 let term_op = parse_sign(inner.next().unwrap());
@@ -104,17 +113,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                     span: subspan,
                 };
             }
-            if sign.is_some() {
-                Ast {
-                    kind: AstKind::Monop(ast::Monop {
-                        op: sign.unwrap(),
-                        child: Box::new(head_term),
-                    }),
-                    span,
-                }
-            } else {
-                head_term
-            }
+            head_term
         }
 
         //term       = { factor ~ (factor_op ~ factor)* }

@@ -39,6 +39,7 @@ pub struct DiscreteModel<'s> {
     state: Tensor<'s>,
     state_dot: Tensor<'s>,
     is_algebraic: Vec<bool>,
+    stop: Option<Tensor<'s>>,
 }
 
 impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
@@ -66,6 +67,9 @@ impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
         }
         write!(f, "{}\n", self.lhs)?;
         write!(f, "{}\n", self.rhs)?;
+        if let Some(stop) = &self.stop {
+            write!(f, "{}\n", stop)?;
+        }
         write!(f, "{}\n", self.out)
     }
 }
@@ -84,6 +88,7 @@ impl<'s> DiscreteModel<'s> {
             state: Tensor::new_empty("u"),
             state_dot: Tensor::new_empty("u_dot"),
             is_algebraic: Vec::new(),
+            stop: None,
         }
     }
 
@@ -287,6 +292,11 @@ impl<'s> DiscreteModel<'s> {
                             span_g = Some(span);
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 ret.rhs = built;
+                            }
+                        }
+                        "stop" => {
+                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                                ret.stop = Some(built);
                             }
                         }
                         "out" => {
@@ -581,6 +591,7 @@ impl<'s> DiscreteModel<'s> {
         let lhs =  Tensor::new_no_layout("F", f_elmts, vec!['i']);
         let rhs = Tensor::new_no_layout("G", g_elmts, vec!['i']);
         let name = model.name;
+        let stop = None;
         DiscreteModel {
             name,
             lhs,
@@ -593,6 +604,7 @@ impl<'s> DiscreteModel<'s> {
             time_dep_defns,
             state_dep_defns,
             is_algebraic,
+            stop,
         }
     }
 

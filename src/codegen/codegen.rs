@@ -984,11 +984,11 @@ impl<'ctx> CodeGen<'ctx> {
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
         let fn_arg_names = &["t", "u", "dudt", "data", "root"];
-        let function = self.module.add_function("calc_root", fn_type, None);
+        let function = self.module.add_function("calc_stop", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
         self.builder.position_at_end(basic_block);
@@ -1187,7 +1187,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.clear();
         let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
         let fn_type = self.context.void_type().fn_type(
-            &[int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into()]
+            &[int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into(), int_ptr_type.into()]
             , false
         );
 

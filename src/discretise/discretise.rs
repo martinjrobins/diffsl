@@ -975,4 +975,35 @@ mod tests {
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2, 2) }",
         sparse_matrix_vect_multiply_zero_row: "A_ij { (0, 0): 1, (0, 1): 2 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (1) { (0)(1): A_ij * x_j (1, 2) }",
     );
+
+    #[test]
+    fn test_stop() {
+        let text_no_stop = "
+        u_i {
+            y = 1,
+        }
+        dudt_i {
+            dydt = 0,
+        }
+        F_i {
+            dydt,
+        }
+        G_i {
+            y * (1 - y),
+        }
+        out {
+            y,
+        }
+        ";
+        let text_stop = text_no_stop.to_owned() + "stop_i { y - 0.5 }";
+        let model_ds_no_stop = parse_ds_string(text_no_stop).unwrap();
+        let model_ds = parse_ds_string(text_stop.as_str()).unwrap();
+        let model_no_stop = DiscreteModel::build("$name", &model_ds_no_stop).unwrap();
+        let model = DiscreteModel::build("$name", &model_ds).unwrap();
+        assert!(model_no_stop.stop().is_none());
+        assert_eq!(model.stop().unwrap().elmts()[0].expr().to_string(), "y - 0.5");
+        assert_eq!(model.stop().unwrap().name(), "stop");
+        assert_eq!(model.stop().unwrap().elmts().len(), 1);
+    }
+
 }

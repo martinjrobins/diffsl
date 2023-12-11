@@ -703,6 +703,43 @@ mod tests {
         object.write_object_file(path).unwrap();
     }
 
+    #[test]
+    fn test_stop() {
+        let full_text = "
+        u_i {
+            y = 1,
+        }
+        dudt_i {
+            dydt = 0,
+        }
+        F_i {
+            dydt,
+        }
+        G_i {
+            y * (1 - y),
+        }
+        stop_i {
+            y - 0.5,
+        }
+        out {
+            y,
+        }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_stop").unwrap();
+        let mut u0 = vec![1.];
+        let mut up0 = vec![1.];
+        let mut res = vec![0.];
+        let mut stop = vec![0.];
+        let mut data = compiler.get_new_data();
+        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        compiler.calc_stop(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), stop.as_mut_slice()).unwrap();
+        assert_relative_eq!(stop[0], 0.5);
+        assert_eq!(stop.len(), 1);
+    }
+
     fn tensor_test_common(text: &str, tmp_loc: &str, tensor_name: &str) -> Vec<Vec<f64>> {
         let full_text = format!("
             {}

@@ -20,13 +20,14 @@ use crate::codegen::{Translation, TranslationFrom, TranslationTo, DataLayout};
 ///
 /// Calling this is innately `unsafe` because there's no guarantee it doesn't
 /// do `unsafe` operations internally.
+pub type StopFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, root: *mut realtype);
 pub type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, rr: *mut realtype);
 pub type ResidualGradientFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, du: *const realtype, up: *const realtype, dup: *const realtype, data: *mut realtype, ddata: *mut realtype, rr: *mut realtype, drr: *mut realtype);
 pub type U0Func = unsafe extern "C" fn(data: *mut realtype, u: *mut realtype, up: *mut realtype);
 pub type U0GradientFunc = unsafe extern "C" fn(data: *mut realtype, ddata: *mut realtype, u: *mut realtype, du: *mut realtype, up: *mut realtype, dup: *mut realtype);
 pub type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype);
 pub type CalcOutGradientFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, du: *const realtype, up: *const realtype, dup: *const realtype, data: *mut realtype, ddata: *mut realtype);
-pub type GetDimsFunc = unsafe extern "C" fn(states: *mut u32, inputs: *mut u32, outputs: *mut u32, data: *mut u32);
+pub type GetDimsFunc = unsafe extern "C" fn(states: *mut u32, inputs: *mut u32, outputs: *mut u32, data: *mut u32, stop: *mut u32);
 pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const realtype, data: *mut realtype);
 pub type SetInputsGradientFunc = unsafe extern "C" fn(inputs: *const realtype, dinputs: *const realtype, data: *mut realtype, ddata: *mut realtype);
 pub type SetIdFunc = unsafe extern "C" fn(id: *mut realtype);
@@ -978,6 +979,50 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
+    pub fn compile_calc_stop<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
+        self.clear();
+        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
+        let void_type = self.context.void_type();
+        let fn_type = void_type.fn_type(
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            , false
+        );
+        let fn_arg_names = &["t", "u", "dudt", "data", "root"];
+        let function = self.module.add_function("calc_root", fn_type, None);
+        let basic_block = self.context.append_basic_block(function, "entry");
+        self.fn_value_opt = Some(function);
+        self.builder.position_at_end(basic_block);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+
+        self.insert_state(model.state(), model.state_dot());
+        self.insert_data(model);
+        self.insert_indices();
+        
+        if let Some(stop) = model.stop() {
+            let res_ptr = self.get_param("root");
+            self.jit_compile_tensor(stop, Some(*res_ptr))?;
+        }
+        self.builder.build_return(None)?;
+
+        if function.verify(true) {
+            self.fpm.run_on(&function);
+
+            Ok(function)
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+
     pub fn compile_residual<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
@@ -1148,7 +1193,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         let function = self.module.add_function("get_dims", fn_type, None);
         let block = self.context.append_basic_block(function, "entry");
-        let fn_arg_names = &["states", "inputs", "outputs", "data"];
+        let fn_arg_names = &["states", "inputs", "outputs", "data", "stop"];
         self.builder.position_at_end(block);
 
         for (i, arg) in function.get_param_iter().enumerate() {
@@ -1162,11 +1207,17 @@ impl<'ctx> CodeGen<'ctx> {
         let number_of_states = model.state().nnz() as u64;
         let number_of_inputs = model.inputs().iter().fold(0, |acc, x| acc + x.nnz()) as u64;
         let number_of_outputs = model.out().nnz() as u64;
+        let number_of_stop = if let Some(stop) = model.stop() {
+            stop.nnz() as u64
+        } else {
+            0
+        };
         let data_len = self.layout.data().len() as u64;
         self.builder.build_store(*self.get_param("states"), self.int_type.const_int(number_of_states, false))?;
         self.builder.build_store(*self.get_param("inputs"), self.int_type.const_int(number_of_inputs, false))?;
         self.builder.build_store(*self.get_param("outputs"), self.int_type.const_int(number_of_outputs, false))?;
         self.builder.build_store(*self.get_param("data"), self.int_type.const_int(data_len, false))?;
+        self.builder.build_store(*self.get_param("stop"), self.int_type.const_int(number_of_stop, false))?;
         self.builder.build_return(None)?;
 
         if function.verify(true) {

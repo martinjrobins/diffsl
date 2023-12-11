@@ -649,6 +649,10 @@ impl<'s> DiscreteModel<'s> {
     pub fn is_algebraic(&self) -> &[bool] {
         self.is_algebraic.as_ref()
     }
+
+    pub fn stop(&self) -> Option<&Tensor<'_>> {
+        self.stop.as_ref()
+    }
 }
 
 #[cfg(test)]

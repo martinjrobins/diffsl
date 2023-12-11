@@ -23,7 +23,7 @@ use super::codegen::SetIdFunc;
 use super::codegen::SetInputsFunc;
 use super::codegen::SetInputsGradientFunc;
 use super::codegen::U0GradientFunc;
-use super::{CodeGen, codegen::{U0Func, ResidualFunc, CalcOutFunc}, data_layout::DataLayout};
+use super::{CodeGen, codegen::{U0Func, ResidualFunc, CalcOutFunc, StopFunc}, data_layout::DataLayout};
 
 
 
@@ -32,6 +32,7 @@ struct JitFunctions<'ctx> {
     set_u0: JitFunction<'ctx, U0Func>,
     residual: JitFunction<'ctx, ResidualFunc>,
     calc_out: JitFunction<'ctx, CalcOutFunc>,
+    calc_stop: JitFunction<'ctx, StopFunc>,
     set_id: JitFunction<'ctx, SetIdFunc>,
     get_dims: JitFunction<'ctx, GetDimsFunc>,
     set_inputs: JitFunction<'ctx, SetInputsFunc>,
@@ -103,6 +104,7 @@ impl Compiler {
                 
                 let _set_u0 = codegen.compile_set_u0(model)?;
                 let _set_u0_grad = codegen.compile_gradient(_set_u0, &[CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
+                let _calc_stop = codegen.compile_calc_stop(model)?;
                 let _residual = codegen.compile_residual(model)?;
                 let _residual_grad = codegen.compile_gradient(_residual, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::DupNoNeed])?;
                 let _calc_out = codegen.compile_calc_out(model)?;
@@ -142,6 +144,7 @@ impl Compiler {
 
                 let set_u0 = Compiler::jit("set_u0", &ee)?;
                 let residual = Compiler::jit("residual", &ee)?;
+                let calc_stop = Compiler::jit("calc_stop", &ee)?;
                 let calc_out = Compiler::jit("calc_out", &ee)?;
                 let set_id = Compiler::jit("set_id", &ee)?;
                 let get_dims= Compiler::jit("get_dims", &ee)?;
@@ -163,6 +166,7 @@ impl Compiler {
                         get_dims,
                         set_inputs,
                         get_out,
+                        calc_stop,
                     },
                     jit_grad_functions: JitGradFunctions {
                         set_u0_grad,
@@ -363,6 +367,32 @@ impl Compiler {
         Ok(())
     }
 
+    pub fn calc_stop(&self, t: f64, yy: &[f64], yp: &[f64], data: &mut [f64], stop: &mut [f64]) -> Result<()> {
+
+        let (n_states, _, _, n_data, n_stop) = self.get_dims();
+        if yy.len() != n_states {
+            return Err(anyhow!("Expected {} states, got {}", n_states, yy.len()));
+        }
+        if yp.len() != n_states {
+            return Err(anyhow!("Expected {} state derivatives, got {}", n_states, yp.len()));
+        }
+        if data.len() != n_data {
+            return Err(anyhow!("Expected {} data, got {}", n_data, data.len()));
+        }
+        if stop.len() != n_stop {
+            return Err(anyhow!("Expected {} stop, got {}", n_stop, stop.len()));
+        }
+        self.with_data(|compiler| {
+            let yy_ptr = yy.as_ptr();
+            let yp_ptr = yp.as_ptr();
+            let data_ptr = data.as_mut_ptr();
+            let stop_ptr = stop.as_mut_ptr();
+            unsafe { compiler.jit_functions.calc_stop.call(t, yy_ptr, yp_ptr, data_ptr, stop_ptr); }
+        });
+        Ok(())
+    }
+        
+
     pub fn residual(&self, t: f64, yy: &[f64], yp: &[f64], data: &mut [f64], rr: &mut [f64]) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
@@ -493,20 +523,21 @@ impl Compiler {
     /// 
     /// # Returns
     /// 
-    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data)`
-    pub fn get_dims(&self) -> (usize, usize, usize, usize) {
+    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data, n_stop)`
+    pub fn get_dims(&self) -> (usize, usize, usize, usize, usize) {
         let mut n_states = 0u32;
         let mut n_inputs= 0u32;
         let mut n_outputs = 0u32;
         let mut n_data= 0u32;
+        let mut n_stop = 0u32;
         self.with(|compiler| {
-            unsafe { compiler.data.jit_functions.get_dims.call(&mut n_states, &mut n_inputs, &mut n_outputs, &mut n_data); }
+            unsafe { compiler.data.jit_functions.get_dims.call(&mut n_states, &mut n_inputs, &mut n_outputs, &mut n_data, &mut n_stop); }
         });
-        (n_states as usize, n_inputs as usize, n_outputs as usize, n_data as usize)
+        (n_states as usize, n_inputs as usize, n_outputs as usize, n_data as usize, n_stop as usize)
     }
 
     pub fn set_inputs(&self, inputs: &[f64], data: &mut [f64]) -> Result<()> {
-        let (_, n_inputs, _, _) = self.get_dims();
+        let (_, n_inputs, _, _, _) = self.get_dims();
         if n_inputs != inputs.len() {
             return Err(anyhow!("Expected {} inputs, got {}", n_inputs, inputs.len()));
         }
@@ -521,7 +552,7 @@ impl Compiler {
     }
 
     pub fn set_inputs_grad(&self, inputs: &[f64], dinputs: &[f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
-        let (_, n_inputs, _, _) = self.get_dims();
+        let (_, n_inputs, _, _, _) = self.get_dims();
         if n_inputs != inputs.len() {
             return Err(anyhow!("Expected {} inputs, got {}", n_inputs, inputs.len()));
         }
@@ -547,7 +578,7 @@ impl Compiler {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        let (_, _, n_outputs, _) = self.get_dims();
+        let (_, _, n_outputs, _, _) = self.get_dims();
         let mut tensor_data_ptr: *mut f64 = std::ptr::null_mut();
         let mut tensor_data_len = 0u32;
         let tensor_data_ptr_ptr: *mut *mut f64 = &mut tensor_data_ptr;
@@ -561,7 +592,7 @@ impl Compiler {
     }
 
     pub fn set_id(&self, id: &mut [f64]) -> Result<()> {
-        let (n_states, _, _, _) = self.get_dims();
+        let (n_states, _, _, _, _) = self.get_dims();
         if n_states != id.len() {
             return Err(anyhow!("Expected {} states, got {}", n_states, id.len()));
         }
@@ -691,7 +722,7 @@ mod tests {
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
         let mut grad_data = Vec::new();
-        let (_n_states, n_inputs, _n_outputs, _n_data) = compiler.get_dims();
+        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop) = compiler.get_dims();
         for _ in 0..n_inputs {
             grad_data.push(compiler.get_new_data());
         }
@@ -916,7 +947,7 @@ mod tests {
         let mut dres = vec![0.];
         let mut data = compiler.get_new_data();
         let mut ddata = compiler.get_new_data();
-        let (_n_states, n_inputs, _n_outputs, _n_data) = compiler.get_dims();
+        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop) = compiler.get_dims();
 
         for _ in 0..3 {
             let inputs = vec![2.; n_inputs];
@@ -960,7 +991,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_additional_functions").unwrap();
-        let (n_states, n_inputs, n_outputs, n_data) = compiler.get_dims();
+        let (n_states, n_inputs, n_outputs, n_data, _n_stop) = compiler.get_dims();
         assert_eq!(n_states, 2);
         assert_eq!(n_inputs, 1);
         assert_eq!(n_outputs, 3);

@@ -97,9 +97,9 @@ impl<'ctx> CodeGen<'ctx> {
         let layout = DataLayout::new(model);
         let globals = Globals::new(&layout, context, &module).ok();
         Self {
-            context: &context,
+            context,
             module,
-            builder: builder,
+            builder,
             fpm,
             real_type,
             real_type_str: real_type_str.to_owned(),
@@ -169,7 +169,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
     fn insert_tensor(&mut self, tensor: &Tensor) {
-        let ptr = self.variables.get("data").unwrap().clone();
+        let ptr = *self.variables.get("data").unwrap();
         let mut data_index = self.layout.get_data_index(tensor.name()).unwrap();
         let i = self.context.i32_type().const_int(data_index.try_into().unwrap(), false);
         let alloca = unsafe { self.create_entry_block_builder().build_in_bounds_gep(ptr, &[i], tensor.name()).unwrap() };
@@ -230,7 +230,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let fn_type = ret_type.fn_type(args_types.as_slice(), false);
                         let fn_val = self.module.add_function(name, fn_type, None);
                         
-                        for (_, arg) in fn_val.get_param_iter().enumerate() {
+                        for arg in fn_val.get_param_iter() {
                             arg.into_float_value().set_name("x");
                         }
 
@@ -838,10 +838,8 @@ impl<'ctx> CodeGen<'ctx> {
                         Some(zero)
 
                     }
-                } else if layout.is_sparse() {
+                } else if layout.is_sparse() || layout.is_diagonal() {
                     // must have come from jit_compile_sparse_block, so we can just use the elmt_index
-                    expr_index
-                } else if layout.is_diagonal() {
                     // must have come from jit_compile_diagonal_block, so we can just use the elmt_index
                     expr_index
                 } else {

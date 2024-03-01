@@ -68,8 +68,8 @@ pub struct Compiler {
 }
 
 impl Compiler {
-    const OPT_VARIENTS: [&str; 2] = ["opt-14", "opt"];
-    const CLANG_VARIENTS: [&str; 2] = ["clang", "clang-14"];
+    const OPT_VARIENTS: [&'static str; 2] = ["opt-14", "opt"];
+    const CLANG_VARIENTS: [&'static str; 2] = ["clang", "clang-14"];
     fn find_opt() -> Result<&'static str> {
         find_executable(&Compiler::OPT_VARIENTS)
     }
@@ -157,7 +157,7 @@ impl Compiler {
                 let set_u0_grad = Compiler::jit("set_u0_grad", &ee)?;
                 
                 let data = CompilerData {
-                    codegen: codegen,
+                    codegen,
                     jit_functions: JitFunctions {
                         set_u0,
                         residual,

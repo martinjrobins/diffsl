@@ -375,6 +375,30 @@ impl<'s> DiscreteModel<'s> {
             }
         };
 
+        // if dudt is not defined, add it
+        if !read_dot_state {
+            let zero = Ast { kind: AstKind::new_num(0.0), span: None };
+            let zero_block = Ast { kind: AstKind::new_tensor_elmt(zero, None), span: None };
+            let indices = ret.state.indices().to_vec();
+            let default_dudt = ast::Tensor::new("dudt", indices, vec![Box::new(zero_block)]);
+            if let Some(built) = Self::build_array(&default_dudt, &mut env) {
+                ret.state_dot = built;
+            }
+            read_dot_state = true;
+        }
+
+        // if F is not defined, add it
+        if span_f.is_none() {
+            span_f = Some(span_all);
+            let name = "F";
+            let dudt_block = Ast { kind: AstKind::new_tensor_elmt(Ast { kind: AstKind::new_indexed_name("dudt", ret.state_dot.indices().to_vec()), span: None }, None), span: None };
+            let indices = ret.rhs.indices().to_vec();
+            let default_f = ast::Tensor::new(name, indices, vec![Box::new(dudt_block)]);
+            if let Some(built) = Self::build_array(&default_f, &mut env) {
+                ret.lhs = built;
+            }
+        }
+
         // check that we've read all the required arrays
         if !read_state {
             env.errs_mut().push(ValidationError::new(
@@ -782,6 +806,32 @@ mod tests {
                 dydt,
             }
             G {
+                (r * y) * (1 - y),
+            }
+            out {
+                y,
+            }
+        " [],
+        logistic_no_f: "
+            in = [r, ]
+            r { 1, }    
+            u {
+                y = 1,
+            }
+            G {
+                (r * y) * (1 - y),
+            }
+            out {
+                y,
+            }
+        " [],
+        logistic_no_f2: "
+            in = [r, ]
+            r { 1, }    
+            u_i {
+                y = 1,
+            }
+            G_i {
                 (r * y) * (1 - y),
             }
             out {

@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Add;
 
-
 #[derive(Debug, Clone)]
 pub struct DsModel<'a> {
     pub inputs: Vec<&'a str>,
@@ -241,6 +240,12 @@ pub struct TensorElmt<'a> {
     pub indices: Option<Box<Ast<'a>>>,
 }
 
+impl<'a> TensorElmt<'a> {
+    pub fn new(expr: Box<Ast<'a>>, indices: Option<Box<Ast<'a>>>) -> Self {
+        Self { expr, indices }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Assignment<'a> {
     pub name: &'a str,
@@ -439,6 +444,12 @@ impl<'a> AstKind<'a> {
     }
     pub fn new_num(num: f64) -> Self {
         AstKind::Number(num)
+    }
+    pub fn new_tensor(name: &'a str, indices: Vec<char>, elmts: Vec<Box<Ast<'a>>>) -> Self {
+        AstKind::Tensor(Tensor::new(name, indices, elmts))
+    }
+    pub fn new_tensor_elmt(expr: Ast<'a>, indices: Option<Ast<'a>>) -> Self {
+        AstKind::TensorElmt(TensorElmt::new(Box::new(expr), indices.map(Box::new)))
     }
 }
 

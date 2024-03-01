@@ -22,7 +22,7 @@ pub struct Output {
 impl Output {
     pub fn new(text: String, span: Option<StringSpan>) -> Self {
         Self {
-            text: text,
+            text,
             source_ref: span,
             secondary_txts: Vec::new(),
             secondary_refs: Vec::new(),
@@ -565,13 +565,11 @@ impl<'s> ModelInfo<'s> {
                                         arg.span,
                                     ));
                                 }
-                            } else {
-                                if has_kwarg {
-                                    self.errors.push(Output::new(
-                                        format!("indexed call arg found after named arg"),
-                                        arg.span,
-                                    ));
-                                }
+                            } else if has_kwarg {
+                                self.errors.push(Output::new(
+                                    format!("indexed call arg found after named arg"),
+                                    arg.span,
+                                ));
                             }
                         } else {
                             panic!("all args should be CallArgs")

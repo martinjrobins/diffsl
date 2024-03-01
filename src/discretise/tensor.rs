@@ -48,7 +48,7 @@ impl<'s> TensorBlock<'s> {
     }
 
     pub fn shape(&self) -> &Shape {
-        &self.layout.shape()
+        self.layout.shape()
     }
 
     pub fn start(&self) -> &Index {
@@ -172,7 +172,7 @@ impl<'s> Tensor<'s> {
     }
 
     pub fn shape(&self) -> &Shape {
-        &self.layout.shape()
+        self.layout.shape()
     }
 
     pub fn name(&self) -> &str {
@@ -202,7 +202,7 @@ impl<'s> Tensor<'s> {
 
 impl<'s> fmt::Display for Tensor<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.indices.len() > 0 {
+        if !self.indices.is_empty() {
             write!(f, "{}_", self.name)?;
             for i in 0..self.indices.len() {
                 write!(f, "{}", self.indices[i])?;
@@ -210,11 +210,11 @@ impl<'s> fmt::Display for Tensor<'s> {
         } else {
             write!(f, "{}", self.name)?;
         }
-        write!(f, " {} {{\n", self.layout())?;
+        writeln!(f, " {} {{", self.layout())?;
         for i in 0..self.elmts.len() {
             write!(f, "  {}", self.elmts[i])?;
             if i < self.elmts.len() - 1 {
-                write!(f, ",\n")?;
+                writeln!(f, ",")?;
             }
         }
         write!(f, "}}")

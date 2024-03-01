@@ -1,5 +1,5 @@
-pub mod discretise;
-pub use discretise::DiscreteModel;
+pub mod discrete_model;
+pub use discrete_model::DiscreteModel;
 
 pub mod error;
 pub use error::{ValidationError, ValidationErrors};

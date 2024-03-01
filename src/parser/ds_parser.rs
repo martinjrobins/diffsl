@@ -259,7 +259,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
 
 
 
-pub fn parse_string(text: &str) -> Result<ast::DsModel, Error<Rule>> {
+pub fn parse_string(text: &str) -> Result<ast::DsModel, Box<Error<Rule>>> {
     let main = DsParser::parse(Rule::main, text)?.next().unwrap();
     let model = parse_value(main.into_inner().next().unwrap()).kind.to_ds_model().unwrap();
     Ok(model)

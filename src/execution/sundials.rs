@@ -385,7 +385,7 @@ mod tests {
     use crate::continuous::ModelInfo;
     use crate::discretise::DiscreteModel;
     use crate::parser::parse_ms_string;
-    use crate::codegen::{Options, Sundials};
+    use crate::execution::{Options, Sundials};
     
     #[test]
     fn rate_equationn() {

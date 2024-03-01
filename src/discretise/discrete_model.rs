@@ -896,7 +896,7 @@ mod tests {
                 z_i,
             }
         " [],
-        error_missing_specials: "" ["missing 'u' array", "missing 'dudt' array", "missing 'F' array", "missing 'G' array", "missing 'out' array",],
+        error_missing_specials: "" ["missing 'u' array", "missing 'G' array", "missing 'out' array",],
         error_state_lhs_rhs_same: "
             u_i {
                 y = 1,

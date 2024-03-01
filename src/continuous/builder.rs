@@ -4,7 +4,6 @@ use crate::ast::AstKind;
 use crate::ast::Model;
 use crate::ast::StringSpan;
 use pest::Span;
-use std::boxed::Box;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -202,7 +201,7 @@ impl<'s> ModelInfo<'s> {
             time: time.clone(),
         }
     }
-    pub fn build(name: &'s str, ast: &'s [Box<Ast<'s>>]) -> Result<Self, String> {
+    pub fn build(name: &'s str, ast: &'s [Ast<'s>]) -> Result<Self, String> {
         let model_refs: Vec<&Model> = ast.iter().filter_map(|n| n.kind.as_model()).collect();
         match model_refs.iter().position(|v| v.name == name) {
             Some(i) => {

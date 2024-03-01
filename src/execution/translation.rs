@@ -208,7 +208,7 @@ impl Translation {
 mod tests {
     use crate::discretise::DiscreteModel;
     use crate::parser::parse_ds_string;
-    use crate::codegen::Translation;
+    use crate::execution::Translation;
 
     macro_rules! translation_test {
         ($($name:ident: $text:literal expect $blk_name:literal = $expected_value:expr,)*) => {

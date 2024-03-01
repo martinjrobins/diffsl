@@ -50,7 +50,7 @@ impl Default for Env {
             },
         );
         Env {
-            errs: ValidationErrors::new(),
+            errs: ValidationErrors::default(),
             vars,
             current_span: None,
         }

@@ -1,6 +1,6 @@
 use std::{path::Path, ffi::OsStr};
 use anyhow::{Result, anyhow};
-use codegen::Compiler;
+use execution::Compiler;
 use continuous::ModelInfo;
 use discretise::DiscreteModel;
 use parser::{parse_ms_string, parse_ds_string};
@@ -13,7 +13,7 @@ pub mod parser;
 pub mod ast;
 pub mod discretise;
 pub mod continuous;
-pub mod codegen;
+pub mod execution;
 pub mod utils;
 
 
@@ -62,7 +62,7 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
 
     let continuous_model_info = if let Some(ast) = &continuous_ast {
         let model_info = ModelInfo::build(model_name, ast).map_err(|e| anyhow!("{}", e))?;
-        if model_info.errors.len() > 0 {
+        if !model_info.errors.is_empty() {
             let error_text = model_info.errors.iter().fold(String::new(), |acc, error| {
                 format!("{}\n{}", acc, error.as_error_message(text))
             });
@@ -74,7 +74,7 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
     };
 
     let discrete_model = if let Some(model_info) = &continuous_model_info {
-        let model = DiscreteModel::from(&model_info);
+        let model = DiscreteModel::from(model_info);
         model
     } else if let Some(ast) = &discrete_ast {
         match DiscreteModel::build(model_name, ast) {

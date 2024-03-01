@@ -1,4 +1,4 @@
-use std::{ops::Deref, hash::Hasher, hash::Hash, fmt, rc::Rc};
+use std::{ops::Deref, hash::Hasher, hash::Hash, fmt, rc::Rc, convert::AsRef};
 use anyhow::{Result, anyhow};
 use itertools::Itertools;
 use ndarray::s;
@@ -63,7 +63,7 @@ impl Layout {
         let mut res = Index::zeros(shape.len());
         for i in (0..shape.len()).rev() {
             res[i] = i64::try_from(idx % shape[i]).unwrap();
-            idx = idx / shape[i];
+            idx /= shape[i];
         }
         res
     }
@@ -82,10 +82,10 @@ impl Layout {
     // row major order
     pub fn cmp_index(a: &Index, b: &Index) -> std::cmp::Ordering {
         for i in 0..a.len() {
-            if a[i] < b[i] {
-                return std::cmp::Ordering::Less;
-            } else if a[i] > b[i] {
-                return std::cmp::Ordering::Greater;
+            match a[i].cmp(&b[i]) {
+                std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
+                std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
+                _ => {}
             }
         }
         std::cmp::Ordering::Equal
@@ -130,12 +130,12 @@ impl Layout {
         // if there are no dense axes, then remove the last axis from each index
         if self.n_dense_axes == 0 {
             let mut new_indices = self.indices.clone();
-            for i in 0..self.indices.len() {
+            (0..self.indices.len()).for_each(|i| {
                 new_indices[i] = new_indices[i].slice(s![0..rank-1]).to_owned();
-            }
+            });
 
             // remove any duplicate indices
-            new_indices.sort_by(|a, b| Self::cmp_index(a, b));
+            new_indices.sort_by(Self::cmp_index);
             new_indices.dedup();
 
             // check if now dense
@@ -187,6 +187,7 @@ impl Layout {
 
         // for a sparse tensor, can only permute the sparse axes
         if self.is_sparse() {
+            #[allow(clippy::needless_range_loop)]
             for i in self.rank() - self.n_dense_axes..self.rank() {
                 if permutation[i] != i {
                     return Err(anyhow!("cannot permute dense axes of a sparse layout"));
@@ -260,11 +261,11 @@ impl Layout {
                 return Err(anyhow!("cannot broadcast sparse and non-dense layouts with multiply"));
             }
             let mut n_dense_axes = None;
-            for i in 0..layouts.len() {
-                if any_diagonal && layouts[i].is_diagonal() || any_sparse && layouts[i].is_sparse() {
+            for layout in layouts.iter() {
+                if any_diagonal && layout.is_diagonal() || any_sparse && layout.is_sparse() {
                     if n_dense_axes.is_none() {
-                        n_dense_axes = Some(layouts[i].n_dense_axes);
-                    } else if layouts[i].n_dense_axes != n_dense_axes.unwrap() {
+                        n_dense_axes = Some(layout.n_dense_axes);
+                    } else if layout.n_dense_axes != n_dense_axes.unwrap() {
                         return Err(anyhow!("cannot broadcast layouts with different numbers of dense axes"));
                     }
                 }
@@ -306,12 +307,12 @@ impl Layout {
                 }
             }
         }
-        return Ok(Layout {
+        Ok(Layout {
             indices: indices.unwrap(),
             shape,
             kind: LayoutKind::Sparse,
             n_dense_axes,
-        });
+        })
     }
     pub fn is_dense(&self) -> bool {
         self.kind == LayoutKind::Dense
@@ -479,7 +480,7 @@ impl Layout {
         }
 
         // sort the indices in row major order and remove duplicates
-        new_layout.indices.sort_by(|a, b| Self::cmp_index(a, b));
+        new_layout.indices.sort_by(Self::cmp_index);
         new_layout.indices.dedup();
 
         // check if now dense
@@ -503,7 +504,7 @@ impl Layout {
                 return i + 1;
             }
         }
-        return 0;
+        0
     }
 
     pub fn dense(shape: Shape) -> Self {
@@ -668,11 +669,13 @@ impl Deref for RcLayout {
         &self.0
     }
 }
+impl AsRef<Layout> for RcLayout {
+    fn as_ref(&self) -> &Layout {
+        &self.0
+    }
+}
 impl RcLayout {
     pub fn new(layout: Layout) -> Self {
         Self(Rc::new(layout))
-    }
-    pub fn as_ref(&self) -> &Layout {
-        &self.0
     }
 }

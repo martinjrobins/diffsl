@@ -277,13 +277,12 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
 
 
 
-pub fn parse_string(text: &str) -> Result<Vec<Box<Ast>>, Error<Rule>> {
+pub fn parse_string(text: &str) -> Result<Vec<Ast>, Box<Error<Rule>>> {
     let main = MsParser::parse(Rule::main, text)?.next().unwrap();
     let ast_nodes= main
         .into_inner()
         .take_while(|pair| pair.as_rule() != Rule::EOI)
         .map(parse_value)
-        .map(Box::new)
         .collect();
     Ok(ast_nodes)
 }
@@ -293,7 +292,7 @@ mod tests {
     use super::parse_string;
     use crate::{ast::AstKind, ast::Model, ast::Ast};
 
-    fn ast_to_model(node: Box<Ast>) -> Model {
+    fn ast_to_model(node: Ast) -> Model {
         if let AstKind::Model(model) = node.kind {
             model
         } else {

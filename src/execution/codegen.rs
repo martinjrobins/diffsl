@@ -14,7 +14,7 @@ use sundials_sys::realtype;
 
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
-use crate::codegen::{Translation, TranslationFrom, TranslationTo, DataLayout};
+use crate::execution::{Translation, TranslationFrom, TranslationTo, DataLayout};
 
 /// Convenience type alias for the `sum` function.
 ///

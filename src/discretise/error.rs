@@ -42,17 +42,14 @@ impl fmt::Display for ValidationError {
 
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ValidationErrors {
     errors: Vec<ValidationError>,
 }
 
+
+
 impl ValidationErrors {
-    pub fn new() -> Self {
-        Self {
-            errors: Vec::new(),
-        }
-    }
     pub fn push(&mut self, new: ValidationError) {
         self.errors.push(new);
     }
@@ -69,9 +66,10 @@ impl ValidationErrors {
     }
     pub fn as_error_message(&self, input: &str) -> String {
         let mut buf = "\n".to_string();
-        self.errors.iter().fold(Ok(()), |result, err| {
-            result.and_then(|_| err.as_error_message(&mut buf, input)).and_then(|_| write!(buf, "\n"))
-        }).unwrap();
+        for err in &self.errors {
+            err.as_error_message(&mut buf, input).unwrap();
+            writeln!(buf).unwrap();
+        }
         buf
     }
     
@@ -82,8 +80,9 @@ impl ValidationErrors {
 
 impl fmt::Display for ValidationErrors {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.errors.iter().fold(Ok(()), |result, err| {
-            result.and_then(|_| write!(f, "{}", err))
-        })
+        for err in &self.errors {
+            write!(f, "{}", err)?;
+        }
+        Ok(())
     }
 }

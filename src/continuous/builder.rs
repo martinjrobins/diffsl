@@ -63,7 +63,7 @@ pub struct Variable<'s> {
 impl<'a> fmt::Display for Variable<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let deps_disp: Vec<_> = self.dependents.iter().map(|dep| dep.borrow().name).collect();
-        if deps_disp.len() > 0 {
+        if !deps_disp.is_empty() {
             write!(f, "{}({})", self.name, deps_disp.join(","))
         } else {
             write!(f, "{}", self.name)
@@ -90,10 +90,10 @@ impl<'s> Variable<'s> {
         self.equation.is_some()
     }
     pub fn has_initial_condition(&self) -> bool {
-        self.init_conditions.len() > 0
+        !self.init_conditions.is_empty()
     }
     pub fn is_time(&self) -> bool {
-        return self.name == "t";
+        self.name == "t"
     }
     pub fn is_algebraic(&self) -> Option<bool> {
         if let Some(eqn) = &self.equation {
@@ -114,7 +114,7 @@ impl<'s> Variable<'s> {
         }
 
     }
-    pub fn new(node: &Box<Ast<'s>>, info: &mut ModelInfo<'s>) -> Variable<'s> {
+    pub fn new(node: &Ast<'s>, info: &mut ModelInfo<'s>) -> Variable<'s> {
         match &node.kind {
             AstKind::Unknown(unknown) => {
                 let is_time = unknown.name == "t";
@@ -202,7 +202,7 @@ impl<'s> ModelInfo<'s> {
             time: time.clone(),
         }
     }
-    pub fn build(name: &'s str, ast: &'s Vec<Box<Ast<'s>>>) -> Result<Self, String> {
+    pub fn build(name: &'s str, ast: &'s [Box<Ast<'s>>]) -> Result<Self, String> {
         let model_refs: Vec<&Model> = ast.iter().filter_map(|n| n.kind.as_model()).collect();
         match model_refs.iter().position(|v| v.name == name) {
             Some(i) => {
@@ -217,7 +217,7 @@ impl<'s> ModelInfo<'s> {
     }
     fn build_submodel(
         name: &'s str,
-        models: &Vec<&ast::Model<'s>>,
+        models: &[&ast::Model<'s>],
     ) -> Option<Self> {
         match models.iter().position(|v| v.name == name) {
             Some(i) => {
@@ -314,7 +314,7 @@ impl<'s> ModelInfo<'s> {
             Some(stmt)
         }
     }
-    fn allocate_stmts(&mut self, ast: &Box<Ast<'s>>) {
+    fn allocate_stmts(&mut self, ast: &Ast<'s>) {
         
         // move stmts out of self so we can move them
         let mut stmts: Vec<Ast<'s>> = Vec::new();
@@ -384,7 +384,7 @@ impl<'s> ModelInfo<'s> {
 
     fn builder(
         model: &ast::Model<'s>,
-        models: &Vec<&ast::Model<'s>>,
+        models: &[&ast::Model<'s>],
     ) -> Self {
         
         let mut info = Self::new(model.name);
@@ -432,7 +432,7 @@ impl<'s> ModelInfo<'s> {
                             continue;
                         }
                     };
-                    info.add_submodel(&mut submodel, &submodel_call);
+                    info.add_submodel(&mut submodel, submodel_call);
                 }
                 AstKind::Equation(eqn) => {
                     // its an initial condition if:
@@ -450,7 +450,7 @@ impl<'s> ModelInfo<'s> {
                     
                 }
                 AstKind::Definition(dfn) => {
-                    let var_cell = Rc::new(RefCell::new(Variable::new(&stmt, &mut info)));
+                    let var_cell = Rc::new(RefCell::new(Variable::new(stmt, &mut info)));
                     let mut var = var_cell.borrow_mut();
                     if reserved.contains(&var.name) {
                         info.errors.push(Output::new(
@@ -503,11 +503,11 @@ impl<'s> ModelInfo<'s> {
         }
     }
 
-    fn check_expr(&mut self, expr: & Box<Ast<'s>>) {
+    fn check_expr(&mut self, expr: & Ast<'s>) {
         match &expr.kind {
             AstKind::Name(name) => {
                 // check name exists
-                if self.variables.iter().find(|(var_name, _)| *var_name == name).is_none() {
+                if !self.variables.iter().any(|(var_name, _)| *var_name == *name) {
                     self.errors.push(Output::new(
                         format!("name {} not found", name),
                         expr.span,
@@ -535,9 +535,9 @@ impl<'s> ModelInfo<'s> {
                     }
                     for arg in call.args.iter() {
                         if let AstKind::CallArg(call_arg) = &arg.kind {
-                            if let Some(_) = call_arg.name {
+                            if call_arg.name.is_some() {
                                 self.errors.push(Output::new(
-                                    format!("keyword args not allowed for built-in funcitons"),
+                                    "keyword args not allowed for built-in funcitons".to_string(),
                                     arg.span,
                                 ));
                             }
@@ -567,7 +567,7 @@ impl<'s> ModelInfo<'s> {
                                 }
                             } else if has_kwarg {
                                 self.errors.push(Output::new(
-                                    format!("indexed call arg found after named arg"),
+                                    "indexed call arg found after named arg".to_string(),
                                     arg.span,
                                 ));
                             }
@@ -599,7 +599,7 @@ impl<'s> ModelInfo<'s> {
         &mut self,
         submodel: & ModelInfo<'s>,
         submodel_call: &'a ast::Submodel<'s>
-    ) -> HashMap<&'s str, &'a Box<Ast<'s>>> {
+    ) -> HashMap<&'s str, &'a Ast<'s>> {
         let mut replacements = HashMap::new();
         let mut found_kwarg = false;
 
@@ -608,8 +608,8 @@ impl<'s> ModelInfo<'s> {
             if let AstKind::CallArg(call_arg) = &arg.kind {
                 if let Some(name) = call_arg.name {
                     found_kwarg = true;
-                    if let Some(_) = submodel.variables.iter().find(|(name, var)| var.borrow().name == **name) {
-                        replacements.insert(name, &call_arg.expression);
+                    if submodel.variables.iter().any(|(name, var)| var.borrow().name == *name) {
+                        replacements.insert(name, call_arg.expression.as_ref());
                     } else {
                         self.errors.push(Output::new(
                             format!(
@@ -622,7 +622,7 @@ impl<'s> ModelInfo<'s> {
                 } else {
                     if found_kwarg {
                         self.errors.push(Output::new(
-                            format!("positional argument found after keyword argument"),
+                            "positional argument found after keyword argument".to_owned(),
                             arg.span,
                         ));
                     }
@@ -680,7 +680,7 @@ mod tests {
         ";
         let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
-        assert!(model_info.errors.len() > 0);
+        assert!(!model_info.errors.is_empty());
         assert!(model_info.errors.iter().any(|o| o.as_error_message(text).contains("Did you mean to set an initial condition")));
     }
     #[test]
@@ -715,8 +715,8 @@ mod tests {
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.variables.len(), 3);
         assert_eq!(model_info.errors.len(), 2);
-        assert!(model_info.errors[0].text.contains("resistorr") == true);
-        assert!(model_info.errors[1].text.contains("underdetermined") == true);
+        assert!(model_info.errors[0].text.contains("resistorr"));
+        assert!(model_info.errors[1].text.contains("underdetermined"));
     }
     #[test]
     fn submodel_replacements() {
@@ -745,8 +745,8 @@ mod tests {
         let model_info = ModelInfo::build("resistor", &models).unwrap();
         assert_eq!(model_info.variables.len(), 4);
         assert_eq!(model_info.errors.len(), 2);
-        assert!(model_info.errors[0].text.contains("doesnotexist") == true);
-        assert!(model_info.errors[1].text.contains("underdetermined") == true);
+        assert!(model_info.errors[0].text.contains("doesnotexist"));
+        assert!(model_info.errors[1].text.contains("underdetermined"));
     }
     #[test]
     fn alg_variable_with_ic() {
@@ -759,6 +759,6 @@ mod tests {
         let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("resistor", &models).unwrap();
         assert_eq!(model_info.errors.len(), 1);
-        assert!(model_info.errors[0].text.contains("overdetermined initial condition") == true);
+        assert!(model_info.errors[0].text.contains("overdetermined initial condition"));
     }
 }

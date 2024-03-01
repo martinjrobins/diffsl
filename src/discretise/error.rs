@@ -14,7 +14,7 @@ pub struct ValidationError {
 impl ValidationError {
     pub fn new(text: String, span: Option<StringSpan>) -> Self {
         Self {
-            text: text,
+            text,
             source_ref: span,
         }
     }

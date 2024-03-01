@@ -42,37 +42,40 @@ pub struct DiscreteModel<'s> {
     stop: Option<Tensor<'s>>,
 }
 
-impl<'s, 'a> fmt::Display for DiscreteModel<'s> {
+impl<'s> fmt::Display for DiscreteModel<'s> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.inputs.len() > 0 {
+        if !self.inputs.is_empty() {
             write!(f, "in = [")?;
             for input in &self.inputs {
                 write!(f, "{},", input.name())?;
             }
-            write!(f, "]\n")?;
+            writeln!(f, "]")?;
             for input in &self.inputs {
-                write!(f, "{}\n", input)?;
+                writeln!(f, "{}", input)?;
             }
         }
         for defn in &self.time_indep_defns {
-            write!(f, "{}\n", defn)?;
+            writeln!(f, "{}", defn)?;
         }
         for defn in &self.time_dep_defns {
-            write!(f, "{}\n", defn)?;
+            writeln!(f, "{}", defn)?;
         }
-        write!(f, "{}\n", self.state)?;
-        write!(f, "{}\n", self.state_dot)?;
+        writeln!(f, "{}", self.state)?;
+        writeln!(f, "{}", self.state_dot)?;
         for defn in &self.state_dep_defns {
-            write!(f, "{}\n", defn)?;
+            writeln!(f, "{}", defn)?;
         }
-        write!(f, "{}\n", self.lhs)?;
-        write!(f, "{}\n", self.rhs)?;
+        writeln!(f, "{}", self.lhs)?;
+        writeln!(f, "{}", self.rhs)?;
         if let Some(stop) = &self.stop {
-            write!(f, "{}\n", stop)?;
+            writeln!(f, "{}", stop)?;
         }
-        write!(f, "{}\n", self.out)
+        writeln!(f, "{}", self.out)
     }
 }
+
+
+type VecVariable<'s> = Vec<Rc<RefCell<Variable<'s>>>>;
 
 impl<'s> DiscreteModel<'s> {
     pub fn new(name: &'s str) -> Self {
@@ -133,21 +136,19 @@ impl<'s> DiscreteModel<'s> {
         let nerrs = env.errs().len();
         if rank == 0 && array.elmts().len() > 1 {
             env.errs_mut().push(ValidationError::new(
-                format!("cannot have more than one element in a scalar"),
+                "cannot have more than one element in a scalar".to_string(),
                 array.elmts()[1].span,
             ));
         }
         for a in array.elmts() {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
-                    if let Some((expr_layout, elmt_layout)) = env.get_layout_tensor_elmt(&te, array.indices()) {
-                        if rank == 0 && elmt_layout.rank() == 1 {
-                            if elmt_layout.shape()[0] > 1 {
-                                env.errs_mut().push(ValidationError::new(
-                                    format!("cannot assign an expression with rank > 1 to a scalar, rhs has shape {}", elmt_layout.shape()),
-                                    a.span,
-                                ));
-                            }
+                    if let Some((expr_layout, elmt_layout)) = env.get_layout_tensor_elmt(te, array.indices()) {
+                        if rank == 0 && elmt_layout.rank() == 1 && elmt_layout.shape()[0] > 1 {
+                            env.errs_mut().push(ValidationError::new(
+                                format!("cannot assign an expression with rank > 1 to a scalar, rhs has shape {}", elmt_layout.shape()),
+                                a.span,
+                            ));
                         }
                         let (name, expr) = if let AstKind::Assignment(a) = &te.expr.kind {
                             (Some(String::from(a.name)), a.expr.clone())
@@ -170,7 +171,7 @@ impl<'s> DiscreteModel<'s> {
                         elmts.push(TensorBlock::new(name, start.clone(), array.indices().to_vec(), RcLayout::new(elmt_layout), RcLayout::new(expr_layout), *expr));
 
                         // increment start index
-                        if start.len() > 0 {
+                        if !start.is_empty() {
                             start[0] += zero_axis_shape;
                         }
                     }
@@ -234,7 +235,7 @@ impl<'s> DiscreteModel<'s> {
     }
 
     pub fn build(name: &'s str, model: &'s ast::DsModel) -> Result<Self, ValidationErrors> {
-        let mut env = Env::new();
+        let mut env = Env::default();
         let mut ret = Self::new(name);
         let mut read_state = false;
         let mut read_dot_state = false;
@@ -304,7 +305,7 @@ impl<'s> DiscreteModel<'s> {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 if built.rank() > 1 {
                                     env.errs_mut().push(ValidationError::new(
-                                        format!("output shape must be a scalar or 1D vector"),
+                                        "output shape must be a scalar or 1D vector".to_string(),
                                         tensor_ast.span,
                                     ));
                                 }
@@ -380,7 +381,7 @@ impl<'s> DiscreteModel<'s> {
             let zero = Ast { kind: AstKind::new_num(0.0), span: None };
             let zero_block = Ast { kind: AstKind::new_tensor_elmt(zero, None), span: None };
             let indices = ret.state.indices().to_vec();
-            let default_dudt = ast::Tensor::new("dudt", indices, vec![Box::new(zero_block)]);
+            let default_dudt = ast::Tensor::new("dudt", indices, vec![zero_block]);
             if let Some(built) = Self::build_array(&default_dudt, &mut env) {
                 ret.state_dot = built;
             }
@@ -393,7 +394,7 @@ impl<'s> DiscreteModel<'s> {
             let name = "F";
             let dudt_block = Ast { kind: AstKind::new_tensor_elmt(Ast { kind: AstKind::new_indexed_name("dudt", ret.state_dot.indices().to_vec()), span: None }, None), span: None };
             let indices = ret.rhs.indices().to_vec();
-            let default_f = ast::Tensor::new(name, indices, vec![Box::new(dudt_block)]);
+            let default_f = ast::Tensor::new(name, indices, vec![dudt_block]);
             if let Some(built) = Self::build_array(&default_f, &mut env) {
                 ret.lhs = built;
             }
@@ -518,8 +519,8 @@ impl<'s> DiscreteModel<'s> {
     }
     pub fn from(model: &ModelInfo<'s>) -> DiscreteModel<'s> {
         let (time_varying_unknowns, const_unknowns): (
-            Vec<Rc<RefCell<Variable>>>,
-            Vec<Rc<RefCell<Variable>>>,
+            VecVariable,
+            VecVariable,
         ) = model
             .unknowns
             .iter()
@@ -533,8 +534,8 @@ impl<'s> DiscreteModel<'s> {
             .collect();
 
         let (state_dep_defns, state_indep_defns): (
-            Vec<Rc<RefCell<Variable>>>,
-            Vec<Rc<RefCell<Variable>>>,
+            VecVariable,
+            VecVariable,
         ) = model
             .definitions
             .iter()
@@ -542,8 +543,8 @@ impl<'s> DiscreteModel<'s> {
             .partition(|v| v.as_ref().borrow().is_dependent_on_state());
 
         let (time_dep_defns, const_defns): (
-            Vec<Rc<RefCell<Variable>>>,
-            Vec<Rc<RefCell<Variable>>>,
+            VecVariable,
+            VecVariable,
         ) = state_indep_defns
             .iter()
             .cloned()
@@ -571,7 +572,7 @@ impl<'s> DiscreteModel<'s> {
             let mut init_dudt = DiscreteModel::state_to_dudt0(state);
             init_state.start_mut()[0] = i64::try_from(curr_index).unwrap();
             init_dudt.start_mut()[0] = i64::try_from(curr_index).unwrap();
-            curr_index = curr_index + init_state.layout().shape()[0];
+            curr_index += init_state.layout().shape()[0];
             init_dudts.push(init_dudt);
             init_states.push(init_state);
         }
@@ -588,7 +589,7 @@ impl<'s> DiscreteModel<'s> {
             let mut elmt = DiscreteModel::state_to_elmt(state);
             elmt.0.start_mut()[0] = i64::try_from(curr_index).unwrap();
             elmt.1.start_mut()[0] = i64::try_from(curr_index).unwrap();
-            curr_index = curr_index + elmt.0.layout().shape()[0];
+            curr_index += elmt.0.layout().shape()[0];
             f_elmts.push(elmt.0);
             g_elmts.push(elmt.1);
             is_algebraic.push(state.as_ref().borrow().is_algebraic().unwrap());

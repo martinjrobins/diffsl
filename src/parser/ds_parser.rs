@@ -30,7 +30,7 @@ fn parse_name(pair: Pair<Rule>) -> &str {
     pair.as_str()
 }
 
-fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
+fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
     let span = Some(StringSpan {
         pos_start: pair.as_span().start(),
         pos_end: pair.as_span().end(),
@@ -191,7 +191,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                 }
                 _ => unreachable!()
             };
-            let elmts = inner.map(|v| Box::new(parse_value(v))).collect();
+            let elmts = inner.map(|v| parse_value(v)).collect();
             Ast { 
                 kind: AstKind::Tensor(ast::Tensor::new(name, indices, elmts)),
                 span 
@@ -260,7 +260,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
 
 
 pub fn parse_string(text: &str) -> Result<ast::DsModel, Error<Rule>> {
-    let main = DsParser::parse(Rule::main, &text)?.next().unwrap();
+    let main = DsParser::parse(Rule::main, text)?.next().unwrap();
     let model = parse_value(main.into_inner().next().unwrap()).kind.to_ds_model().unwrap();
     Ok(model)
 }
@@ -286,7 +286,7 @@ mod tests {
         let tensor = model.tensors[0].kind.as_tensor().unwrap();
         assert_eq!(tensor.name(), "test");
         assert_eq!(tensor.elmts().len(), 4);
-        let expect_values = vec![1.0, 1.0, 1.0e-3, 1e3];
+        let expect_values = [1.0, 1.0, 1.0e-3, 1e3];
         for (i, elmt) in tensor.elmts().iter().enumerate() {
             let tensor_elmt = elmt.kind.as_tensor_elmt().unwrap();
             assert!(tensor_elmt.indices.is_none());

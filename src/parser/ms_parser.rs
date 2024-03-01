@@ -30,7 +30,7 @@ fn parse_name(pair: Pair<Rule>) -> &str {
     pair.as_str()
 }
 
-fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
+fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
     let span = Some(StringSpan {
         pos_start: pair.as_span().start(),
         pos_end: pair.as_span().end(),
@@ -169,7 +169,7 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
             let local_name = if inner.peek().is_some() {
                 parse_name(inner.next().unwrap())
             } else {
-                name.clone()
+                name
             };
             Ast {
                 kind: AstKind::Submodel(ast::Submodel {
@@ -232,10 +232,10 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
                     span: subspan,
                 };
             }
-            if sign.is_some() {
+            if let Some(sign) = sign {
                 Ast {
                     kind: AstKind::Monop(ast::Monop {
-                        op: sign.unwrap(),
+                        op: sign,
                         child: Box::new(head_term),
                     }),
                     span,
@@ -278,14 +278,14 @@ fn parse_value<'a, 'b>(pair: Pair<'a, Rule>) -> Ast<'a> {
 
 
 pub fn parse_string(text: &str) -> Result<Vec<Box<Ast>>, Error<Rule>> {
-    let main = MsParser::parse(Rule::main, &text)?.next().unwrap();
+    let main = MsParser::parse(Rule::main, text)?.next().unwrap();
     let ast_nodes= main
         .into_inner()
         .take_while(|pair| pair.as_rule() != Rule::EOI)
         .map(parse_value)
         .map(Box::new)
         .collect();
-    return Ok(ast_nodes);
+    Ok(ast_nodes)
 }
 
 #[cfg(test)]
@@ -352,7 +352,7 @@ mod tests {
             assert!(matches!(eqn.lhs.kind, AstKind::Name(name) if name == "i"));
             assert!(matches!(&eqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*'));
         } else {
-            assert!(false, "not an equation")
+            panic!("not an equation")
         }
     }
 
@@ -373,7 +373,7 @@ mod tests {
             assert_eq!(reqn.name, "y");
             assert!(matches!(&reqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*'));
         } else {
-            assert!(false, "not a rate equation")
+            panic!("not a rate equation")
         }
     }
 
@@ -400,7 +400,7 @@ mod tests {
                 matches!(&dfn.rhs.kind, AstKind::Call(call) if call.fn_name == "sin" && call.args.len() == 1)
             );
         } else {
-            assert!(false, "not an definition")
+            panic!("not an definition")
         }
         if let AstKind::Submodel(submodel) = &models[1].statements[1].kind {
             assert_eq!(submodel.name, "resistor");
@@ -415,7 +415,7 @@ mod tests {
                 unreachable!("not a call arg")
             }
         } else {
-            assert!(false, "not an definition")
+            panic!("not an definition")
         }
     }
 }

@@ -301,10 +301,8 @@ impl Layout {
             if layout.is_sparse() {
                 if indices.is_none() {
                     indices = Some(layout.indices);
-                } else {
-                    if layout.indices.len() != indices.as_ref().unwrap().len() || layout.indices.iter().zip(indices.as_ref().unwrap().iter()).any(|(x, y)| x != y) {
-                        return Err(anyhow!("cannot broadcast layouts with different sparsity patterns"));
-                    }
+                } else if layout.indices.len() != indices.as_ref().unwrap().len() || layout.indices.iter().zip(indices.as_ref().unwrap().iter()).any(|(x, y)| x != y) {
+                    return Err(anyhow!("cannot broadcast layouts with different sparsity patterns"));
                 }
             }
         }

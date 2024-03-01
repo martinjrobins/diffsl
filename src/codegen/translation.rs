@@ -1,4 +1,4 @@
-use std::{fmt, borrow::Borrow};
+use std::fmt;
 
 use ndarray::s;
 
@@ -70,7 +70,7 @@ impl TranslationFrom {
             let indices: Vec<Index> = source.indices().collect();
             let mut current_monitor_axis_value = indices[0][monitor_axis];
             // the indices are held in row major order, so the last index is the fastest changing index
-            for i in 1..indices.len() {
+            (1..indices.len()).for_each(|i| {
                 let index = &indices[i];
                 let monitor_axis_value = index[monitor_axis];
                 if monitor_axis_value != current_monitor_axis_value {
@@ -78,7 +78,7 @@ impl TranslationFrom {
                     contract_end_indices.push(i);
                     current_monitor_axis_value = monitor_axis_value;
                 }
-            }
+            });
             contract_end_indices.push(indices.len());
             assert!(contract_start_indices.len() == contract_end_indices.len());
             assert!(contract_start_indices.len() == target.nnz());
@@ -174,9 +174,9 @@ impl fmt::Display for Translation {
 
 impl Translation {
     pub fn new(source: &RcLayout, via: &RcLayout, target_start: &Index, target: &RcLayout) -> Self {
-        let source_layout = source.borrow();
-        let target_layout = target.borrow();
-        let via_layout = via.borrow();
+        let source_layout = source;
+        let target_layout = target;
+        let via_layout = via;
         let from = TranslationFrom::new(source_layout, via_layout);
         let to = TranslationTo::new(target_start, via_layout, target_layout);
         assert_eq!(from.nnz_after_translate(source_layout), to.nnz_after_translate());

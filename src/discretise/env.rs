@@ -37,8 +37,8 @@ pub struct Env {
     vars: HashMap<String, EnvVar>,
 }
 
-impl Env {
-    pub fn new() -> Self {
+impl Default for Env {
+    fn default() -> Self {
         let mut vars = HashMap::new();
         vars.insert(
             "t".to_string(),
@@ -55,6 +55,9 @@ impl Env {
             current_span: None,
         }
     }
+}
+
+impl Env {
     pub fn is_tensor_time_dependent(&self, tensor: &Tensor) -> bool {
         if tensor.name() == "u" || tensor.name() == "dudt" { return true };
         tensor.elmts().iter().any(|block| {
@@ -210,7 +213,7 @@ impl Env {
                 self.get_layout_binary_op(binop.left.as_ref(), binop.right.as_ref(), binop, indices)
             }
             AstKind::Monop(monop) => self.get_layout(monop.child.as_ref(), indices),
-            AstKind::Call(call) => self.get_layout_call(&call, ast, indices),
+            AstKind::Call(call) => self.get_layout_call(call, ast, indices),
             AstKind::CallArg(arg) => self.get_layout(arg.expression.as_ref(), indices),
             AstKind::Number(_) => Some(Layout::new_scalar()),
             AstKind::Integer(_) => Some(Layout::new_scalar()),
@@ -292,7 +295,7 @@ impl Env {
             let mut exp_expr_shape = Shape::ones(indices.len());
             
             // we will use the expression shape as defaults if the range is not explicitly given
-            exp_expr_shape.slice_mut(s![..expr_layout.rank()]).assign(&expr_layout.shape());
+            exp_expr_shape.slice_mut(s![..expr_layout.rank()]).assign(expr_layout.shape());
             
             // calculate the shape of the tensor element from the given indices and expression shape
             let all_range_indices = given_indices.iter().all(|i| i.sep == Some(".."));
@@ -303,16 +306,16 @@ impl Env {
                 // make sure the use of the range separator is valid
                 if !all_range_indices && matches!(indice.sep, Some("..")) {
                     self.errs.push(ValidationError::new(
-                        format!("can only use range separator if all indices are ranges"),
+                        "can only use range separator if all indices are ranges".to_string(),
                         given_indices_ast[i].span,
                     ));
                 }
-                let dim = if let Some(_) = indice.sep {
+                let dim = if indice.sep.is_some() {
                     if let Some(second) = &indice.last {
                         let second = second.kind.as_integer().unwrap();
                         if second < first {
                             self.errs.push(ValidationError::new(
-                                format!("range end must be greater than range start"),
+                                "range end must be greater than range start".to_string(),
                                 given_indices_ast[i].span,
                             ));
                             return None;
@@ -328,7 +331,7 @@ impl Env {
                 // make sure the dimension of the range is consistent
                 if all_range_indices && old_dim.is_some() && dim != old_dim.unwrap() {
                     self.errs.push(ValidationError::new(
-                        format!("range indices must have the same dimension"),
+                        "range indices must have the same dimension".to_string(),
                         given_indices_ast[i].span,
                     ));
                     return None;
@@ -338,7 +341,7 @@ impl Env {
             }
 
             // check that the expression shape can be broadcast to the tensor element shape
-            if !can_broadcast_to(&exp_expr_shape, &expr_layout.shape()) {
+            if !can_broadcast_to(&exp_expr_shape, expr_layout.shape()) {
                 self.errs.push(ValidationError::new(
                     format!("cannot broadcast expression shape {} to tensor element shape {}", expr_layout.shape(), exp_expr_shape),
                     elmt.expr.span,
@@ -361,7 +364,7 @@ impl Env {
                 LayoutKind::Sparse => {
                     if all_range_indices {
                         self.errs.push(ValidationError::new(
-                            format!("cannot use range indices with sparse expression"),
+                            "cannot use range indices with sparse expression".to_string(),
                             elmt.expr.span,
                         ));
                         return None;
@@ -372,7 +375,7 @@ impl Env {
                 LayoutKind::Diagonal => {
                     if all_range_indices {
                         self.errs.push(ValidationError::new(
-                            format!("cannot use range indices with diagonal expression"),
+                            "cannot use range indices with diagonal expression".to_string(),
                             elmt.expr.span,
                         ));
                         return None;

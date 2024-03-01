@@ -260,7 +260,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let fn_type = ret_type.fn_type(args_types.as_slice(), false);
                         let fn_val = self.module.add_function(name, fn_type, None);
                         
-                        for (_, arg) in fn_val.get_param_iter().enumerate() {
+                        for arg in fn_val.get_param_iter() {
                             arg.into_float_value().set_name("x");
                         }
 
@@ -298,7 +298,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let fn_type = ret_type.fn_type(args_types.as_slice(), false);
                         let fn_val = self.module.add_function(name, fn_type, None);
                         
-                        for (_, arg) in fn_val.get_param_iter().enumerate() {
+                        for arg in fn_val.get_param_iter() {
                             arg.into_float_value().set_name("x");
                         }
 
@@ -365,7 +365,7 @@ impl<'ctx> CodeGen<'ctx> {
         };
         let name = a.name();
         let elmt = a.elmts().first().unwrap();
-        let float_value = self.jit_compile_expr(name, &elmt.expr(), &[], elmt, None)?;
+        let float_value = self.jit_compile_expr(name, elmt.expr(), &[], elmt, None)?;
         self.builder.build_store(res_ptr, float_value)?;
         Ok(res_ptr)
     }
@@ -468,7 +468,7 @@ impl<'ctx> CodeGen<'ctx> {
         let elmt_index = self.builder.build_load(elmt_index_ptr, "elmt_index")?.into_int_value();
         let next_expr_index = self.builder.build_int_add(expr_index, one, "next_expr_index")?;
         self.builder.build_store(expr_index_ptr, next_expr_index)?;
-        let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(expr_index))?;
+        let float_value = self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, Some(expr_index))?;
 
         if contract_sum.is_some() {
             let contract_sum_value = self.builder.build_load(contract_sum.unwrap(), "contract_sum")?.into_float_value();
@@ -572,7 +572,7 @@ impl<'ctx> CodeGen<'ctx> {
         }).collect::<Result<Vec<_>, anyhow::Error>>()?;
         
         // loop body - eval expression and increment sum
-        let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(expr_index))?;
+        let float_value = self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, Some(expr_index))?;
         let contract_sum_value = self.builder.build_load(contract_sum_ptr, "contract_sum")?.into_float_value();
         let new_contract_sum_value = self.builder.build_float_add(contract_sum_value, float_value, "new_contract_sum")?;
         self.builder.build_store(contract_sum_ptr, new_contract_sum_value)?;
@@ -632,7 +632,7 @@ impl<'ctx> CodeGen<'ctx> {
         }).collect::<Result<Vec<_>, anyhow::Error>>()?;
         
         // loop body - eval expression
-        let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
+        let float_value = self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
 
         block = self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation, block)?;
 
@@ -669,11 +669,11 @@ impl<'ctx> CodeGen<'ctx> {
         // loop body - index is just the same for each element
         let elmt_index = curr_index.as_basic_value().into_int_value();
         let indices_int: Vec<IntValue> = (0..elmt.expr_layout().rank()).map(|_| {
-            elmt_index.clone()
+            elmt_index
         }).collect();
         
         // loop body - eval expression
-        let float_value = self.jit_compile_expr(name, &elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
+        let float_value = self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, Some(elmt_index))?;
 
         // loop body - store result
         block = self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation, block)?;
@@ -821,8 +821,8 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                     // calculate the element index using iname_index and the shape of the tensor
                     // TODO: can we optimise this by using expr_index, and also including elmt_index?
-                    if iname_index.len() > 0 {
-                        let mut iname_elmt_index = iname_index.last().unwrap().clone();
+                    if !iname_index.is_empty() {
+                        let mut iname_elmt_index = *iname_index.last().unwrap();
                         let mut stride = 1u64;
                         for i in (0..iname_index.len() - 1).rev() {
                             let iname_i = iname_index[i];
@@ -917,8 +917,8 @@ impl<'ctx> CodeGen<'ctx> {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
         }
 
-        self.jit_compile_tensor(&model.state(), Some(*self.get_param("u0")))?;
-        self.jit_compile_tensor(&model.state_dot(), Some(*self.get_param("dudt0")))?;
+        self.jit_compile_tensor(model.state(), Some(*self.get_param("u0")))?;
+        self.jit_compile_tensor(model.state_dot(), Some(*self.get_param("dudt0")))?;
 
         self.builder.build_return(None)?;
 
@@ -1056,8 +1056,8 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         // F and G
-        self.jit_compile_tensor(&model.lhs(), Some(*self.get_var(model.lhs())))?;
-        self.jit_compile_tensor(&model.rhs(), Some(*self.get_var(model.rhs())))?;
+        self.jit_compile_tensor(model.lhs(), Some(*self.get_var(model.lhs())))?;
+        self.jit_compile_tensor(model.rhs(), Some(*self.get_var(model.rhs())))?;
         
         // compute residual here as dummy array
         let residual = model.residual();
@@ -1161,7 +1161,7 @@ impl<'ctx> CodeGen<'ctx> {
         let enzyme_fn_type = void_type.fn_type(&enzyme_fn_type, false);
         let orig_fn_name = original_function.get_name().to_str().unwrap();
         let enzyme_fn_name = format!("__enzyme_fwddiff_{}", orig_fn_name);
-        let enzyme_function = self.module.add_function(&enzyme_fn_name.as_str(), enzyme_fn_type, Some(Linkage::External));
+        let enzyme_function = self.module.add_function(enzyme_fn_name.as_str(), enzyme_fn_type, Some(Linkage::External));
         
         // call enzyme function
         self.builder.build_call(enzyme_function, enzyme_fn_args.as_slice(), "enzyme_call")?;
@@ -1331,7 +1331,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             // get ready for next input
             block = post_block;
-            inputs_index = inputs_index + input.nnz();
+            inputs_index += input.nnz();
         }
         self.builder.build_return(None)?;
 
@@ -1402,7 +1402,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             // get ready for next blk
             block = post_block;
-            id_index = id_index + blk.nnz();
+            id_index += blk.nnz();
         }
         self.builder.build_return(None)?;
 

@@ -68,12 +68,12 @@ impl DataLayout {
         model.inputs().iter().for_each(&mut add_tensor);
         model.time_indep_defns().iter().for_each(&mut add_tensor);
         model.time_dep_defns().iter().for_each(&mut add_tensor);
-        add_tensor(&model.state());
-        add_tensor(&model.state_dot());
+        add_tensor(model.state());
+        add_tensor(model.state_dot());
         model.state_dep_defns().iter().for_each(&mut add_tensor);
-        add_tensor(&model.lhs());
-        add_tensor(&model.rhs());
-        add_tensor(&model.out());
+        add_tensor(model.lhs());
+        add_tensor(model.rhs());
+        add_tensor(model.out());
 
         // add layout info for "t"
         let t_layout = RcLayout::new(Layout::new_scalar());
@@ -89,7 +89,7 @@ impl DataLayout {
     
     // get the index of the data array for the given tensor name
     pub fn get_data_index(&self, name: &str) -> Option<usize> {
-        self.data_index_map.get(name).map(|i| *i)
+        self.data_index_map.get(name).copied()
     }
     
     pub fn format_data(&self, data: &[f64]) -> String {
@@ -117,15 +117,15 @@ impl DataLayout {
     }
 
     pub fn get_data_length(&self, name: &str) -> Option<usize> {
-        self.data_length_map.get(name).map(|i| *i)
+        self.data_length_map.get(name).copied()
     }
 
     pub fn get_layout_index(&self, layout: &RcLayout) -> Option<usize> {
-        self.layout_index_map.get(layout).map(|i| *i)
+        self.layout_index_map.get(layout).copied()
     }
 
     pub fn get_translation_index(&self, from: &RcLayout, to: &RcLayout) -> Option<usize> {
-        self.translate_index_map.get(&(from.clone(), to.clone())).map(|i| *i)
+        self.translate_index_map.get(&(from.clone(), to.clone())).copied()
     }
 
     pub fn data(&self) -> &[f64] {

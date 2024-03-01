@@ -23,8 +23,8 @@ pub struct Options {
     linsol_max_iterations: u32,
 }
 
-impl Options {
-    pub fn new() -> Options {
+impl Default for Options {
+    fn default() -> Self {
         Options {
             atol: 1e-6,
             rtol: 1e-6,
@@ -82,12 +82,12 @@ impl Sundials {
             let c_str = unsafe { CStr::from_ptr(char_ptr) };
             Err(anyhow!("Sundials Error Name: {}", c_str.to_str()?))
         } else {
-            return Ok(())
+            Ok(())
         }
     }
 
 
-    pub fn from_discrete_model<'m>(model: &'m DiscreteModel, options: Options, out: &str) -> Result<Sundials> {
+    pub fn from_discrete_model(model: &DiscreteModel, options: Options, out: &str) -> Result<Sundials> {
         let compiler = Compiler::from_discrete_model(model, out).unwrap();
         let number_of_states = compiler.number_of_states() as i64;
         let number_of_parameters = compiler.number_of_parameters();
@@ -98,14 +98,14 @@ impl Sundials {
             // allocate vectors
             let yy = N_VNew_Serial(number_of_states);
             let yp = N_VNew_Serial(number_of_states);
-            let avtol = N_VNew_Serial(i64::from(number_of_states));
-            let id = N_VNew_Serial(i64::from(number_of_states));
+            let avtol = N_VNew_Serial(number_of_states);
+            let id = N_VNew_Serial(number_of_states);
 
             let mut yy_s: Vec<N_Vector> = Vec::new();
             let mut yp_s: Vec<N_Vector> = Vec::new();
             for _ in 0..number_of_parameters {
-                yy_s.push(N_VNew_Serial(i64::from(number_of_states)));
-                yp_s.push(N_VNew_Serial(i64::from(number_of_states)));
+                yy_s.push(N_VNew_Serial(number_of_states));
+                yp_s.push(N_VNew_Serial(number_of_states));
             }
 
             // set tolerances
@@ -131,7 +131,7 @@ impl Sundials {
                 return Err(anyhow!("sparse jacobian not implemented"))
             }
             else if options.jacobian == "dense" || options.jacobian == "none" {
-                SUNDenseMatrix(i64::from(number_of_states), i64::from(number_of_states))
+                SUNDenseMatrix(number_of_states, number_of_states)
             }
             else if options.jacobian == "matrix-free" {
                 null_mut()
@@ -206,7 +206,7 @@ impl Sundials {
             let mut data = Box::new(
                 SundialsData {
                     number_of_states: usize::try_from(number_of_states).unwrap(),
-                    number_of_parameters: usize::try_from(number_of_parameters).unwrap(),
+                    number_of_parameters,
                     yy,
                     yp,
                     avtol,
@@ -270,13 +270,12 @@ impl Sundials {
             //    }
             //}
 
-            let t_final = times.last().unwrap().clone();
+            let t_final = *times.last().unwrap();
             for t_i in 1..number_of_timesteps {
                 let t_next = times[t_i];
                 Self::check(IDASetStopTime(self.ida_mem, t_next))?;
                 let mut tret: realtype = 0.0;
-                let retval: c_int;
-                retval = IDASolve(self.ida_mem, t_final, & mut tret as *mut realtype, self.data.yy, self.data.yp, IDA_NORMAL);
+                let retval = IDASolve(self.ida_mem, t_final, & mut tret as *mut realtype, self.data.yy, self.data.yp, IDA_NORMAL);
                 Self::check(retval)?;
 
                 //if self.data.number_of_parameters > 0 {
@@ -355,7 +354,7 @@ impl Sundials {
 
         }
 
-        return Ok(out_return);
+        Ok(out_return)
     }
 
     pub fn destroy(&mut self) {
@@ -402,7 +401,7 @@ mod tests {
         assert_eq!(model_info.errors.len(), 0);
         let discrete = DiscreteModel::from(&model_info);
         println!("{}", discrete);
-        let options = Options::new();
+        let options = Options::default();
         let mut sundials = Sundials::from_discrete_model(&discrete, options, "test_output/sundials_logistic_growth").unwrap();
 
         let times = Array::linspace(0., 1., 5);

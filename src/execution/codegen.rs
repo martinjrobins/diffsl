@@ -9,7 +9,8 @@ use inkwell::module::{Module, Linkage};
 use std::collections::HashMap;
 use std::iter::zip;
 use anyhow::{Result, anyhow};
-use sundials_sys::realtype;
+
+type RealType = f64;
 
 
 use crate::ast::{Ast, AstKind};
@@ -20,18 +21,18 @@ use crate::execution::{Translation, TranslationFrom, TranslationTo, DataLayout};
 ///
 /// Calling this is innately `unsafe` because there's no guarantee it doesn't
 /// do `unsafe` operations internally.
-pub type StopFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, root: *mut realtype);
-pub type ResidualFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype, rr: *mut realtype);
-pub type ResidualGradientFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, du: *const realtype, up: *const realtype, dup: *const realtype, data: *mut realtype, ddata: *mut realtype, rr: *mut realtype, drr: *mut realtype);
-pub type U0Func = unsafe extern "C" fn(data: *mut realtype, u: *mut realtype, up: *mut realtype);
-pub type U0GradientFunc = unsafe extern "C" fn(data: *mut realtype, ddata: *mut realtype, u: *mut realtype, du: *mut realtype, up: *mut realtype, dup: *mut realtype);
-pub type CalcOutFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, up: *const realtype, data: *mut realtype);
-pub type CalcOutGradientFunc = unsafe extern "C" fn(time: realtype, u: *const realtype, du: *const realtype, up: *const realtype, dup: *const realtype, data: *mut realtype, ddata: *mut realtype);
+pub type StopFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, up: *const RealType, data: *mut RealType, root: *mut RealType);
+pub type ResidualFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, up: *const RealType, data: *mut RealType, rr: *mut RealType);
+pub type ResidualGradientFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, du: *const RealType, up: *const RealType, dup: *const RealType, data: *mut RealType, ddata: *mut RealType, rr: *mut RealType, drr: *mut RealType);
+pub type U0Func = unsafe extern "C" fn(data: *mut RealType, u: *mut RealType, up: *mut RealType);
+pub type U0GradientFunc = unsafe extern "C" fn(data: *mut RealType, ddata: *mut RealType, u: *mut RealType, du: *mut RealType, up: *mut RealType, dup: *mut RealType);
+pub type CalcOutFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, up: *const RealType, data: *mut RealType);
+pub type CalcOutGradientFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, du: *const RealType, up: *const RealType, dup: *const RealType, data: *mut RealType, ddata: *mut RealType);
 pub type GetDimsFunc = unsafe extern "C" fn(states: *mut u32, inputs: *mut u32, outputs: *mut u32, data: *mut u32, stop: *mut u32);
-pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const realtype, data: *mut realtype);
-pub type SetInputsGradientFunc = unsafe extern "C" fn(inputs: *const realtype, dinputs: *const realtype, data: *mut realtype, ddata: *mut realtype);
-pub type SetIdFunc = unsafe extern "C" fn(id: *mut realtype);
-pub type GetOutFunc = unsafe extern "C" fn(data: *const realtype, tensor_data: *mut *mut realtype, tensor_size: *mut u32);
+pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const RealType, data: *mut RealType);
+pub type SetInputsGradientFunc = unsafe extern "C" fn(inputs: *const RealType, dinputs: *const RealType, data: *mut RealType, ddata: *mut RealType);
+pub type SetIdFunc = unsafe extern "C" fn(id: *mut RealType);
+pub type GetOutFunc = unsafe extern "C" fn(data: *const RealType, tensor_data: *mut *mut RealType, tensor_size: *mut u32);
 
 struct Globals<'ctx> {
     enzyme_dup: GlobalValue<'ctx>,
@@ -1385,7 +1386,7 @@ impl<'ctx> CodeGen<'ctx> {
             let curr_blk_index = index.as_basic_value().into_int_value();
             let curr_id_index = self.builder.build_int_add(id_start_index, curr_blk_index, name)?;
             let id_ptr = unsafe { self.builder.build_in_bounds_gep(*self.get_param("id"), &[curr_id_index], name)? };
-            let is_algebraic_float = if *is_algebraic { 0.0 as realtype } else { 1.0 as realtype };
+            let is_algebraic_float = if *is_algebraic { 0.0 as RealType } else { 1.0 as RealType };
             let is_algebraic_value = self.real_type.const_float(is_algebraic_float);
             self.builder.build_store(id_ptr, is_algebraic_value)?;
 

@@ -1,5 +1,6 @@
 use std::path::Path;
 use anyhow::anyhow;
+use std::env;
 
 use anyhow::Result;
 use inkwell::memory_buffer::MemoryBuffer;
@@ -9,7 +10,6 @@ use inkwell::{context::Context, OptimizationLevel, targets::{TargetTriple, Initi
 use ouroboros::self_referencing;
 use crate::discretise::DiscreteModel;
 use crate::utils::find_executable;
-use crate::utils::find_library_path;
 use crate::utils::find_runtime_path;
 use std::process::Command;
 
@@ -77,8 +77,11 @@ impl Compiler {
         find_executable(&Compiler::CLANG_VARIENTS)
     }
     fn find_enzyme_lib() -> Result<String> {
-        let enzyme_lib_varients = ["LLVMEnzyme-14.so", "LLVMEnzyme-14.dylib"];
-        find_library_path(&enzyme_lib_varients)
+        match env::var("ENZYME_LIB") {
+            Ok(lib) => Ok(lib),
+            Err(_) => Err(anyhow!("ENZYME_LIB environment variable not set")),
+
+        }
     }
     pub fn from_discrete_model(model: &DiscreteModel, out: &str) -> Result<Self> { 
         let number_of_states = *model.state().shape().first().unwrap_or(&1);

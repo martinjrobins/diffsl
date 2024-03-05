@@ -46,12 +46,12 @@ out_i {
   x,
   y,
   z,
+}
 ```
 
-## Installation
+## Dependencies
 
-This package relies on the `clang` (https://clang.llvm.org/) and `opt`
-executables from the [LLVM project](https://llvm.org/). The easiest way to
+This package uses the `opt` executable from the [LLVM project](https://llvm.org/). The easiest way to
 install these is to use the package manager for your operating system. For
 example, on Ubuntu you can install these with the following command:
 
@@ -59,23 +59,19 @@ example, on Ubuntu you can install these with the following command:
 sudo apt-get install clang
 ```
 
-In addition, DiffSL uses the [Enzyme AD](https://enzyme.mit.edu/) package for automatic differentiation. This can be installed by following the instructions on the Enzyme AD website. You will need set the `LIBRARY_PATH` environment variable to the location of the Enzyme AD library. For example, if you have installed Enzyme AD in the directory `/usr/local`, you can set the `LIBRARY_PATH` environment variable with the following command:
+In addition, DiffSL uses the [Enzyme AD](https://enzyme.mit.edu/) package for automatic differentiation. This can be installed by following the instructions on the Enzyme AD website. You will need set the `ENZYME_LIB` environment variable to the location of the Enzyme AD library. Please make sure that you compile the Enzyme AD library with the version of LLVM that corresponds to the version of `opt` that you have on your path.
 
 ```bash
-export LIBRARY_PATH=/usr/local/lib
+export ENZYME_LIB=<path to Enzyme AD library>
 ```
 
-## Building DiffSL
 
+## Installing DiffSL
 
-
-
-
-
-### Installing Enzyme AD
+You can install DiffSL using cargo:
 
 ```bash
-cmake -DCMAKE_INSTALL_PREFIX=<install> -DCMAKE_BUILD_TYPE=Release  ..
+cargo add diffsl
 ```
 
 ## DiffSL Language

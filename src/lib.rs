@@ -16,7 +16,6 @@ pub mod continuous;
 pub mod execution;
 pub mod utils;
 
-
 pub struct CompilerOptions {
     pub bitcode_only: bool,
     pub wasm: bool,

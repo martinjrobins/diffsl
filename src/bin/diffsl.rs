@@ -1,6 +1,6 @@
 use clap::Parser;
 use anyhow::Result;
-use diffeq::{compile, CompilerOptions};
+use diffsl::{compile, CompilerOptions};
 
 /// compiles a model in continuous (.cs) or discrete (.ds) format to an object file
 #[derive(Parser, Debug)]

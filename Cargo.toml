@@ -1,10 +1,10 @@
 [package]
-name = "diffeq"
+name = "diffsl"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "diffeq"
+name = "diffsl"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

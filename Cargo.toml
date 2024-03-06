@@ -2,6 +2,8 @@
 name = "diffsl"
 version = "0.1.0"
 edition = "2021"
+description = "A compiler for a domain-specific language for ordinary differential equations (ODE) and differential algebraic equations (DAE)."
+license-file = "LICENSE.txt"
 
 [[bin]]
 name = "diffsl"
@@ -15,7 +17,7 @@ approx = ">=0.5"
 pest = ">=2.1.3"
 pest_derive = ">=2.1.0"
 itertools = ">=0.10.3"
-inkwell = { version = ">=0.4.0", git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm14-0"] }
+inkwell = { version = ">=0.4.0", features = ["llvm14-0"] }
 ouroboros = ">=0.17"
 clap = { version = "4.3.23", features = ["derive"] }
 

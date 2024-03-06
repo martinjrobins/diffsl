@@ -40,7 +40,7 @@ jobs:
         cd Enzyme/enzyme/build
         cmake -G Ninja .. -DLLVM_DIR=${{ env.LLVM_PATH }}/lib/cmake/llvm
         ninja
-        echo "ENZYME_LIB=`pwd`/LLVMEnzyme-14.so" >> $GITHUB_ENV
+        echo "ENZYME_LIB=`pwd`/Enzyme/LLVMEnzyme-14.so" >> $GITHUB_ENV
     - name: Print LLVM Enzyme Library
       run: echo $ENZYME_LIB
     - name: Set up Rust

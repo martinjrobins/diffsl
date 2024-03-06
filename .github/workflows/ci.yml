@@ -35,7 +35,7 @@ jobs:
         version: "14.0"
     - name: Install EnzymeAD
       run: |
-        git clone https://github.com/EnzymeAD/Enzyme
+        git clone --depth 1 https://github.com/EnzymeAD/Enzyme
         mkdir Enzyme/enzyme/build
         cd Enzyme/enzyme/build
         cmake -G Ninja .. -DLLVM_DIR=${{ env.LLVM_PATH }}/lib/cmake/llvm

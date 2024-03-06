@@ -56,7 +56,7 @@ install these is to use the package manager for your operating system. For
 example, on Ubuntu you can install these with the following command:
 
 ```bash
-sudo apt-get install clang
+sudo apt-get install llvm
 ```
 
 In addition, DiffSL uses the [Enzyme AD](https://enzyme.mit.edu/) package for automatic differentiation. This can be installed by following the instructions on the Enzyme AD website. You will need set the `ENZYME_LIB` environment variable to the location of the Enzyme AD library. Please make sure that you compile the Enzyme AD library with the version of LLVM that corresponds to the version of `opt` that you have on your path.

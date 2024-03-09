@@ -1,7 +1,8 @@
 {
   "rust-analyzer.debug.engineSettings": {"cppvsdbg": {"visualizerFile":"${workspaceFolder}/.vscode/custom.natvis"}},
   "rust-analyzer.runnables.extraEnv": {
-    "LIBRARY_PATH": "/home/mrobins/.local/lib"
+    "LIBRARY_PATH": "/home/mrobins/.local/lib",
+    "ENZYME_LIB": "/home/mrobins/.local/lib/LLVMEnzyme-14.so",
   },
   "lldb.launch.initCommands": [
     "command script import ${workspaceFolder}/.vscode/formatter.py"

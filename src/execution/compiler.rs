@@ -1,5 +1,6 @@
 use std::path::Path;
 use anyhow::anyhow;
+use uid::Id;
 use std::env;
 
 use anyhow::Result;
@@ -9,6 +10,7 @@ use inkwell::targets::TargetMachine;
 use inkwell::{context::Context, OptimizationLevel, targets::{TargetTriple, InitializationConfig, Target, RelocMode, CodeModel, FileType}, execution_engine::{JitFunction, ExecutionEngine, UnsafeFunctionPointer}};
 use ouroboros::self_referencing;
 use crate::discretise::DiscreteModel;
+use crate::parser::parse_ds_string;
 use crate::utils::find_executable;
 use crate::utils::find_runtime_path;
 use std::process::Command;
@@ -83,6 +85,16 @@ impl Compiler {
 
         }
     }
+    pub fn from_discrete_str(code: &str) -> Result<Self> {
+        let uid = Id::<u32>::new();
+        let name = format!("diffsl_{}", uid);
+        let model = parse_ds_string(code).unwrap();
+        let model = DiscreteModel::build(name.as_str(), &model).unwrap_or_else(|e| panic!("{}", e.as_error_message(code)));
+        let dir = env::temp_dir();
+        let path = dir.join(name.clone());
+        Compiler::from_discrete_model(&model, path.to_str().unwrap())
+    }
+
     pub fn from_discrete_model(model: &DiscreteModel, out: &str) -> Result<Self> { 
         let number_of_states = *model.state().shape().first().unwrap_or(&1);
         let input_names = model.inputs().iter().map(|input| input.name().to_owned()).collect::<Vec<_>>();
@@ -705,6 +717,26 @@ mod tests {
         let path = Path::new("main.o");
         object.write_object_file(path).unwrap();
     }
+
+    #[test]
+    fn test_from_discrete_str() {
+        let text = "
+        u { y = 1 }
+        G { -y }
+        out { y }
+        ";
+        let compiler = Compiler::from_discrete_str(text).unwrap();
+        let mut u0 = vec![0.];
+        let mut up0 = vec![1.];
+        let mut res = vec![0.];
+        let mut data = compiler.get_new_data();
+        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
+        assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
+        assert_relative_eq!(up0.as_slice(), vec![0.].as_slice());
+        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        assert_relative_eq!(res.as_slice(), vec![1.].as_slice());
+    }
+
 
     #[test]
     fn test_stop() {

@@ -20,6 +20,7 @@ itertools = ">=0.10.3"
 inkwell = { version = ">=0.4.0", features = ["llvm14-0"] }
 ouroboros = ">=0.17"
 clap = { version = "4.3.23", features = ["derive"] }
+uid = "0.1.7"
 
 [profile.dev]
 opt-level = 0

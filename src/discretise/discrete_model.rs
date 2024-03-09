@@ -100,12 +100,13 @@ impl<'s> DiscreteModel<'s> {
     pub fn residual(&self) -> Tensor<'s> {
         let mut residual = self.lhs.clone();
         residual.set_name("residual");
+        let indices = self.lhs.indices().to_vec();
         let lhs = Ast {
-            kind: AstKind::new_indexed_name("F", vec!['i']),
+            kind: AstKind::new_indexed_name("F", indices.clone()),
             span: None,
         };
         let rhs = Ast {
-            kind: AstKind::new_indexed_name("G", vec!['i']),
+            kind: AstKind::new_indexed_name("G", indices),
             span: None,
         };
         let name = "residual";

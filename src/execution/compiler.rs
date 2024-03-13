@@ -831,13 +831,7 @@ mod tests {
                     u_i {{
                         y = 1,
                     }}
-                    dudt_i {{
-                        dydt = 0,
-                    }}
                     F_i {{
-                        dydt,
-                    }}
-                    G_i {{
                         y,
                     }}
                     out_i {{

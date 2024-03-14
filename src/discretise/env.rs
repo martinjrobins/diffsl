@@ -10,6 +10,7 @@ pub struct EnvVar {
     layout: RcLayout,
     is_time_dependent: bool,
     is_state_dependent: bool,
+    is_dstatedt_dependent: bool,
     is_algebraic: bool,
 }
 
@@ -20,6 +21,10 @@ impl EnvVar {
 
     pub fn is_state_dependent(&self) -> bool {
         self.is_state_dependent
+    }
+    
+    pub fn is_dstatedt_dependent(&self) -> bool {
+        self.is_dstatedt_dependent
     }
 
     pub fn is_algebraic(&self) -> bool {
@@ -46,6 +51,7 @@ impl Default for Env {
                 layout: RcLayout::new(Layout::new_scalar()),
                 is_time_dependent: true,
                 is_state_dependent: false,
+                is_dstatedt_dependent: false,
                 is_algebraic: true,
             },
         );
@@ -69,13 +75,28 @@ impl Env {
         })
     }
     pub fn is_tensor_state_dependent(&self, tensor: &Tensor) -> bool {
-        if tensor.name() == "u" || tensor.name() == "dudt" { return true };
+        self.is_tensor_dependent_on(tensor, "u")
+    }
+    
+    pub fn is_tensor_dstatedt_dependent(&self, tensor: &Tensor) -> bool {
+        self.is_tensor_dependent_on(tensor, "dudt")
+    }
+    
+    fn is_tensor_dependent_on(&self, tensor: &Tensor, var: &str) -> bool {
+        if tensor.name() == var { return true };
         tensor.elmts().iter().any(|block| {
             block
                 .expr()
                 .get_dependents()
                 .iter()
-                .any(|&dep| dep == "u" || self.vars[dep].is_state_dependent())
+                .any(|&dep| 
+                    dep == var || 
+                    match var {
+                        "u" => self.vars[dep].is_state_dependent(),
+                        "dudt" => self.vars[dep].is_dstatedt_dependent(),
+                        _ => false
+                    }
+                )
         })
     }
 
@@ -87,6 +108,7 @@ impl Env {
                 is_algebraic: true,
                 is_time_dependent: self.is_tensor_time_dependent(var),
                 is_state_dependent: self.is_tensor_state_dependent(var),
+                is_dstatedt_dependent: self.is_tensor_dstatedt_dependent(var),
             },
         );
     }
@@ -99,6 +121,7 @@ impl Env {
                 is_algebraic: true,
                 is_time_dependent: self.is_tensor_time_dependent(var),
                 is_state_dependent: self.is_tensor_state_dependent(var),
+                is_dstatedt_dependent: self.is_tensor_dstatedt_dependent(var),
             },
         );
     }

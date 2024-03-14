@@ -26,7 +26,7 @@ use super::ValidationErrors;
 
 
 #[derive(Debug)]
-// F(t, u, u_dot) = G(t, u)
+// M(t, u_dot) = F(t, u)
 pub struct DiscreteModel<'s> {
     name: &'s str,
     lhs: Tensor<'s>,
@@ -35,6 +35,7 @@ pub struct DiscreteModel<'s> {
     time_indep_defns: Vec<Tensor<'s>>,
     time_dep_defns: Vec<Tensor<'s>>,
     state_dep_defns: Vec<Tensor<'s>>,
+    dstate_dep_defns: Vec<Tensor<'s>>,
     inputs: Vec<Tensor<'s>>,
     state: Tensor<'s>,
     state_dot: Tensor<'s>,
@@ -81,12 +82,13 @@ impl<'s> DiscreteModel<'s> {
     pub fn new(name: &'s str) -> Self {
         Self {
             name,
-            lhs: Tensor::new_empty("F"),
-            rhs: Tensor::new_empty("G"),
+            lhs: Tensor::new_empty("M"),
+            rhs: Tensor::new_empty("F"),
             out: Tensor::new_empty("out"),
             time_indep_defns: Vec::new(),
             time_dep_defns: Vec::new(),
             state_dep_defns: Vec::new(),
+            dstate_dep_defns: Vec::new(),
             inputs: Vec::new(),
             state: Tensor::new_empty("u"),
             state_dot: Tensor::new_empty("u_dot"),
@@ -94,41 +96,6 @@ impl<'s> DiscreteModel<'s> {
             stop: None,
         }
     }
-
-    // residual = F(t, u, u_dot) - G(t, u)
-    // return a tensor equal to the residual
-    pub fn residual(&self) -> Tensor<'s> {
-        let mut residual = self.lhs.clone();
-        residual.set_name("residual");
-        let indices = self.lhs.indices().to_vec();
-        let lhs = Ast {
-            kind: AstKind::new_indexed_name("F", indices.clone()),
-            span: None,
-        };
-        let rhs = Ast {
-            kind: AstKind::new_indexed_name("G", indices),
-            span: None,
-        };
-        let name = "residual";
-        let indices = self.lhs.indices().to_vec();
-        let layout = self.lhs.layout_ptr().clone();
-        let elmts = vec![
-            TensorBlock::new(
-                None,
-                Index::from_vec(vec![0]),
-                indices.clone(),
-                self.lhs.layout_ptr().clone(),
-                self.lhs.layout_ptr().clone(),
-                Ast {
-                    kind: AstKind::new_binop('-', lhs, rhs),
-                    span: None,
-                },
-            )
-        ];
-        Tensor::new(name, elmts, layout, indices)
-    }
-
-    
 
     fn build_array(array: &ast::Tensor<'s>, env: &mut Env) -> Option<Tensor<'s>> {
         let rank = array.indices().len();
@@ -242,7 +209,7 @@ impl<'s> DiscreteModel<'s> {
         let mut read_dot_state = false;
         let mut read_out = false;
         let mut span_f = None;
-        let mut span_g = None;
+        let mut span_m = None;
         for tensor_ast in model.tensors.iter() {
             env.set_current_span(tensor_ast.span);
             match tensor_ast.kind.as_array() {
@@ -287,18 +254,43 @@ impl<'s> DiscreteModel<'s> {
                         "F" => {
                             span_f = Some(span);
                             if let Some(built) = Self::build_array(tensor, &mut env) {
-                                ret.lhs = built;
-                            }
-                        }
-                        "G" => {
-                            span_g = Some(span);
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
                                 ret.rhs = built;
                             }
+                            // check that F is not dstatedt dependent and only depends on u
+                            let f = env.get("F").unwrap();
+                            if f.is_dstatedt_dependent() {
+                                env.errs_mut().push(ValidationError::new(
+                                    "F must not be dependent on dudt".to_string(),
+                                    span,
+                                ));
+                            }
+                        }
+                        "M" => {
+                            span_m = Some(span);
+                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                                ret.lhs= built;
+                            }
+                            // check that M is not state dependent and only depends on dudt
+                            let m = env.get("M").unwrap();
+                            if m.is_state_dependent() {
+                                env.errs_mut().push(ValidationError::new(
+                                    "M must not be dependent on u".to_string(),
+                                    span,
+                                ));
+                            }
+                            
                         }
                         "stop" => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
                                 ret.stop = Some(built);
+                            }
+                            // check that stop is not dependent on dudt
+                            let stop = env.get("stop").unwrap();
+                            if stop.is_dstatedt_dependent() {
+                                env.errs_mut().push(ValidationError::new(
+                                    "stop must not be dependent on dudt".to_string(),
+                                    tensor_ast.span,
+                                ));
                             }
                         }
                         "out" => {
@@ -312,6 +304,14 @@ impl<'s> DiscreteModel<'s> {
                                 }
                                 ret.out = built;
                             }
+                            // check that out is not dependent on dudt
+                            let out = env.get("out").unwrap();
+                            if out.is_dstatedt_dependent() {
+                                env.errs_mut().push(ValidationError::new(
+                                    "out must not be dependent on dudt".to_string(),
+                                    tensor_ast.span,
+                                ));
+                            }
                         }
                         _name => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
@@ -319,6 +319,7 @@ impl<'s> DiscreteModel<'s> {
                                 if let Some(env_entry) = env.get(built.name()) {
                                     let dependent_on_state = env_entry.is_state_dependent();
                                     let dependent_on_time = env_entry.is_time_dependent();
+                                    let dependent_on_dudt = env_entry.is_dstatedt_dependent();
                                     if is_input {
                                         // inputs must be constants
                                         if dependent_on_time || dependent_on_state {
@@ -330,10 +331,14 @@ impl<'s> DiscreteModel<'s> {
                                         ret.inputs.push(built);
                                     } else if !dependent_on_time {
                                         ret.time_indep_defns.push(built);
-                                    } else if dependent_on_time && !dependent_on_state {
+                                    } else if dependent_on_time && !dependent_on_state && !dependent_on_dudt {
                                         ret.time_dep_defns.push(built);
-                                    } else {
+                                    } else if dependent_on_state {
                                         ret.state_dep_defns.push(built);
+                                    } else if dependent_on_dudt {
+                                        ret.dstate_dep_defns.push(built);
+                                    } else {
+                                        panic!("all the cases should be covered")
                                     }
                                 }
                             }
@@ -389,14 +394,14 @@ impl<'s> DiscreteModel<'s> {
             read_dot_state = true;
         }
 
-        // if F is not defined, add it
-        if span_f.is_none() {
-            span_f = Some(span_all);
-            let name = "F";
+        // if M is not defined, add it
+        if span_m.is_none() {
+            span_m = Some(span_all);
+            let name = "M";
             let dudt_block = Ast { kind: AstKind::new_tensor_elmt(Ast { kind: AstKind::new_indexed_name("dudt", ret.state_dot.indices().to_vec()), span: None }, None), span: None };
-            let indices = ret.rhs.indices().to_vec();
-            let default_f = ast::Tensor::new(name, indices, vec![dudt_block]);
-            if let Some(built) = Self::build_array(&default_f, &mut env) {
+            let indices = ret.state_dot.indices().to_vec();
+            let default_m = ast::Tensor::new(name, indices, vec![dudt_block]);
+            if let Some(built) = Self::build_array(&default_m, &mut env) {
                 ret.lhs = built;
             }
         }
@@ -420,9 +425,9 @@ impl<'s> DiscreteModel<'s> {
                 span_all,
             ));
         }
-        if span_g.is_none() {
+        if span_m.is_none() {
             env.errs_mut().push(ValidationError::new(
-                "missing 'G' array".to_string(),
+                "missing 'M' array".to_string(),
                 span_all,
             ));
         }
@@ -435,7 +440,7 @@ impl<'s> DiscreteModel<'s> {
         if let Some(span) = span_f {
             Self::check_match(&ret.lhs, &ret.state, span, &mut env);
         }
-        if let Some(span) = span_g {
+        if let Some(span) = span_m {
             Self::check_match(&ret.rhs, &ret.state, span, &mut env);
         }
 
@@ -583,16 +588,16 @@ impl<'s> DiscreteModel<'s> {
 
         // define F and G
         let mut curr_index = 0;
+        let mut m_elmts: Vec<TensorBlock> = Vec::new();
         let mut f_elmts: Vec<TensorBlock> = Vec::new();
-        let mut g_elmts: Vec<TensorBlock> = Vec::new();
         let mut is_algebraic = Vec::new();
         for state in states.iter() {
             let mut elmt = DiscreteModel::state_to_elmt(state);
             elmt.0.start_mut()[0] = i64::try_from(curr_index).unwrap();
             elmt.1.start_mut()[0] = i64::try_from(curr_index).unwrap();
             curr_index += elmt.0.layout().shape()[0];
-            f_elmts.push(elmt.0);
-            g_elmts.push(elmt.1);
+            m_elmts.push(elmt.0);
+            f_elmts.push(elmt.1);
             is_algebraic.push(state.as_ref().borrow().is_algebraic().unwrap());
         }
 
@@ -614,10 +619,11 @@ impl<'s> DiscreteModel<'s> {
             .iter()
             .map(DiscreteModel::dfn_to_array)
             .collect();
-        let lhs =  Tensor::new_no_layout("F", f_elmts, vec!['i']);
-        let rhs = Tensor::new_no_layout("G", g_elmts, vec!['i']);
+        let lhs =  Tensor::new_no_layout("M", m_elmts, vec!['i']);
+        let rhs = Tensor::new_no_layout("F", f_elmts, vec!['i']);
         let name = model.name;
         let stop = None;
+        let dstate_dep_defns = Vec::new();
         DiscreteModel {
             name,
             lhs,
@@ -629,6 +635,7 @@ impl<'s> DiscreteModel<'s> {
             time_indep_defns,
             time_dep_defns,
             state_dep_defns,
+            dstate_dep_defns,
             is_algebraic,
             stop,
         }
@@ -646,6 +653,10 @@ impl<'s> DiscreteModel<'s> {
     }
     pub fn state_dep_defns(&self) -> &[Tensor] {
         self.state_dep_defns.as_ref()
+    }
+    
+    pub fn dstate_dep_defns(&self) -> &[Tensor] {
+        self.dstate_dep_defns.as_ref()
     }
 
     pub fn state(&self) -> &Tensor<'s> {
@@ -707,8 +718,8 @@ mod tests {
         assert_eq!(discrete.time_dep_defns[0].name(), "inputVoltage");
         assert_eq!(discrete.state_dep_defns.len(), 1);
         assert_eq!(discrete.state_dep_defns[0].name(), "doubleI");
-        assert_eq!(discrete.lhs.name(), "F");
-        assert_eq!(discrete.rhs.name(), "G");
+        assert_eq!(discrete.lhs.name(), "M");
+        assert_eq!(discrete.rhs.name(), "F");
         assert_eq!(discrete.state.shape()[0], 1);
         assert_eq!(discrete.state.elmts().len(), 1);
         assert_eq!(discrete.out.elmts().len(), 3);
@@ -731,6 +742,54 @@ mod tests {
         assert_eq!(discrete.out.elmts()[1].expr().to_string(), "t");
         assert_eq!(discrete.out.elmts()[2].expr().to_string(), "z");
         println!("{}", discrete);
+    }
+    
+    #[test]
+    fn tensor_classification() {
+        let text = "
+            in = [r, k, ]
+            r { 1, }
+            k { 1, }
+            z { 2 * r }
+            g { 2 * t }
+            u_i {
+                y = 1,
+                z = 0,
+            }
+            u2_i {
+                2 * y,
+                2 * z,
+            }
+            dudt_i {
+                dydt = 0,
+                dzdt = 0,
+            }
+            dudt2_i {
+                2 * dydt,
+                0,
+            }
+            M_i {
+                dydt,
+                0,
+            }
+            F_i {
+                (r * y) * (1 - (y / k)),
+                (2 * y) - z,
+            }
+            out_i {
+                y,
+                t,
+                z,
+            }
+        ";
+        let model = parse_ds_string(text).unwrap();
+        let model = DiscreteModel::build("$name", &model).unwrap();
+        assert_eq!(model.inputs().iter().map(|t| t.name()).collect::<Vec<_>>(), ["r", "k"]);
+        assert_eq!(model.time_indep_defns().iter().map(|t| t.name()).collect::<Vec<_>>(), ["z"]);
+        assert_eq!(model.time_dep_defns().iter().map(|t| t.name()).collect::<Vec<_>>(), ["g"]);
+        assert_eq!(model.state_dep_defns().iter().map(|t| t.name()).collect::<Vec<_>>(), ["u2"]);
+        assert_eq!(model.dstate_dep_defns().iter().map(|t| t.name()).collect::<Vec<_>>(), ["dudt2"]);
+        assert_eq!(model.inputs().iter().map(|t| t.name()).collect::<Vec<_>>(), ["r", "k"]);
     }
 
     macro_rules! count {
@@ -781,11 +840,11 @@ mod tests {
                 dydt = 0,
                 dzdt = 0,
             }
-            F_i {
+            M_i {
                 dydt,
                 0,
             }
-            G_i {
+            F_i {
                 (r * y) * (1 - (y / k)),
                 (2 * y) - z,
             }
@@ -804,10 +863,10 @@ mod tests {
             dudt {
                 dydt = 0,
             }
-            F {
+            M {
                 dydt,
             }
-            G {
+            F {
                 (r * y) * (1 - y),
             }
             out {
@@ -820,7 +879,7 @@ mod tests {
             u {
                 y = 1,
             }
-            G {
+            F {
                 (r * y) * (1 - y),
             }
             out {
@@ -833,7 +892,7 @@ mod tests {
             u_i {
                 y = 1,
             }
-            G_i {
+            F_i {
                 (r * y) * (1 - y),
             }
             out {
@@ -849,10 +908,10 @@ mod tests {
             dudt_i {
                 dydt = 0,
             }
-            F_i {
+            M_i {
                 dydt,
             }
-            G_i {
+            F_i {
                 (r * y) * (1 - y),
             }
             out {
@@ -883,12 +942,12 @@ mod tests {
                 (r * y_i) * (1 - (y_i / k)),
                 (2 * y_i) - z_i,
             }
-            F_i {
+            M_i {
                 dydt_i,
                 0,
                 0,
             }
-            G_i {
+            F_i {
                 I_ij * rhs_i,
             }
             out_i {
@@ -897,16 +956,55 @@ mod tests {
                 z_i,
             }
         " [],
-        error_missing_specials: "" ["missing 'u' array", "missing 'G' array", "missing 'out' array",],
+        error_missing_specials: "" ["missing 'u' array", "missing 'F' array", "missing 'out' array",],
         error_state_lhs_rhs_same: "
             u_i {
                 y = 1,
             }
-            G_i {
+            F_i {
                 y,
                 1,
             }
-        " ["G and u must have the same shape",],
+        " ["F and u must have the same shape",],
+        error_dep_on_dudt: "
+            u_i {
+                y = 1,
+            }
+            dudt_i {
+                dydt = 0,
+            }
+            F_i {
+                dydt,
+            }
+            stop_i {
+                dydt,
+            }
+            out_i {
+                dydt,
+            }
+        " ["F must not be dependent on dudt", "stop must not be dependent on dudt", "out must not be dependent on dudt",],
+        error_m_dep_on_u: "
+            u_i {
+                y = 1,
+            }
+            y2_i {
+                2 * y,
+            }
+            dudt_i {
+                dydt = 0,
+            }
+            M_i {
+                y2_i,
+            }
+            F_i {
+                y,
+            }
+            out_i {
+                y,
+            }
+        " ["M must not be dependent on u",],
+
+
     );
 
     
@@ -921,13 +1019,7 @@ mod tests {
                     u_i {{
                         y = 1,
                     }}
-                    dudt_i {{
-                        dydt = 0,
-                    }}
                     F_i {{
-                        dydt,
-                    }}
-                    G_i {{
                         y,
                     }}
                     out_i {{
@@ -969,13 +1061,7 @@ mod tests {
                     u_i {{
                         y = 1,
                     }}
-                    dudt_i {{
-                        dydt = 0,
-                    }}
                     F_i {{
-                        dydt,
-                    }}
-                    G_i {{
                         y,
                     }}
                     out_i {{
@@ -1034,13 +1120,7 @@ mod tests {
         u_i {
             y = 1,
         }
-        dudt_i {
-            dydt = 0,
-        }
         F_i {
-            dydt,
-        }
-        G_i {
             y * (1 - y),
         }
         out {

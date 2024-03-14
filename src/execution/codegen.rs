@@ -21,13 +21,14 @@ use crate::execution::{Translation, TranslationFrom, TranslationTo, DataLayout};
 ///
 /// Calling this is innately `unsafe` because there's no guarantee it doesn't
 /// do `unsafe` operations internally.
-pub type StopFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, up: *const RealType, data: *mut RealType, root: *mut RealType);
-pub type ResidualFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, up: *const RealType, data: *mut RealType, rr: *mut RealType);
-pub type ResidualGradientFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, du: *const RealType, up: *const RealType, dup: *const RealType, data: *mut RealType, ddata: *mut RealType, rr: *mut RealType, drr: *mut RealType);
-pub type U0Func = unsafe extern "C" fn(data: *mut RealType, u: *mut RealType, up: *mut RealType);
-pub type U0GradientFunc = unsafe extern "C" fn(data: *mut RealType, ddata: *mut RealType, u: *mut RealType, du: *mut RealType, up: *mut RealType, dup: *mut RealType);
-pub type CalcOutFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, up: *const RealType, data: *mut RealType);
-pub type CalcOutGradientFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, du: *const RealType, up: *const RealType, dup: *const RealType, data: *mut RealType, ddata: *mut RealType);
+pub type StopFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, data: *mut RealType, root: *mut RealType);
+pub type RhsFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, data: *mut RealType, rr: *mut RealType);
+pub type RhsGradientFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, du: *const RealType, data: *mut RealType, ddata: *mut RealType, rr: *mut RealType, drr: *mut RealType);
+pub type MassFunc = unsafe extern "C" fn(time: RealType, v: *const RealType, data: *mut RealType, mv: *mut RealType);
+pub type U0Func = unsafe extern "C" fn(data: *mut RealType, u: *mut RealType);
+pub type U0GradientFunc = unsafe extern "C" fn(data: *mut RealType, ddata: *mut RealType, u: *mut RealType, du: *mut RealType);
+pub type CalcOutFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, data: *mut RealType);
+pub type CalcOutGradientFunc = unsafe extern "C" fn(time: RealType, u: *const RealType, du: *const RealType, data: *mut RealType, ddata: *mut RealType);
 pub type GetDimsFunc = unsafe extern "C" fn(states: *mut u32, inputs: *mut u32, outputs: *mut u32, data: *mut u32, stop: *mut u32);
 pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const RealType, data: *mut RealType);
 pub type SetInputsGradientFunc = unsafe extern "C" fn(inputs: *const RealType, dinputs: *const RealType, data: *mut RealType, ddata: *mut RealType);
@@ -147,7 +148,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.variables.insert(name.to_owned(), value);
     }
 
-    fn insert_state(&mut self, u: &Tensor, dudt: &Tensor) {
+    fn insert_state(&mut self, u: &Tensor) {
         let mut data_index = 0;
         for blk in u.elmts() {
             if let Some(name) = blk.name() {
@@ -158,7 +159,10 @@ impl<'ctx> CodeGen<'ctx> {
             }
             data_index += blk.nnz();
         }
-        data_index = 0;
+        
+    }
+    fn insert_dot_state(&mut self, dudt: &Tensor) {
+        let mut data_index = 0;
         for blk in dudt.elmts() {
             if let Some(name) = blk.name() {
                 let ptr = self.variables.get("dudt").unwrap();
@@ -896,10 +900,10 @@ impl<'ctx> CodeGen<'ctx> {
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            &[real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &[ "data", "u0", "dudt0"];
+        let fn_arg_names = &[ "data", "u0"];
         let function = self.module.add_function("set_u0", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -919,7 +923,6 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         self.jit_compile_tensor(model.state(), Some(*self.get_param("u0")))?;
-        self.jit_compile_tensor(model.state_dot(), Some(*self.get_param("dudt0")))?;
 
         self.builder.build_return(None)?;
 
@@ -941,10 +944,10 @@ impl<'ctx> CodeGen<'ctx> {
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &["t", "u", "dudt", "data"];
+        let fn_arg_names = &["t", "u", "data"];
         let function = self.module.add_function("calc_out", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -956,7 +959,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_param(name, alloca);
         }
 
-        self.insert_state(model.state(), model.state_dot());
+        self.insert_state(model.state());
         self.insert_data(model);
         self.insert_indices();
         
@@ -983,10 +986,10 @@ impl<'ctx> CodeGen<'ctx> {
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &["t", "u", "dudt", "data", "root"];
+        let fn_arg_names = &["t", "u", "data", "root"];
         let function = self.module.add_function("calc_stop", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -998,7 +1001,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_param(name, alloca);
         }
 
-        self.insert_state(model.state(), model.state_dot());
+        self.insert_state(model.state());
         self.insert_data(model);
         self.insert_indices();
         
@@ -1022,16 +1025,16 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
 
-    pub fn compile_residual<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_rhs<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
             , false
         );
-        let fn_arg_names = &["t", "u", "dudt", "data", "rr"];
-        let function = self.module.add_function("residual", fn_type, None);
+        let fn_arg_names = &["t", "u", "data", "rr"];
+        let function = self.module.add_function("rhs", fn_type, None);
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
         self.builder.position_at_end(basic_block);
@@ -1042,7 +1045,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_param(name, alloca);
         }
 
-        self.insert_state(model.state(), model.state_dot());
+        self.insert_state(model.state());
         self.insert_data(model);
         self.insert_indices();
 
@@ -1051,20 +1054,66 @@ impl<'ctx> CodeGen<'ctx> {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
         }
         
-        // TODO: could split state dep defns into before and after F and G
+        // TODO: could split state dep defns into before and after F
         for a in model.state_dep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
         }
 
-        // F and G
-        self.jit_compile_tensor(model.lhs(), Some(*self.get_var(model.lhs())))?;
-        self.jit_compile_tensor(model.rhs(), Some(*self.get_var(model.rhs())))?;
-        
-        // compute residual here as dummy array
-        let residual = model.residual();
-
+        // F
         let res_ptr = self.get_param("rr");
-        let _res_ptr = self.jit_compile_tensor(&residual, Some(*res_ptr))?;
+        self.jit_compile_tensor(model.rhs(), Some(*res_ptr))?;
+        
+        self.builder.build_return(None)?;
+
+        if function.verify(true) {
+            self.fpm.run_on(&function);
+            Ok(function)
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+    pub fn compile_mass<'m>(& mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
+        self.clear();
+        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
+        let void_type = self.context.void_type();
+        let fn_type = void_type.fn_type(
+            &[self.real_type.into(), real_ptr_type.into(), real_ptr_type.into(), real_ptr_type.into()]
+            , false
+        );
+        let fn_arg_names = &["t", "dudt", "data", "rr"];
+        let function = self.module.add_function("mass", fn_type, None);
+        let basic_block = self.context.append_basic_block(function, "entry");
+        self.fn_value_opt = Some(function);
+        self.builder.position_at_end(basic_block);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+
+        self.insert_dot_state(model.state_dot());
+        self.insert_data(model);
+        self.insert_indices();
+
+        // calculate time dependant definitions
+        for tensor in model.time_dep_defns() {
+            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+        }
+        
+        for a in model.dstate_dep_defns() {
+            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+        }
+
+        // mass
+        let res_ptr = self.get_param("rr");
+        self.jit_compile_tensor(model.lhs(), Some(*res_ptr))?;
+        
         self.builder.build_return(None)?;
 
         if function.verify(true) {

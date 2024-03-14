@@ -16,23 +16,23 @@ use crate::utils::find_runtime_path;
 use std::process::Command;
 
 
-use super::codegen::CalcOutGradientFunc;
+use super::codegen::{CalcOutGradientFunc, MassFunc, RhsFunc, RhsGradientFunc};
 use super::codegen::CompileGradientArgType;
 use super::codegen::GetDimsFunc;
 use super::codegen::GetOutFunc;
-use super::codegen::ResidualGradientFunc;
 use super::codegen::SetIdFunc;
 use super::codegen::SetInputsFunc;
 use super::codegen::SetInputsGradientFunc;
 use super::codegen::U0GradientFunc;
-use super::{CodeGen, codegen::{U0Func, ResidualFunc, CalcOutFunc, StopFunc}, data_layout::DataLayout};
+use super::{CodeGen, codegen::{U0Func, CalcOutFunc, StopFunc}, data_layout::DataLayout};
 
 
 
 
 struct JitFunctions<'ctx> {
     set_u0: JitFunction<'ctx, U0Func>,
-    residual: JitFunction<'ctx, ResidualFunc>,
+    rhs: JitFunction<'ctx, RhsFunc>,
+    mass: JitFunction<'ctx, MassFunc>,
     calc_out: JitFunction<'ctx, CalcOutFunc>,
     calc_stop: JitFunction<'ctx, StopFunc>,
     set_id: JitFunction<'ctx, SetIdFunc>,
@@ -43,7 +43,7 @@ struct JitFunctions<'ctx> {
 
 struct JitGradFunctions<'ctx> {
     set_u0_grad: JitFunction<'ctx, U0GradientFunc>,
-    residual_grad: JitFunction<'ctx, ResidualGradientFunc>,
+    rhs_grad: JitFunction<'ctx, RhsGradientFunc>,
     calc_out_grad: JitFunction<'ctx, CalcOutGradientFunc>,
     set_inputs_grad: JitFunction<'ctx, SetInputsGradientFunc>,
 }
@@ -116,12 +116,13 @@ impl Compiler {
                 let mut codegen = CodeGen::new(model, context, module, real_type, real_type_str);
                 
                 let _set_u0 = codegen.compile_set_u0(model)?;
-                let _set_u0_grad = codegen.compile_gradient(_set_u0, &[CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
+                let _set_u0_grad = codegen.compile_gradient(_set_u0, &[CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
                 let _calc_stop = codegen.compile_calc_stop(model)?;
-                let _residual = codegen.compile_residual(model)?;
-                let _residual_grad = codegen.compile_gradient(_residual, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::DupNoNeed])?;
+                let _rhs= codegen.compile_rhs(model)?;
+                let _mass = codegen.compile_mass(model)?;
+                let _rhs_grad = codegen.compile_gradient(_rhs, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::DupNoNeed])?;
                 let _calc_out = codegen.compile_calc_out(model)?;
-                let _calc_out_grad = codegen.compile_gradient(_calc_out, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
+                let _calc_out_grad = codegen.compile_gradient(_calc_out, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
                 let _set_id = codegen.compile_set_id(model)?;
                 let _get_dims= codegen.compile_get_dims(model)?;
                 let _set_inputs = codegen.compile_set_inputs(model)?;
@@ -156,7 +157,8 @@ impl Compiler {
                 let ee = module.create_jit_execution_engine(OptimizationLevel::None).map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
 
                 let set_u0 = Compiler::jit("set_u0", &ee)?;
-                let residual = Compiler::jit("residual", &ee)?;
+                let rhs = Compiler::jit("rhs", &ee)?;
+                let mass = Compiler::jit("mass", &ee)?;
                 let calc_stop = Compiler::jit("calc_stop", &ee)?;
                 let calc_out = Compiler::jit("calc_out", &ee)?;
                 let set_id = Compiler::jit("set_id", &ee)?;
@@ -166,14 +168,15 @@ impl Compiler {
                 
                 let set_inputs_grad = Compiler::jit("set_inputs_grad", &ee)?;
                 let calc_out_grad = Compiler::jit("calc_out_grad", &ee)?;
-                let residual_grad = Compiler::jit("residual_grad", &ee)?;
+                let rhs_grad = Compiler::jit("rhs_grad", &ee)?;
                 let set_u0_grad = Compiler::jit("set_u0_grad", &ee)?;
                 
                 let data = CompilerData {
                     codegen,
                     jit_functions: JitFunctions {
                         set_u0,
-                        residual,
+                        rhs,
+                        mass,
                         calc_out,
                         set_id,
                         get_dims,
@@ -183,7 +186,7 @@ impl Compiler {
                     },
                     jit_grad_functions: JitGradFunctions {
                         set_u0_grad,
-                        residual_grad,
+                        rhs_grad,
                         calc_out_grad,
                         set_inputs_grad,
                     },
@@ -330,36 +333,26 @@ impl Compiler {
         Some(&data[index..index+nnz])
     }
 
-    pub fn set_u0(&self, yy: &mut [f64], yp: &mut [f64], data: &mut [f64]) -> Result<()> {
+    pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
             return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
         }
-        if yp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
-        }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_mut_ptr();
-            let yp_ptr = yp.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
-            unsafe { compiler.jit_functions.set_u0.call(data_ptr, yy_ptr, yp_ptr); }
+            unsafe { compiler.jit_functions.set_u0.call(data_ptr, yy_ptr); }
         });
         Ok(())
     }
 
-    pub fn set_u0_grad(&self, yy: &mut [f64], dyy: &mut [f64], yp: &mut [f64], dyp: &mut [f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
+    pub fn set_u0_grad(&self, yy: &mut [f64], dyy: &mut [f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
             return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
         }
-        if yp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
-        }
         if dyy.len() != number_of_states {
             return Err(anyhow!("Expected {} states for dyy, got {}", number_of_states, dyy.len()));
-        }
-        if dyp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives for dyp, got {}", number_of_states, dyp.len()));
         }
         if data.len() != self.data_len() {
             return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
@@ -369,24 +362,19 @@ impl Compiler {
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_mut_ptr();
-            let yp_ptr = yp.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
             let dyy_ptr = dyy.as_mut_ptr();
-            let dyp_ptr = dyp.as_mut_ptr();
             let ddata_ptr = ddata.as_mut_ptr();
-            unsafe { compiler.jit_grad_functions.set_u0_grad.call(data_ptr, ddata_ptr, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr); }
+            unsafe { compiler.jit_grad_functions.set_u0_grad.call(data_ptr, ddata_ptr, yy_ptr, dyy_ptr); }
         });
         Ok(())
     }
 
-    pub fn calc_stop(&self, t: f64, yy: &[f64], yp: &[f64], data: &mut [f64], stop: &mut [f64]) -> Result<()> {
+    pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) -> Result<()> {
 
         let (n_states, _, _, n_data, n_stop) = self.get_dims();
         if yy.len() != n_states {
             return Err(anyhow!("Expected {} states, got {}", n_states, yy.len()));
-        }
-        if yp.len() != n_states {
-            return Err(anyhow!("Expected {} state derivatives, got {}", n_states, yp.len()));
         }
         if data.len() != n_data {
             return Err(anyhow!("Expected {} data, got {}", n_data, data.len()));
@@ -396,22 +384,18 @@ impl Compiler {
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
-            let yp_ptr = yp.as_ptr();
             let data_ptr = data.as_mut_ptr();
             let stop_ptr = stop.as_mut_ptr();
-            unsafe { compiler.jit_functions.calc_stop.call(t, yy_ptr, yp_ptr, data_ptr, stop_ptr); }
+            unsafe { compiler.jit_functions.calc_stop.call(t, yy_ptr, data_ptr, stop_ptr); }
         });
         Ok(())
     }
         
 
-    pub fn residual(&self, t: f64, yy: &[f64], yp: &[f64], data: &mut [f64], rr: &mut [f64]) -> Result<()> {
+    pub fn rhs(&self, t: f64, yy: &[f64], data: &mut [f64], rr: &mut [f64]) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
             return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
-        }
-        if yp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
         }
         if rr.len() != number_of_states {
             return Err(anyhow!("Expected {} residual states, got {}", number_of_states, rr.len()));
@@ -421,10 +405,29 @@ impl Compiler {
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
+            let rr_ptr = rr.as_mut_ptr();
+            let data_ptr = data.as_mut_ptr();
+            unsafe { compiler.jit_functions.rhs.call(t, yy_ptr, data_ptr, rr_ptr); }
+        });
+        Ok(())
+    }
+
+    pub fn mass(&self, t: f64, yp: &[f64], data: &mut [f64], rr: &mut [f64]) -> Result<()> {
+        let number_of_states = *self.borrow_number_of_states();
+        if yp.len() != number_of_states {
+            return Err(anyhow!("Expected {} states, got {}", number_of_states, yp.len()));
+        }
+        if rr.len() != number_of_states {
+            return Err(anyhow!("Expected {} residual states, got {}", number_of_states, rr.len()));
+        }
+        if data.len() != self.data_len() {
+            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+        }
+        self.with_data(|compiler| {
             let yp_ptr = yp.as_ptr();
             let rr_ptr = rr.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
-            unsafe { compiler.jit_functions.residual.call(t, yy_ptr, yp_ptr, data_ptr, rr_ptr); }
+            unsafe { compiler.jit_functions.mass.call(t, yp_ptr, data_ptr, rr_ptr); }
         });
         Ok(())
     }
@@ -440,22 +443,16 @@ impl Compiler {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn residual_grad(&self, t: f64, yy: &[f64], dyy: &[f64], yp: &[f64], dyp: &[f64], data: &mut [f64], ddata: &mut [f64], rr: &mut [f64], drr: &mut [f64]) -> Result<()> {
+    pub fn rhs_grad(&self, t: f64, yy: &[f64], dyy: &[f64], data: &mut [f64], ddata: &mut [f64], rr: &mut [f64], drr: &mut [f64]) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
             return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
-        }
-        if yp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
         }
         if rr.len() != number_of_states {
             return Err(anyhow!("Expected {} residual states, got {}", number_of_states, rr.len()));
         }
         if dyy.len() != number_of_states {
             return Err(anyhow!("Expected {} states for dyy, got {}", number_of_states, dyy.len()));
-        }
-        if dyp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives for dyp, got {}", number_of_states, dyp.len()));
         }
         if drr.len() != number_of_states {
             return Err(anyhow!("Expected {} residual states for drr, got {}", number_of_states, drr.len()));
@@ -468,46 +465,36 @@ impl Compiler {
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
-            let yp_ptr = yp.as_ptr();
             let rr_ptr = rr.as_mut_ptr();
             let dyy_ptr = dyy.as_ptr();
-            let dyp_ptr = dyp.as_ptr();
             let drr_ptr = drr.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
             let ddata_ptr = ddata.as_mut_ptr();
-            unsafe { compiler.jit_grad_functions.residual_grad.call(t, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr, data_ptr, ddata_ptr, rr_ptr, drr_ptr); }
+            unsafe { compiler.jit_grad_functions.rhs_grad.call(t, yy_ptr, dyy_ptr, data_ptr, ddata_ptr, rr_ptr, drr_ptr); }
         });
         Ok(())
     }
 
-    pub fn calc_out(&self, t: f64, yy: &[f64], yp: &[f64], data: &mut [f64]) -> Result<()> {
+    pub fn calc_out(&self, t: f64, yy: &[f64], data: &mut [f64]) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != *self.borrow_number_of_states() {
             return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
-        }
-        if yp.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
         }
         if data.len() != self.data_len() {
             return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
-            let yp_ptr = yp.as_ptr();
             let data_ptr = data.as_mut_ptr();
-            unsafe { compiler.jit_functions.calc_out.call(t, yy_ptr, yp_ptr, data_ptr ); }
+            unsafe { compiler.jit_functions.calc_out.call(t, yy_ptr, data_ptr ); }
         });
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn calc_out_grad(&self, t: f64, yy: &[f64], dyy: &[f64], yp: &[f64], dyp: &[f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
+    pub fn calc_out_grad(&self, t: f64, yy: &[f64], dyy: &[f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != *self.borrow_number_of_states() {
             return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
-        }
-        if yp.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
         }
         if data.len() != self.data_len() {
             return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
@@ -515,20 +502,15 @@ impl Compiler {
         if dyy.len() != *self.borrow_number_of_states() {
             return Err(anyhow!("Expected {} states for dyy, got {}", number_of_states, dyy.len()));
         }
-        if dyp.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} state derivatives for dyp, got {}", number_of_states, dyp.len()));
-        }
         if ddata.len() != self.data_len() {
             return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
-            let yp_ptr = yp.as_ptr();
             let data_ptr = data.as_mut_ptr();
             let dyy_ptr = dyy.as_ptr();
-            let dyp_ptr = dyp.as_ptr();
             let ddata_ptr = ddata.as_mut_ptr();
-            unsafe { compiler.jit_grad_functions.calc_out_grad.call(t, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr, data_ptr, ddata_ptr); }
+            unsafe { compiler.jit_grad_functions.calc_out_grad.call(t, yy_ptr, dyy_ptr, data_ptr, ddata_ptr); }
         });
         Ok(())
     }
@@ -722,19 +704,20 @@ mod tests {
     fn test_from_discrete_str() {
         let text = "
         u { y = 1 }
-        G { -y }
+        F { -y }
         out { y }
         ";
         let compiler = Compiler::from_discrete_str(text).unwrap();
         let mut u0 = vec![0.];
-        let mut up0 = vec![1.];
+        let up0 = vec![2.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
-        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice()).unwrap();
         assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
-        assert_relative_eq!(up0.as_slice(), vec![0.].as_slice());
-        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
-        assert_relative_eq!(res.as_slice(), vec![1.].as_slice());
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        assert_relative_eq!(res.as_slice(), vec![-1.].as_slice());
+        compiler.mass(0., up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        assert_relative_eq!(res.as_slice(), vec![2.].as_slice());
     }
 
 
@@ -747,10 +730,10 @@ mod tests {
         dudt_i {
             dydt = 0,
         }
-        F_i {
+        M_i {
             dydt,
         }
-        G_i {
+        F_i {
             y * (1 - y),
         }
         stop_i {
@@ -764,13 +747,12 @@ mod tests {
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_stop").unwrap();
         let mut u0 = vec![1.];
-        let mut up0 = vec![1.];
         let mut res = vec![0.];
         let mut stop = vec![0.];
         let mut data = compiler.get_new_data();
-        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
-        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
-        compiler.calc_stop(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), stop.as_mut_slice()).unwrap();
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        compiler.calc_stop(0., u0.as_slice(), data.as_mut_slice(), stop.as_mut_slice()).unwrap();
         assert_relative_eq!(stop[0], 0.5);
         assert_eq!(stop.len(), 1);
     }
@@ -790,7 +772,6 @@ mod tests {
         };
         let compiler = Compiler::from_discrete_model(&discrete_model, tmp_loc).unwrap();
         let mut u0 = vec![1.];
-        let mut up0 = vec![1.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
         let mut grad_data = Vec::new();
@@ -801,21 +782,20 @@ mod tests {
         let mut results = Vec::new();
         let inputs = vec![1.; n_inputs];
         compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
-        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
-        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
-        compiler.calc_out(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        compiler.calc_out(0., u0.as_slice(), data.as_mut_slice()).unwrap();
         results.push(compiler.get_tensor_data(tensor_name, data.as_slice()).unwrap().to_vec());
         for i in 0..n_inputs {
             let mut dinputs = vec![0.; n_inputs];
             dinputs[i] = 1.0;
             let mut ddata = compiler.get_new_data();
             let mut du0 = vec![0.];
-            let mut dup0 = vec![0.];
             let mut dres = vec![0.];
             compiler.set_inputs_grad(inputs.as_slice(), dinputs.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), up0.as_mut_slice(), dup0.as_mut_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.residual_grad(0., u0.as_slice(), du0.as_slice(), up0.as_slice(), dup0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
-            compiler.calc_out_grad(0., u0.as_slice(), du0.as_slice(), up0.as_slice(), dup0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
+            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
+            compiler.rhs_grad(0., u0.as_slice(), du0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
+            compiler.calc_out_grad(0., u0.as_slice(), du0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
             results.push(compiler.get_tensor_data(tensor_name, ddata.as_slice()).unwrap().to_vec());
         }
         results
@@ -941,10 +921,10 @@ mod tests {
                         dydt = p,
                     }}
                     {}
-                    F_i {{
+                    M_i {{
                         dydt,
                     }}
-                    G_i {{
+                    F_i {{
                         y,
                     }}
                     out_i {{
@@ -985,10 +965,10 @@ mod tests {
             r {
                 2 * y * p,
             }
-            F_i {
+            M_i {
                 dydt,
             }
-            G_i {
+            F_i {
                 r,
             }
             out_i {
@@ -1006,9 +986,7 @@ mod tests {
         };
         let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_repeated_grad").unwrap();
         let mut u0 = vec![1.];
-        let mut up0 = vec![1.];
         let mut du0 = vec![1.];
-        let mut dup0 = vec![1.];
         let mut res = vec![0.];
         let mut dres = vec![0.];
         let mut data = compiler.get_new_data();
@@ -1019,9 +997,9 @@ mod tests {
             let inputs = vec![2.; n_inputs];
             let dinputs = vec![1.; n_inputs];
             compiler.set_inputs_grad(inputs.as_slice(), dinputs.as_slice(), data.as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), up0.as_mut_slice(), dup0.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.residual_grad(0., u0.as_slice(), du0.as_slice(), up0.as_slice(), dup0.as_slice(), data.as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
-            assert_relative_eq!(dres.as_slice(), vec![-8.].as_slice());
+            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice()).unwrap();
+            compiler.rhs_grad(0., u0.as_slice(), du0.as_slice(), data.as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
+            assert_relative_eq!(dres.as_slice(), vec![8.].as_slice());
         }
     }
 
@@ -1040,11 +1018,11 @@ mod tests {
                 dydt = 0,
                 0,
             }
-            F_i {
+            M_i {
                 dydt,
                 0,
             }
-            G_i {
+            F_i {
                 y - 1,
                 x - 2,
             }
@@ -1075,17 +1053,21 @@ mod tests {
         assert_eq!(id, vec![1.0, 0.0]);
 
         let mut u = vec![0., 0.];
-        let mut up = vec![0., 0.];
-        compiler.set_u0(u.as_mut_slice(), up.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_u0(u.as_mut_slice(), data.as_mut_slice()).unwrap();
         assert_relative_eq!(u.as_slice(), vec![1., 2.].as_slice());
-        assert_relative_eq!(up.as_slice(), vec![0., 0.].as_slice());
 
         let mut rr = vec![1., 1.];
-        compiler.residual(0., u.as_slice(), up.as_slice(), data.as_mut_slice(), rr.as_mut_slice()).unwrap();
+        compiler.rhs(0., u.as_slice(), data.as_mut_slice(), rr.as_mut_slice()).unwrap();
         assert_relative_eq!(rr.as_slice(), vec![0., 0.].as_slice());
+        
+        let up = vec![2., 3.];
+        rr = vec![1., 1.];
+        compiler.mass(0., up.as_slice(), data.as_mut_slice(), rr.as_mut_slice()).unwrap();
+        assert_relative_eq!(rr.as_slice(), vec![2., 0.].as_slice());
 
-        compiler.calc_out(0., u.as_slice(), up.as_slice(), data.as_mut_slice()).unwrap();
+        compiler.calc_out(0., u.as_slice(), data.as_mut_slice()).unwrap();
         let out = compiler.get_out(data.as_slice());
         assert_relative_eq!(out, vec![1., 2., 4.].as_slice());
+        
     }
 }

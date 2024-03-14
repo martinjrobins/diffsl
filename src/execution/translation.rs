@@ -224,10 +224,10 @@ mod tests {
                     dudt_i {{
                         dydt = 0,
                     }}
-                    F_i {{
+                    M_i {{
                         dydt,
                     }}
-                    G_i {{
+                    F_i {{
                         y,
                     }}
                     out_i {{

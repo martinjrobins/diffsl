@@ -333,32 +333,31 @@ impl Compiler {
         Some(&data[index..index+nnz])
     }
 
-    pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) -> Result<()> {
+    pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
             unsafe { compiler.jit_functions.set_u0.call(data_ptr, yy_ptr); }
         });
-        Ok(())
     }
 
-    pub fn set_u0_grad(&self, yy: &mut [f64], dyy: &mut [f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
+    pub fn set_u0_grad(&self, yy: &mut [f64], dyy: &mut [f64], data: &mut [f64], ddata: &mut [f64]) {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
         if dyy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states for dyy, got {}", number_of_states, dyy.len()));
+            panic!("Expected {} states for dyy, got {}", number_of_states, dyy.len());
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
         if ddata.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
+            panic!("Expected {} data for ddata, got {}", self.data_len(), ddata.len());
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_mut_ptr();
@@ -367,20 +366,19 @@ impl Compiler {
             let ddata_ptr = ddata.as_mut_ptr();
             unsafe { compiler.jit_grad_functions.set_u0_grad.call(data_ptr, ddata_ptr, yy_ptr, dyy_ptr); }
         });
-        Ok(())
     }
 
-    pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) -> Result<()> {
+    pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) {
 
         let (n_states, _, _, n_data, n_stop) = self.get_dims();
         if yy.len() != n_states {
-            return Err(anyhow!("Expected {} states, got {}", n_states, yy.len()));
+            panic!("Expected {} states, got {}", n_states, yy.len());
         }
         if data.len() != n_data {
-            return Err(anyhow!("Expected {} data, got {}", n_data, data.len()));
+            panic!("Expected {} data, got {}", n_data, data.len());
         }
         if stop.len() != n_stop {
-            return Err(anyhow!("Expected {} stop, got {}", n_stop, stop.len()));
+            panic!("Expected {} stop, got {}", n_stop, stop.len());
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
@@ -388,20 +386,19 @@ impl Compiler {
             let stop_ptr = stop.as_mut_ptr();
             unsafe { compiler.jit_functions.calc_stop.call(t, yy_ptr, data_ptr, stop_ptr); }
         });
-        Ok(())
     }
         
 
-    pub fn rhs(&self, t: f64, yy: &[f64], data: &mut [f64], rr: &mut [f64]) -> Result<()> {
+    pub fn rhs(&self, t: f64, yy: &[f64], data: &mut [f64], rr: &mut [f64]) {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
         if rr.len() != number_of_states {
-            return Err(anyhow!("Expected {} residual states, got {}", number_of_states, rr.len()));
+            panic!("Expected {} residual states, got {}", number_of_states, rr.len());
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
@@ -409,19 +406,18 @@ impl Compiler {
             let data_ptr = data.as_mut_ptr();
             unsafe { compiler.jit_functions.rhs.call(t, yy_ptr, data_ptr, rr_ptr); }
         });
-        Ok(())
     }
 
-    pub fn mass(&self, t: f64, yp: &[f64], data: &mut [f64], rr: &mut [f64]) -> Result<()> {
+    pub fn mass(&self, t: f64, yp: &[f64], data: &mut [f64], rr: &mut [f64]) {
         let number_of_states = *self.borrow_number_of_states();
         if yp.len() != number_of_states {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yp.len()));
+            panic!("Expected {} states, got {}", number_of_states, yp.len());
         }
         if rr.len() != number_of_states {
-            return Err(anyhow!("Expected {} residual states, got {}", number_of_states, rr.len()));
+            panic!("Expected {} residual states, got {}", number_of_states, rr.len());
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
         self.with_data(|compiler| {
             let yp_ptr = yp.as_ptr();
@@ -429,7 +425,6 @@ impl Compiler {
             let data_ptr = data.as_mut_ptr();
             unsafe { compiler.jit_functions.mass.call(t, yp_ptr, data_ptr, rr_ptr); }
         });
-        Ok(())
     }
 
     pub fn data_len(&self) -> usize {
@@ -443,25 +438,25 @@ impl Compiler {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn rhs_grad(&self, t: f64, yy: &[f64], dyy: &[f64], data: &mut [f64], ddata: &mut [f64], rr: &mut [f64], drr: &mut [f64]) -> Result<()> {
+    pub fn rhs_grad(&self, t: f64, yy: &[f64], dyy: &[f64], data: &mut [f64], ddata: &mut [f64], rr: &mut [f64], drr: &mut [f64]) {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
         if rr.len() != number_of_states {
-            return Err(anyhow!("Expected {} residual states, got {}", number_of_states, rr.len()));
+            panic!("Expected {} residual states, got {}", number_of_states, rr.len());
         }
         if dyy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states for dyy, got {}", number_of_states, dyy.len()));
+            panic!("Expected {} states for dyy, got {}", number_of_states, dyy.len());
         }
         if drr.len() != number_of_states {
-            return Err(anyhow!("Expected {} residual states for drr, got {}", number_of_states, drr.len()));
+            panic!("Expected {} residual states for drr, got {}", number_of_states, drr.len());
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
         if ddata.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
+            panic!("Expected {} data for ddata, got {}", self.data_len(), ddata.len());
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
@@ -472,38 +467,36 @@ impl Compiler {
             let ddata_ptr = ddata.as_mut_ptr();
             unsafe { compiler.jit_grad_functions.rhs_grad.call(t, yy_ptr, dyy_ptr, data_ptr, ddata_ptr, rr_ptr, drr_ptr); }
         });
-        Ok(())
     }
 
-    pub fn calc_out(&self, t: f64, yy: &[f64], data: &mut [f64]) -> Result<()> {
+    pub fn calc_out(&self, t: f64, yy: &[f64], data: &mut [f64]) {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
             let data_ptr = data.as_mut_ptr();
             unsafe { compiler.jit_functions.calc_out.call(t, yy_ptr, data_ptr ); }
         });
-        Ok(())
     }
 
-    pub fn calc_out_grad(&self, t: f64, yy: &[f64], dyy: &[f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
+    pub fn calc_out_grad(&self, t: f64, yy: &[f64], dyy: &[f64], data: &mut [f64], ddata: &mut [f64]) {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
         if dyy.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} states for dyy, got {}", number_of_states, dyy.len()));
+            panic!("Expected {} states for dyy, got {}", number_of_states, dyy.len());
         }
         if ddata.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
+            panic!("Expected {} data for ddata, got {}", self.data_len(), ddata.len());
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
@@ -512,7 +505,6 @@ impl Compiler {
             let ddata_ptr = ddata.as_mut_ptr();
             unsafe { compiler.jit_grad_functions.calc_out_grad.call(t, yy_ptr, dyy_ptr, data_ptr, ddata_ptr); }
         });
-        Ok(())
     }
 
     /// Get various dimensions of the model
@@ -532,34 +524,33 @@ impl Compiler {
         (n_states as usize, n_inputs as usize, n_outputs as usize, n_data as usize, n_stop as usize)
     }
 
-    pub fn set_inputs(&self, inputs: &[f64], data: &mut [f64]) -> Result<()> {
+    pub fn set_inputs(&self, inputs: &[f64], data: &mut [f64]) {
         let (_, n_inputs, _, _, _) = self.get_dims();
         if n_inputs != inputs.len() {
-            return Err(anyhow!("Expected {} inputs, got {}", n_inputs, inputs.len()));
+            panic!("Expected {} inputs, got {}", n_inputs, inputs.len());
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
         self.with_data(|compiler| {
             let data_ptr = data.as_mut_ptr();
             unsafe { compiler.jit_functions.set_inputs.call(inputs.as_ptr(), data_ptr); }
         });
-        Ok(())
     }
 
-    pub fn set_inputs_grad(&self, inputs: &[f64], dinputs: &[f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
+    pub fn set_inputs_grad(&self, inputs: &[f64], dinputs: &[f64], data: &mut [f64], ddata: &mut [f64]) {
         let (_, n_inputs, _, _, _) = self.get_dims();
         if n_inputs != inputs.len() {
-            return Err(anyhow!("Expected {} inputs, got {}", n_inputs, inputs.len()));
+            panic!("Expected {} inputs, got {}", n_inputs, inputs.len());
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
         if dinputs.len() != n_inputs {
-            return Err(anyhow!("Expected {} inputs for dinputs, got {}", n_inputs, dinputs.len()));
+            panic!("Expected {} inputs for dinputs, got {}", n_inputs, dinputs.len());
         }
         if ddata.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
+            panic!("Expected {} data for ddata, got {}", self.data_len(), ddata.len());
         }
         self.with_data(|compiler| {
             let data_ptr = data.as_mut_ptr();
@@ -567,7 +558,6 @@ impl Compiler {
             let dinputs_ptr = dinputs.as_ptr();
             unsafe { compiler.jit_grad_functions.set_inputs_grad.call(inputs.as_ptr(), dinputs_ptr, data_ptr, ddata_ptr); }
         });
-        Ok(())
     }
 
     pub fn get_out(&self, data: &[f64]) -> &[f64] {
@@ -587,15 +577,14 @@ impl Compiler {
         unsafe { std::slice::from_raw_parts(tensor_data_ptr, tensor_data_len as usize) }
     }
 
-    pub fn set_id(&self, id: &mut [f64]) -> Result<()> {
+    pub fn set_id(&self, id: &mut [f64]) {
         let (n_states, _, _, _, _) = self.get_dims();
         if n_states != id.len() {
-            return Err(anyhow!("Expected {} states, got {}", n_states, id.len()));
+            panic!("Expected {} states, got {}", n_states, id.len());
         }
         self.with_data(|compiler| {
             unsafe { compiler.jit_functions.set_id.call(id.as_mut_ptr()); };
-            Ok(())
-        })
+        });
     }
 
     fn get_native_machine() -> Result<TargetMachine> {
@@ -712,11 +701,11 @@ mod tests {
         let up0 = vec![2.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
-        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         assert_relative_eq!(res.as_slice(), vec![-1.].as_slice());
-        compiler.mass(0., up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        compiler.mass(0., up0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         assert_relative_eq!(res.as_slice(), vec![2.].as_slice());
     }
 
@@ -750,9 +739,9 @@ mod tests {
         let mut res = vec![0.];
         let mut stop = vec![0.];
         let mut data = compiler.get_new_data();
-        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice()).unwrap();
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
-        compiler.calc_stop(0., u0.as_slice(), data.as_mut_slice(), stop.as_mut_slice()).unwrap();
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+        compiler.calc_stop(0., u0.as_slice(), data.as_mut_slice(), stop.as_mut_slice());
         assert_relative_eq!(stop[0], 0.5);
         assert_eq!(stop.len(), 1);
     }
@@ -781,10 +770,10 @@ mod tests {
         }
         let mut results = Vec::new();
         let inputs = vec![1.; n_inputs];
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
-        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice()).unwrap();
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
-        compiler.calc_out(0., u0.as_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+        compiler.calc_out(0., u0.as_slice(), data.as_mut_slice());
         results.push(compiler.get_tensor_data(tensor_name, data.as_slice()).unwrap().to_vec());
         for i in 0..n_inputs {
             let mut dinputs = vec![0.; n_inputs];
@@ -792,10 +781,10 @@ mod tests {
             let mut ddata = compiler.get_new_data();
             let mut du0 = vec![0.];
             let mut dres = vec![0.];
-            compiler.set_inputs_grad(inputs.as_slice(), dinputs.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.rhs_grad(0., u0.as_slice(), du0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
-            compiler.calc_out_grad(0., u0.as_slice(), du0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
+            compiler.set_inputs_grad(inputs.as_slice(), dinputs.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice());
+            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice());
+            compiler.rhs_grad(0., u0.as_slice(), du0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice());
+            compiler.calc_out_grad(0., u0.as_slice(), du0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice());
             results.push(compiler.get_tensor_data(tensor_name, ddata.as_slice()).unwrap().to_vec());
         }
         results
@@ -996,9 +985,9 @@ mod tests {
         for _ in 0..3 {
             let inputs = vec![2.; n_inputs];
             let dinputs = vec![1.; n_inputs];
-            compiler.set_inputs_grad(inputs.as_slice(), dinputs.as_slice(), data.as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.rhs_grad(0., u0.as_slice(), du0.as_slice(), data.as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
+            compiler.set_inputs_grad(inputs.as_slice(), dinputs.as_slice(), data.as_mut_slice(), ddata.as_mut_slice());
+            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice());
+            compiler.rhs_grad(0., u0.as_slice(), du0.as_slice(), data.as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice());
             assert_relative_eq!(dres.as_slice(), vec![8.].as_slice());
         }
     }
@@ -1043,29 +1032,29 @@ mod tests {
 
         let mut data = compiler.get_new_data();
         let inputs = vec![1.1];
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
         
         let inputs = compiler.get_tensor_data("k", data.as_slice()).unwrap();
         assert_relative_eq!(inputs, vec![1.1].as_slice());
 
         let mut id = vec![0.0, 0.0];
-        compiler.set_id(id.as_mut_slice()).unwrap();
+        compiler.set_id(id.as_mut_slice());
         assert_eq!(id, vec![1.0, 0.0]);
 
         let mut u = vec![0., 0.];
-        compiler.set_u0(u.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_u0(u.as_mut_slice(), data.as_mut_slice());
         assert_relative_eq!(u.as_slice(), vec![1., 2.].as_slice());
 
         let mut rr = vec![1., 1.];
-        compiler.rhs(0., u.as_slice(), data.as_mut_slice(), rr.as_mut_slice()).unwrap();
+        compiler.rhs(0., u.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
         assert_relative_eq!(rr.as_slice(), vec![0., 0.].as_slice());
         
         let up = vec![2., 3.];
         rr = vec![1., 1.];
-        compiler.mass(0., up.as_slice(), data.as_mut_slice(), rr.as_mut_slice()).unwrap();
+        compiler.mass(0., up.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
         assert_relative_eq!(rr.as_slice(), vec![2., 0.].as_slice());
 
-        compiler.calc_out(0., u.as_slice(), data.as_mut_slice()).unwrap();
+        compiler.calc_out(0., u.as_slice(), data.as_mut_slice());
         let out = compiler.get_out(data.as_slice());
         assert_relative_eq!(out, vec![1., 2., 4.].as_slice());
         

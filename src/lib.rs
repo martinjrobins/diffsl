@@ -121,18 +121,18 @@ mod tests {
         let inputs = vec![r, k];
         let mut u0 = vec![y, z];
         let mut data = compiler.get_new_data();
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
-        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
 
         u0 = vec![y, z];
         let up0 = vec![dydt, dzdt];
         let mut res = vec![1., 1.];
 
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         let expected_value = vec![dydt, 2.0 * y - z];
         assert_relative_eq!(res.as_slice(), expected_value.as_slice());
         
-        compiler.mass(0., up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        compiler.mass(0., up0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         let expected_value = vec![dydt, 0.];
         assert_relative_eq!(res.as_slice(), expected_value.as_slice());
     }

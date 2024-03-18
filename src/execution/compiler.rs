@@ -79,9 +79,13 @@ impl Compiler {
         find_executable(&Compiler::CLANG_VARIENTS)
     }
     fn find_enzyme_lib() -> Result<String> {
-        match env::var("ENZYME_LIB") {
+        // print all the environment variables
+        for (key, value) in env::vars() {
+            println!("{}: {}", key, value);
+        }
+        match env::var("DEP_ENZYME_SYS_LIBDIR") {
             Ok(lib) => Ok(lib),
-            Err(_) => Err(anyhow!("ENZYME_LIB environment variable not set")),
+            Err(_) => Err(anyhow!("DEP_ENZYME_SYS_LIBDIR environment variable not set")),
 
         }
     }

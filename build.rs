@@ -14,7 +14,6 @@ fn main() {
     for (key, value) in env::vars() {
         println!("{}: {}", key, value);
     }
-
     // get env vars matching DEP_LLVM_*_LIBDIR regex    
     let llvm_dirs: Vec<_> = env::vars().filter(|(k, _)| k.starts_with("DEP_LLVM_") && k.ends_with("_LIBDIR")).collect();
     // take first one
@@ -25,4 +24,5 @@ fn main() {
     // compile enzyme
     let libdir= compile_enzyme(llvm_dir);
     println!("cargo:rustc-link-search=native={}", libdir);
+    println!("cargo:rerun-if-changed=build.rs");
 }

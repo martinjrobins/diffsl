@@ -1,19 +1,18 @@
 use std::env;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::Result;
 use anyhow::anyhow;
 
 fn is_executable_on_path(executable_name: &str) -> bool {
-    let output = Command::new("which")
-        .arg(executable_name)
-        .output()
-        .expect("failed to execute which command");
-
-    output.status.success()
+    for path in env::var("PATH").unwrap().split(':') {
+        let path = Path::new(path).join(executable_name);
+        if path.exists() {
+            return true;
+        }
+    }
+    false
 }
-
 
 pub fn find_executable<'a>(varients: &[&'a str]) -> Result<&'a str> {
     let mut command = None;
@@ -28,7 +27,6 @@ pub fn find_executable<'a>(varients: &[&'a str]) -> Result<&'a str> {
         None => Err(anyhow!("Could not find any of {:?} on path", varients)),
     }
 }
-
 
 pub fn find_runtime_path(libraries: &[&str] ) -> Result<String> {
     // search in EMSDK lib dir and LIBRARY_PATH env variable

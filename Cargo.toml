@@ -1,8 +1,8 @@
 [package]
 name = "diffsl"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
-description = "A compiler for a domain-specific language for ordinary differential equations (ODE) and differential algebraic equations (DAE)."
+description = "A compiler for a domain-specific language for ordinary differential equations (ODE)."
 license-file = "LICENSE.txt"
 
 [[bin]]

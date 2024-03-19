@@ -78,12 +78,28 @@ impl Compiler {
     fn find_clang() -> Result<&'static str> {
         find_executable(&Compiler::CLANG_VARIENTS)
     }
+    /// search for the enzyme library in the environment variables
     fn find_enzyme_lib() -> Result<String> {
-        match env::var("ENZYME_LIB") {
-            Ok(lib) => Ok(lib),
-            Err(_) => Err(anyhow!("ENZYME_LIB environment variable not set")),
-
+        let env_vars = ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "PATH"];
+        for var in env_vars.iter() {
+            if let Ok(val) = env::var(var) {
+                for path in val.split(":") {
+                    // check that LLVMEnzype*.so exists in this directory
+                    if let Ok(entries) = std::fs::read_dir(path) {
+                        for entry in entries {
+                            if let Ok(entry) = entry {
+                                if let Some(filename) = entry.file_name().to_str() {
+                                    if filename.starts_with("LLVMEnzyme") && filename.ends_with(".so") {
+                                        return Ok(entry.path().to_str().unwrap().to_owned());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+        Err(anyhow!("LLVMEnzyme*.so not found in any of: {:?}", env_vars))
     }
     pub fn from_discrete_str(code: &str) -> Result<Self> {
         let uid = Id::<u32>::new();

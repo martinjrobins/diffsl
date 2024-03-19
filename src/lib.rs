@@ -16,6 +16,35 @@ pub mod continuous;
 pub mod execution;
 pub mod utils;
 
+#[cfg(feature = "inkwell-40")]
+pub extern crate inkwell_40 as inkwell;
+#[cfg(feature = "inkwell-50")]
+pub extern crate inkwell_50 as inkwell;
+#[cfg(feature = "inkwell-60")]
+pub extern crate inkwell_60 as inkwell;
+#[cfg(feature = "inkwell-70")]
+pub extern crate inkwell_70 as inkwell;
+#[cfg(feature = "inkwell-80")]
+pub extern crate inkwell_80 as inkwell;
+#[cfg(feature = "inkwell-90")]
+pub extern crate inkwell_90 as inkwell;
+#[cfg(feature = "inkwell-100")]
+pub extern crate inkwell_100 as inkwell;
+#[cfg(feature = "inkwell-110")]
+pub extern crate inkwell_110 as inkwell;
+#[cfg(feature = "inkwell-120")]
+pub extern crate inkwell_120 as inkwell;
+#[cfg(feature = "inkwell-130")]
+pub extern crate inkwell_130 as inkwell;
+#[cfg(feature = "inkwell-140")]
+pub extern crate inkwell_140 as inkwell;
+#[cfg(feature = "inkwell-150")]
+pub extern crate inkwell_150 as inkwell;
+#[cfg(feature = "inkwell-160")]
+pub extern crate inkwell_160 as inkwell;
+#[cfg(feature = "inkwell-170")]
+pub extern crate inkwell_170 as inkwell;
+
 pub struct CompilerOptions {
     pub bitcode_only: bool,
     pub wasm: bool,

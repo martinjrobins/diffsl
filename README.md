@@ -1,6 +1,10 @@
 # DiffSL
 
-A compiler for a domain-specific language for ordinary differential equations (ODE) and differential algebraic equations (DAE).
+A compiler for a domain-specific language for ordinary differential equations (ODEs) of the following form:
+
+$$
+M(t) \frac{d\mathbf{u}}{dt} = F(\mathbf{u}, t)
+$$
 
 As an example, the following code defines a classic DAE testcase, the Robertson
 (1966) problem, which models the  kinetics of an autocatalytic reaction, given
@@ -32,12 +36,12 @@ dudt_i {
   dydt = 0,
   dzdt = 0,
 }
-F_i {
+M_i {
   dxdt,
   dydt,
   0,
 }
-G_i {
+F_i {
   -k1 * x + k2 * y * z,
   k1 * x - k2 * y * z - k3 * y * y,
   1 - x - y - z,
@@ -51,28 +55,24 @@ out_i {
 
 ## Dependencies
 
-This package uses the `opt` executable from the [LLVM project](https://llvm.org/). The easiest way to
-install these is to use the package manager for your operating system. For
+You will need to install the [LLVM project](https://llvm.org/). The easiest way to
+install this is to use the package manager for your operating system. For
 example, on Ubuntu you can install these with the following command:
 
 ```bash
 sudo apt-get install llvm
 ```
 
-In addition, DiffSL uses the [Enzyme AD](https://enzyme.mit.edu/) package for automatic differentiation. This can be installed by following the instructions on the Enzyme AD website. You will need set the `ENZYME_LIB` environment variable to the location of the Enzyme AD library. Please make sure that you compile the Enzyme AD library with the version of LLVM that corresponds to the version of `opt` that you have on your path.
-
-```bash
-export ENZYME_LIB=<path to Enzyme AD library>
-```
-
-
 ## Installing DiffSL
 
-You can install DiffSL using cargo:
+You can install DiffSL using cargo. You will need to indicate the llvm version you have installed using a feature flag. For example, for llvm 14:
 
 ```bash
-cargo add diffsl
+cargo add diffsl --features llvm14-0
 ```
+
+Other versions of llvm are also supported given by the features `llvm4-0`, `llvm5-0`, `llvm6-0`, `llvm7-0`, `llvm8-0`, `llvm9-0`, `llvm10-0`, `llvm11-0`, `llvm12-0`, `llvm13-0`, `llvm14-0`, `llvm15-0`, `llvm16-0`, `llvm17-0`.
+
 
 ## DiffSL Language
 
@@ -80,14 +80,13 @@ The DSL is designed to be an easy and flexible language for specifying
 DAE systems and is based on the idea that a DAE system can be specified by a set
 of equations of the form:
 
-$$F(\mathbf{u}, \mathbf{\dot{u}}, t) = G(\mathbf{u}, t)$$
+$$
+M(t) \frac{d\mathbf{u}}{dt} = F(\mathbf{u}, t)
+$$
 
-where $\mathbf{u}$ is the vector of state variables, $\mathbf{\dot{u}}$ is the
-vector of time derivatives of the state variables, and $t$ is the time. The DSL
-allows the user to specify the state vector $\mathbf{u}$ and the vector of time
-derivatives of the state vector $\mathbf{\dot{u}}$, vectors $F$ and $G$
-calculated at each timestep, along with an arbitrary number of intermediate
-scalars and vectors of the users that are required to calculate $F$ and $G$.
+where $\mathbf{u}$ is the vector of state variables and $t$ is the time. The DSL
+allows the user to specify the state vector $\mathbf{u}$ and the RHS function $F$. Optionally, the user can also define the derivative of the state vector $d\mathbf{u}/dt$ and the mass matrix $M$ as a function of $d\mathbf{u}/dt$ (note that this function should be linear!). The user is also free to define an an arbitrary number of intermediate
+scalars and vectors of the users that are required to calculate $F$ and $M$.
 
 ### Defining variables
 
@@ -145,25 +144,26 @@ dudt_i {
 ```
 
 Here the initial values of the time derivatives are given, but for dxdt and dydt
-this initial value is not used as we give explicit equations for these below in
-the `F_i` and `G_i` sections. For the third element of the vector, `dzdt`, the
+this initial value is not used as we give explicit equations for these. For the third element of the vector, `dzdt`, the
 initial value is used as a starting point to calculate a set of consistent
 initial values for the state variables.
 
-### Defining the DAE system equations
+Note that there is no need to define `dudt` if you do not define a mass matrix $M$. In this case, the mass matrix is assumed to be the identity matrix.
 
-We now define the equations $F$ and $G$ that we want to solve, using the
+### Defining the ODE system equations
+
+We now define the equations $F$ and $M$ that we want to solve, using the
 variables that we have defined above, both the input parameters and the state
 variables. 
 
 
 ```
-F_i {
+M_i {
   dxdt,
   dydt,
   0,
 }
-G_i {
+F_i {
   -k1 * x + k2 * y * z,
   k1 * x - k2 * y * z - k3 * y * y,
   1 - x - y - z,
@@ -191,9 +191,7 @@ out_i {
 The DSL allows the user to specify an arbitrary number of intermediate variables, but certain variables are required to be defined. These are:
 
 * `u_i` - the state variables
-* `dudt_i` - the time derivatives of the state variables
-* `F_i` - the vector $F(\mathbf{u}, \mathbf{\dot{u}}, t)$
-* `G_i` - the vector $G(\mathbf{u}, t)$
+* `F_i` - the vector $F(\mathbf{u}, t)$
 * `out_i` - the output variables
 
 ### Predefined variables
@@ -202,9 +200,6 @@ The only predefined variable is the scalar `t` which is the current time, this a
 
 ```
 F_i {
-  dydt,
-}
-G_i {
   k1 * t + sin(t)
 }
 ```

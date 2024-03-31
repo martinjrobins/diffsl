@@ -61,6 +61,8 @@ jobs:
     - name: Run tests
       run: cargo test --verbose --features llvm14-0
     - name: Run Clippy
+      if: matrix.toolchain == 'stable'
       run: cargo clippy --verbose --features llvm14-0
     - name: Run Docs
+      if: matrix.toolchain == 'nightly'
       run: cargo rustdoc --features llvm14-0

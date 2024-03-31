@@ -1,33 +1,21 @@
-use std::{path::Path, ffi::OsStr};
-use anyhow::{Result, anyhow};
-use execution::Compiler;
+use anyhow::{anyhow, Result};
 use continuous::ModelInfo;
 use discretise::DiscreteModel;
-use parser::{parse_ms_string, parse_ds_string};
+use execution::Compiler;
+use parser::{parse_ds_string, parse_ms_string};
+use std::{ffi::OsStr, path::Path};
 
 extern crate pest;
 #[macro_use]
 extern crate pest_derive;
 
-pub mod parser;
 pub mod ast;
-pub mod discretise;
 pub mod continuous;
+pub mod discretise;
 pub mod execution;
+pub mod parser;
 pub mod utils;
 
-#[cfg(feature = "inkwell-40")]
-pub extern crate inkwell_40 as inkwell;
-#[cfg(feature = "inkwell-50")]
-pub extern crate inkwell_50 as inkwell;
-#[cfg(feature = "inkwell-60")]
-pub extern crate inkwell_60 as inkwell;
-#[cfg(feature = "inkwell-70")]
-pub extern crate inkwell_70 as inkwell;
-#[cfg(feature = "inkwell-80")]
-pub extern crate inkwell_80 as inkwell;
-#[cfg(feature = "inkwell-90")]
-pub extern crate inkwell_90 as inkwell;
 #[cfg(feature = "inkwell-100")]
 pub extern crate inkwell_100 as inkwell;
 #[cfg(feature = "inkwell-110")]
@@ -44,6 +32,18 @@ pub extern crate inkwell_150 as inkwell;
 pub extern crate inkwell_160 as inkwell;
 #[cfg(feature = "inkwell-170")]
 pub extern crate inkwell_170 as inkwell;
+#[cfg(feature = "inkwell-40")]
+pub extern crate inkwell_40 as inkwell;
+#[cfg(feature = "inkwell-50")]
+pub extern crate inkwell_50 as inkwell;
+#[cfg(feature = "inkwell-60")]
+pub extern crate inkwell_60 as inkwell;
+#[cfg(feature = "inkwell-70")]
+pub extern crate inkwell_70 as inkwell;
+#[cfg(feature = "inkwell-80")]
+pub extern crate inkwell_80 as inkwell;
+#[cfg(feature = "inkwell-90")]
+pub extern crate inkwell_90 as inkwell;
 
 pub struct CompilerOptions {
     pub bitcode_only: bool,
@@ -51,11 +51,25 @@ pub struct CompilerOptions {
     pub standalone: bool,
 }
 
-
-pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: CompilerOptions) -> Result<()> {
+pub fn compile(
+    input: &str,
+    out: Option<&str>,
+    model: Option<&str>,
+    options: CompilerOptions,
+) -> Result<()> {
     let inputfile = Path::new(input);
-    let is_discrete = inputfile.extension().unwrap_or(OsStr::new("")).to_str().unwrap() == "ds";
-    let is_continuous = inputfile.extension().unwrap_or(OsStr::new("")).to_str().unwrap() == "cs";
+    let is_discrete = inputfile
+        .extension()
+        .unwrap_or(OsStr::new(""))
+        .to_str()
+        .unwrap()
+        == "ds";
+    let is_continuous = inputfile
+        .extension()
+        .unwrap_or(OsStr::new(""))
+        .to_str()
+        .unwrap()
+        == "cs";
     if !is_discrete && !is_continuous {
         panic!("Input file must have extension .ds or .cs");
     }
@@ -63,7 +77,9 @@ pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: Com
         if let Some(model_name) = model {
             model_name
         } else {
-            return Err(anyhow!("Model name must be specified for continuous models"));
+            return Err(anyhow!(
+                "Model name must be specified for continuous models"
+            ));
         }
     } else {
         inputfile.file_stem().unwrap().to_str().unwrap()
@@ -73,9 +89,15 @@ pub fn compile(input: &str, out: Option<&str>, model: Option<&str>, options: Com
     compile_text(text.as_str(), out, model_name, options, is_discrete)
 }
 
-pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOptions, is_discrete: bool) -> Result<()> {
+pub fn compile_text(
+    text: &str,
+    out: &str,
+    model_name: &str,
+    options: CompilerOptions,
+    is_discrete: bool,
+) -> Result<()> {
     let is_continuous = !is_discrete;
-    
+
     let continuous_ast = if is_continuous {
         Some(parse_ms_string(text)?)
     } else {
@@ -86,7 +108,7 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
         Some(parse_ds_string(text)?)
     } else {
         None
-    }; 
+    };
 
     let continuous_model_info = if let Some(ast) = &continuous_ast {
         let model_info = ModelInfo::build(model_name, ast).map_err(|e| anyhow!("{}", e))?;
@@ -115,17 +137,20 @@ pub fn compile_text(text: &str, out: &str, model_name: &str, options: CompilerOp
         panic!("No model found");
     };
     let compiler = Compiler::from_discrete_model(&discrete_model, out)?;
-    
+
     if options.bitcode_only {
         return Ok(());
     }
-    
+
     compiler.compile(options.standalone, options.wasm)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser::{parse_ds_string, parse_ms_string}, continuous::ModelInfo};
+    use crate::{
+        continuous::ModelInfo,
+        parser::{parse_ds_string, parse_ms_string},
+    };
     use approx::assert_relative_eq;
 
     use super::*;
@@ -133,7 +158,8 @@ mod tests {
     fn ds_example_compiler(example: &str) -> Compiler {
         let text = std::fs::read_to_string(format!("examples/{}.ds", example)).unwrap();
         let model = parse_ds_string(text.as_str()).unwrap();
-        let model = DiscreteModel::build(example, &model).unwrap_or_else(|e| panic!("{}", e.as_error_message(text.as_str())));
+        let model = DiscreteModel::build(example, &model)
+            .unwrap_or_else(|e| panic!("{}", e.as_error_message(text.as_str())));
         let out = format!("test_output/lib_examples_{}", example);
         Compiler::from_discrete_model(&model, out.as_str()).unwrap()
     }
@@ -160,7 +186,7 @@ mod tests {
         compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         let expected_value = vec![dydt, 2.0 * y - z];
         assert_relative_eq!(res.as_slice(), expected_value.as_slice());
-        
+
         compiler.mass(0., up0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         let expected_value = vec![dydt, 0.];
         assert_relative_eq!(res.as_slice(), expected_value.as_slice());
@@ -179,13 +205,10 @@ mod tests {
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
         let discrete_model = DiscreteModel::from(&model_info);
-        let object = Compiler::from_discrete_model(&discrete_model, "test_output/lib_test_object_file").unwrap();
+        let object =
+            Compiler::from_discrete_model(&discrete_model, "test_output/lib_test_object_file")
+                .unwrap();
         let path = Path::new("main.o");
         object.write_object_file(path).unwrap();
     }
 }
-
-
-
-
-

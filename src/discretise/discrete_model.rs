@@ -24,7 +24,6 @@ use super::TensorBlock;
 use super::ValidationError;
 use super::ValidationErrors;
 
-
 #[derive(Debug)]
 // M(t, u_dot) = F(t, u)
 pub struct DiscreteModel<'s> {
@@ -75,7 +74,6 @@ impl<'s> fmt::Display for DiscreteModel<'s> {
     }
 }
 
-
 type VecVariable<'s> = Vec<Rc<RefCell<Variable<'s>>>>;
 
 impl<'s> DiscreteModel<'s> {
@@ -111,7 +109,9 @@ impl<'s> DiscreteModel<'s> {
         for a in array.elmts() {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
-                    if let Some((expr_layout, elmt_layout)) = env.get_layout_tensor_elmt(te, array.indices()) {
+                    if let Some((expr_layout, elmt_layout)) =
+                        env.get_layout_tensor_elmt(te, array.indices())
+                    {
                         if rank == 0 && elmt_layout.rank() == 1 && elmt_layout.shape()[0] > 1 {
                             env.errs_mut().push(ValidationError::new(
                                 format!("cannot assign an expression with rank > 1 to a scalar, rhs has shape {}", elmt_layout.shape()),
@@ -123,42 +123,62 @@ impl<'s> DiscreteModel<'s> {
                         } else {
                             (None, te.expr.clone())
                         };
-                        
+
                         // if the tensor indices indicates a start, use this, otherwise increment by the shape
                         if let Some(elmt_indices) = te.indices.as_ref() {
                             let given_indices_ast = &elmt_indices.kind.as_vector().unwrap().data;
-                            let given_indices: Vec<&Indice> = given_indices_ast.iter().map(|i| i.kind.as_indice().unwrap()).collect();
-                            start = Index::from_vec(given_indices.into_iter().map(|i| i.first.kind.as_integer().unwrap()).collect::<Vec<i64>>())
+                            let given_indices: Vec<&Indice> = given_indices_ast
+                                .iter()
+                                .map(|i| i.kind.as_indice().unwrap())
+                                .collect();
+                            start = Index::from_vec(
+                                given_indices
+                                    .into_iter()
+                                    .map(|i| i.first.kind.as_integer().unwrap())
+                                    .collect::<Vec<i64>>(),
+                            )
                         }
-                        let zero_axis_shape= if elmt_layout.rank() == 0 {
+                        let zero_axis_shape = if elmt_layout.rank() == 0 {
                             1
                         } else {
                             i64::try_from(elmt_layout.shape()[0]).unwrap()
                         };
-                        
-                        elmts.push(TensorBlock::new(name, start.clone(), array.indices().to_vec(), RcLayout::new(elmt_layout), RcLayout::new(expr_layout), *expr));
+
+                        elmts.push(TensorBlock::new(
+                            name,
+                            start.clone(),
+                            array.indices().to_vec(),
+                            RcLayout::new(elmt_layout),
+                            RcLayout::new(expr_layout),
+                            *expr,
+                        ));
 
                         // increment start index
                         if !start.is_empty() {
                             start[0] += zero_axis_shape;
                         }
                     }
-                },
+                }
                 _ => unreachable!("unexpected expression in tensor definition"),
             }
         }
-        // create tensor 
+        // create tensor
         if elmts.is_empty() {
             let span = env.current_span().to_owned();
             env.errs_mut().push(ValidationError::new(
                 format!("tensor {} has no elements", array.name()),
-                span 
+                span,
             ));
             None
         } else {
             match Layout::concatenate(&elmts, rank) {
                 Ok(layout) => {
-                    let tensor = Tensor::new(array.name(), elmts, RcLayout::new(layout), array.indices().to_vec());
+                    let tensor = Tensor::new(
+                        array.name(),
+                        elmts,
+                        RcLayout::new(layout),
+                        array.indices().to_vec(),
+                    );
                     //check that the number of indices matches the rank
                     assert_eq!(tensor.rank(), tensor.indices().len());
                     if nerrs == env.errs().len() {
@@ -170,19 +190,16 @@ impl<'s> DiscreteModel<'s> {
                         }
                     }
                     Some(tensor)
-                },
+                }
                 Err(e) => {
                     let span = env.current_span().to_owned();
-                    env.errs_mut().push(ValidationError::new(
-                        format!("{}", e),
-                        span 
-                    ));
+                    env.errs_mut()
+                        .push(ValidationError::new(format!("{}", e), span));
                     None
                 }
             }
         }
     }
-
 
     fn check_match(tensor1: &Tensor, tensor2: &Tensor, span: Option<StringSpan>, env: &mut Env) {
         // check shapes
@@ -268,7 +285,7 @@ impl<'s> DiscreteModel<'s> {
                         "M" => {
                             span_m = Some(span);
                             if let Some(built) = Self::build_array(tensor, &mut env) {
-                                ret.lhs= built;
+                                ret.lhs = built;
                             }
                             // check that M is not state dependent and only depends on dudt
                             let m = env.get("M").unwrap();
@@ -278,7 +295,6 @@ impl<'s> DiscreteModel<'s> {
                                     span,
                                 ));
                             }
-                            
                         }
                         "stop" => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
@@ -331,7 +347,10 @@ impl<'s> DiscreteModel<'s> {
                                         ret.inputs.push(built);
                                     } else if !dependent_on_time {
                                         ret.time_indep_defns.push(built);
-                                    } else if dependent_on_time && !dependent_on_state && !dependent_on_dudt {
+                                    } else if dependent_on_time
+                                        && !dependent_on_state
+                                        && !dependent_on_dudt
+                                    {
                                         ret.time_dep_defns.push(built);
                                     } else if dependent_on_state {
                                         ret.state_dep_defns.push(built);
@@ -348,10 +367,11 @@ impl<'s> DiscreteModel<'s> {
             }
         }
 
-        
-
         // set is_algebraic for every state based on equations
-        for i in 0..std::cmp::min(ret.state_dot.elmts().len(), std::cmp::min(ret.lhs.elmts().len(), ret.rhs.elmts().len())) {
+        for i in 0..std::cmp::min(
+            ret.state_dot.elmts().len(),
+            std::cmp::min(ret.lhs.elmts().len(), ret.rhs.elmts().len()),
+        ) {
             let sp = &ret.state_dot.elmts()[i];
             let feq = ret.lhs.elmts()[i].expr();
             let geq = ret.rhs.elmts()[i].expr();
@@ -363,7 +383,7 @@ impl<'s> DiscreteModel<'s> {
                 }
             }
         }
-        
+
         let span_all = if model.tensors.is_empty() {
             None
         } else {
@@ -380,12 +400,18 @@ impl<'s> DiscreteModel<'s> {
                     span_all,
                 ));
             }
-        };
+        }
 
         // if dudt is not defined, add it
         if !read_dot_state {
-            let zero = Ast { kind: AstKind::new_num(0.0), span: None };
-            let zero_block = Ast { kind: AstKind::new_tensor_elmt(zero, None), span: None };
+            let zero = Ast {
+                kind: AstKind::new_num(0.0),
+                span: None,
+            };
+            let zero_block = Ast {
+                kind: AstKind::new_tensor_elmt(zero, None),
+                span: None,
+            };
             let indices = ret.state.indices().to_vec();
             let default_dudt = ast::Tensor::new("dudt", indices, vec![zero_block]);
             if let Some(built) = Self::build_array(&default_dudt, &mut env) {
@@ -398,7 +424,16 @@ impl<'s> DiscreteModel<'s> {
         if span_m.is_none() {
             span_m = Some(span_all);
             let name = "M";
-            let dudt_block = Ast { kind: AstKind::new_tensor_elmt(Ast { kind: AstKind::new_indexed_name("dudt", ret.state_dot.indices().to_vec()), span: None }, None), span: None };
+            let dudt_block = Ast {
+                kind: AstKind::new_tensor_elmt(
+                    Ast {
+                        kind: AstKind::new_indexed_name("dudt", ret.state_dot.indices().to_vec()),
+                        span: None,
+                    },
+                    None,
+                ),
+                span: None,
+            };
             let indices = ret.state_dot.indices().to_vec();
             let default_m = ast::Tensor::new(name, indices, vec![dudt_block]);
             if let Some(built) = Self::build_array(&default_m, &mut env) {
@@ -450,7 +485,7 @@ impl<'s> DiscreteModel<'s> {
             Err(env.errs().to_owned())
         }
     }
-    
+
     fn state_to_elmt(state_cell: &Rc<RefCell<Variable<'s>>>) -> (TensorBlock<'s>, TensorBlock<'s>) {
         let state = state_cell.as_ref().borrow();
         let ast_eqn = if let Some(eqn) = &state.equation {
@@ -459,10 +494,7 @@ impl<'s> DiscreteModel<'s> {
             panic!("state var should have an equation")
         };
         let (f_astkind, g_astkind) = match ast_eqn.kind {
-            AstKind::RateEquation(eqn) => (
-                AstKind::new_time_derivative(state.name),
-                eqn.rhs.kind,
-            ),
+            AstKind::RateEquation(eqn) => (AstKind::new_time_derivative(state.name), eqn.rhs.kind),
             AstKind::Equation(eqn) => (
                 AstKind::new_num(0.0),
                 AstKind::new_binop('-', *eqn.rhs, *eqn.lhs),
@@ -470,8 +502,24 @@ impl<'s> DiscreteModel<'s> {
             _ => panic!("equation for state var should be rate eqn or standard eqn"),
         };
         (
-            TensorBlock::new_dense_vector(None, 0, state.dim, Ast { kind: f_astkind, span: ast_eqn.span }),
-            TensorBlock::new_dense_vector(None, 0, state.dim, Ast { kind: g_astkind, span: ast_eqn.span }),
+            TensorBlock::new_dense_vector(
+                None,
+                0,
+                state.dim,
+                Ast {
+                    kind: f_astkind,
+                    span: ast_eqn.span,
+                },
+            ),
+            TensorBlock::new_dense_vector(
+                None,
+                0,
+                state.dim,
+                Ast {
+                    kind: g_astkind,
+                    span: ast_eqn.span,
+                },
+            ),
         )
     }
     fn state_to_u0(state_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
@@ -479,19 +527,33 @@ impl<'s> DiscreteModel<'s> {
         let init = if state.has_initial_condition() {
             state.init_conditions[0].equation.clone()
         } else {
-            Ast { kind: AstKind::new_num(0.0), span: None }
+            Ast {
+                kind: AstKind::new_num(0.0),
+                span: None,
+            }
         };
         TensorBlock::new_dense_vector(Some(state.name.to_owned()), 0, state.dim, init)
     }
     fn state_to_dudt0(state_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
         let state = state_cell.as_ref().borrow();
-        let init = Ast { kind: AstKind::new_num(0.0), span: None };
-        let named_gradient_str = AstKind::new_time_derivative(state.name).as_named_gradient().unwrap().to_string();
+        let init = Ast {
+            kind: AstKind::new_num(0.0),
+            span: None,
+        };
+        let named_gradient_str = AstKind::new_time_derivative(state.name)
+            .as_named_gradient()
+            .unwrap()
+            .to_string();
         TensorBlock::new_dense_vector(Some(named_gradient_str), 0, state.dim, init)
     }
     fn dfn_to_array(defn_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
         let defn = defn_cell.as_ref().borrow();
-        let tsr_blk = TensorBlock::new_dense_vector(None, 0, defn.dim, defn.expression.as_ref().unwrap().clone());
+        let tsr_blk = TensorBlock::new_dense_vector(
+            None,
+            0,
+            defn.dim,
+            defn.expression.as_ref().unwrap().clone(),
+        );
         let layout = tsr_blk.layout().clone();
         Tensor::new(defn.name, vec![tsr_blk], layout, vec!['i'])
     }
@@ -503,7 +565,10 @@ impl<'s> DiscreteModel<'s> {
         let expr = if let Some(expr) = &input.expression {
             expr.clone()
         } else {
-            Ast { kind: AstKind::new_num(0.0), span: None }
+            Ast {
+                kind: AstKind::new_num(0.0),
+                span: None,
+            }
         };
         let elmt = TensorBlock::new_dense_vector(None, 0, input.dim, expr);
         let indices = vec!['i'];
@@ -524,10 +589,7 @@ impl<'s> DiscreteModel<'s> {
         TensorBlock::new_dense_vector(None, 0, output.dim, expr)
     }
     pub fn from(model: &ModelInfo<'s>) -> DiscreteModel<'s> {
-        let (time_varying_unknowns, const_unknowns): (
-            VecVariable,
-            VecVariable,
-        ) = model
+        let (time_varying_unknowns, const_unknowns): (VecVariable, VecVariable) = model
             .unknowns
             .iter()
             .cloned()
@@ -539,19 +601,13 @@ impl<'s> DiscreteModel<'s> {
             .cloned()
             .collect();
 
-        let (state_dep_defns, state_indep_defns): (
-            VecVariable,
-            VecVariable,
-        ) = model
+        let (state_dep_defns, state_indep_defns): (VecVariable, VecVariable) = model
             .definitions
             .iter()
             .cloned()
             .partition(|v| v.as_ref().borrow().is_dependent_on_state());
 
-        let (time_dep_defns, const_defns): (
-            VecVariable,
-            VecVariable,
-        ) = state_indep_defns
+        let (time_dep_defns, const_defns): (VecVariable, VecVariable) = state_indep_defns
             .iter()
             .cloned()
             .partition(|v| v.as_ref().borrow().is_time_dependent());
@@ -619,7 +675,7 @@ impl<'s> DiscreteModel<'s> {
             .iter()
             .map(DiscreteModel::dfn_to_array)
             .collect();
-        let lhs =  Tensor::new_no_layout("M", m_elmts, vec!['i']);
+        let lhs = Tensor::new_no_layout("M", m_elmts, vec!['i']);
         let rhs = Tensor::new_no_layout("F", f_elmts, vec!['i']);
         let name = model.name;
         let stop = None;
@@ -654,7 +710,7 @@ impl<'s> DiscreteModel<'s> {
     pub fn state_dep_defns(&self) -> &[Tensor] {
         self.state_dep_defns.as_ref()
     }
-    
+
     pub fn dstate_dep_defns(&self) -> &[Tensor] {
         self.dstate_dep_defns.as_ref()
     }
@@ -694,8 +750,11 @@ impl<'s> DiscreteModel<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser::{parse_ms_string, parse_ds_string}, continuous::ModelInfo, discretise::DiscreteModel};
-
+    use crate::{
+        continuous::ModelInfo,
+        discretise::DiscreteModel,
+        parser::{parse_ds_string, parse_ms_string},
+    };
 
     #[test]
     fn test_circuit_model() {
@@ -743,7 +802,7 @@ mod tests {
         assert_eq!(discrete.out.elmts()[2].expr().to_string(), "z");
         println!("{}", discrete);
     }
-    
+
     #[test]
     fn tensor_classification() {
         let text = "
@@ -784,12 +843,46 @@ mod tests {
         ";
         let model = parse_ds_string(text).unwrap();
         let model = DiscreteModel::build("$name", &model).unwrap();
-        assert_eq!(model.inputs().iter().map(|t| t.name()).collect::<Vec<_>>(), ["r", "k"]);
-        assert_eq!(model.time_indep_defns().iter().map(|t| t.name()).collect::<Vec<_>>(), ["z"]);
-        assert_eq!(model.time_dep_defns().iter().map(|t| t.name()).collect::<Vec<_>>(), ["g"]);
-        assert_eq!(model.state_dep_defns().iter().map(|t| t.name()).collect::<Vec<_>>(), ["u2"]);
-        assert_eq!(model.dstate_dep_defns().iter().map(|t| t.name()).collect::<Vec<_>>(), ["dudt2"]);
-        assert_eq!(model.inputs().iter().map(|t| t.name()).collect::<Vec<_>>(), ["r", "k"]);
+        assert_eq!(
+            model.inputs().iter().map(|t| t.name()).collect::<Vec<_>>(),
+            ["r", "k"]
+        );
+        assert_eq!(
+            model
+                .time_indep_defns()
+                .iter()
+                .map(|t| t.name())
+                .collect::<Vec<_>>(),
+            ["z"]
+        );
+        assert_eq!(
+            model
+                .time_dep_defns()
+                .iter()
+                .map(|t| t.name())
+                .collect::<Vec<_>>(),
+            ["g"]
+        );
+        assert_eq!(
+            model
+                .state_dep_defns()
+                .iter()
+                .map(|t| t.name())
+                .collect::<Vec<_>>(),
+            ["u2"]
+        );
+        assert_eq!(
+            model
+                .dstate_dep_defns()
+                .iter()
+                .map(|t| t.name())
+                .collect::<Vec<_>>(),
+            ["dudt2"]
+        );
+        assert_eq!(
+            model.inputs().iter().map(|t| t.name()).collect::<Vec<_>>(),
+            ["r", "k"]
+        );
     }
 
     macro_rules! count {
@@ -1007,7 +1100,6 @@ mod tests {
 
     );
 
-    
     macro_rules! tensor_fail_tests {
         ($($name:ident: $text:literal errors [$($error:literal,)*],)*) => {
         $(
@@ -1133,9 +1225,11 @@ mod tests {
         let model_no_stop = DiscreteModel::build("$name", &model_ds_no_stop).unwrap();
         let model = DiscreteModel::build("$name", &model_ds).unwrap();
         assert!(model_no_stop.stop().is_none());
-        assert_eq!(model.stop().unwrap().elmts()[0].expr().to_string(), "y - 0.5");
+        assert_eq!(
+            model.stop().unwrap().elmts()[0].expr().to_string(),
+            "y - 0.5"
+        );
         assert_eq!(model.stop().unwrap().name(), "stop");
         assert_eq!(model.stop().unwrap().elmts().len(), 1);
     }
-
 }

@@ -9,15 +9,14 @@ pub fn parse_ms_string(text: &str) -> Result<Vec<Ast>, Box<Error<MsRule>>> {
 }
 
 pub mod ds_parser;
-pub use ds_parser::DsParser;
 pub use self::ds_parser::Rule as DsRule;
+pub use ds_parser::DsParser;
 
 pub fn parse_ds_string(text: &str) -> Result<ast::DsModel, Box<Error<DsRule>>> {
     ds_parser::parse_string(text)
 }
 
 use crate::ast::{self, Ast};
-
 
 #[cfg(test)]
 mod tests {
@@ -26,7 +25,6 @@ mod tests {
     use pest::Parser;
 
     use super::{MsParser, MsRule};
-    
 
     const MS_FILENAMES: &[&str] = &["test_circuit.ms", "test_fishers.ms", "test_pk.ms"];
 

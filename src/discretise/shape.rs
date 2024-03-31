@@ -1,7 +1,5 @@
 use ndarray::Array1;
 
-
-
 pub type Shape = Array1<usize>;
 
 pub fn broadcast_shapes(shapes: &[&Shape]) -> Option<Shape> {
@@ -11,8 +9,18 @@ pub fn broadcast_shapes(shapes: &[&Shape]) -> Option<Shape> {
     let max_rank = shapes.iter().map(|s| s.len()).max().unwrap();
     let mut shape = Shape::zeros(max_rank);
     for i in (0..max_rank).rev() {
-        let mdim = shapes.iter().map(|s| *s.get(i).unwrap_or(&1)).max().unwrap();
-        let compatible = shapes.iter().all(|s| if let Some(x) = s.get(i) { *x == mdim || *x == 1 } else { true });
+        let mdim = shapes
+            .iter()
+            .map(|s| *s.get(i).unwrap_or(&1))
+            .max()
+            .unwrap();
+        let compatible = shapes.iter().all(|s| {
+            if let Some(x) = s.get(i) {
+                *x == mdim || *x == 1
+            } else {
+                true
+            }
+        });
         if !compatible {
             return None;
         }

@@ -2,9 +2,12 @@ use std::collections::HashMap;
 
 use ndarray::s;
 
-use crate::ast::{StringSpan, Ast, self, AstKind};
+use crate::ast::{self, Ast, AstKind, StringSpan};
 
-use super::{layout::RcLayout, ValidationErrors, Layout, Tensor, TensorBlock, ValidationError, Shape, can_broadcast_to, LayoutKind};
+use super::{
+    can_broadcast_to, layout::RcLayout, Layout, LayoutKind, Shape, Tensor, TensorBlock,
+    ValidationError, ValidationErrors,
+};
 
 pub struct EnvVar {
     layout: RcLayout,
@@ -22,7 +25,7 @@ impl EnvVar {
     pub fn is_state_dependent(&self) -> bool {
         self.is_state_dependent
     }
-    
+
     pub fn is_dstatedt_dependent(&self) -> bool {
         self.is_dstatedt_dependent
     }
@@ -65,7 +68,9 @@ impl Default for Env {
 
 impl Env {
     pub fn is_tensor_time_dependent(&self, tensor: &Tensor) -> bool {
-        if tensor.name() == "u" || tensor.name() == "dudt" { return true };
+        if tensor.name() == "u" || tensor.name() == "dudt" {
+            return true;
+        };
         tensor.elmts().iter().any(|block| {
             block
                 .expr()
@@ -77,26 +82,24 @@ impl Env {
     pub fn is_tensor_state_dependent(&self, tensor: &Tensor) -> bool {
         self.is_tensor_dependent_on(tensor, "u")
     }
-    
+
     pub fn is_tensor_dstatedt_dependent(&self, tensor: &Tensor) -> bool {
         self.is_tensor_dependent_on(tensor, "dudt")
     }
-    
+
     fn is_tensor_dependent_on(&self, tensor: &Tensor, var: &str) -> bool {
-        if tensor.name() == var { return true };
+        if tensor.name() == var {
+            return true;
+        };
         tensor.elmts().iter().any(|block| {
-            block
-                .expr()
-                .get_dependents()
-                .iter()
-                .any(|&dep| 
-                    dep == var || 
-                    match var {
+            block.expr().get_dependents().iter().any(|&dep| {
+                dep == var
+                    || match var {
                         "u" => self.vars[dep].is_state_dependent(),
                         "dudt" => self.vars[dep].is_dstatedt_dependent(),
-                        _ => false
+                        _ => false,
                     }
-                )
+            })
         })
     }
 
@@ -125,7 +128,6 @@ impl Env {
             },
         );
     }
-
 
     pub fn get(&self, name: &str) -> Option<&EnvVar> {
         self.vars.get(name)
@@ -188,7 +190,10 @@ impl Env {
                 Some(pos) => pos,
                 None => {
                     self.errs.push(ValidationError::new(
-                        format!("cannot find index {} in lhs indices {:?} ", rhs_indices[i], lhs_indices),
+                        format!(
+                            "cannot find index {} in lhs indices {:?} ",
+                            rhs_indices[i], lhs_indices
+                        ),
                         ast.span,
                     ));
                     return None;
@@ -198,20 +203,21 @@ impl Env {
         let layout_permuted = match layout.permute(permutation.as_slice()) {
             Ok(layout) => layout,
             Err(e) => {
-                self.errs.push(ValidationError::new(
-                    format!("{}", e),
-                    ast.span,
-                ));
+                self.errs
+                    .push(ValidationError::new(format!("{}", e), ast.span));
                 return None;
             }
         };
-                
+
         Some(layout_permuted)
     }
 
-    
-
-    fn get_layout_call(&mut self, call: &ast::Call, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
+    fn get_layout_call(
+        &mut self,
+        call: &ast::Call,
+        ast: &Ast,
+        indices: &Vec<char>,
+    ) -> Option<Layout> {
         let layouts = call
             .args
             .iter()
@@ -220,13 +226,11 @@ impl Env {
         match Layout::broadcast(layouts, false) {
             Ok(layout) => Some(layout),
             Err(e) => {
-                self.errs.push(ValidationError::new(
-                    format!("{}", e),
-                    ast.span,
-                ));
+                self.errs
+                    .push(ValidationError::new(format!("{}", e), ast.span));
                 None
             }
-        }    
+        }
     }
 
     pub fn get_layout(&mut self, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
@@ -248,10 +252,13 @@ impl Env {
             _ => panic!("unrecognised ast node {:#?}", ast.kind),
         }
     }
-    
 
     // returns a tuple of (expr_layout, elmt_layout) giving the layouts of the expression and the tensor element.)
-    pub fn get_layout_tensor_elmt(&mut self, elmt: &ast::TensorElmt, indices: &[char]) -> Option<(Layout, Layout)> {
+    pub fn get_layout_tensor_elmt(
+        &mut self,
+        elmt: &ast::TensorElmt,
+        indices: &[char],
+    ) -> Option<(Layout, Layout)> {
         let expr_indices = elmt.expr.get_indices();
         // get any indices from the expression that do not appear in 'indices' and add them to 'indices' to a new vector
         let mut new_indices = indices.to_vec();
@@ -260,7 +267,7 @@ impl Env {
                 new_indices.push(i);
             }
         }
-        
+
         // TODO: for now we will only support one additional index
         if new_indices.len() > indices.len() + 1 {
             self.errs.push(ValidationError::new(
@@ -274,8 +281,8 @@ impl Env {
         }
 
         let expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
-        
-        // calculate the shape of the tensor element. 
+
+        // calculate the shape of the tensor element.
         let elmt_layout = if elmt.indices.is_none() {
             // If there are no indices then blk layout is the same as the expression, but broadcast to the tensor rank
             // (tensor rank given by the number of indices)
@@ -284,10 +291,8 @@ impl Env {
                 match expr_layout.contract_last_axis() {
                     Ok(layout) => layout,
                     Err(e) => {
-                        self.errs.push(ValidationError::new(
-                            format!("{}", e),
-                            elmt.expr.span,
-                        ));
+                        self.errs
+                            .push(ValidationError::new(format!("{}", e), elmt.expr.span));
                         return None;
                     }
                 }
@@ -298,12 +303,14 @@ impl Env {
             // If there are indicies then the rank is determined by the number of indices, and the
             // shape is determined by the ranges of the indices
             // TODO: this is quite large, perhaps move to another function
-            
 
             // make sure the number of indices matches the number of dimensions
             let elmt_indices = elmt.indices.as_ref().unwrap();
             let given_indices_ast = &elmt_indices.kind.as_vector().unwrap().data;
-            let given_indices: Vec<&ast::Indice> = given_indices_ast.iter().map(|i| i.kind.as_indice().unwrap()).collect();
+            let given_indices: Vec<&ast::Indice> = given_indices_ast
+                .iter()
+                .map(|i| i.kind.as_indice().unwrap())
+                .collect();
             if given_indices.len() != indices.len() {
                 self.errs.push(ValidationError::new(
                     format!(
@@ -314,18 +321,20 @@ impl Env {
                 ));
                 return None;
             }
-            
+
             let mut exp_expr_shape = Shape::ones(indices.len());
-            
+
             // we will use the expression shape as defaults if the range is not explicitly given
-            exp_expr_shape.slice_mut(s![..expr_layout.rank()]).assign(expr_layout.shape());
-            
+            exp_expr_shape
+                .slice_mut(s![..expr_layout.rank()])
+                .assign(expr_layout.shape());
+
             // calculate the shape of the tensor element from the given indices and expression shape
             let all_range_indices = given_indices.iter().all(|i| i.sep == Some(".."));
             let mut old_dim = None;
             for (i, indice) in given_indices.iter().enumerate() {
                 let first = indice.first.kind.as_integer().unwrap();
-                
+
                 // make sure the use of the range separator is valid
                 if !all_range_indices && matches!(indice.sep, Some("..")) {
                     self.errs.push(ValidationError::new(
@@ -350,7 +359,7 @@ impl Env {
                 } else {
                     1usize
                 };
-                
+
                 // make sure the dimension of the range is consistent
                 if all_range_indices && old_dim.is_some() && dim != old_dim.unwrap() {
                     self.errs.push(ValidationError::new(
@@ -366,12 +375,16 @@ impl Env {
             // check that the expression shape can be broadcast to the tensor element shape
             if !can_broadcast_to(&exp_expr_shape, expr_layout.shape()) {
                 self.errs.push(ValidationError::new(
-                    format!("cannot broadcast expression shape {} to tensor element shape {}", expr_layout.shape(), exp_expr_shape),
+                    format!(
+                        "cannot broadcast expression shape {} to tensor element shape {}",
+                        expr_layout.shape(),
+                        exp_expr_shape
+                    ),
                     elmt.expr.span,
                 ));
                 return None;
             }
-                
+
             // tensor elmt layout is:
             // 1. dense if the expression is dense and no indices are ranges
             // 2. diagonal if the expression is dense and all indices are ranges, or the expression is diagonal and no indices are ranges
@@ -383,7 +396,7 @@ impl Env {
                     } else {
                         Layout::new_dense(exp_expr_shape)
                     }
-                },
+                }
                 LayoutKind::Sparse => {
                     if all_range_indices {
                         self.errs.push(ValidationError::new(
@@ -392,9 +405,9 @@ impl Env {
                         ));
                         return None;
                     } else {
-                        expr_layout.clone()    
+                        expr_layout.clone()
                     }
-                },
+                }
                 LayoutKind::Diagonal => {
                     if all_range_indices {
                         self.errs.push(ValidationError::new(
@@ -405,12 +418,11 @@ impl Env {
                     } else {
                         Layout::new_diagonal(exp_expr_shape)
                     }
-                },
+                }
             };
             elmt_layout
         };
 
-        
         Some((expr_layout, elmt_layout))
     }
 

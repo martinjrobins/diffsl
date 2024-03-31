@@ -8,10 +8,10 @@ pub mod env;
 pub use env::Env;
 
 pub mod layout;
-pub use layout::{Layout, RcLayout, LayoutKind};
+pub use layout::{Layout, LayoutKind, RcLayout};
 
 pub mod shape;
-pub use shape::{Shape, can_broadcast_to, broadcast_shapes};
+pub use shape::{broadcast_shapes, can_broadcast_to, Shape};
 
 pub mod tensor;
-pub use tensor::{Tensor, TensorBlock, Index};
+pub use tensor::{Index, Tensor, TensorBlock};

@@ -17,16 +17,17 @@ scalars and vectors of the users that are required to calculate $F$ and $M$.
 
 ## Defining variables
 
-The DSL allows the user to define scalars, vectors, and dense/sparse/diagonal n-dimensional tensors.
-You can optionally label the elements of a vector or tensor for later use.
+The DSL allows the user to define scalars, vectors, and dense/sparse/diagonal
+n-dimensional tensors.  You can optionally label the elements of a vector or
+tensor for later use.
 
-For example, to define a scalar variable `k` with value `1.0`, we write:
+For example, to define a scalar variable $k$ with value $1$, we write:
 
 ```
 k { 1.0 }
 ```
 
-To define a vector variable `v` with 3 elements that are labelled, we write:
+To define a vector variable $\mathbf{v}$ with 3 elements that are labelled, we write:
 
 ```
 v_i {
@@ -36,10 +37,12 @@ v_i {
 }
 ```
 
-The subscript `_i` indicates that this is a 1D vector, and `x`, `y`, and `z` are defined as labels to the 3 elements of the vector.
-Later in the code, we could refer to either the whole vector `v_i` or to the individual elements `x`, `y`, and `z`, which are scalars.
+The subscript `_i` indicates that this is a 1D vector, and $x$, $y$, and $z$ are
+defined as labels to the 3 elements of the vector.  Later in the code, we could
+refer to either the whole vector `v_i` for $\mathbf{v}$ or to the individual
+elements $x$, $y$, and $z$, which are scalars.
 
-To define dense 2x3 matrix `A` with all elements set to `1.0`, we write:
+To define dense 2x3 matrix $A$ with all elements set to `1.0`, we write:
 
 ```
 A_ij {
@@ -47,8 +50,9 @@ A_ij {
 }
 ```
 
-Note the two subscript to indicate that this is a 2D tensor. The size of the tensor is given in the brackets, and the elements are set to `1.0`.
-If we have additional rows, we can add them as follows:
+Note the two subscript to indicate that this is a 2D tensor. The size of the
+tensor is given in the brackets, and the elements are set to $1$.  If we have
+additional rows, we can add them as follows:
 
 ```
 A_ij {
@@ -57,7 +61,7 @@ A_ij {
 }
 ```
 
-We can define a sparse matrix `B` by specifying the non-zero elements:
+We can define a sparse matrix $B$ by specifying the non-zero elements:
 
 ```
 B_ij {
@@ -67,7 +71,8 @@ B_ij {
 }
 ```
 
-We can also define a diagonal identity matrix `I` by specifying the diagonal elements using a different range syntax:
+We can also define a diagonal identity matrix $I$ by specifying the diagonal
+elements using a different range syntax:
 
 ```
 I_ij {
@@ -77,29 +82,35 @@ I_ij {
 
 ## Operations
 
-We can use standard algebraic operations on variables. To refer to previously defined variables,
-we use the variable name, making sure to use the correct subscript if it is a vector or tensor.
+We can use standard algebraic operations on variables. To refer to previously
+defined variables, we use the variable name, making sure to use the correct
+subscript if it is a vector or tensor.
 
-For example, to define a scalar variable `a` as the sum of two other scalar variables `b` and `c`, we write:
+For example, to define a scalar variable $a$ as the sum of two other scalar
+variables $b$ and $c$, we write:
 
 ```
 a { b + c }
 ```
 
-To define a vector variable `v` as the sum of two other vector variables `u` and `w`, we write:
+To define a vector variable $\mathbf{V}$ as the sum of two other vector
+variables $\mathbf{u}$ and $\mathbf{w}$, we write:
 
 ```
 v_i { u_i + w_i }
 ```
 
-The indexing can be used to perform translations on tensors, for example the following will define a new tensor $C$ that is the sum of $A$ and $B^T$:
+The indexing can be used to perform translations on tensors, for example the
+following will define a new tensor $C$ that is the sum of $A$ and $B^T$:
 
 ```
 C_ij { A_ij + B_ji }
 ```
 
-Tensor indexing notation can also matrix-vector multiplications and any other contraction operations. Any indices that do not appear in the output will be summed over.
-For example, the following will define a new vector $v$ that is the result of a matrix-vector multiplication:
+Tensor indexing notation can also matrix-vector multiplications and any other
+contraction operations. Any indices that do not appear in the output will be
+summed over.  For example, the following will define a new vector $v$ that is
+the result of a matrix-vector multiplication:
 
 ```
 v_i { A_ij * u_j }
@@ -107,9 +118,9 @@ v_i { A_ij * u_j }
 
 ## Specifying inputs
 
-We can override the values of any scalar variables by specifying them as input variables.
-To do this, we add a line at the top
-of the code to specify that these are input variables:
+We can override the values of any scalar variables by specifying them as input
+variables.  To do this, we add a line at the top of the code to specify that
+these are input variables:
 
 ```
 in = [k]
@@ -118,10 +129,12 @@ k { 1.0 }
 
 ## Defining state variables
 
-The primary goal of the DSL is to define a set of differential equations of a system of state variables.
-To define the state variables, we create a special vector variable `u_i` which corresponds to the state variables $\mathbf{u}$.
+The primary goal of the DSL is to define a set of differential equations of a
+system of state variables.  To define the state variables, we create a special
+vector variable `u_i` which corresponds to the state variables $\mathbf{u}$.
 
-The values that we use for `u_i` are the initial values of the state variables at $t=0$.
+The values that we use for `u_i` are the initial values of the state variables
+at $t=0$.
 
 ```
 u_i {
@@ -131,7 +144,8 @@ u_i {
 }
 ```
 
-We can optionally define the time derivatives of the state variables, $\mathbf{\dot{u}}$ as well:
+We can optionally define the time derivatives of the state variables,
+$\mathbf{\dot{u}}$ as well:
 
 ```
 dudt_i {
@@ -141,8 +155,9 @@ dudt_i {
 }
 ```
 
-Here the initial values of the time derivatives are given, these are typically  used as a starting point to calculate a set of consistent
-initial values for the state variables.
+Here the initial values of the time derivatives are given, these are typically
+used as a starting point to calculate a set of consistent initial values for the
+state variables.
 
 Note that there is no need to define `dudt` if you do not define a mass matrix $M$.
 
@@ -155,8 +170,8 @@ M(t) \frac{d\mathbf{u}}{dt} = F(\mathbf{u}, t)
 $$
 
 We now define the equations $F$ and $M$ that we want to solve, using the
-variables that we have defined earlier. We do this by defining a vector variable `F_i` that
-corresponds to the RHS of the equations.
+variables that we have defined earlier. We do this by defining a vector variable
+`F_i` that corresponds to the RHS of the equations.
 
 For example, to define a simple system of ODEs:
 
@@ -182,9 +197,12 @@ F_i {
 }
 ```
 
-We can also define a mass matrix $M$ by defining a vector variable `M_i`. This is optional, and if not defined, the mass matrix is assumed to be the identity matrix.
+We can also define a mass matrix $M$ by defining a vector variable `M_i`. This
+is optional, and if not defined, the mass matrix is assumed to be the identity
+matrix.
 
-For example, lets define a simple DAE system using a singular mass matrix with a zero on the diagonal:
+For example, lets define a simple DAE system using a singular mass matrix with a
+zero on the diagonal:
 
 $$
 \begin{align*}
@@ -221,7 +239,7 @@ F_i {
 Finally, we specify the outputs of the system. These might be the state
 variables themselves, or they might be other variables that are calculated from
 the state variables. Here we specify that we want to output the state variables
-`x` and `y`:
+$x$ and $y$:
 
 ```
 out_i {
@@ -232,15 +250,17 @@ out_i {
 
 ## Required variables
 
-The DSL allows the user to specify an arbitrary number of intermediate variables, but certain variables are required to be defined. These are:
+The DSL allows the user to specify an arbitrary number of intermediate
+variables, but certain variables are required to be defined. These are:
 
 * `u_i` - the state variables
 * `F_i` - the vector $F(\mathbf{u}, t)$
 * `out_i` - the output variables
 
-### Predefined variables
+## Predefined variables
 
-The only predefined variable is the scalar `t` which is the current time, this allows the equations to be written as functions of time. For example
+The only predefined variable is the scalar $t$ which is the current time, this
+allows the equations to be written as functions of time. For example
 
 ```
 F_i {

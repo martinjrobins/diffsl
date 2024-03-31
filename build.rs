@@ -10,15 +10,21 @@ fn compile_enzyme(llvm_dir: String) -> String {
 }
 
 fn main() {
-    // get env vars matching DEP_LLVM_*_LIBDIR regex    
-    let llvm_dirs: Vec<_> = env::vars().filter(|(k, _)| k.starts_with("DEP_LLVM_") && k.ends_with("_LIBDIR")).collect();
+    // get env vars matching DEP_LLVM_*_LIBDIR regex
+    let llvm_dirs: Vec<_> = env::vars()
+        .filter(|(k, _)| k.starts_with("DEP_LLVM_") && k.ends_with("_LIBDIR"))
+        .collect();
     // take first one
-    let llvm_dir = llvm_dirs.first().expect("DEP_LLVM_*_LIBDIR not set").1.clone();
+    let llvm_dir = llvm_dirs
+        .first()
+        .expect("DEP_LLVM_*_LIBDIR not set")
+        .1
+        .clone();
 
     dbg!("llvm_dir", &llvm_dir);
-    
+
     // compile enzyme
-    let libdir= compile_enzyme(llvm_dir);
+    let libdir = compile_enzyme(llvm_dir);
     println!("cargo:rustc-link-search=native={}", libdir);
     println!("cargo:rerun-if-changed=build.rs");
 }

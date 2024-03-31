@@ -19,7 +19,6 @@ impl ValidationError {
         }
     }
 
-
     pub fn as_error_message(&self, f: &mut String, input: &str) -> fmt::Result {
         if let Some(source_ref) = self.source_ref {
             let span = Span::new(input, source_ref.pos_start, source_ref.pos_end);
@@ -39,7 +38,6 @@ impl fmt::Display for ValidationError {
             write!(f, "Error: {}", self.text)
         }
     }
-
 }
 
 #[derive(Debug, Clone, Default)]
@@ -47,13 +45,11 @@ pub struct ValidationErrors {
     errors: Vec<ValidationError>,
 }
 
-
-
 impl ValidationErrors {
     pub fn push(&mut self, new: ValidationError) {
         self.errors.push(new);
     }
-    
+
     pub fn extend(&mut self, new: Vec<ValidationError>) {
         self.errors.extend(new)
     }
@@ -72,7 +68,7 @@ impl ValidationErrors {
         }
         buf
     }
-    
+
     pub fn has_error_contains(&self, text: &str) -> bool {
         self.errors.iter().any(|err| err.text.contains(text))
     }

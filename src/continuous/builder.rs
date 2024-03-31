@@ -43,7 +43,7 @@ pub struct BoundaryCondition<'s> {
     pub variable: Rc<RefCell<Variable<'s>>>,
     pub location: f64,
     pub equation: Ast<'s>,
-    pub is_dirichlet:  bool,
+    pub is_dirichlet: bool,
 }
 
 #[derive(Debug)]
@@ -61,7 +61,11 @@ pub struct Variable<'s> {
 
 impl<'a> fmt::Display for Variable<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let deps_disp: Vec<_> = self.dependents.iter().map(|dep| dep.borrow().name).collect();
+        let deps_disp: Vec<_> = self
+            .dependents
+            .iter()
+            .map(|dep| dep.borrow().name)
+            .collect();
         if !deps_disp.is_empty() {
             write!(f, "{}({})", self.name, deps_disp.join(","))
         } else {
@@ -70,11 +74,14 @@ impl<'a> fmt::Display for Variable<'a> {
     }
 }
 
-
 impl<'s> Variable<'s> {
     pub fn is_time_dependent(&self) -> bool {
-        self.time_index.is_some() || self.is_time()
-        || self.dependents.iter().any(|d| d.borrow().is_time_dependent())
+        self.time_index.is_some()
+            || self.is_time()
+            || self
+                .dependents
+                .iter()
+                .any(|d| d.borrow().is_time_dependent())
     }
     pub fn is_independent(&self) -> bool {
         self.dependents.is_empty()
@@ -107,11 +114,10 @@ impl<'s> Variable<'s> {
     }
     pub fn is_dependent_on_state(&self) -> bool {
         if self.is_definition() {
-            self.dependents.iter().any(|dep|  dep.borrow().is_state())
+            self.dependents.iter().any(|dep| dep.borrow().is_state())
         } else {
             self.is_state()
         }
-
     }
     pub fn new(node: &Ast<'s>, info: &mut ModelInfo<'s>) -> Variable<'s> {
         match &node.kind {
@@ -206,30 +212,22 @@ impl<'s> ModelInfo<'s> {
         match model_refs.iter().position(|v| v.name == name) {
             Some(i) => {
                 let other_models = [&model_refs[..i], &model_refs[i..]].concat();
-                let mut model_info =
-                    Self::builder(model_refs[i], &other_models);
+                let mut model_info = Self::builder(model_refs[i], &other_models);
                 model_info.allocate_stmts(&ast[i]);
                 Ok(model_info)
             }
             None => Err(format!("Model name {} not found", name)),
         }
     }
-    fn build_submodel(
-        name: &'s str,
-        models: &[&ast::Model<'s>],
-    ) -> Option<Self> {
+    fn build_submodel(name: &'s str, models: &[&ast::Model<'s>]) -> Option<Self> {
         match models.iter().position(|v| v.name == name) {
             Some(i) => {
                 let other_models = [&models[..i], &models[i..]].concat();
-                Some(Self::builder(
-                    models[i],
-                    &other_models,
-                ))
+                Some(Self::builder(models[i], &other_models))
             }
             None => None,
         }
     }
-
 
     fn allocate_stmt<'a>(&'a mut self, stmt: Ast<'s>) -> Option<Ast<'s>> {
         //TODO use if-let chaining
@@ -248,29 +246,39 @@ impl<'s> ModelInfo<'s> {
                                     if value == self.time.borrow().bounds.0 {
                                         Some((
                                             v_cell.clone(),
-                                            BoundaryCondition{
-                                                    variable: self.time.clone(),
-                                                    location: value,
-                                                    equation: *eqn.rhs.clone(),
-                                                    is_dirichlet: true,
-                                            }
+                                            BoundaryCondition {
+                                                variable: self.time.clone(),
+                                                location: value,
+                                                equation: *eqn.rhs.clone(),
+                                                is_dirichlet: true,
+                                            },
                                         ))
                                     } else {
                                         self.errors.push(Output::new(
                                             format!(
                                                 "Did you mean to set an initial condition here? equation should be {}({}) = ...",
-                                                fn_name, self.time.borrow().bounds.0, 
+                                                fn_name, self.time.borrow().bounds.0,
                                             ),
                                             args[time_index].span,
                                         ));
                                         None
                                     }
-                                } else { None }
-                            } else { None }
-                        } else { None }
-                    } else { None }
-                } else { None }
-            },
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
         if let Some((v_cell, bc)) = bc_opt {
@@ -278,30 +286,28 @@ impl<'s> ModelInfo<'s> {
             return None;
         }
         let allocated_to = match &stmt.kind {
-            AstKind::RateEquation(reqn) => {
-                match self.variables.get(reqn.name) {
-                    Some(v_c) => {
-                        let v = v_c.borrow();
-                        if v.is_state() && v.is_time_dependent() {
-                            Some(v_c.clone())
-                        } else {
-                            self.errors.push(Output::new(
-                                format!(
-                                    "Rate equation invalid: variable {} does not depend on time",
-                                    v.name
-                                ),
-                                stmt.span,
-                            ));
-                            None
-                        }
-                    }
-                    None => {
+            AstKind::RateEquation(reqn) => match self.variables.get(reqn.name) {
+                Some(v_c) => {
+                    let v = v_c.borrow();
+                    if v.is_state() && v.is_time_dependent() {
+                        Some(v_c.clone())
+                    } else {
                         self.errors.push(Output::new(
-                            format!("name {} not found", reqn.name),
+                            format!(
+                                "Rate equation invalid: variable {} does not depend on time",
+                                v.name
+                            ),
                             stmt.span,
                         ));
                         None
                     }
+                }
+                None => {
+                    self.errors.push(Output::new(
+                        format!("name {} not found", reqn.name),
+                        stmt.span,
+                    ));
+                    None
                 }
             },
             _ => None,
@@ -314,16 +320,24 @@ impl<'s> ModelInfo<'s> {
         }
     }
     fn allocate_stmts(&mut self, ast: &Ast<'s>) {
-        
         // move stmts out of self so we can move them
         let mut stmts: Vec<Ast<'s>> = Vec::new();
-        std::mem::swap(& mut self.stmts, & mut stmts);
-        let unallocated_eqns: Vec<Ast> = stmts.into_iter().filter_map(|stmt| self.allocate_stmt(stmt)).collect();
+        std::mem::swap(&mut self.stmts, &mut stmts);
+        let unallocated_eqns: Vec<Ast> = stmts
+            .into_iter()
+            .filter_map(|stmt| self.allocate_stmt(stmt))
+            .collect();
 
-
-
-        let unallocated_state_vars: Vec<Rc<RefCell<Variable>>> = self.variables.iter()
-            .filter_map(|(_name, v)| if v.borrow().is_state() && !v.borrow().has_equation() { Some(v.clone()) } else { None })
+        let unallocated_state_vars: Vec<Rc<RefCell<Variable>>> = self
+            .variables
+            .iter()
+            .filter_map(|(_name, v)| {
+                if v.borrow().is_state() && !v.borrow().has_equation() {
+                    Some(v.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
         if unallocated_eqns.len() != unallocated_state_vars.len() {
             let msg = if unallocated_state_vars.len() > unallocated_eqns.len() {
@@ -331,14 +345,20 @@ impl<'s> ModelInfo<'s> {
             } else {
                 "Model is overdetermined"
             };
-            let unallocated_eqns_disp: Vec<String> = unallocated_eqns.iter().map(|eqn| eqn.to_string()).collect();
-            let unallocated_state_vars_disp: Vec<String> = unallocated_state_vars.iter().map(|var| var.borrow().to_string()).collect();
+            let unallocated_eqns_disp: Vec<String> =
+                unallocated_eqns.iter().map(|eqn| eqn.to_string()).collect();
+            let unallocated_state_vars_disp: Vec<String> = unallocated_state_vars
+                .iter()
+                .map(|var| var.borrow().to_string())
+                .collect();
             self.errors.push(Output::new(
                 format!(
                     "{}, {} equations for {} unknowns. Equations are: [{}]. Unknowns are: [{}]",
                     msg,
-                    unallocated_eqns.len(), unallocated_state_vars.len(),
-                    unallocated_eqns_disp.join(", "), unallocated_state_vars_disp.join(", ")
+                    unallocated_eqns.len(),
+                    unallocated_state_vars.len(),
+                    unallocated_eqns_disp.join(", "),
+                    unallocated_state_vars_disp.join(", ")
                 ),
                 ast.span,
             ));
@@ -358,7 +378,7 @@ impl<'s> ModelInfo<'s> {
                         ast.span,
                     ));
                 }
-                // check algebraic variables do not have initial conditions 
+                // check algebraic variables do not have initial conditions
                 if v.is_algebraic().unwrap() && v.has_initial_condition() {
                     self.errors.push(Output::new(
                         format!("overdetermined initial condition, algebraic variable {} should not have an initial condition", v),
@@ -368,9 +388,8 @@ impl<'s> ModelInfo<'s> {
             }
         }
     }
-    
 
-    fn set_dependents(&self, var: & mut Variable<'s>, deps: &Vec<&'s str>) {
+    fn set_dependents(&self, var: &mut Variable<'s>, deps: &Vec<&'s str>) {
         for dep in deps {
             if let Some(dep_var) = self.variables.get(dep) {
                 if dep_var.borrow().is_time() {
@@ -381,16 +400,11 @@ impl<'s> ModelInfo<'s> {
         }
     }
 
-    fn builder(
-        model: &ast::Model<'s>,
-        models: &[&ast::Model<'s>],
-    ) -> Self {
-        
+    fn builder(model: &ast::Model<'s>, models: &[&ast::Model<'s>]) -> Self {
         let mut info = Self::new(model.name);
         let reserved = ["u", "dudt", "t", "F", "G", "input"];
         // create variables from unknowns
         for node in model.unknowns.iter() {
-
             let var_cell = Rc::new(RefCell::new(Variable::new(node, &mut info)));
             let var = var_cell.borrow();
             info.unknowns.push(var_cell.clone());
@@ -411,7 +425,7 @@ impl<'s> ModelInfo<'s> {
         for node in model.unknowns.iter() {
             if let AstKind::Unknown(u) = &node.kind {
                 if let Some(var) = info.variables.get(u.name) {
-                    info.set_dependents(& mut var.borrow_mut(), &u.dependents);
+                    info.set_dependents(&mut var.borrow_mut(), &u.dependents);
                     // if time is a dependent then add to outputs
                 }
             }
@@ -420,8 +434,7 @@ impl<'s> ModelInfo<'s> {
             match &stmt.kind {
                 AstKind::Submodel(submodel_call) => {
                     // find name in models
-                    let mut submodel = match Self::build_submodel(submodel_call.name, models)
-                    {
+                    let mut submodel = match Self::build_submodel(submodel_call.name, models) {
                         Some(x) => x,
                         None => {
                             info.errors.push(Output::new(
@@ -446,7 +459,6 @@ impl<'s> ModelInfo<'s> {
                     // check name exists and variable is state and nonconstant
                     info.check_expr(&reqn.rhs);
                     info.stmts.push(*stmt.clone());
-                    
                 }
                 AstKind::Definition(dfn) => {
                     let var_cell = Rc::new(RefCell::new(Variable::new(stmt, &mut info)));
@@ -460,7 +472,7 @@ impl<'s> ModelInfo<'s> {
                     let deps = dfn.rhs.get_dependents();
                     let dependents: Vec<&str> = deps.into_iter().collect();
                     var.time_index = dependents.iter().position(|d| *d == "t");
-                    info.set_dependents(& mut var, &dependents);
+                    info.set_dependents(&mut var, &dependents);
                     info.definitions.push(var_cell.clone());
                     info.variables.insert(var.name, var_cell.clone());
                     info.check_expr(&dfn.rhs);
@@ -471,11 +483,7 @@ impl<'s> ModelInfo<'s> {
         info
     }
 
-    fn add_submodel(
-        &mut self,
-        submodel: & mut ModelInfo<'s>,
-        submodel_call: & ast::Submodel<'s>,
-    ) {
+    fn add_submodel(&mut self, submodel: &mut ModelInfo<'s>, submodel_call: &ast::Submodel<'s>) {
         self.errors.append(&mut submodel.errors);
         let replacements = self.find_replacements(submodel, submodel_call);
 
@@ -492,25 +500,26 @@ impl<'s> ModelInfo<'s> {
             }
             // apply replacements to equation
             {
-                let mut var = var_cell.borrow_mut(); 
+                let mut var = var_cell.borrow_mut();
                 if let Some(eqn) = &var.equation {
                     var.equation = Some(eqn.clone_and_subst(&replacements));
-
                 }
             }
             self.variables.insert(name, var_cell);
         }
     }
 
-    fn check_expr(&mut self, expr: & Ast<'s>) {
+    fn check_expr(&mut self, expr: &Ast<'s>) {
         match &expr.kind {
             AstKind::Name(name) => {
                 // check name exists
-                if !self.variables.iter().any(|(var_name, _)| *var_name == *name) {
-                    self.errors.push(Output::new(
-                        format!("name {} not found", name),
-                        expr.span,
-                    ))
+                if !self
+                    .variables
+                    .iter()
+                    .any(|(var_name, _)| *var_name == *name)
+                {
+                    self.errors
+                        .push(Output::new(format!("name {} not found", name), expr.span))
                 }
             }
             AstKind::Binop(binop) => {
@@ -522,7 +531,7 @@ impl<'s> ModelInfo<'s> {
             }
             AstKind::Call(call) => {
                 // check name in allowed functions
-                let functions = ["sin" , "cos" , "tan" , "pow" , "exp" , "log" , "sqrt" , "abs"];
+                let functions = ["sin", "cos", "tan", "pow", "exp", "log", "sqrt", "abs"];
                 if functions.contains(&call.fn_name) {
                     // built in functions all have 1 arg
                     // built in functions should have no keyword args
@@ -544,12 +553,20 @@ impl<'s> ModelInfo<'s> {
                             panic!("all args should be CallArgs")
                         }
                     }
-                } else if let Some((_, var_cell)) = self.variables.iter().find(|(_name, var)| var.borrow().name == call.fn_name) {
+                } else if let Some((_, var_cell)) = self
+                    .variables
+                    .iter()
+                    .find(|(_name, var)| var.borrow().name == call.fn_name)
+                {
                     // variable call, check we've got all the right call args
                     let var = var_cell.borrow();
                     if var.dependents.len() != call.args.len() {
                         self.errors.push(Output::new(
-                            format!("incorrect number of arguments ({}) for dependent variable {}", call.args.len(), var),
+                            format!(
+                                "incorrect number of arguments ({}) for dependent variable {}",
+                                call.args.len(),
+                                var
+                            ),
                             expr.span,
                         ));
                     }
@@ -560,7 +577,10 @@ impl<'s> ModelInfo<'s> {
                                 has_kwarg = true;
                                 if var.dependents.iter().all(|v| v.borrow().name != name) {
                                     self.errors.push(Output::new(
-                                        format!("named arg {} does not exist in variable {}", name, var),
+                                        format!(
+                                            "named arg {} does not exist in variable {}",
+                                            name, var
+                                        ),
                                         arg.span,
                                     ));
                                 }
@@ -573,7 +593,6 @@ impl<'s> ModelInfo<'s> {
                         } else {
                             panic!("all args should be CallArgs")
                         }
-
                     }
                 } else {
                     self.errors.push(Output::new(
@@ -586,7 +605,7 @@ impl<'s> ModelInfo<'s> {
                 for arg in &call.args {
                     self.check_expr(arg);
                 }
-            },
+            }
             AstKind::CallArg(arg) => {
                 self.check_expr(&arg.expression);
             }
@@ -596,8 +615,8 @@ impl<'s> ModelInfo<'s> {
     }
     fn find_replacements<'a>(
         &mut self,
-        submodel: & ModelInfo<'s>,
-        submodel_call: &'a ast::Submodel<'s>
+        submodel: &ModelInfo<'s>,
+        submodel_call: &'a ast::Submodel<'s>,
     ) -> HashMap<&'s str, &'a Ast<'s>> {
         let mut replacements = HashMap::new();
         let mut found_kwarg = false;
@@ -607,14 +626,15 @@ impl<'s> ModelInfo<'s> {
             if let AstKind::CallArg(call_arg) = &arg.kind {
                 if let Some(name) = call_arg.name {
                     found_kwarg = true;
-                    if submodel.variables.iter().any(|(name, var)| var.borrow().name == *name) {
+                    if submodel
+                        .variables
+                        .iter()
+                        .any(|(name, var)| var.borrow().name == *name)
+                    {
                         replacements.insert(name, call_arg.expression.as_ref());
                     } else {
                         self.errors.push(Output::new(
-                            format!(
-                                "Cannot find unknown {} in model {}",
-                                name, submodel.name
-                            ),
+                            format!("Cannot find unknown {} in model {}", name, submodel.name),
                             arg.span,
                         ));
                     }
@@ -680,7 +700,9 @@ mod tests {
         let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert!(!model_info.errors.is_empty());
-        assert!(model_info.errors.iter().any(|o| o.as_error_message(text).contains("Did you mean to set an initial condition")));
+        assert!(model_info.errors.iter().any(|o| o
+            .as_error_message(text)
+            .contains("Did you mean to set an initial condition")));
     }
     #[test]
     fn missing_initial_condition() {
@@ -697,7 +719,9 @@ mod tests {
             println!("{}", o.as_error_message(text));
         }
         assert_eq!(model_info.errors.len(), 1);
-        assert!(model_info.errors[0].as_error_message(text).contains("does not have an inital condition"));
+        assert!(model_info.errors[0]
+            .as_error_message(text)
+            .contains("does not have an inital condition"));
     }
     #[test]
     fn submodel_name_not_found() {
@@ -758,6 +782,8 @@ mod tests {
         let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("resistor", &models).unwrap();
         assert_eq!(model_info.errors.len(), 1);
-        assert!(model_info.errors[0].text.contains("overdetermined initial condition"));
+        assert!(model_info.errors[0]
+            .text
+            .contains("overdetermined initial condition"));
     }
 }

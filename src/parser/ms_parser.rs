@@ -4,9 +4,9 @@ pub struct MsParser;
 
 use crate::ast::StringSpan;
 
-use pest::Parser;
 use pest::error::Error;
 use pest::iterators::Pair;
+use pest::Parser;
 use std::boxed::Box;
 
 use crate::ast;
@@ -102,11 +102,12 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             let mut inner = pair.into_inner();
             let name = parse_name(inner.next().unwrap());
             //dependents = { "(" ~ name ~ ("," ~ name )* ~ ")" }
-            let dependents = if inner.peek().is_some() && inner.peek().unwrap().as_rule() == Rule::dependents {
-                inner.next().unwrap().into_inner().map(parse_name).collect()
-            } else {
-                Vec::new()
-            };
+            let dependents =
+                if inner.peek().is_some() && inner.peek().unwrap().as_rule() == Rule::dependents {
+                    inner.next().unwrap().into_inner().map(parse_name).collect()
+                } else {
+                    Vec::new()
+                };
             let codomain = if inner.peek().is_some() {
                 Some(Box::new(parse_value(inner.next().unwrap())))
             } else {
@@ -275,11 +276,9 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
     }
 }
 
-
-
 pub fn parse_string(text: &str) -> Result<Vec<Ast>, Box<Error<Rule>>> {
     let main = MsParser::parse(Rule::main, text)?.next().unwrap();
-    let ast_nodes= main
+    let ast_nodes = main
         .into_inner()
         .take_while(|pair| pair.as_rule() != Rule::EOI)
         .map(parse_value)
@@ -290,7 +289,7 @@ pub fn parse_string(text: &str) -> Result<Vec<Ast>, Box<Error<Rule>>> {
 #[cfg(test)]
 mod tests {
     use super::parse_string;
-    use crate::{ast::AstKind, ast::Model, ast::Ast};
+    use crate::{ast::Ast, ast::AstKind, ast::Model};
 
     fn ast_to_model(node: Ast) -> Model {
         if let AstKind::Model(model) = node.kind {
@@ -303,7 +302,11 @@ mod tests {
     #[test]
     fn empty_model() {
         const TEXT: &str = "model test() {}";
-        let models: Vec<Model> = parse_string(TEXT).unwrap().into_iter().map(ast_to_model).collect();
+        let models: Vec<Model> = parse_string(TEXT)
+            .unwrap()
+            .into_iter()
+            .map(ast_to_model)
+            .collect();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, "test");
         assert!(models[0].unknowns.is_empty());
@@ -320,7 +323,11 @@ mod tests {
             v = i * r
         }
         ";
-        let models: Vec<Model> = parse_string(text).unwrap().into_iter().map(ast_to_model).collect();
+        let models: Vec<Model> = parse_string(text)
+            .unwrap()
+            .into_iter()
+            .map(ast_to_model)
+            .collect();
         assert_eq!(models.len(), 2);
 
         assert_eq!(models[0].name, "capacitor");
@@ -362,7 +369,11 @@ mod tests {
             dot(y) = d * div(grad(y, x), x) 
         }
         ";
-        let models: Vec<Model> = parse_string(text).unwrap().into_iter().map(ast_to_model).collect();
+        let models: Vec<Model> = parse_string(text)
+            .unwrap()
+            .into_iter()
+            .map(ast_to_model)
+            .collect();
         assert_eq!(models.len(), 1);
 
         assert_eq!(models[0].name, "diffusion");
@@ -387,7 +398,11 @@ mod tests {
             use resistor(v = inputVoltage)
         }
         ";
-        let models: Vec<Model> = parse_string(text).unwrap().into_iter().map(ast_to_model).collect();
+        let models: Vec<Model> = parse_string(text)
+            .unwrap()
+            .into_iter()
+            .map(ast_to_model)
+            .collect();
         assert_eq!(models.len(), 2);
 
         assert_eq!(models[1].name, "circuit");
@@ -418,4 +433,3 @@ mod tests {
         }
     }
 }
-

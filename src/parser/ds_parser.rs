@@ -4,9 +4,9 @@ pub struct DsParser;
 
 use crate::ast::StringSpan;
 
-use pest::Parser;
 use pest::error::Error;
 use pest::iterators::Pair;
+use pest::Parser;
 use std::boxed::Box;
 
 use crate::ast;
@@ -86,7 +86,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             } else {
                 None
             };
-            let mut head_term =  match sign {
+            let mut head_term = match sign {
                 Some(s) => Ast {
                     kind: AstKind::Monop(ast::Monop {
                         op: s,
@@ -94,7 +94,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
                     }),
                     span,
                 },
-                None => parse_value(inner.next().unwrap())
+                None => parse_value(inner.next().unwrap()),
             };
             while inner.peek().is_some() {
                 //term_op    = @{ "-"|"+" }
@@ -142,7 +142,6 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
         // factor     = { call | name | real | integer | "(" ~ expression ~ ")" }
         Rule::factor => parse_value(pair.into_inner().next().unwrap()),
 
-
         // name_ij    = { name ~ ("_" ~ name)? }
         Rule::name_ij => {
             let mut inner = pair.into_inner();
@@ -159,7 +158,6 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             }
         }
 
-        
         //model      = { inputs? ~ tensor* }
         //inputs     = { "inputs" ~ "=" ~ "[" ~ name ~ ("," ~ name)* ~ "]" }
         // TODO: refactor inputs to an ast node
@@ -182,21 +180,19 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
         }
 
         // tensor     = { name_ij ~ "{" ~ tensor_elmt? ~ (DELIM~ tensor_elmt )* ~ DELIM? ~ "}" }
-        Rule::tensor =>  {
+        Rule::tensor => {
             let mut inner = pair.into_inner();
             let name_ij = parse_value(inner.next().unwrap());
             let (name, indices) = match name_ij.kind {
-                AstKind::IndexedName(ast::IndexedName { name, indices }) => {
-                    (name, indices)
-                }
-                _ => unreachable!()
+                AstKind::IndexedName(ast::IndexedName { name, indices }) => (name, indices),
+                _ => unreachable!(),
             };
             let elmts = inner.map(|v| parse_value(v)).collect();
-            Ast { 
+            Ast {
                 kind: AstKind::Tensor(ast::Tensor::new(name, indices, elmts)),
-                span 
+                span,
             }
-        },
+        }
 
         // indice      = { integer ~ ( range_sep ~ integer )? }
         Rule::indice => {
@@ -205,41 +201,45 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             if inner.peek().is_some() {
                 let sep = Some(inner.next().unwrap().as_str());
                 let last = Some(Box::new(parse_value(inner.next().unwrap())));
-                Ast { 
+                Ast {
                     kind: AstKind::Indice(ast::Indice { first, last, sep }),
-                    span
+                    span,
                 }
             } else {
-                Ast { 
-                    kind: AstKind::Indice(ast::Indice { first, last: None, sep: None }),
-                    span 
+                Ast {
+                    kind: AstKind::Indice(ast::Indice {
+                        first,
+                        last: None,
+                        sep: None,
+                    }),
+                    span,
                 }
             }
-        },
+        }
 
         // indices   = { "(" ~ indice ~ ("," ~ indice)* ~ ")" ~ ":" }
         Rule::indices => {
             let inner = pair.into_inner();
             let indices = inner.map(|v| Box::new(parse_value(v))).collect::<Vec<_>>();
-            Ast { 
+            Ast {
                 kind: AstKind::Vector(ast::Vector { data: indices }),
-                span 
+                span,
             }
-        },
+        }
 
         // assignment = { name_ij ~ "=" ~ expression }
         Rule::assignment => {
             let mut inner = pair.into_inner();
             let name = parse_name(inner.next().unwrap());
             let expr = Box::new(parse_value(inner.next().unwrap()));
-            Ast { 
+            Ast {
                 kind: AstKind::Assignment(ast::Assignment { name, expr }),
-                span 
+                span,
             }
-        },
+        }
 
         // tensor_elmt = { indices? ~ (assignment | expression) }
-        Rule::tensor_elmt =>  {
+        Rule::tensor_elmt => {
             let mut inner = pair.into_inner();
             let indices = if inner.peek().unwrap().as_rule() == Rule::indices {
                 Some(Box::new(parse_value(inner.next().unwrap())))
@@ -247,21 +247,22 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
                 None
             };
             let expr = Box::new(parse_value(inner.next().unwrap()));
-            Ast { 
+            Ast {
                 kind: AstKind::TensorElmt(ast::TensorElmt { indices, expr }),
-                span 
+                span,
             }
-        },
+        }
 
         _ => unreachable!("{:?}", pair.to_string()),
     }
 }
 
-
-
 pub fn parse_string(text: &str) -> Result<ast::DsModel, Box<Error<Rule>>> {
     let main = DsParser::parse(Rule::main, text)?.next().unwrap();
-    let model = parse_value(main.into_inner().next().unwrap()).kind.to_ds_model().unwrap();
+    let model = parse_value(main.into_inner().next().unwrap())
+        .kind
+        .to_ds_model()
+        .unwrap();
     Ok(model)
 }
 
@@ -332,16 +333,66 @@ mod tests {
         let tensor = model.tensors[2].kind.as_tensor().unwrap();
         assert_eq!(tensor.name(), "I");
         assert_eq!(tensor.elmts().len(), 3);
-        assert_eq!(tensor.elmts()[0].kind.as_tensor_elmt().unwrap().indices.as_ref().unwrap().kind.as_vector().unwrap().data.len(), 2);
-        assert_eq!(tensor.elmts()[0].kind.as_tensor_elmt().unwrap().expr.to_string(), "1");
-        assert_eq!(tensor.elmts()[1].kind.as_tensor_elmt().unwrap().expr.to_string(), "1");
+        assert_eq!(
+            tensor.elmts()[0]
+                .kind
+                .as_tensor_elmt()
+                .unwrap()
+                .indices
+                .as_ref()
+                .unwrap()
+                .kind
+                .as_vector()
+                .unwrap()
+                .data
+                .len(),
+            2
+        );
+        assert_eq!(
+            tensor.elmts()[0]
+                .kind
+                .as_tensor_elmt()
+                .unwrap()
+                .expr
+                .to_string(),
+            "1"
+        );
+        assert_eq!(
+            tensor.elmts()[1]
+                .kind
+                .as_tensor_elmt()
+                .unwrap()
+                .expr
+                .to_string(),
+            "1"
+        );
         let tensor = model.tensors[3].kind.as_tensor().unwrap();
         assert_eq!(tensor.name(), "u");
         assert_eq!(tensor.elmts().len(), 2);
-        assert_eq!(tensor.elmts()[0].kind.as_tensor_elmt().unwrap().expr.kind.as_assignment().unwrap().name, "y");
-        assert_eq!(tensor.elmts()[0].kind.as_tensor_elmt().unwrap().expr.kind.as_assignment().unwrap().expr.to_string(), "1");
+        assert_eq!(
+            tensor.elmts()[0]
+                .kind
+                .as_tensor_elmt()
+                .unwrap()
+                .expr
+                .kind
+                .as_assignment()
+                .unwrap()
+                .name,
+            "y"
+        );
+        assert_eq!(
+            tensor.elmts()[0]
+                .kind
+                .as_tensor_elmt()
+                .unwrap()
+                .expr
+                .kind
+                .as_assignment()
+                .unwrap()
+                .expr
+                .to_string(),
+            "1"
+        );
     }
-
-
-    
 }

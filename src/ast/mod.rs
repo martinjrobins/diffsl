@@ -155,8 +155,6 @@ pub struct Model<'a> {
     pub statements: Vec<Box<Ast<'a>>>,
 }
 
-
-
 #[derive(Debug, Clone)]
 pub struct Tensor<'a> {
     name: &'a str,
@@ -165,7 +163,13 @@ pub struct Tensor<'a> {
 }
 
 impl<'a> Tensor<'a> {
-    pub fn new(name: &'a str, indices: Vec<char>, elmts: Vec<Ast<'a>>) -> Self { Self { name, indices, elmts } }
+    pub fn new(name: &'a str, indices: Vec<char>, elmts: Vec<Ast<'a>>) -> Self {
+        Self {
+            name,
+            indices,
+            elmts,
+        }
+    }
 
     pub fn elmts(&self) -> &[Ast<'a>] {
         self.elmts.as_ref()
@@ -180,7 +184,7 @@ impl<'a> Tensor<'a> {
     }
 }
 
-impl <'a> fmt::Display for Tensor<'a> {
+impl<'a> fmt::Display for Tensor<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.name)?;
         if !self.indices.is_empty() {
@@ -222,7 +226,7 @@ pub struct Vector<'a> {
 }
 
 impl<'a> fmt::Display for Vector<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result  {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(")?;
         for (i, elmt) in self.data.iter().enumerate() {
             write!(f, "{}", elmt)?;
@@ -270,7 +274,7 @@ pub struct NamedGradient<'a> {
     pub gradient_wrt: Box<Ast<'a>>,
 }
 
-impl <'a> fmt::Display for NamedGradient<'a> {
+impl<'a> fmt::Display for NamedGradient<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "d{}d{}", self.gradient_of, self.gradient_wrt)
     }
@@ -419,13 +423,23 @@ impl<'a> AstKind<'a> {
         }
     }
     pub fn new_binop(op: char, left: Ast<'a>, right: Ast<'a>) -> Self {
-        AstKind::Binop(Binop{ op, left: Box::new(left), right: Box::new(right)})
+        AstKind::Binop(Binop {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        })
     }
     pub fn new_dot(child: Ast<'a>) -> Self {
-        AstKind::Call(Call { fn_name: "dot", args: vec![Box::new(child)] })
+        AstKind::Call(Call {
+            fn_name: "dot",
+            args: vec![Box::new(child)],
+        })
     }
     pub fn new_index(left: Ast<'a>, right: Ast<'a>) -> Self {
-        AstKind::Index(Index{left: Box::new(left), right: Box::new(right)})
+        AstKind::Index(Index {
+            left: Box::new(left),
+            right: Box::new(right),
+        })
     }
     pub fn new_name(name: &'a str) -> Self {
         AstKind::Name(name)
@@ -434,13 +448,25 @@ impl<'a> AstKind<'a> {
         AstKind::IndexedName(IndexedName { name, indices })
     }
     pub fn new_time_derivative(name: &'a str) -> Self {
-        AstKind::NamedGradient(NamedGradient { gradient_of: Box::new(Ast { kind: Self::new_name(name), span:None }), gradient_wrt: Box::new(Ast { kind: Self::new_name("t"), span: None }) })
+        AstKind::NamedGradient(NamedGradient {
+            gradient_of: Box::new(Ast {
+                kind: Self::new_name(name),
+                span: None,
+            }),
+            gradient_wrt: Box::new(Ast {
+                kind: Self::new_name("t"),
+                span: None,
+            }),
+        })
     }
     pub fn new_int(num: i64) -> Self {
         AstKind::Integer(num)
     }
     pub fn new_irange(range: (usize, usize)) -> Self {
-        AstKind::IntRange(IntRange { lower: range.0, upper: range.1 })
+        AstKind::IntRange(IntRange {
+            lower: range.0,
+            upper: range.1,
+        })
     }
     pub fn new_num(num: f64) -> Self {
         AstKind::Number(num)
@@ -483,14 +509,13 @@ pub struct Ast<'a> {
 }
 
 impl<'a> Ast<'a> {
-
     pub fn new_binop(op: char, lhs: Ast<'a>, rhs: Ast<'a>) -> Self {
         Ast {
             kind: AstKind::new_binop(op, lhs, rhs),
             span: None,
         }
     }
-    
+
     pub fn clone_and_subst<'b>(&self, replacements: &HashMap<&'a str, &'b Ast<'a>>) -> Self {
         let cloned_kind = match &self.kind {
             AstKind::Definition(dfn) => AstKind::Definition(Definition {
@@ -536,8 +561,9 @@ impl<'a> Ast<'a> {
             }),
             AstKind::Number(num) => AstKind::Number(*num),
             AstKind::Integer(num) => AstKind::Integer(*num),
-            AstKind::IndexedName(name) => AstKind::IndexedName(IndexedName { 
-                name: name.name, indices: name.indices.clone() 
+            AstKind::IndexedName(name) => AstKind::IndexedName(IndexedName {
+                name: name.name,
+                indices: name.indices.clone(),
             }),
             AstKind::Name(name) => {
                 if let Some(x) = replacements.get(name) {
@@ -545,7 +571,7 @@ impl<'a> Ast<'a> {
                 } else {
                     AstKind::Name(name)
                 }
-            },
+            }
             AstKind::NamedGradient(gradient) => AstKind::NamedGradient(NamedGradient {
                 gradient_of: Box::new(gradient.gradient_of.clone_and_subst(replacements)),
                 gradient_wrt: Box::new(gradient.gradient_wrt.clone_and_subst(replacements)),
@@ -625,22 +651,20 @@ impl<'a> Ast<'a> {
             AstKind::Index(index) => {
                 index.left.collect_deps(deps);
                 index.right.collect_deps(deps);
-            },
+            }
             AstKind::Slice(slice) => {
                 slice.lower.collect_deps(deps);
                 slice.upper.collect_deps(deps);
-            },
+            }
             AstKind::Tensor(tensor) => {
                 for elmt in &tensor.elmts {
                     elmt.collect_deps(deps);
                 }
-            },
+            }
             AstKind::TensorElmt(elmt) => {
                 elmt.expr.collect_deps(deps);
-            },
-            AstKind::DsModel(m) => {
-                deps.extend(m.inputs.iter().cloned())
             }
+            AstKind::DsModel(m) => deps.extend(m.inputs.iter().cloned()),
             AstKind::Number(_) => (),
             AstKind::Integer(_) => (),
             AstKind::Model(_) => (),
@@ -655,7 +679,7 @@ impl<'a> Ast<'a> {
             AstKind::Indice(_) => (),
         }
     }
-    
+
     pub fn get_indices(&self) -> Vec<char> {
         let mut indices = Vec::new();
         self.collect_indices(&mut indices);
@@ -691,27 +715,27 @@ impl<'a> Ast<'a> {
             }
             AstKind::IndexedName(found_name) => {
                 indices.extend(found_name.indices.iter().cloned());
-            },
+            }
             AstKind::Index(index) => {
                 index.left.collect_indices(indices);
                 index.right.collect_indices(indices);
-            },
+            }
             AstKind::Slice(slice) => {
                 slice.lower.collect_indices(indices);
                 slice.upper.collect_indices(indices);
-            },
+            }
             AstKind::Tensor(tensor) => {
                 for elmt in &tensor.elmts {
                     elmt.collect_indices(indices);
                 }
-            },
+            }
             AstKind::TensorElmt(elmt) => {
                 elmt.expr.collect_indices(indices);
-            },
+            }
             AstKind::NamedGradient(gradient) => {
                 gradient.gradient_of.collect_indices(indices);
                 gradient.gradient_wrt.collect_indices(indices);
-            },
+            }
             AstKind::Name(_) => (),
             AstKind::DsModel(_) => (),
             AstKind::Number(_) => (),
@@ -748,15 +772,13 @@ impl<'a> fmt::Display for Ast<'a> {
                 "Unknown ({})({:#?}) -> {:#?}",
                 unknown.name, unknown.dependents, unknown.codomain
             ),
-            AstKind::Domain(domain) => {
-                write!(f, "{}", domain.range).and_then(|_| {
-                    if domain.dim == 1 {
-                        write!(f, "^{}", domain.dim)
-                    } else {
-                        Ok(())
-                    }
-                })
-            }
+            AstKind::Domain(domain) => write!(f, "{}", domain.range).and_then(|_| {
+                if domain.dim == 1 {
+                    write!(f, "^{}", domain.dim)
+                } else {
+                    Ok(())
+                }
+            }),
             AstKind::IntRange(range) => write!(f, "({}, {})", range.lower, range.upper),
             AstKind::Equation(eqn) => {
                 write!(f, "{}", eqn)
@@ -782,13 +804,7 @@ impl<'a> fmt::Display for Ast<'a> {
                 } else {
                     format!("{}", binop.right)
                 };
-                write!(
-                    f,
-                    "{} {} {}",
-                    lhs,
-                    binop.op,
-                    rhs,
-                )
+                write!(f, "{} {} {}", lhs, binop.op, rhs,)
             }
             AstKind::Monop(monop) => {
                 let bracket = matches!(monop.child.kind, AstKind::Binop(_) | AstKind::Monop(_));
@@ -821,10 +837,10 @@ impl<'a> fmt::Display for Ast<'a> {
                 } else {
                     write!(f, "{}", elmt.expr)
                 }
-            },
+            }
             AstKind::Assignment(a) => {
                 write!(f, "{} = {}", a.name, a.expr)
-            },
+            }
             AstKind::DsModel(m) => write!(f, "{}", m),
             AstKind::Tensor(tensor) => write!(f, "{}", tensor),
             AstKind::Range(range) => write!(f, "{}", range),

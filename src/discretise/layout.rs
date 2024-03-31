@@ -1,11 +1,9 @@
-use std::{ops::Deref, hash::Hasher, hash::Hash, fmt, rc::Rc, convert::AsRef};
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use itertools::Itertools;
 use ndarray::s;
+use std::{convert::AsRef, fmt, hash::Hash, hash::Hasher, ops::Deref, rc::Rc};
 
-use super::{shape::Shape, tensor::Index, broadcast_shapes, TensorBlock};
-
-
+use super::{broadcast_shapes, shape::Shape, tensor::Index, TensorBlock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutKind {
@@ -13,7 +11,6 @@ pub enum LayoutKind {
     Diagonal,
     Sparse,
 }
-
 
 // a sparsity pattern for a multidimensional tensor. A tensor can be sparse, diagonal or dense, as given by the kind field.
 // A tensor can also have n_dense_axes axes which are dense, these are the last n_dense_axes axes of the tensor. So for example,
@@ -34,12 +31,12 @@ impl fmt::Display for Layout {
         }
         write!(f, " (")?;
         for i in 0..self.rank() {
-            let type_char = if self.is_diagonal() && i < self.rank() - self.n_dense_axes  { 
-                Some('i') 
+            let type_char = if self.is_diagonal() && i < self.rank() - self.n_dense_axes {
+                Some('i')
             } else if self.is_sparse() && i < self.rank() - self.n_dense_axes {
                 Some('s')
             } else {
-                None 
+                None
             };
             if let Some(type_char) = type_char {
                 write!(f, "{}{}", self.shape()[i], type_char)?;
@@ -55,10 +52,8 @@ impl fmt::Display for Layout {
 }
 
 impl Layout {
-    
     // row major order
     pub fn unravel_index(index: usize, shape: &Shape) -> Index {
-
         let mut idx = index;
         let mut res = Index::zeros(shape.len());
         for i in (0..shape.len()).rev() {
@@ -97,8 +92,8 @@ impl Layout {
         if rank == 0 {
             return Err(anyhow!("cannot contract last axis of a scalar"));
         }
-        let new_shape = self.shape.slice(s![0..rank-1]).to_owned();
-        
+        let new_shape = self.shape.slice(s![0..rank - 1]).to_owned();
+
         // if layout is dense just remove the last axis
         if self.is_dense() {
             return Ok(Layout::dense(new_shape));
@@ -131,7 +126,7 @@ impl Layout {
         if self.n_dense_axes == 0 {
             let mut new_indices = self.indices.clone();
             (0..self.indices.len()).for_each(|i| {
-                new_indices[i] = new_indices[i].slice(s![0..rank-1]).to_owned();
+                new_indices[i] = new_indices[i].slice(s![0..rank - 1]).to_owned();
             });
 
             // remove any duplicate indices
@@ -163,9 +158,8 @@ impl Layout {
                 kind: LayoutKind::Sparse,
                 n_dense_axes: self.n_dense_axes - 1,
             })
-        } 
+        }
     }
-
 
     // permute the axes of the layout and return a new layout
     pub fn permute(&self, permutation: &[usize]) -> Result<Layout> {
@@ -202,13 +196,17 @@ impl Layout {
         }
 
         // permute indices
-        let new_indices = self.indices.iter().map(|i| {
-            let mut new_i = i.slice(s![..new_rank]).to_owned();
-            for (ai, &p) in permutation.iter().enumerate() {
-                new_i[ai] = i[p];
-            }
-            new_i
-        }).collect::<Vec<_>>();
+        let new_indices = self
+            .indices
+            .iter()
+            .map(|i| {
+                let mut new_i = i.slice(s![..new_rank]).to_owned();
+                for (ai, &p) in permutation.iter().enumerate() {
+                    new_i[ai] = i[p];
+                }
+                new_i
+            })
+            .collect::<Vec<_>>();
 
         // reduce the number of dense axes according to the permutation
         let n_dense_axes = if self.is_dense() {
@@ -224,7 +222,7 @@ impl Layout {
             n_dense_axes,
         })
     }
-    
+
     // create a new layout by broadcasting a list of layouts
     // typically different types of layouts cannot be broadcast together, but for multiplies we can broadcast diagonal and dense layouts
     // and sparse and dense layouts
@@ -234,7 +232,11 @@ impl Layout {
         let shape = match broadcast_shapes(&shapes[..]) {
             Some(x) => x,
             None => {
-                let shapes_str = shapes.iter().map(|x| format!("{}", x)).collect::<Vec<_>>().join(", ");
+                let shapes_str = shapes
+                    .iter()
+                    .map(|x| format!("{}", x))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 return Err(anyhow!("cannot broadcast shapes: {}", shapes_str));
             }
         };
@@ -255,10 +257,14 @@ impl Layout {
         // check for violations of sparse/dense/diagonal rules
         let n_dense_axes = if is_multiply {
             if any_diagonal && !all_diagonal_and_dense {
-                return Err(anyhow!("cannot broadcast diagonal and non-dense layouts with multiply"));
+                return Err(anyhow!(
+                    "cannot broadcast diagonal and non-dense layouts with multiply"
+                ));
             }
             if any_sparse && !all_sparse_and_dense {
-                return Err(anyhow!("cannot broadcast sparse and non-dense layouts with multiply"));
+                return Err(anyhow!(
+                    "cannot broadcast sparse and non-dense layouts with multiply"
+                ));
             }
             let mut n_dense_axes = None;
             for layout in layouts.iter() {
@@ -266,7 +272,9 @@ impl Layout {
                     if n_dense_axes.is_none() {
                         n_dense_axes = Some(layout.n_dense_axes);
                     } else if layout.n_dense_axes != n_dense_axes.unwrap() {
-                        return Err(anyhow!("cannot broadcast layouts with different numbers of dense axes"));
+                        return Err(anyhow!(
+                            "cannot broadcast layouts with different numbers of dense axes"
+                        ));
                     }
                 }
             }
@@ -278,9 +286,12 @@ impl Layout {
             if any_sparse && !all_sparse {
                 return Err(anyhow!("cannot broadcast sparse and non-sparse layouts, except for multiply. Layouts are [{}]", layouts.iter().map(|x| format!("{}", x)).join(", ")));
             }
-            if layouts.iter().any(|x| x.n_dense_axes != layouts[0].n_dense_axes) {
+            if layouts
+                .iter()
+                .any(|x| x.n_dense_axes != layouts[0].n_dense_axes)
+            {
                 return Err(anyhow!("cannot broadcast diagonal layouts with different numbers of dense axes. Layouts are [{}]", layouts.iter().map(|x| format!("{}", x)).join(", ")));
-            } 
+            }
             layouts[0].n_dense_axes
         };
 
@@ -294,7 +305,7 @@ impl Layout {
             });
         }
 
-        // if there are any sparse layouts then the result is sparse, and the indicies of all sparse layouts must be identical and have the same number of dense axis. 
+        // if there are any sparse layouts then the result is sparse, and the indicies of all sparse layouts must be identical and have the same number of dense axis.
         // must be sparse and maybe dense
         let mut indices = None;
         for _i in 0..layouts.len() {
@@ -302,8 +313,16 @@ impl Layout {
             if layout.is_sparse() {
                 if indices.is_none() {
                     indices = Some(layout.indices);
-                } else if layout.indices.len() != indices.as_ref().unwrap().len() || layout.indices.iter().zip(indices.as_ref().unwrap().iter()).any(|(x, y)| x != y) {
-                    return Err(anyhow!("cannot broadcast layouts with different sparsity patterns"));
+                } else if layout.indices.len() != indices.as_ref().unwrap().len()
+                    || layout
+                        .indices
+                        .iter()
+                        .zip(indices.as_ref().unwrap().iter())
+                        .any(|(x, y)| x != y)
+                {
+                    return Err(anyhow!(
+                        "cannot broadcast layouts with different sparsity patterns"
+                    ));
                 }
             }
         }
@@ -326,7 +345,7 @@ impl Layout {
     pub fn is_scalar(&self) -> bool {
         self.rank() == 0
     }
-    
+
     pub fn new_empty(rank: usize) -> Self {
         Layout {
             indices: vec![],
@@ -354,7 +373,7 @@ impl Layout {
             n_dense_axes,
         }
     }
-    
+
     pub fn new_diagonal(shape: Shape) -> Self {
         Layout {
             indices: vec![],
@@ -366,7 +385,10 @@ impl Layout {
 
     // concatenate a list of layouts along the first axis
     pub fn concatenate(elmts: &[TensorBlock], rank: usize) -> Result<Self> {
-        let layouts = elmts.iter().map(|x| x.layout().as_ref()).collect::<Vec<_>>();
+        let layouts = elmts
+            .iter()
+            .map(|x| x.layout().as_ref())
+            .collect::<Vec<_>>();
         let starts = elmts.iter().map(|x| x.start()).collect::<Vec<_>>();
 
         // if there are no layouts then return an empty layout
@@ -374,12 +396,14 @@ impl Layout {
             return Ok(Layout::new_empty(0));
         }
 
-        // get max rank of the elmts 
+        // get max rank of the elmts
         let max_rank = layouts.iter().map(|x| x.rank()).max().unwrap();
         if max_rank > rank {
-            return Err(anyhow!("cannot concatenate layouts with rank greater than the rank of the target tensor"));
+            return Err(anyhow!(
+                "cannot concatenate layouts with rank greater than the rank of the target tensor"
+            ));
         }
-        
+
         // get max shape of the elmts, each dim is at least 1
         let max_shape = layouts.iter().fold(Shape::ones(rank), |mut acc, x| {
             for i in 0..x.rank() {
@@ -391,19 +415,22 @@ impl Layout {
         // check if the layouts are contiguous on the first axis
         // check if the layouts are contiguous on the diagonal
         let mut is_contiguous_on_first_axis = true;
-        let mut is_contiguous_on_diagonal= true;
+        let mut is_contiguous_on_diagonal = true;
         if rank > 0 {
             let mut curr_index = 0;
             for (start, layout) in std::iter::zip(starts.iter(), layouts.iter()) {
-
                 let mut expect_contiguous_on_first_axis = Index::zeros(rank);
                 expect_contiguous_on_first_axis[0] = curr_index;
                 is_contiguous_on_first_axis &= start == &expect_contiguous_on_first_axis;
 
-                let expect_contiguous_on_diagonal= Index::zeros(rank) + curr_index;
+                let expect_contiguous_on_diagonal = Index::zeros(rank) + curr_index;
                 is_contiguous_on_diagonal &= start == &expect_contiguous_on_diagonal;
 
-                curr_index += if layout.rank() == 0 { 1 } else { i64::try_from(layout.shape()[0]).unwrap() };
+                curr_index += if layout.rank() == 0 {
+                    1
+                } else {
+                    i64::try_from(layout.shape()[0]).unwrap()
+                };
             }
         }
 
@@ -419,7 +446,10 @@ impl Layout {
             }
             let mut new_shape = max_shape.clone();
             if rank > 0 {
-                new_shape[0] = layouts.iter().map(|x| if x.rank() > 0 { x.shape[0] } else { 1 }).sum();
+                new_shape[0] = layouts
+                    .iter()
+                    .map(|x| if x.rank() > 0 { x.shape[0] } else { 1 })
+                    .sum();
             }
             return Ok(Layout::dense(new_shape));
         }
@@ -434,13 +464,23 @@ impl Layout {
         }
 
         // check that the number of final dense axes is the same for all sparse or diagonal layouts
-        if layouts.iter().any(|x| !x.is_dense() && x.n_dense_axes != n_dense_axes) {
-            return Err(anyhow!("cannot concatenate layouts with different numbers of final dense axes"));
+        if layouts
+            .iter()
+            .any(|x| !x.is_dense() && x.n_dense_axes != n_dense_axes)
+        {
+            return Err(anyhow!(
+                "cannot concatenate layouts with different numbers of final dense axes"
+            ));
         }
 
         // check that the shapes of the final dense axes are the same for all layouts
-        if layouts.iter().any(|x| x.shape.slice(s![x.rank() - n_dense_axes..]) != layouts[0].shape.slice(s![x.rank() - n_dense_axes..])) {
-            return Err(anyhow!("cannot concatenate layouts with different shapes for the final dense axes"));
+        if layouts.iter().any(|x| {
+            x.shape.slice(s![x.rank() - n_dense_axes..])
+                != layouts[0].shape.slice(s![x.rank() - n_dense_axes..])
+        }) {
+            return Err(anyhow!(
+                "cannot concatenate layouts with different shapes for the final dense axes"
+            ));
         }
 
         // check that the rank is the same for all layouts
@@ -448,10 +488,14 @@ impl Layout {
             return Err(anyhow!("cannot concatenate layouts with different ranks"));
         }
 
-        // if all layouts are diagonal (or scalar), and on the diagonal then 
-        if layouts.iter().all(|x| x.is_diagonal() || x.shape().iter().all(|x| *x==1)) && is_contiguous_on_diagonal {
+        // if all layouts are diagonal (or scalar), and on the diagonal then
+        if layouts
+            .iter()
+            .all(|x| x.is_diagonal() || x.shape().iter().all(|x| *x == 1))
+            && is_contiguous_on_diagonal
+        {
             // add up the shapes for the non-final dense axes
-            let mut new_shape = max_shape.clone(); 
+            let mut new_shape = max_shape.clone();
             for i in 0..rank {
                 new_shape[i] = layouts.iter().map(|x| x.shape[i]).sum();
             }
@@ -467,16 +511,25 @@ impl Layout {
         let mut max_extent = Shape::zeros(rank);
         for (start, layout) in std::iter::zip(starts.iter(), layouts.iter()) {
             for i in 0..layout.rank() {
-                max_extent[i] = std::cmp::max(max_extent[i], usize::try_from(start[i]).unwrap() + layout.shape[i]);
+                max_extent[i] = std::cmp::max(
+                    max_extent[i],
+                    usize::try_from(start[i]).unwrap() + layout.shape[i],
+                );
             }
         }
 
         // any other combination we convert all to sparse and concatenate
-        let mut new_layout = Layout { indices: Vec::new(), shape: max_extent, kind: LayoutKind::Sparse, n_dense_axes }; 
+        let mut new_layout = Layout {
+            indices: Vec::new(),
+            shape: max_extent,
+            kind: LayoutKind::Sparse,
+            n_dense_axes,
+        };
         for (layout, start) in std::iter::zip(layouts, starts) {
             // convert to sparse
-            new_layout.indices.extend(layout.indices().map(|x| x + start));
-            
+            new_layout
+                .indices
+                .extend(layout.indices().map(|x| x + start));
         }
 
         // sort the indices in row major order and remove duplicates
@@ -492,7 +545,6 @@ impl Layout {
 
         Ok(new_layout)
     }
-
 
     pub fn rank(&self) -> usize {
         self.shape.len()
@@ -534,11 +586,20 @@ impl Layout {
     }
 
     pub fn nnz(&self) -> usize {
-        let n_dense: usize = self.shape.slice(s![self.rank() - self.n_dense_axes..]).iter().product();
+        let n_dense: usize = self
+            .shape
+            .slice(s![self.rank() - self.n_dense_axes..])
+            .iter()
+            .product();
         if self.is_dense() {
             self.shape.iter().product()
         } else if self.is_diagonal() {
-            n_dense * (if self.shape.is_empty() { 0 } else { self.shape[0] })
+            n_dense
+                * (if self.shape.is_empty() {
+                    0
+                } else {
+                    self.shape[0]
+                })
         } else {
             n_dense * self.indices.len()
         }
@@ -547,17 +608,13 @@ impl Layout {
     pub fn indices(&self) -> impl Iterator<Item = Index> + '_ {
         match self.kind {
             LayoutKind::Dense => {
-                let f = Box::new(move |i| {
-                    Self::unravel_index(i, &self.shape)
-                });
+                let f = Box::new(move |i| Self::unravel_index(i, &self.shape));
                 (0..self.shape.product()).map(f as Box<dyn Fn(usize) -> Index>)
-            },
+            }
             LayoutKind::Diagonal => {
-                let f = Box::new(move |i| {
-                    Index::zeros(self.rank()) + i64::try_from(i).unwrap()
-                });
+                let f = Box::new(move |i| Index::zeros(self.rank()) + i64::try_from(i).unwrap());
                 (0..self.shape[0]).map(f as Box<dyn Fn(usize) -> Index>)
-            },
+            }
             LayoutKind::Sparse => {
                 let f = Box::new(move |i| {
                     let index: &Index = self.indices.get(i).unwrap();
@@ -584,7 +641,12 @@ impl Layout {
         } else if self.rank() < rank {
             // must be increasing the rank
             let new_ranks = rank - self.rank();
-            let shape = Shape::from_iter(self.shape.iter().cloned().chain(std::iter::repeat(1).take(new_ranks)));
+            let shape = Shape::from_iter(
+                self.shape
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::repeat(1).take(new_ranks)),
+            );
             let n_dense_axes = self.n_dense_axes + new_ranks;
             Some(Self {
                 indices: self.indices.clone(),
@@ -612,16 +674,20 @@ impl Layout {
     pub fn find_nnz_index(&self, index: &Index) -> Option<usize> {
         match self.kind {
             LayoutKind::Sparse => self.indices.iter().position(|x| x == index),
-            LayoutKind::Dense =>  {
-                let valid_index = ndarray::Zip::from(index).and(self.shape()).all(|&a, &b| a < b.try_into().unwrap());
+            LayoutKind::Dense => {
+                let valid_index = ndarray::Zip::from(index)
+                    .and(self.shape())
+                    .all(|&a, &b| a < b.try_into().unwrap());
                 if valid_index {
                     Some(Self::ravel_index(index, self.shape()))
                 } else {
                     None
                 }
-            },
+            }
             LayoutKind::Diagonal => {
-                if index.iter().all(|&x| x == index[0]) && index[0] < self.shape[0].try_into().unwrap() {
+                if index.iter().all(|&x| x == index[0])
+                    && index[0] < self.shape[0].try_into().unwrap()
+                {
                     Some(index[0].try_into().unwrap())
                 } else {
                     None
@@ -642,7 +708,6 @@ impl Layout {
         self.n_dense_axes
     }
 }
-
 
 // RcLayout is a wrapper for Rc<Layout> that implements Hash and PartialEq based on ptr equality
 #[derive(Debug)]

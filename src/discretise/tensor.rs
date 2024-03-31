@@ -4,8 +4,7 @@ use ndarray::Array1;
 
 use crate::ast::Ast;
 
-use super::{RcLayout, Layout, Shape};
-
+use super::{Layout, RcLayout, Shape};
 
 pub type Index = Array1<i64>;
 
@@ -21,7 +20,14 @@ pub struct TensorBlock<'s> {
 }
 
 impl<'s> TensorBlock<'s> {
-    pub fn new(name: Option<String>, start: Index, indices: Vec<char>, layout: RcLayout, expr_layout: RcLayout, expr: Ast<'s>) -> Self {
+    pub fn new(
+        name: Option<String>,
+        start: Index,
+        indices: Vec<char>,
+        layout: RcLayout,
+        expr_layout: RcLayout,
+        expr: Ast<'s>,
+    ) -> Self {
         Self {
             name,
             start,
@@ -42,9 +48,13 @@ impl<'s> TensorBlock<'s> {
             indices: Vec::new(),
         }
     }
-    
+
     pub fn nnz(&self) -> usize {
-        if self.is_diagonal() { self.shape().iter().product() } else { *self.shape().get(0).unwrap_or(&0usize) }
+        if self.is_diagonal() {
+            self.shape().iter().product()
+        } else {
+            *self.shape().get(0).unwrap_or(&0usize)
+        }
     }
 
     pub fn shape(&self) -> &Shape {
@@ -58,7 +68,7 @@ impl<'s> TensorBlock<'s> {
     pub fn expr(&self) -> &Ast<'s> {
         &self.expr
     }
-    
+
     pub fn rank(&self) -> usize {
         self.shape().len()
     }
@@ -66,7 +76,7 @@ impl<'s> TensorBlock<'s> {
     pub fn is_diagonal(&self) -> bool {
         self.layout.is_diagonal()
     }
-    
+
     pub fn layout(&self) -> &RcLayout {
         &self.layout
     }
@@ -75,7 +85,7 @@ impl<'s> TensorBlock<'s> {
         &self.expr_layout
     }
 
-    pub fn name(& self) -> Option<&str> {
+    pub fn name(&self) -> Option<&str> {
         match &self.name {
             Some(name) => Some(name.as_str()),
             None => None,
@@ -139,8 +149,12 @@ impl<'s> Tensor<'s> {
         self.layout.nnz()
     }
 
-    
-    pub fn new(name: &'s str, elmts: Vec<TensorBlock<'s>>, layout: RcLayout, indices: Vec<char>) -> Self {
+    pub fn new(
+        name: &'s str,
+        elmts: Vec<TensorBlock<'s>>,
+        layout: RcLayout,
+        indices: Vec<char>,
+    ) -> Self {
         Self {
             name,
             elmts,
@@ -154,18 +168,9 @@ impl<'s> Tensor<'s> {
             Tensor::new("out", vec![], RcLayout::new(Layout::new_empty(0)), vec![])
         } else {
             let layout = Layout::concatenate(elmts.as_slice(), indices.len()).unwrap();
-            Tensor::new(
-                name,
-                elmts,
-                RcLayout::new(layout),
-                indices,
-            )
+            Tensor::new(name, elmts, RcLayout::new(layout), indices)
         }
     }
-
-
-
-
 
     pub fn rank(&self) -> usize {
         self.layout.rank()
@@ -182,7 +187,7 @@ impl<'s> Tensor<'s> {
     pub fn elmts(&self) -> &[TensorBlock<'s>] {
         self.elmts.as_ref()
     }
-    
+
     pub fn indices(&self) -> &[char] {
         self.indices.as_ref()
     }

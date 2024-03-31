@@ -1,4 +1,4 @@
-name: Rust
+name: CI
 
 on:
   push:
@@ -8,36 +8,61 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_HOME: ${{ github.workspace }}/.cargo
+  RUSTFLAGS: -D warnings -A unused-imports
+  RUSTDOCFLAGS: -D warnings
+  RUST_BACKTRACE: ful
 
 jobs:
-  build:
-    name: Rust project - ${{ matrix.os }} - ${{ matrix.toolchain }}
+  rustfmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable --no-self-update
+      - run: rustc -Vv
+      - run: cargo fmt --all -- --check
+        
+  unit-tests:
+    name: Tests - ${{ matrix.os }} - ${{ matrix.toolchain }}
     runs-on: ubuntu-latest
     strategy:
         matrix:
           toolchain:
             - stable
-            - beta
-            # - nightly
           os:
             - ubuntu-latest
             - macos-latest
             - windows-latest
+          include:
+            - toolchain: beta
+              os: ubuntu-latest
+            - toolchain: nightly
+              os: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         submodules: 'true'
-    - name: Install ninja build
-      uses: seanmiddleditch/gha-setup-ninja@master
+    - uses: actions/cache@v3.3.2
+      with:
+        path: |
+          ${{ env.CARGO_HOME }}
+          target
+        key: unit-test-${{ runner.os }}-${{ matrix.toolchain}}
+    - name: Set up Rust
+      run: rustup default ${{ matrix.toolchain }} && rustup update ${{ matrix.toolchain }} --no-self-update && rustup component add clippy rust-docs
+    - name: Rust version
+      run: rustc -Vv
     - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@v1
       with:
         version: "14.0"
-    - name: Set up Rust
-      run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
-    - name: Build
-      run: cargo build --verbose --features llvm14-0
     - name: Run tests
       run: cargo test --verbose --features llvm14-0
+    - name: Run Clippy
+      if: matrix.toolchain == 'stable'
+      run: cargo clippy --verbose --features llvm14-0
+    - name: Run Docs
+      if: matrix.toolchain == 'nightly'
+      run: cargo rustdoc --features llvm14-0

@@ -88,17 +88,13 @@ impl Compiler {
         let env_vars = ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "PATH"];
         for var in env_vars.iter() {
             if let Ok(val) = env::var(var) {
-                for path in val.split(":") {
+                for path in val.split(':') {
                     // check that LLVMEnzype*.so exists in this directory
                     if let Ok(entries) = std::fs::read_dir(path) {
-                        for entry in entries {
-                            if let Ok(entry) = entry {
-                                if let Some(filename) = entry.file_name().to_str() {
-                                    if filename.starts_with("LLVMEnzyme")
-                                        && filename.ends_with(".so")
-                                    {
-                                        return Ok(entry.path().to_str().unwrap().to_owned());
-                                    }
+                        for entry in entries.flatten() {
+                            if let Some(filename) = entry.file_name().to_str() {
+                                if filename.starts_with("LLVMEnzyme") && filename.ends_with(".so") {
+                                    return Ok(entry.path().to_str().unwrap().to_owned());
                                 }
                             }
                         }

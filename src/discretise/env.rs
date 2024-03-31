@@ -158,8 +158,8 @@ impl Env {
         &mut self,
         name: &str,
         ast: &Ast,
-        rhs_indices: &Vec<char>,
-        lhs_indices: &Vec<char>,
+        rhs_indices: &[char],
+        lhs_indices: &[char],
     ) -> Option<Layout> {
         let var = self.get(name);
         if var.is_none() {
@@ -248,7 +248,7 @@ impl Env {
             AstKind::IndexedName(name) => {
                 self.get_layout_name(name.name, ast, &name.indices, indices)
             }
-            AstKind::Name(name) => self.get_layout_name(name, ast, &vec![], indices),
+            AstKind::Name(name) => self.get_layout_name(name, ast, &[], indices),
             _ => panic!("unrecognised ast node {:#?}", ast.kind),
         }
     }

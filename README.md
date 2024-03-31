@@ -1,5 +1,7 @@
 # DiffSL
 
+<img src="https://github.com/martinjrobins/diffsl/actions/workflows/ci.yml/badge.svg" alt="CI build status badge">
+
 A compiler for a domain-specific language for ordinary differential equations (ODEs) of the following form:
 
 $$

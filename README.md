@@ -59,16 +59,15 @@ out_i {
 
 See the [DiffSL Language](#diffsl-language) section for a full description.
 
-* Input parameters
-* Define arbitrary intermediate variables:
+* Tensor types:
   * Scalars (double precision floating point numbers)
   * Vectors (1D arrays of scalars)
   * N-dimensional tensor of scalars
-  * Sparse tensors
+  * Sparse/dense/diagonal tensors
 * Tensor operations:
   * Elementwise operations
+  * Broadcasting
   * Tensor contractions/matmul/translation etc via index notation
-* Stop the simulation when a condition is met
 
 ## Dependencies
 

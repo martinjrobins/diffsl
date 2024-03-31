@@ -116,6 +116,15 @@ the result of a matrix-vector multiplication:
 v_i { A_ij * u_j }
 ```
 
+Broadcasting is also supported, for example the following will define a new
+matrix $D$ that is the sum of $A$ and a vector $v$:
+
+```
+D_ij { A_ij + v_j }
+```
+
+Here the vector $v$ is broadcast to the same shape as $A$ before the addition.
+
 ## Specifying inputs
 
 We can override the values of any scalar variables by specifying them as input

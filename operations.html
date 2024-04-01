@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>DiffSL Language - DiffSL</title>
+        <title>Tensor Operations - DiffSL</title>
 
 
         <!-- Custom HTML head -->
@@ -90,7 +90,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html" class="active"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html" class="active"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -175,35 +175,68 @@
 
                 <div id="content" class="content">
                     <main>
-                        <p>DiffSL Language</p>
-<p>The DSL is designed to be an easy and flexible language for specifying
-DAE systems and is based on the idea that a DAE system can be specified by a set
-of equations of the form:</p>
-<p>$$
-M(t) \frac{d\mathbf{u}}{dt} = F(\mathbf{u}, t)
-$$</p>
-<p>where \( \mathbf{u}$ \) is the vector of state variables and \( t \) is the time. The DSL
-allows the user to specify the state vector \( \mathbf{u} \) and the RHS function \( F \).
-Optionally, the user can also define the derivative of the state vector \( d\mathbf{u}/dt \)
-and the mass matrix \( M \) as a function of \( d\mathbf{u}/dt \) (note that this function should be linear!).</p>
-<p>The user is also free to define an an arbitrary number of intermediate
-scalars and vectors of the users that are required to calculate \( F \) and \( M \).</p>
-<h2 id="a-simple-example"><a class="header" href="#a-simple-example">A Simple Example</a></h2>
-<p>To illustrate the language, consider the following simple example of a logistic growth model:</p>
-<p>$$
-\frac{dN}{dt} = r N (1 - N/K)
-$$</p>
-<p>where \( N \) is the population, \( r \) is the growth rate, and \( K \) is the carrying capacity.</p>
-<p>To specify this model in DiffSL, we can write:</p>
-<p><code>in = [r, k] u_i {   N = 0.0 } F_i {   r * N * (1 - N/k) } out_i {   N }</code></p>
-<p>Here, we define the input parameters for our model as a vector <code>in</code> with the growth rate <code>r</code> and the carrying capacity <code>k</code>. We then define the state vector <code>u_i</code> with the population <code>N</code> initialized to <code>0.0</code>. Next, we define the RHS function <code>F_i</code> as the logistic growth equation. Finally, we define the output vector <code>out_i</code> with the population <code>N</code>.</p>
+                        <h1 id="tensor-operations"><a class="header" href="#tensor-operations">Tensor Operations</a></h1>
+<p>We can use standard algebraic operations on variables. To refer to previously
+defined variables, we use the variable name, making sure to use the correct
+subscript if it is a vector or tensor.</p>
+<p>For example, to define a scalar variable $a$ as the sum of two other scalar
+variables $b$ and $c$, we write:</p>
+<pre><code>b { 1.0 }
+c { 2.0 }
+a { b + c }
+</code></pre>
+<p>The scalar <code>a</code> will therefore be equal to 3.0.</p>
+<p>To define a vector variable \( \mathbf{v} \) as the sum of two other vector
+variables \( \mathbf{u} \) and \( \mathbf{w} \), we write:</p>
+<pre><code>u_i { 1.0, 2.0 }
+w_i { 3.0, 4.0 }
+v_i { u_i + w_i }
+</code></pre>
+<p>Notice that the index of the vectors within the expression must match the index of the output vector <code>v_i</code>.
+So if we defined <code>v_a</code> instead of <code>v_i</code>, the expression would be:</p>
+<pre><code>v_a { u_a + w_a }
+</code></pre>
+<h2 id="translations"><a class="header" href="#translations">Translations</a></h2>
+<p>For higher-dimensional tensors, the order of the indices in the expression relative to the output tensor is important.</p>
+<p>For example, we can use the indices to define a translation of a matrix. Here we define a new matrix \( C \) that is the sum of \( A \) and \( B^T \)$,
+where \( B^T \) is the transpose of \( B \)</p>
+<pre><code>C_ij { A_ij + B_ji }
+</code></pre>
+<p>Notice that the indices of \( B^T \) are reversed in the expression compared to the output tensor \( C \), indicating that we are indexing the rows of \( B \) with <code>j</code> and the columns with <code>i</code> when we calculate the <code>(i, j)</code> element of \( C \).</p>
+<h2 id="broadcasting"><a class="header" href="#broadcasting">Broadcasting</a></h2>
+<p>Broadcasting is supported in the language, so you can perform element-wise operations on tensors of different shapes. For example, the following will define a new vector \( \mathbf{d} \) that is the sum of \( \mathbf{a} \) and a scalar \( k \):</p>
+<pre><code>a_i { 1.0, 2.0 }
+k { 3.0 }
+d_i { a_i + k }
+</code></pre>
+<p>Here the scalar \( k \) is broadcast to the same shape as \( \mathbf{a} \) before the addition. The output vector \( \mathbf{d} \) will be \( [4.0, 5.0] \).</p>
+<p>DiffSL uses the same broadcasting rules as NumPy, and you can read more about this in the <a href="https://numpy.org/doc/stable/user/basics.broadcasting.html">NumPy documentation</a>.</p>
+<h2 id="contractions"><a class="header" href="#contractions">Contractions</a></h2>
+<p>The tensor indexing notation can also matrix-vector multiplications and any other
+contraction operations. Any indices that do not appear in the output tensor will be
+summed over.  For example, the following will define a new vector $v$ that is
+the result of a matrix-vector multiplication:</p>
+<pre><code>v_i { A_ij * u_j }
+</code></pre>
+<p>Here the <code>j</code> index is summed over, so the <code>i</code> index of the output vector <code>v</code> is the sum of the element-wise product of the <code>i</code>th row of <code>A</code> and the vector <code>u</code>.</p>
+<p>Another way to think about this matrix-vector multiplication is by considering it as a broadcasted element-wise multiplication followed by a sum or contraction over the <code>j</code> index.
+The <code>A_ij * u_j</code> expression broadcasts the vector <code>u</code> to the same shape as <code>A</code>, forming a new 2D tensor where each row is the element-wise product of the <code>i</code>th row of <code>A</code> and the vector <code>u</code>.
+When we specify the output vector <code>v_i</code>, we implicitly then sum over the missing <code>j</code> index to form the final output vector.</p>
+<p>For example, lets manually break this matrix-vector multiplication into two steps using an intermediary tensor <code>M_ij</code>:</p>
+<pre><code>M_ij { A_ij * u_j }
+v_i { M_ij }
+</code></pre>
+<p>The first step calculates the element-wise product of <code>A</code> and <code>u</code> using broadcasting into the 2D tensor <code>M</code>, and the second step uses a contraction to sum over the <code>j</code> index to form the output vector <code>v</code>.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="tensors.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
 
-                            <a rel="next prefetch" href="tensors.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="odes.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -213,8 +246,11 @@ $$</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="tensors.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
 
-                    <a rel="next prefetch" href="tensors.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="odes.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

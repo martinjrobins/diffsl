@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>DiffSL Language - DiffSL</title>
+        <title>Tensor Variables - DiffSL</title>
 
 
         <!-- Custom HTML head -->
@@ -90,7 +90,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html" class="active"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html" class="active"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -175,35 +175,109 @@
 
                 <div id="content" class="content">
                     <main>
-                        <p>DiffSL Language</p>
-<p>The DSL is designed to be an easy and flexible language for specifying
-DAE systems and is based on the idea that a DAE system can be specified by a set
-of equations of the form:</p>
-<p>$$
-M(t) \frac{d\mathbf{u}}{dt} = F(\mathbf{u}, t)
-$$</p>
-<p>where \( \mathbf{u}$ \) is the vector of state variables and \( t \) is the time. The DSL
-allows the user to specify the state vector \( \mathbf{u} \) and the RHS function \( F \).
-Optionally, the user can also define the derivative of the state vector \( d\mathbf{u}/dt \)
-and the mass matrix \( M \) as a function of \( d\mathbf{u}/dt \) (note that this function should be linear!).</p>
-<p>The user is also free to define an an arbitrary number of intermediate
-scalars and vectors of the users that are required to calculate \( F \) and \( M \).</p>
-<h2 id="a-simple-example"><a class="header" href="#a-simple-example">A Simple Example</a></h2>
-<p>To illustrate the language, consider the following simple example of a logistic growth model:</p>
-<p>$$
-\frac{dN}{dt} = r N (1 - N/K)
-$$</p>
-<p>where \( N \) is the population, \( r \) is the growth rate, and \( K \) is the carrying capacity.</p>
-<p>To specify this model in DiffSL, we can write:</p>
-<p><code>in = [r, k] u_i {   N = 0.0 } F_i {   r * N * (1 - N/k) } out_i {   N }</code></p>
-<p>Here, we define the input parameters for our model as a vector <code>in</code> with the growth rate <code>r</code> and the carrying capacity <code>k</code>. We then define the state vector <code>u_i</code> with the population <code>N</code> initialized to <code>0.0</code>. Next, we define the RHS function <code>F_i</code> as the logistic growth equation. Finally, we define the output vector <code>out_i</code> with the population <code>N</code>.</p>
+                        <h1 id="defining-tensor-variables"><a class="header" href="#defining-tensor-variables">Defining tensor variables</a></h1>
+<p>The DiffSL language only has a single type of variable, which is a n-dimensional tensor filled with double precision floating point numbers.
+These tensors can be dense, sparse or diagonal, and the compiler will try to choose the representation that is most efficient, preferring diagonal and then sparse matrices over dense.</p>
+<p>The simplest tensor is a 0th dimensional scalar. For example, to define a scalar variable \( k )\$ with value 1.0, we write:</p>
+<pre><code>k { 1.0 }
+</code></pre>
+<p>Here <code>k</code> is the <em>label</em> for the tensor, which we can later use to refer to it in expressions. In the curly brackets we have one or more <em>elements</em> of the tensor,
+and here <code>k</code> only has a single element, which is a constant value 1.</p>
+<p>Lets now define a 1-dimensional vector variable $\mathbf{v}$ with 3 elements:</p>
+<pre><code>v_i {
+ 1.0,
+ 2.0,
+ 3.0,
+}
+</code></pre>
+<p>The list of elements within a tensor are deliniated with a comma <code>,</code> and the trailing comma at the end of the list is optional.
+Whitespace is ignored so you can also write this tensor all on the one line:</p>
+<pre><code>v_i { 1.0, 2.0, 3.0 }
+</code></pre>
+<h2 id="subscripts"><a class="header" href="#subscripts">Subscripts</a></h2>
+<p>In the previous vector <code>v_i</code>, the subscript <code>_i</code> indicates that this is a 1D vector. Each subscript is a single character,
+and the number of subscripts indicates the number of dimensions of the tensor. You can use any character for the subscript,</p>
+<pre><code>v_x { 1.0, 2.0, 3.0 }
+w_a { 2.0, 3.0 }
+v_i { 1.0, 2.0, 3.0, 4.0 }
+</code></pre>
+<h2 id="ranges"><a class="header" href="#ranges">Ranges</a></h2>
+<p>Each element of a tensor can optionally give a <em>range</em> of index numbers, which is used by the compiler to determine the extent of each element.
+This is useful when defining higher dimensional tensors, such as matrices. For example, to define a 2x3 matrix $A$ with all elements set to <code>1.0</code>, we write:</p>
+<pre><code>A_ij {
+ (0:2, 0:3) = 1.0,
+}
+</code></pre>
+<p>Note the two subscript to indicate that this is a 2D tensor. The size of the
+single element is given in the brackets, we have two ranges <code>0:2</code> and <code>0:3</code> that correspond to the two dimensions of the matrix.</p>
+<p>Here is another example of a 4x2 matrix $B$ with rows 0 to 2 set to <code>1.0</code> and rows 3 to 4 set to <code>2.0</code>:</p>
+<pre><code>A_ij {
+ (0:2, 0:3) = 1.0,
+ (3:4, 0:3) = 2.0,
+}
+</code></pre>
+<p>For specifying a single index, you can simply write the index number without the colon, for example to define a 3x3 identity matrix $I$:</p>
+<pre><code>I_ij {
+ (0, 0) = 1.0,
+ (1, 1) = 1.0,
+ (2, 2) = 1.0,
+}
+</code></pre>
+<p>Note that the compiler will automatically infer the size of the tensor from the ranges you provide, so you don't need to specify the size of the tensor explicitly.
+Since the maximum index in the range is 2, the compiler will infer that the size of the tensor is 3x3.</p>
+<p>Notice also that we have not defined all the elements of the matrix, only the non-zero elements. The compiler will assume that all other elements are zero.</p>
+<p>Finally, you can also use the <code>..</code> operator to specify a <em>diagonal</em> range of indices. For example, to define a 3x3 matrix $D$ with the diagonal elements set to <code>1.0</code>:</p>
+<pre><code>D_ij {
+ (0..2, 0..2) = 1.0,
+}
+</code></pre>
+<h2 id="sparse-and-diagonal-matrices"><a class="header" href="#sparse-and-diagonal-matrices">Sparse and diagonal matrices</a></h2>
+<p>We can automatically define a sparse matrix $B$ by simply specifying the non-zero elements:</p>
+<pre><code>B_ij {
+ (0, 0) = 1.0,
+ (0, 1) = 2.0,
+ (1, 1) = 3.0,
+}
+</code></pre>
+<p>The compiler will infer that this is a 2x2 matrix, and will automatically represent it as a sparse matrix.
+We can force the compiler to use a dense representation by specifying the zeros explicitly:</p>
+<pre><code>B_ij {
+ (0, 0) = 1.0,
+ (0, 1) = 2.0,
+ (1, 0) = 0.0,
+ (1, 1) = 3.0,
+}
+</code></pre>
+<p>As well as specifying a sparse matrix, we can also define a diagonal matrix by specifying the diagonal elements:</p>
+<pre><code>D_ij {
+ (0, 0) = 1.0,
+ (1, 1) = 2.0,
+ (2, 2) = 3.0,
+}
+</code></pre>
+<p>The compiler will infer that this is a 3x3 matrix, and will automatically represent it as a diagonal matrix.</p>
+<h2 id="labels"><a class="header" href="#labels">Labels</a></h2>
+<p>Each element of a tensor can optionally be given a name or <em>label</em> that can be used to refer to the element in expressions.</p>
+<p>For example, to define a vector with two named elements:</p>
+<pre><code>v_i {
+ x = 1.0,
+ y = 2.0,
+}
+</code></pre>
+<p>Here we have defined a single tensor <code>v_i</code> with two named elements <code>x</code> and <code>y</code>. We can then refer to the individual elements in expressions, where they will act as if they were separate variables:</p>
+<pre><code>v_i { x = 1.0, y = 2.0 }
+w_i { 2 * y, 3 * x }
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="introduction.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
 
-                            <a rel="next prefetch" href="tensors.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="operations.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -213,8 +287,11 @@ $$</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="introduction.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
 
-                    <a rel="next prefetch" href="tensors.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="operations.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

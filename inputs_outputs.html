@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>DiffSL Language - DiffSL</title>
+        <title>Inputs and Outputs - DiffSL</title>
 
 
         <!-- Custom HTML head -->
@@ -90,7 +90,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html" class="active"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html" class="active"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -175,37 +175,63 @@
 
                 <div id="content" class="content">
                     <main>
-                        <p>DiffSL Language</p>
-<p>The DSL is designed to be an easy and flexible language for specifying
-DAE systems and is based on the idea that a DAE system can be specified by a set
-of equations of the form:</p>
-<p>$$
-M(t) \frac{d\mathbf{u}}{dt} = F(\mathbf{u}, t)
-$$</p>
-<p>where \( \mathbf{u}$ \) is the vector of state variables and \( t \) is the time. The DSL
-allows the user to specify the state vector \( \mathbf{u} \) and the RHS function \( F \).
-Optionally, the user can also define the derivative of the state vector \( d\mathbf{u}/dt \)
-and the mass matrix \( M \) as a function of \( d\mathbf{u}/dt \) (note that this function should be linear!).</p>
-<p>The user is also free to define an an arbitrary number of intermediate
-scalars and vectors of the users that are required to calculate \( F \) and \( M \).</p>
-<h2 id="a-simple-example"><a class="header" href="#a-simple-example">A Simple Example</a></h2>
-<p>To illustrate the language, consider the following simple example of a logistic growth model:</p>
-<p>$$
-\frac{dN}{dt} = r N (1 - N/K)
-$$</p>
-<p>where \( N \) is the population, \( r \) is the growth rate, and \( K \) is the carrying capacity.</p>
-<p>To specify this model in DiffSL, we can write:</p>
-<p><code>in = [r, k] u_i {   N = 0.0 } F_i {   r * N * (1 - N/k) } out_i {   N }</code></p>
-<p>Here, we define the input parameters for our model as a vector <code>in</code> with the growth rate <code>r</code> and the carrying capacity <code>k</code>. We then define the state vector <code>u_i</code> with the population <code>N</code> initialized to <code>0.0</code>. Next, we define the RHS function <code>F_i</code> as the logistic growth equation. Finally, we define the output vector <code>out_i</code> with the population <code>N</code>.</p>
+                        <h1 id="inputs--outputs"><a class="header" href="#inputs--outputs">Inputs &amp; Outputs</a></h1>
+<p>Often it is useful to parameterize the system of equations using a set of input parameters. It is also useful to be able to extract certain variables from the system for further analysis.
+In this section we will show how to specify inputs and outputs in the DiffSL language.</p>
+<h2 id="specifying-inputs"><a class="header" href="#specifying-inputs">Specifying inputs</a></h2>
+<p>We can override the values of any scalar variables by specifying them as input
+variables.  To do this, we add a line at the top of the code to specify that
+these are input variables:</p>
+<pre><code>in = [k]
+k { 1.0 }
+u { 0.1 }
+F { k * u }
+</code></pre>
+<p>Here we have specified a single input parameter <code>k</code> that is used in the RHS function <code>F</code>.
+The value of <code>k</code> is set to <code>1.0</code> in the code, but this value is only a default, and can be overridden by passing in a value at solve time.</p>
+<p>We can use input parameters anywhere in the code, including in the definition of other input parameters.</p>
+<pre><code>in = [k]
+k { 1.0 }
+g { 2 * k }
+F { g * u }
+</code></pre>
+<p>or in the intial conditions of the state variables:</p>
+<pre><code>in = [k]
+k { 1.0 }
+u_i {
+  x = k,
+}
+F { u }
+</code></pre>
+<h2 id="specifying-outputs"><a class="header" href="#specifying-outputs">Specifying outputs</a></h2>
+<p>We can also specify the outputs of the system. These might be the state
+variables themselves, or they might be other variables that are calculated from
+the state variables.</p>
+<p>Here is an example where we simply output the elements of the state vector:</p>
+<pre><code>u_i {
+  x = 1.0,
+  y = 2.0,
+  z = 3.0,
+}
+out_i { x, y, z }
+</code></pre>
+<p>or we can derive additional outputs from the state variables:</p>
+<pre><code>u_i {
+  x = 1.0,
+  y = 2.0,
+  z = 3.0,
+}
+out { x + y + z }
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-
-                            <a rel="next prefetch" href="tensors.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <i class="fa fa-angle-right"></i>
+                            <a rel="prev" href="odes.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
                             </a>
+
 
                         <div style="clear: both"></div>
                     </nav>
@@ -213,10 +239,10 @@ $$</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-
-                    <a rel="next prefetch" href="tensors.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <i class="fa fa-angle-right"></i>
+                    <a rel="prev" href="odes.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
                     </a>
+
             </nav>
 
         </div>

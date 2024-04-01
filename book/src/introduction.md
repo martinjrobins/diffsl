@@ -1,7 +1,7 @@
 # DiffSL Language
 
 The DSL is designed to be an easy and flexible language for specifying
-DAE systems and is based on the idea that a DAE system can be specified by a set
+ODE systems and is based on the idea that a ODE system can be specified by a set
 of equations of the form:
 
 $$

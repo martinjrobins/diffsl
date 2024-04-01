@@ -176,7 +176,7 @@
 
                 <div id="content" class="content">
                     <main>
-                        <p>DiffSL Language</p>
+                        <h1 id="diffsl-language"><a class="header" href="#diffsl-language">DiffSL Language</a></h1>
 <p>The DSL is designed to be an easy and flexible language for specifying
 DAE systems and is based on the idea that a DAE system can be specified by a set
 of equations of the form:</p>
@@ -185,7 +185,7 @@ M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} = F(\mathbf{u}, t)
 $$</p>
 <p>where \( \mathbf{u} \) is the vector of state variables and \( t \) is the time. The DSL
 allows the user to specify the state vector \( \mathbf{u} \) and the RHS function \( F \).
-Optionally, the user can also define the derivative of the state vector \( d\mathbf{u}/dt \)
+Optionally, the user can also define the derivative of the state vector \( \mathrm{d}\mathbf{u}/\mathrm{d}t \)
 and the mass matrix \( M \) as a function of \( \mathrm{d}\mathbf{u}/\mathrm{d}t \) (note that this function should be linear!).</p>
 <p>The user is also free to define an an arbitrary number of intermediate
 scalars and vectors of the users that are required to calculate \( F \) and \( M \).</p>

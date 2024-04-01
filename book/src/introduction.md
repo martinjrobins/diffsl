@@ -1,4 +1,4 @@
-DiffSL Language
+# DiffSL Language
 
 The DSL is designed to be an easy and flexible language for specifying
 DAE systems and is based on the idea that a DAE system can be specified by a set
@@ -10,7 +10,7 @@ $$
 
 where \\( \mathbf{u} \\) is the vector of state variables and \\( t \\) is the time. The DSL
 allows the user to specify the state vector \\( \mathbf{u} \\) and the RHS function \\( F \\).
-Optionally, the user can also define the derivative of the state vector \\( d\mathbf{u}/dt \\)
+Optionally, the user can also define the derivative of the state vector \\( \mathrm{d}\mathbf{u}/\mathrm{d}t \\)
 and the mass matrix \\( M \\) as a function of \\( \mathrm{d}\mathbf{u}/\mathrm{d}t \\) (note that this function should be linear!).
 
 The user is also free to define an an arbitrary number of intermediate

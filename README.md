@@ -73,7 +73,7 @@ See the [DiffSL language documentation](https://martinjrobins.github.io/diffsl/)
 
 Generally the easiest way to make use of DiffSL is via an ode solver that supports the language, for example the [diffsol](https://github.com/martinjrobins/diffsol) library. Please see the diffsol documentation and consult the [DiffSL language documentation](https://martinjrobins.github.io/diffsl/) for more information.
 
-If you are writing your own ode solver and want to make use of the DiffSol compiler, please either get in touch by opening an issue, contacting the [author](mailto:martinjrobins@gmail.com) or by looking at the [diffsol source code](https://github.com/martinjrobins/diffsol/blob/main/src/ode_solver/diffsl.rs).
+If you are writing your own ode solver and want to make use of the DiffSL compiler, please either get in touch by opening an issue, contacting the [author](mailto:martinjrobins@gmail.com) or by looking at the [diffsol source code](https://github.com/martinjrobins/diffsol/blob/main/src/ode_solver/diffsl.rs).
 
 
 ## Dependencies
@@ -86,7 +86,7 @@ example, on Ubuntu you can install these with the following command:
 sudo apt-get install llvm
 ```
 
-## Installing DiffSL
+## Installation
 
 You can install DiffSL using cargo. You will need to indicate the llvm version you have installed using a feature flag. For example, for llvm 14:
 

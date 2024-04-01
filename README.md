@@ -57,7 +57,7 @@ out_i {
 
 ## DiffSL Language Features
 
-See the [DiffSL Language](#diffsl-language) section for a full description.
+See the [DiffSL language documentation](https://martinjrobins.github.io/diffsl/) for a full description.
 
 * Tensor types:
   * Scalars (double precision floating point numbers)
@@ -68,6 +68,13 @@ See the [DiffSL Language](#diffsl-language) section for a full description.
   * Elementwise operations
   * Broadcasting
   * Tensor contractions/matmul/translation etc via index notation
+  
+## Usage
+
+Generally the easiest way to make use of DiffSL is via an ode solver that supports the language, for example the [diffsol](https://github.com/martinjrobins/diffsol) library. Please see the diffsol documentation and consult the [DiffSL language documentation](https://martinjrobins.github.io/diffsl/) for more information.
+
+If you are writing your own ode solver and want to make use of the DiffSol compiler, please either get in touch by opening an issue, contacting the [author](mailto:martinjrobins@gmail.com) or by looking at the [diffsol source code](https://github.com/martinjrobins/diffsol/blob/main/src/ode_solver/diffsl.rs).
+
 
 ## Dependencies
 

@@ -3,7 +3,7 @@
 The DiffSL language only has a single type of variable, which is a n-dimensional tensor filled with double precision floating point numbers.
 These tensors can be dense, sparse or diagonal, and the compiler will try to choose the representation that is most efficient, preferring diagonal and then sparse matrices over dense.
 
-The simplest tensor is a 0th dimensional scalar. For example, to define a scalar variable \\( k )\\$ with value 1.0, we write:
+The simplest tensor is a 0th dimensional scalar. For example, to define a scalar variable \\( k \\) with value 1.0, we write:
 
 ```
 k { 1.0 }
@@ -12,7 +12,7 @@ k { 1.0 }
 Here `k` is the *label* for the tensor, which we can later use to refer to it in expressions. In the curly brackets we have one or more *elements* of the tensor,
 and here `k` only has a single element, which is a constant value 1.
 
-Lets now define a 1-dimensional vector variable $\mathbf{v}$ with 3 elements:
+Lets now define a 1-dimensional vector variable \\( \mathbf{v} \\) with 3 elements:
 
 ```
 v_i {
@@ -43,7 +43,7 @@ v_i { 1.0, 2.0, 3.0, 4.0 }
 ## Ranges
 
 Each element of a tensor can optionally give a *range* of index numbers, which is used by the compiler to determine the extent of each element.
-This is useful when defining higher dimensional tensors, such as matrices. For example, to define a 2x3 matrix $A$ with all elements set to `1.0`, we write:
+This is useful when defining higher dimensional tensors, such as matrices. For example, to define a 2x3 matrix \\( A \\) with all elements set to `1.0`, we write:
 
 ```
 A_ij {
@@ -55,7 +55,7 @@ A_ij {
 Note the two subscript to indicate that this is a 2D tensor. The size of the
 single element is given in the brackets, we have two ranges `0:2` and `0:3` that correspond to the two dimensions of the matrix.
 
-Here is another example of a 4x2 matrix $B$ with rows 0 to 2 set to `1.0` and rows 3 to 4 set to `2.0`:
+Here is another example of a 4x2 matrix \\( B \\) with rows 0 to 2 set to `1.0` and rows 3 to 4 set to `2.0`:
 
 ```
 A_ij {
@@ -79,7 +79,7 @@ Since the maximum index in the range is 2, the compiler will infer that the size
 
 Notice also that we have not defined all the elements of the matrix, only the non-zero elements. The compiler will assume that all other elements are zero.
 
-Finally, you can also use the `..` operator to specify a *diagonal* range of indices. For example, to define a 3x3 matrix $D$ with the diagonal elements set to `1.0`:
+Finally, you can also use the `..` operator to specify a *diagonal* range of indices. For example, to define a 3x3 matrix \\( D \\) with the diagonal elements set to `1.0`:
 
 ```
 D_ij {
@@ -89,7 +89,7 @@ D_ij {
 
 ## Sparse and diagonal matrices
 
-We can automatically define a sparse matrix $B$ by simply specifying the non-zero elements:
+We can automatically define a sparse matrix \\( B \\) by simply specifying the non-zero elements:
 
 ```
 B_ij {

@@ -5,3 +5,4 @@
 - [Tensor Operations](./operations.md)
 - [Defining ODEs](./odes.md)
 - [Inputs and Outputs](./inputs_outputs.md)
+- [Predefined functions](./functions.md)

@@ -4,8 +4,8 @@ We can use standard algebraic operations on variables. To refer to previously
 defined variables, we use the variable name, making sure to use the correct
 subscript if it is a vector or tensor.
 
-For example, to define a scalar variable $a$ as the sum of two other scalar
-variables $b$ and $c$, we write:
+For example, to define a scalar variable \\( a \\) as the sum of two other scalar
+variables \\( b \\) and \\( c \\), we write:
 
 ```
 b { 1.0 }
@@ -62,7 +62,7 @@ DiffSL uses the same broadcasting rules as NumPy, and you can read more about th
 
 The tensor indexing notation can also matrix-vector multiplications and any other
 contraction operations. Any indices that do not appear in the output tensor will be
-summed over.  For example, the following will define a new vector $v$ that is
+summed over.  For example, the following will define a new vector \\( \mathbf{v} \\) that is
 the result of a matrix-vector multiplication:
 
 ```

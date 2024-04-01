@@ -90,7 +90,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html" class="active"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html" class="active"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li><li class="chapter-item expanded "><a href="functions.html"><strong aria-hidden="true">6.</strong> Predefined functions</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -180,22 +180,32 @@
 DAE systems and is based on the idea that a DAE system can be specified by a set
 of equations of the form:</p>
 <p>$$
-M(t) \frac{d\mathbf{u}}{dt} = F(\mathbf{u}, t)
+M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} = F(\mathbf{u}, t)
 $$</p>
-<p>where \( \mathbf{u}$ \) is the vector of state variables and \( t \) is the time. The DSL
+<p>where \( \mathbf{u} \) is the vector of state variables and \( t \) is the time. The DSL
 allows the user to specify the state vector \( \mathbf{u} \) and the RHS function \( F \).
 Optionally, the user can also define the derivative of the state vector \( d\mathbf{u}/dt \)
-and the mass matrix \( M \) as a function of \( d\mathbf{u}/dt \) (note that this function should be linear!).</p>
+and the mass matrix \( M \) as a function of \( \mathrm{d}\mathbf{u}/\mathrm{d}t \) (note that this function should be linear!).</p>
 <p>The user is also free to define an an arbitrary number of intermediate
 scalars and vectors of the users that are required to calculate \( F \) and \( M \).</p>
 <h2 id="a-simple-example"><a class="header" href="#a-simple-example">A Simple Example</a></h2>
 <p>To illustrate the language, consider the following simple example of a logistic growth model:</p>
 <p>$$
-\frac{dN}{dt} = r N (1 - N/K)
+\frac{\mathrm{d}N}{\mathrm{d}t} = r N (1 - N/K)
 $$</p>
 <p>where \( N \) is the population, \( r \) is the growth rate, and \( K \) is the carrying capacity.</p>
 <p>To specify this model in DiffSL, we can write:</p>
-<p><code>in = [r, k] u_i {   N = 0.0 } F_i {   r * N * (1 - N/k) } out_i {   N }</code></p>
+<pre><code>in = [r, k]
+u_i {
+  N = 0.0
+}
+F_i {
+  r * N * (1 - N/k)
+}
+out_i {
+  N
+}
+</code></pre>
 <p>Here, we define the input parameters for our model as a vector <code>in</code> with the growth rate <code>r</code> and the carrying capacity <code>k</code>. We then define the state vector <code>u_i</code> with the population <code>N</code> initialized to <code>0.0</code>. Next, we define the RHS function <code>F_i</code> as the logistic growth equation. Finally, we define the output vector <code>out_i</code> with the population <code>N</code>.</p>
 
                     </main>

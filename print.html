@@ -91,7 +91,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li><li class="chapter-item expanded "><a href="functions.html"><strong aria-hidden="true">6.</strong> Predefined functions</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -181,32 +181,42 @@
 DAE systems and is based on the idea that a DAE system can be specified by a set
 of equations of the form:</p>
 <p>$$
-M(t) \frac{d\mathbf{u}}{dt} = F(\mathbf{u}, t)
+M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} = F(\mathbf{u}, t)
 $$</p>
-<p>where \( \mathbf{u}$ \) is the vector of state variables and \( t \) is the time. The DSL
+<p>where \( \mathbf{u} \) is the vector of state variables and \( t \) is the time. The DSL
 allows the user to specify the state vector \( \mathbf{u} \) and the RHS function \( F \).
 Optionally, the user can also define the derivative of the state vector \( d\mathbf{u}/dt \)
-and the mass matrix \( M \) as a function of \( d\mathbf{u}/dt \) (note that this function should be linear!).</p>
+and the mass matrix \( M \) as a function of \( \mathrm{d}\mathbf{u}/\mathrm{d}t \) (note that this function should be linear!).</p>
 <p>The user is also free to define an an arbitrary number of intermediate
 scalars and vectors of the users that are required to calculate \( F \) and \( M \).</p>
 <h2 id="a-simple-example"><a class="header" href="#a-simple-example">A Simple Example</a></h2>
 <p>To illustrate the language, consider the following simple example of a logistic growth model:</p>
 <p>$$
-\frac{dN}{dt} = r N (1 - N/K)
+\frac{\mathrm{d}N}{\mathrm{d}t} = r N (1 - N/K)
 $$</p>
 <p>where \( N \) is the population, \( r \) is the growth rate, and \( K \) is the carrying capacity.</p>
 <p>To specify this model in DiffSL, we can write:</p>
-<p><code>in = [r, k] u_i {   N = 0.0 } F_i {   r * N * (1 - N/k) } out_i {   N }</code></p>
+<pre><code>in = [r, k]
+u_i {
+  N = 0.0
+}
+F_i {
+  r * N * (1 - N/k)
+}
+out_i {
+  N
+}
+</code></pre>
 <p>Here, we define the input parameters for our model as a vector <code>in</code> with the growth rate <code>r</code> and the carrying capacity <code>k</code>. We then define the state vector <code>u_i</code> with the population <code>N</code> initialized to <code>0.0</code>. Next, we define the RHS function <code>F_i</code> as the logistic growth equation. Finally, we define the output vector <code>out_i</code> with the population <code>N</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="defining-tensor-variables"><a class="header" href="#defining-tensor-variables">Defining tensor variables</a></h1>
 <p>The DiffSL language only has a single type of variable, which is a n-dimensional tensor filled with double precision floating point numbers.
 These tensors can be dense, sparse or diagonal, and the compiler will try to choose the representation that is most efficient, preferring diagonal and then sparse matrices over dense.</p>
-<p>The simplest tensor is a 0th dimensional scalar. For example, to define a scalar variable \( k )\$ with value 1.0, we write:</p>
+<p>The simplest tensor is a 0th dimensional scalar. For example, to define a scalar variable \( k \) with value 1.0, we write:</p>
 <pre><code>k { 1.0 }
 </code></pre>
 <p>Here <code>k</code> is the <em>label</em> for the tensor, which we can later use to refer to it in expressions. In the curly brackets we have one or more <em>elements</em> of the tensor,
 and here <code>k</code> only has a single element, which is a constant value 1.</p>
-<p>Lets now define a 1-dimensional vector variable $\mathbf{v}$ with 3 elements:</p>
+<p>Lets now define a 1-dimensional vector variable \( \mathbf{v} \) with 3 elements:</p>
 <pre><code>v_i {
  1.0,
  2.0,
@@ -226,14 +236,14 @@ v_i { 1.0, 2.0, 3.0, 4.0 }
 </code></pre>
 <h2 id="ranges"><a class="header" href="#ranges">Ranges</a></h2>
 <p>Each element of a tensor can optionally give a <em>range</em> of index numbers, which is used by the compiler to determine the extent of each element.
-This is useful when defining higher dimensional tensors, such as matrices. For example, to define a 2x3 matrix $A$ with all elements set to <code>1.0</code>, we write:</p>
+This is useful when defining higher dimensional tensors, such as matrices. For example, to define a 2x3 matrix \( A \) with all elements set to <code>1.0</code>, we write:</p>
 <pre><code>A_ij {
  (0:2, 0:3) = 1.0,
 }
 </code></pre>
 <p>Note the two subscript to indicate that this is a 2D tensor. The size of the
 single element is given in the brackets, we have two ranges <code>0:2</code> and <code>0:3</code> that correspond to the two dimensions of the matrix.</p>
-<p>Here is another example of a 4x2 matrix $B$ with rows 0 to 2 set to <code>1.0</code> and rows 3 to 4 set to <code>2.0</code>:</p>
+<p>Here is another example of a 4x2 matrix \( B \) with rows 0 to 2 set to <code>1.0</code> and rows 3 to 4 set to <code>2.0</code>:</p>
 <pre><code>A_ij {
  (0:2, 0:3) = 1.0,
  (3:4, 0:3) = 2.0,
@@ -249,13 +259,13 @@ single element is given in the brackets, we have two ranges <code>0:2</code> and
 <p>Note that the compiler will automatically infer the size of the tensor from the ranges you provide, so you don't need to specify the size of the tensor explicitly.
 Since the maximum index in the range is 2, the compiler will infer that the size of the tensor is 3x3.</p>
 <p>Notice also that we have not defined all the elements of the matrix, only the non-zero elements. The compiler will assume that all other elements are zero.</p>
-<p>Finally, you can also use the <code>..</code> operator to specify a <em>diagonal</em> range of indices. For example, to define a 3x3 matrix $D$ with the diagonal elements set to <code>1.0</code>:</p>
+<p>Finally, you can also use the <code>..</code> operator to specify a <em>diagonal</em> range of indices. For example, to define a 3x3 matrix \( D \) with the diagonal elements set to <code>1.0</code>:</p>
 <pre><code>D_ij {
  (0..2, 0..2) = 1.0,
 }
 </code></pre>
 <h2 id="sparse-and-diagonal-matrices"><a class="header" href="#sparse-and-diagonal-matrices">Sparse and diagonal matrices</a></h2>
-<p>We can automatically define a sparse matrix $B$ by simply specifying the non-zero elements:</p>
+<p>We can automatically define a sparse matrix \( B \) by simply specifying the non-zero elements:</p>
 <pre><code>B_ij {
  (0, 0) = 1.0,
  (0, 1) = 2.0,
@@ -295,8 +305,8 @@ w_i { 2 * y, 3 * x }
 <p>We can use standard algebraic operations on variables. To refer to previously
 defined variables, we use the variable name, making sure to use the correct
 subscript if it is a vector or tensor.</p>
-<p>For example, to define a scalar variable $a$ as the sum of two other scalar
-variables $b$ and $c$, we write:</p>
+<p>For example, to define a scalar variable \( a \) as the sum of two other scalar
+variables \( b \) and \( c \), we write:</p>
 <pre><code>b { 1.0 }
 c { 2.0 }
 a { b + c }
@@ -330,7 +340,7 @@ d_i { a_i + k }
 <h2 id="contractions"><a class="header" href="#contractions">Contractions</a></h2>
 <p>The tensor indexing notation can also matrix-vector multiplications and any other
 contraction operations. Any indices that do not appear in the output tensor will be
-summed over.  For example, the following will define a new vector $v$ that is
+summed over.  For example, the following will define a new vector \( \mathbf{v} \) that is
 the result of a matrix-vector multiplication:</p>
 <pre><code>v_i { A_ij * u_j }
 </code></pre>
@@ -347,13 +357,13 @@ v_i { M_ij }
 <p>The primary goal of the DiffSL language is to define a system of ODEs in the following form:</p>
 <p>$$
 \begin{align*}
-M(t) \frac{d\mathbf{u}}{dt} &amp;= F(\mathbf{u}, t) \\
+M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} &amp;= F(\mathbf{u}, t) \\
 \mathbf{u}(0) &amp;= \mathbf{u}_0
 \end{align*}
 $$</p>
 <p>where \( \mathbf{u} \) is the vector of state variables, \( \mathbf{u}_0 \) is the initial condition, \( F \) is the RHS function, and \( M \) is the mass matrix.
 The DSL allows the user to specify the state vector \( \mathbf{u} \) and the RHS function \( F \).</p>
-<p>Optionally, the user can also define the derivative of the state vector \( d\mathbf{u}/dt \) and the mass matrix \( M \) as a function of \( d\mathbf{u}/dt \)
+<p>Optionally, the user can also define the derivative of the state vector \( \mathrm{d}\mathbf{u}/\mathrm{d}t \) and the mass matrix \( M \) as a function of \( \mathrm{d}\mathbf{u}/\mathrm{d}t \)
 (note that this function should be linear!).
 The user is also free to define an arbitrary number of intermediate tensors that are required to calculate \( F \) and \( M \).</p>
 <h2 id="defining-state-variables"><a class="header" href="#defining-state-variables">Defining state variables</a></h2>
@@ -361,7 +371,7 @@ The user is also free to define an arbitrary number of intermediate tensors that
 vector variable <code>u_i</code>. Note the particular name <code>u</code> is used to indicate that this
 is the state vector.</p>
 <p>The values that we use for <code>u_i</code> are the initial values of the state variables
-at \( t=0 \), so an initial condition \( \mathbf{u|(t=0)} = [x(0), y(0), z(0)] = [1, 0, 0] \) is defined as:</p>
+at \( t=0 \), so an initial condition \( \mathbf{u}(t=0)} = [x(0), y(0), z(0)] = [1, 0, 0] \) is defined as:</p>
 <pre><code>u_i {
   x = 1,
   y = 0,
@@ -382,7 +392,7 @@ In many cases any values can be given here as the time derivatives of the state 
 However, if there are any algebraic variables in the equations then these values can be used
 used as a starting point to calculate a set of consistent initial values for the
 state variables.</p>
-<p>Note that there is no need to define <code>dudt</code> if you do not define a mass matrix $M$.</p>
+<p>Note that there is no need to define <code>dudt</code> if you do not define a mass matrix \( M \).</p>
 <h2 id="defining-the-ode-system-equations"><a class="header" href="#defining-the-ode-system-equations">Defining the ODE system equations</a></h2>
 <p>We now define the right-hand-side  function \( F \) that we want to solve, using the
 variables that we have defined earlier. We do this by defining a vector variable
@@ -401,7 +411,7 @@ $$</p>
 F_i { y, -x }
 </code></pre>
 <h2 id="defining-the-mass-matrix"><a class="header" href="#defining-the-mass-matrix">Defining the mass matrix</a></h2>
-<p>We can also define a mass matrix $M$ by defining a vector variable <code>M_i</code> which is the product of the mass matrix with the time derivative of the state vector \( M \mathbf{\dot{u}} \).
+<p>We can also define a mass matrix \( M \) by defining a vector variable <code>M_i</code> which is the product of the mass matrix with the time derivative of the state vector \( M \mathbf{\dot{u}} \).
 This is optional, and if not defined, the mass matrix is assumed to be the identity
 matrix.</p>
 <p>Notice that we are defining a vector variable <code>M_i</code>, which is the LHS of the ODE equations \( M \mathbf{\dot{u}} \), and <strong>not</strong> the mass matrix itself.</p>
@@ -409,7 +419,7 @@ matrix.</p>
 zero on the diagonal:</p>
 <p>$$
 \begin{align*}
-\frac{dx}{dt} &amp;= x \\
+\frac{\mathrm{d}x}{\mathrm{d}t} &amp;= x \\
 0 &amp;= y-x \\
 x(0) &amp;= 1 \\
 y(0) &amp;= 0 \\
@@ -480,6 +490,29 @@ out_i { x, y, z }
   z = 3.0,
 }
 out { x + y + z }
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="pre-defined-functions"><a class="header" href="#pre-defined-functions">Pre-defined functions</a></h1>
+<p>The DiffSL supports the following mathematical functions that can be used in an expression:</p>
+<ul>
+<li><code>pow(x, y)</code> - x raised to the power of y</li>
+<li><code>sin(x)</code> - sine of x</li>
+<li><code>cos(x)</code> - cosine of x</li>
+<li><code>tan(x)</code> - tangent of x</li>
+<li><code>exp(x)</code> - exponential of x</li>
+<li><code>log(x)</code> - natural logarithm of x</li>
+<li><code>sqrt(x)</code> - square root of x</li>
+<li><code>abs(x)</code> - absolute value of x</li>
+<li><code>sigmoid(x)</code> - sigmoid function of x</li>
+</ul>
+<p>You can use these functions as part of an expression in the DSL. For example, to define a variable <code>a</code> that is the sine of another variable <code>b</code>, you can write:</p>
+<pre><code>b { 1.0 }
+a { sin(b) }
+</code></pre>
+<h1 id="pre-defined-variables"><a class="header" href="#pre-defined-variables">Pre-defined variables</a></h1>
+<p>The only predefined variable is the scalar <code>t</code> which is the current time, this allows the equations to be written as functions of time. For example</p>
+<pre><code>F_i {
+  t + sin(t)
+}
 </code></pre>
 
                     </main>

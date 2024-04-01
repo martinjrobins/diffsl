@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Defining ODEs - DiffSL</title>
+        <title>Predefined functions - DiffSL</title>
 
 
         <!-- Custom HTML head -->
@@ -90,7 +90,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html" class="active"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li><li class="chapter-item expanded "><a href="functions.html"><strong aria-hidden="true">6.</strong> Predefined functions</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li><li class="chapter-item expanded "><a href="functions.html" class="active"><strong aria-hidden="true">6.</strong> Predefined functions</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -175,94 +175,27 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="defining-a-system-of-odes"><a class="header" href="#defining-a-system-of-odes">Defining a system of ODEs</a></h1>
-<p>The primary goal of the DiffSL language is to define a system of ODEs in the following form:</p>
-<p>$$
-\begin{align*}
-M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} &amp;= F(\mathbf{u}, t) \\
-\mathbf{u}(0) &amp;= \mathbf{u}_0
-\end{align*}
-$$</p>
-<p>where \( \mathbf{u} \) is the vector of state variables, \( \mathbf{u}_0 \) is the initial condition, \( F \) is the RHS function, and \( M \) is the mass matrix.
-The DSL allows the user to specify the state vector \( \mathbf{u} \) and the RHS function \( F \).</p>
-<p>Optionally, the user can also define the derivative of the state vector \( \mathrm{d}\mathbf{u}/\mathrm{d}t \) and the mass matrix \( M \) as a function of \( \mathrm{d}\mathbf{u}/\mathrm{d}t \)
-(note that this function should be linear!).
-The user is also free to define an arbitrary number of intermediate tensors that are required to calculate \( F \) and \( M \).</p>
-<h2 id="defining-state-variables"><a class="header" href="#defining-state-variables">Defining state variables</a></h2>
-<p>To define the state variables \(\mathbf{u} \), we create a special
-vector variable <code>u_i</code>. Note the particular name <code>u</code> is used to indicate that this
-is the state vector.</p>
-<p>The values that we use for <code>u_i</code> are the initial values of the state variables
-at \( t=0 \), so an initial condition \( \mathbf{u}(t=0)} = [x(0), y(0), z(0)] = [1, 0, 0] \) is defined as:</p>
-<pre><code>u_i {
-  x = 1,
-  y = 0,
-  z = 0,
-}
+                        <h1 id="pre-defined-functions"><a class="header" href="#pre-defined-functions">Pre-defined functions</a></h1>
+<p>The DiffSL supports the following mathematical functions that can be used in an expression:</p>
+<ul>
+<li><code>pow(x, y)</code> - x raised to the power of y</li>
+<li><code>sin(x)</code> - sine of x</li>
+<li><code>cos(x)</code> - cosine of x</li>
+<li><code>tan(x)</code> - tangent of x</li>
+<li><code>exp(x)</code> - exponential of x</li>
+<li><code>log(x)</code> - natural logarithm of x</li>
+<li><code>sqrt(x)</code> - square root of x</li>
+<li><code>abs(x)</code> - absolute value of x</li>
+<li><code>sigmoid(x)</code> - sigmoid function of x</li>
+</ul>
+<p>You can use these functions as part of an expression in the DSL. For example, to define a variable <code>a</code> that is the sine of another variable <code>b</code>, you can write:</p>
+<pre><code>b { 1.0 }
+a { sin(b) }
 </code></pre>
-<p>Since we will often use the individual elements of the state vector in the RHS function, it is useful to define them as separate variables as well.</p>
-<p>We can optionally define the time derivatives of the state variables,
-\( \mathbf{\dot{u}} \) as well:</p>
-<pre><code>dudt_i {
-  dxdt = 1,
-  dydt = 0,
-  dzdt = 0,
-}
-</code></pre>
-<p>Here the initial values of the time derivatives are given.
-In many cases any values can be given here as the time derivatives of the state variables are calculated from the RHS.
-However, if there are any algebraic variables in the equations then these values can be used
-used as a starting point to calculate a set of consistent initial values for the
-state variables.</p>
-<p>Note that there is no need to define <code>dudt</code> if you do not define a mass matrix \( M \).</p>
-<h2 id="defining-the-ode-system-equations"><a class="header" href="#defining-the-ode-system-equations">Defining the ODE system equations</a></h2>
-<p>We now define the right-hand-side  function \( F \) that we want to solve, using the
-variables that we have defined earlier. We do this by defining a vector variable
-<code>F_i</code> that corresponds to the RHS of the equations.</p>
-<p>For example, to define a simple system of ODEs:</p>
-<p>$$
-\begin{align*}
-\frac{dx}{dt} &amp;= y \\
-\frac{dy}{dt} &amp;= -x \\
-x(0) &amp;= 1 \\
-y(0) &amp;= 0 \\
-\end{align*}
-$$</p>
-<p>We write:</p>
-<pre><code>u_i { x = 1, y = 0 }
-F_i { y, -x }
-</code></pre>
-<h2 id="defining-the-mass-matrix"><a class="header" href="#defining-the-mass-matrix">Defining the mass matrix</a></h2>
-<p>We can also define a mass matrix \( M \) by defining a vector variable <code>M_i</code> which is the product of the mass matrix with the time derivative of the state vector \( M \mathbf{\dot{u}} \).
-This is optional, and if not defined, the mass matrix is assumed to be the identity
-matrix.</p>
-<p>Notice that we are defining a vector variable <code>M_i</code>, which is the LHS of the ODE equations \( M \mathbf{\dot{u}} \), and <strong>not</strong> the mass matrix itself.</p>
-<p>For example, lets define a simple DAE system using a singular mass matrix with a
-zero on the diagonal:</p>
-<p>$$
-\begin{align*}
-\frac{\mathrm{d}x}{\mathrm{d}t} &amp;= x \\
-0 &amp;= y-x \\
-x(0) &amp;= 1 \\
-y(0) &amp;= 0 \\
-\end{align*}
-$$</p>
-<p>We write:</p>
-<pre><code>u_i {
- x = 1,
- y = 0,
-}
-dudt_i {
- dxdt = 0,
- dydt = 1,
-}
-M_i {
- dxdt,
- 0,
-}
-F_i {
- x,
- y-x,
+<h1 id="pre-defined-variables"><a class="header" href="#pre-defined-variables">Pre-defined variables</a></h1>
+<p>The only predefined variable is the scalar <code>t</code> which is the current time, this allows the equations to be written as functions of time. For example</p>
+<pre><code>F_i {
+  t + sin(t)
 }
 </code></pre>
 
@@ -270,13 +203,10 @@ F_i {
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="operations.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="inputs_outputs.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="inputs_outputs.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <i class="fa fa-angle-right"></i>
-                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -284,13 +214,10 @@ F_i {
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="operations.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="inputs_outputs.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="inputs_outputs.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <i class="fa fa-angle-right"></i>
-                    </a>
             </nav>
 
         </div>

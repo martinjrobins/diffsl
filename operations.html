@@ -90,7 +90,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html" class="active"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="introduction.html"><strong aria-hidden="true">1.</strong> DiffSL Language</a></li><li class="chapter-item expanded "><a href="tensors.html"><strong aria-hidden="true">2.</strong> Tensor Variables</a></li><li class="chapter-item expanded "><a href="operations.html" class="active"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="odes.html"><strong aria-hidden="true">4.</strong> Defining ODEs</a></li><li class="chapter-item expanded "><a href="inputs_outputs.html"><strong aria-hidden="true">5.</strong> Inputs and Outputs</a></li><li class="chapter-item expanded "><a href="functions.html"><strong aria-hidden="true">6.</strong> Predefined functions</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -179,8 +179,8 @@
 <p>We can use standard algebraic operations on variables. To refer to previously
 defined variables, we use the variable name, making sure to use the correct
 subscript if it is a vector or tensor.</p>
-<p>For example, to define a scalar variable $a$ as the sum of two other scalar
-variables $b$ and $c$, we write:</p>
+<p>For example, to define a scalar variable \( a \) as the sum of two other scalar
+variables \( b \) and \( c \), we write:</p>
 <pre><code>b { 1.0 }
 c { 2.0 }
 a { b + c }
@@ -214,7 +214,7 @@ d_i { a_i + k }
 <h2 id="contractions"><a class="header" href="#contractions">Contractions</a></h2>
 <p>The tensor indexing notation can also matrix-vector multiplications and any other
 contraction operations. Any indices that do not appear in the output tensor will be
-summed over.  For example, the following will define a new vector $v$ that is
+summed over.  For example, the following will define a new vector \( \mathbf{v} \) that is
 the result of a matrix-vector multiplication:</p>
 <pre><code>v_i { A_ij * u_j }
 </code></pre>

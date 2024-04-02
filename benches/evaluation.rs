@@ -68,8 +68,6 @@ fn add_scalar_rust<const N: usize>(bencher: Bencher) {
     });
 }
 
-bench!(inner_product, "F_i { (0) }", [1, 10, 100, 1000]);
-
 bench!(
     dense_matmul,
     "A_ij { (0:n, 0:n): 1 } F_i { A_ij * u_i }",

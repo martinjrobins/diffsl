@@ -69,13 +69,13 @@ fn add_scalar_rust<const N: usize>(bencher: Bencher) {
 }
 
 bench!(
-    dense_matmul,
+    dense_matvec_mul,
     "A_ij { (0:n, 0:n): 1 } F_i { A_ij * u_i }",
     [10, 100, 1000]
 );
 
 #[divan::bench(consts = [10, 100, 1000])]
-fn dense_matmul_rust<const N: usize>(bencher: Bencher) {
+fn dense_matvec_mul_rust<const N: usize>(bencher: Bencher) {
     let n = N;
     let u = vec![1.0; n];
     let a = vec![1.0; n * n];

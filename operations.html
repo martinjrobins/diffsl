@@ -212,17 +212,25 @@ d_i { a_i + k }
 <p>Here the scalar \( k \) is broadcast to the same shape as \( \mathbf{a} \) before the addition. The output vector \( \mathbf{d} \) will be \( [4.0, 5.0] \).</p>
 <p>DiffSL uses the same broadcasting rules as NumPy, and you can read more about this in the <a href="https://numpy.org/doc/stable/user/basics.broadcasting.html">NumPy documentation</a>.</p>
 <h2 id="contractions"><a class="header" href="#contractions">Contractions</a></h2>
-<p>The tensor indexing notation can also matrix-vector multiplications and any other
-contraction operations. Any indices that do not appear in the output tensor will be
-summed over.  For example, the following will define a new vector \( \mathbf{v} \) that is
-the result of a matrix-vector multiplication:</p>
+<p>The DiffSL indexing notation allows for tensor contractions, which are operations that sum over one or more indices.
+The rule used is that any indices that do not appear in the output tensor will be summed over.</p>
+<p>For example, the following defines a new vector \( \mathbf{v} \) that is the sum of the rows of a matrix \( A \):</p>
+<pre><code>v_i { A_ij }
+</code></pre>
+<p>Another example, the following will define a new scalar \( s \) that is the sum of the element-wise product of two vectors \( \mathbf{u} \) and \( \mathbf{v} \) (i.e. an inner product):</p>
+<pre><code>u_i { 1.0, 2.0 }
+v_i { 3.0, 4.0 }
+s { u_i * v_i }
+</code></pre>
+<p>Here the <code>i</code> index is summed over, so the scalar <code>s</code> is the sum of the element-wise product of the two vectors <code>u</code> and <code>v</code>.</p>
+<p>We can also define a matrix-vector multiplication, the following will define a new vector \( \mathbf{v} \) that is
+the result of a matrix-vector multiplication of a matrix \( A \) and a vector \( \mathbf{u} \):</p>
 <pre><code>v_i { A_ij * u_j }
 </code></pre>
-<p>Here the <code>j</code> index is summed over, so the <code>i</code> index of the output vector <code>v</code> is the sum of the element-wise product of the <code>i</code>th row of <code>A</code> and the vector <code>u</code>.</p>
-<p>Another way to think about this matrix-vector multiplication is by considering it as a broadcasted element-wise multiplication followed by a sum or contraction over the <code>j</code> index.
-The <code>A_ij * u_j</code> expression broadcasts the vector <code>u</code> to the same shape as <code>A</code>, forming a new 2D tensor where each row is the element-wise product of the <code>i</code>th row of <code>A</code> and the vector <code>u</code>.
-When we specify the output vector <code>v_i</code>, we implicitly then sum over the missing <code>j</code> index to form the final output vector.</p>
-<p>For example, lets manually break this matrix-vector multiplication into two steps using an intermediary tensor <code>M_ij</code>:</p>
+<p>This operation is actually a combination of a broadcast <code>A_ij * u_j</code>, followed by a contraction over the <code>j</code> index,
+the <code>A_ij * u_j</code> expression broadcasts the vector <code>u</code> to the same shape as <code>A</code>, forming a new 2D tensor, and
+the output vector <code>v_i</code> implicitly sums over the missing <code>j</code> index to form the final output vector.
+To illustrate this further, lets manually break this matrix-vector multiplication into two steps using an intermediary tensor <code>M_ij</code>:</p>
 <pre><code>M_ij { A_ij * u_j }
 v_i { M_ij }
 </code></pre>

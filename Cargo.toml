@@ -69,6 +69,13 @@ llvm-sys-170 = { package = "llvm-sys", version = "170.0.1", optional = true }
 [build-dependencies]
 cmake = "0.1.50"
 
+[dev-dependencies]
+divan = "0.1.14"
+
+[[bench]]
+name = "evaluation"
+harness = false
+
 [profile.dev]
 opt-level = 0
 debug = true

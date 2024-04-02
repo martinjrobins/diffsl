@@ -408,8 +408,29 @@ impl<'s> DiscreteModel<'s> {
                 kind: AstKind::new_num(0.0),
                 span: None,
             };
+            let indices = if ret.state.shape().len() == 0 {
+                None
+            } else {
+                let first = Ast {
+                    kind: AstKind::new_integer(0),
+                    span: None,
+                };
+                let last = Ast {
+                    kind: AstKind::new_integer(i64::try_from(ret.state.shape()[0]).unwrap()),
+                    span: None,
+                };
+                let index = Ast {
+                    kind: AstKind::new_indice(first, Some(last), Some(":")),
+                    span: None,
+                };
+                Some(Ast {
+                    kind: AstKind::new_vector(vec![index]),
+                    span: None,
+                })
+            };
+
             let zero_block = Ast {
-                kind: AstKind::new_tensor_elmt(zero, None),
+                kind: AstKind::new_tensor_elmt(zero, indices),
                 span: None,
             };
             let indices = ret.state.indices().to_vec();
@@ -966,7 +987,7 @@ mod tests {
                 y,
             }
         " [],
-        logistic_no_f: "
+        logistic_no_m: "
             in = [r, ]
             r { 1, }    
             u {
@@ -979,13 +1000,15 @@ mod tests {
                 y,
             }
         " [],
-        logistic_no_f2: "
+        logistic_no_m2: "
             in = [r, ]
             r { 1, }    
             u_i {
+                x = 1,
                 y = 1,
             }
             F_i {
+                (r * x) * (1 - x),
                 (r * y) * (1 - y),
             }
             out {

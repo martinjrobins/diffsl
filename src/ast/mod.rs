@@ -435,10 +435,22 @@ impl<'a> AstKind<'a> {
             args: vec![Box::new(child)],
         })
     }
+    pub fn new_indice(first: Ast<'a>, last: Option<Ast<'a>>, sep: Option<&'a str>) -> Self {
+        AstKind::Indice(Indice {
+            first: Box::new(first),
+            last: last.map(Box::new),
+            sep,
+        })
+    }
     pub fn new_index(left: Ast<'a>, right: Ast<'a>) -> Self {
         AstKind::Index(Index {
             left: Box::new(left),
             right: Box::new(right),
+        })
+    }
+    pub fn new_vector(data: Vec<Ast<'a>>) -> Self {
+        AstKind::Vector(Vector {
+            data: data.into_iter().map(Box::new).collect(),
         })
     }
     pub fn new_name(name: &'a str) -> Self {
@@ -470,6 +482,9 @@ impl<'a> AstKind<'a> {
     }
     pub fn new_num(num: f64) -> Self {
         AstKind::Number(num)
+    }
+    pub fn new_integer(num: i64) -> Self {
+        AstKind::Integer(num)
     }
     pub fn new_tensor(name: &'a str, indices: Vec<char>, elmts: Vec<Ast<'a>>) -> Self {
         AstKind::Tensor(Tensor::new(name, indices, elmts))

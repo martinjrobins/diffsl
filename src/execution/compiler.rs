@@ -193,6 +193,7 @@ impl Compiler {
                     .arg(format!("-load={}", enzyme_lib))
                     .arg("-enzyme")
                     .arg("--enable-new-pm=0")
+                    .arg("-O3")
                     .arg("-o")
                     .arg(bitcodefilename.as_str())
                     .output()?;
@@ -209,7 +210,7 @@ impl Compiler {
                 let module = Module::parse_bitcode_from_buffer(&buffer, context)
                     .map_err(|e| anyhow::anyhow!("Error parsing bitcode: {:?}", e))?;
                 let ee = module
-                    .create_jit_execution_engine(OptimizationLevel::None)
+                    .create_jit_execution_engine(OptimizationLevel::Default)
                     .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
 
                 let set_u0 = Compiler::jit("set_u0", &ee)?;

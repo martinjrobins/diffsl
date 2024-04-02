@@ -408,7 +408,7 @@ impl<'s> DiscreteModel<'s> {
                 kind: AstKind::new_num(0.0),
                 span: None,
             };
-            let indices = if ret.state.shape().len() == 0 {
+            let indices = if ret.state.shape().is_empty() {
                 None
             } else {
                 let first = Ast {

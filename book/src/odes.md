@@ -24,7 +24,7 @@ vector variable `u_i`. Note the particular name `u` is used to indicate that thi
 is the state vector.
 
 The values that we use for `u_i` are the initial values of the state variables
-at \\( t=0 \\), so an initial condition \\( \mathbf{u}(t=0)} = [x(0), y(0), z(0)] = [1, 0, 0] \\) is defined as:
+at \\( t=0 \\), so an initial condition \\( \mathbf{u}(t=0) = [x(0), y(0), z(0)] = [1, 0, 0] \\) is defined as:
 
 ```
 u_i {

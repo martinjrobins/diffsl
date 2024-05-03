@@ -470,12 +470,9 @@ impl<'ctx> CodeGen<'ctx> {
                         let result = self
                             .builder
                             .build_select(
-                                self.builder.build_float_compare(
-                                    FloatPredicate::OGE,
-                                    x,
-                                    zero,
-                                    "x >= 0",
-                                ).unwrap(),
+                                self.builder
+                                    .build_float_compare(FloatPredicate::OGE, x, zero, "x >= 0")
+                                    .unwrap(),
                                 one,
                                 zero,
                                 name,

@@ -10,6 +10,7 @@ use inkwell::values::{
     IntValue, PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
+use inkwell_140::FloatPredicate;
 use std::collections::HashMap;
 use std::iter::zip;
 
@@ -440,6 +441,46 @@ impl<'ctx> CodeGen<'ctx> {
                             .left()
                             .unwrap()
                             .into_float_value();
+                        self.builder.build_return(Some(&result)).ok();
+                        self.builder.position_at_end(current_block);
+                        Some(fn_val)
+                    }
+                    "heaviside" => {
+                        let arg_len = 1;
+                        let ret_type = self.real_type;
+
+                        let args_types = std::iter::repeat(ret_type)
+                            .take(arg_len)
+                            .map(|f| f.into())
+                            .collect::<Vec<BasicMetadataTypeEnum>>();
+
+                        let fn_type = ret_type.fn_type(args_types.as_slice(), false);
+                        let fn_val = self.module.add_function(name, fn_type, None);
+
+                        for arg in fn_val.get_param_iter() {
+                            arg.into_float_value().set_name("x");
+                        }
+
+                        let current_block = self.builder.get_insert_block().unwrap();
+                        let basic_block = self.context.append_basic_block(fn_val, "entry");
+                        self.builder.position_at_end(basic_block);
+                        let x = fn_val.get_nth_param(0)?.into_float_value();
+                        let zero = self.real_type.const_float(0.0);
+                        let one = self.real_type.const_float(1.0);
+                        let result = self
+                            .builder
+                            .build_select(
+                                self.builder.build_float_compare(
+                                    FloatPredicate::OGE,
+                                    x,
+                                    zero,
+                                    "x >= 0",
+                                ).unwrap(),
+                                one,
+                                zero,
+                                name,
+                            )
+                            .ok()?;
                         self.builder.build_return(Some(&result)).ok();
                         self.builder.position_at_end(current_block);
                         Some(fn_val)

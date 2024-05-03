@@ -11,6 +11,7 @@ The DiffSL supports the following mathematical functions that can be used in an 
 * `sqrt(x)` - square root of x
 * `abs(x)` - absolute value of x
 * `sigmoid(x)` - sigmoid function of x
+* `heaviside(x)` - Heaviside step function of x
 
 You can use these functions as part of an expression in the DSL. For example, to define a variable `a` that is the sine of another variable `b`, you can write:
 

@@ -25,6 +25,6 @@ fn main() {
 
     // compile enzyme
     let libdir = compile_enzyme(llvm_dir);
-    println!("cargo:rustc-link-search=native={}", libdir);
+    println!("cargo:rustc-link-search={}", libdir);
     println!("cargo:rerun-if-changed=build.rs");
 }

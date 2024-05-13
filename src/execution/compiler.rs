@@ -1,20 +1,24 @@
-use std::path::Path;
 use anyhow::anyhow;
-use uid::Id;
 use std::env;
+use std::path::Path;
+use uid::Id;
 
-use anyhow::Result;
-use inkwell::memory_buffer::MemoryBuffer;
-use inkwell::module::Module;
-use inkwell::targets::TargetMachine;
-use inkwell::{context::Context, OptimizationLevel, targets::{TargetTriple, InitializationConfig, Target, RelocMode, CodeModel, FileType}, execution_engine::{JitFunction, ExecutionEngine, UnsafeFunctionPointer}};
-use ouroboros::self_referencing;
 use crate::discretise::DiscreteModel;
 use crate::parser::parse_ds_string;
 use crate::utils::find_executable;
 use crate::utils::find_runtime_path;
+use anyhow::Result;
+use inkwell::memory_buffer::MemoryBuffer;
+use inkwell::module::Module;
+use inkwell::targets::TargetMachine;
+use inkwell::{
+    context::Context,
+    execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer},
+    targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple},
+    OptimizationLevel,
+};
+use ouroboros::self_referencing;
 use std::process::Command;
-
 
 use super::codegen::CalcOutGradientFunc;
 use super::codegen::CompileGradientArgType;
@@ -25,10 +29,11 @@ use super::codegen::SetIdFunc;
 use super::codegen::SetInputsFunc;
 use super::codegen::SetInputsGradientFunc;
 use super::codegen::U0GradientFunc;
-use super::{CodeGen, codegen::{U0Func, ResidualFunc, CalcOutFunc, StopFunc}, data_layout::DataLayout};
-
-
-
+use super::{
+    codegen::{CalcOutFunc, ResidualFunc, StopFunc, U0Func},
+    data_layout::DataLayout,
+    CodeGen,
+};
 
 struct JitFunctions<'ctx> {
     set_u0: JitFunction<'ctx, U0Func>,
@@ -61,7 +66,7 @@ pub struct Compiler {
     #[borrows(context)]
     #[not_covariant]
     data: CompilerData<'this>,
-    
+
     number_of_states: usize,
     number_of_parameters: usize,
     number_of_outputs: usize,
@@ -82,25 +87,31 @@ impl Compiler {
         match env::var("ENZYME_LIB") {
             Ok(lib) => Ok(lib),
             Err(_) => Err(anyhow!("ENZYME_LIB environment variable not set")),
-
         }
     }
     pub fn from_discrete_str(code: &str) -> Result<Self> {
         let uid = Id::<u32>::new();
         let name = format!("diffsl_{}", uid);
         let model = parse_ds_string(code).unwrap();
-        let model = DiscreteModel::build(name.as_str(), &model).unwrap_or_else(|e| panic!("{}", e.as_error_message(code)));
+        let model = DiscreteModel::build(name.as_str(), &model)
+            .unwrap_or_else(|e| panic!("{}", e.as_error_message(code)));
         let dir = env::temp_dir();
         let path = dir.join(name.clone());
         Compiler::from_discrete_model(&model, path.to_str().unwrap())
     }
 
-    pub fn from_discrete_model(model: &DiscreteModel, out: &str) -> Result<Self> { 
+    pub fn from_discrete_model(model: &DiscreteModel, out: &str) -> Result<Self> {
         let number_of_states = *model.state().shape().first().unwrap_or(&1);
-        let input_names = model.inputs().iter().map(|input| input.name().to_owned()).collect::<Vec<_>>();
+        let input_names = model
+            .inputs()
+            .iter()
+            .map(|input| input.name().to_owned())
+            .collect::<Vec<_>>();
         let data_layout = DataLayout::new(model);
         let context = Context::create();
-        let number_of_parameters = input_names.iter().fold(0, |acc, name| acc + data_layout.get_data_length(name).unwrap());
+        let number_of_parameters = input_names.iter().fold(0, |acc, name| {
+            acc + data_layout.get_data_length(name).unwrap()
+        });
         let number_of_outputs = data_layout.get_data_length("out").unwrap();
         CompilerTryBuilder {
             data_layout,
@@ -114,24 +125,52 @@ impl Compiler {
                 let real_type = context.f64_type();
                 let real_type_str = "f64";
                 let mut codegen = CodeGen::new(model, context, module, real_type, real_type_str);
-                
+
                 let _set_u0 = codegen.compile_set_u0(model)?;
-                let _set_u0_grad = codegen.compile_gradient(_set_u0, &[CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
+                let _set_u0_grad = codegen.compile_gradient(
+                    _set_u0,
+                    &[
+                        CompileGradientArgType::Dup,
+                        CompileGradientArgType::Dup,
+                        CompileGradientArgType::Dup,
+                    ],
+                )?;
                 let _calc_stop = codegen.compile_calc_stop(model)?;
                 let _residual = codegen.compile_residual(model)?;
-                let _residual_grad = codegen.compile_gradient(_residual, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::DupNoNeed])?;
+                let _residual_grad = codegen.compile_gradient(
+                    _residual,
+                    &[
+                        CompileGradientArgType::Const,
+                        CompileGradientArgType::Dup,
+                        CompileGradientArgType::Dup,
+                        CompileGradientArgType::Dup,
+                        CompileGradientArgType::DupNoNeed,
+                    ],
+                )?;
                 let _calc_out = codegen.compile_calc_out(model)?;
-                let _calc_out_grad = codegen.compile_gradient(_calc_out, &[CompileGradientArgType::Const, CompileGradientArgType::Dup, CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
+                let _calc_out_grad = codegen.compile_gradient(
+                    _calc_out,
+                    &[
+                        CompileGradientArgType::Const,
+                        CompileGradientArgType::Dup,
+                        CompileGradientArgType::Dup,
+                        CompileGradientArgType::Dup,
+                    ],
+                )?;
                 let _set_id = codegen.compile_set_id(model)?;
-                let _get_dims= codegen.compile_get_dims(model)?;
+                let _get_dims = codegen.compile_get_dims(model)?;
                 let _set_inputs = codegen.compile_set_inputs(model)?;
-                let _set_inputs_grad = codegen.compile_gradient(_set_inputs, &[CompileGradientArgType::Dup, CompileGradientArgType::Dup])?;
+                let _set_inputs_grad = codegen.compile_gradient(
+                    _set_inputs,
+                    &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+                )?;
                 let _get_output = codegen.compile_get_tensor(model, "out")?;
-                
 
                 let pre_enzyme_bitcodefilename = Compiler::get_pre_enzyme_bitcode_filename(out);
-                codegen.module().write_bitcode_to_path(Path::new(&pre_enzyme_bitcodefilename));
-    
+                codegen
+                    .module()
+                    .write_bitcode_to_path(Path::new(&pre_enzyme_bitcodefilename));
+
                 let opt_name = Compiler::find_opt()?;
                 let enzyme_lib = Compiler::find_enzyme_lib()?;
 
@@ -141,34 +180,39 @@ impl Compiler {
                     .arg(format!("-load={}", enzyme_lib))
                     .arg("-enzyme")
                     .arg("--enable-new-pm=0")
-                    .arg("-o").arg(bitcodefilename.as_str())
+                    .arg("-o")
+                    .arg(bitcodefilename.as_str())
                     .output()?;
-                
+
                 if let Some(code) = output.status.code() {
                     if code != 0 {
                         println!("{}", String::from_utf8_lossy(&output.stderr));
                         return Err(anyhow!("{} returned error code {}", opt_name, code));
                     }
                 }
-                
-                let buffer = MemoryBuffer::create_from_file(Path::new(bitcodefilename.as_str())).unwrap();
-                let module = Module::parse_bitcode_from_buffer(&buffer, context).map_err(|e| anyhow::anyhow!("Error parsing bitcode: {:?}", e))?;
-                let ee = module.create_jit_execution_engine(OptimizationLevel::None).map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
+
+                let buffer =
+                    MemoryBuffer::create_from_file(Path::new(bitcodefilename.as_str())).unwrap();
+                let module = Module::parse_bitcode_from_buffer(&buffer, context)
+                    .map_err(|e| anyhow::anyhow!("Error parsing bitcode: {:?}", e))?;
+                let ee = module
+                    .create_jit_execution_engine(OptimizationLevel::None)
+                    .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
 
                 let set_u0 = Compiler::jit("set_u0", &ee)?;
                 let residual = Compiler::jit("residual", &ee)?;
                 let calc_stop = Compiler::jit("calc_stop", &ee)?;
                 let calc_out = Compiler::jit("calc_out", &ee)?;
                 let set_id = Compiler::jit("set_id", &ee)?;
-                let get_dims= Compiler::jit("get_dims", &ee)?;
+                let get_dims = Compiler::jit("get_dims", &ee)?;
                 let set_inputs = Compiler::jit("set_inputs", &ee)?;
-                let get_out= Compiler::jit("get_out", &ee)?;
-                
+                let get_out = Compiler::jit("get_out", &ee)?;
+
                 let set_inputs_grad = Compiler::jit("set_inputs_grad", &ee)?;
                 let calc_out_grad = Compiler::jit("calc_out_grad", &ee)?;
                 let residual_grad = Compiler::jit("residual_grad", &ee)?;
                 let set_u0_grad = Compiler::jit("set_u0_grad", &ee)?;
-                
+
                 let data = CompilerData {
                     codegen,
                     jit_functions: JitFunctions {
@@ -189,12 +233,12 @@ impl Compiler {
                     },
                 };
                 Ok(data)
-            }
-        }.try_build()
+            },
+        }
+        .try_build()
     }
-    
-    pub fn compile(&self, standalone: bool, wasm: bool) -> Result<()> {
 
+    pub fn compile(&self, standalone: bool, wasm: bool) -> Result<()> {
         let opt_name = Compiler::find_opt()?;
         let clang_name = Compiler::find_clang()?;
         let enzyme_lib = Compiler::find_enzyme_lib()?;
@@ -202,25 +246,26 @@ impl Compiler {
         let object_filename = Compiler::get_object_filename(out);
         let bitcodefilename = Compiler::get_bitcode_filename(out);
         let mut command = Command::new(clang_name);
-        command.arg(bitcodefilename.as_str())
+        command
+            .arg(bitcodefilename.as_str())
             .arg("-c")
             .arg(format!("-fplugin={}", enzyme_lib))
-            .arg("-o").arg(object_filename.as_str());
-    
+            .arg("-o")
+            .arg(object_filename.as_str());
+
         if wasm {
             command.arg("-target").arg("wasm32-unknown-emscripten");
         }
-        
+
         let output = command.output().unwrap();
-        
-        
+
         if let Some(code) = output.status.code() {
             if code != 0 {
                 println!("{}", String::from_utf8_lossy(&output.stderr));
                 return Err(anyhow!("{} returned error code {}", opt_name, code));
             }
         }
-        
+
         // link the object file and our runtime library
         let mut command = if wasm {
             let emcc_varients = ["emcc"];
@@ -230,10 +275,8 @@ impl Compiler {
                 "Vector_create",
                 "Vector_create_with_capacity",
                 "Vector_push",
-                
                 "Options_destroy",
                 "Options_create",
-
                 "Sundials_destroy",
                 "Sundials_create",
                 "Sundials_init",
@@ -262,8 +305,14 @@ impl Compiler {
                 command.arg(Path::new(runtime_path.as_str()).join(file));
             }
             if !standalone {
-                let exported_functions = exported_functions.into_iter().map(|s| format!("_{}", s)).collect::<Vec<_>>().join(",");
-                command.arg("-s").arg(format!("EXPORTED_FUNCTIONS={}", exported_functions));
+                let exported_functions = exported_functions
+                    .into_iter()
+                    .map(|s| format!("_{}", s))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                command
+                    .arg("-s")
+                    .arg(format!("EXPORTED_FUNCTIONS={}", exported_functions));
                 command.arg("--no-entry");
             }
             command
@@ -277,29 +326,48 @@ impl Compiler {
             }
             command
         };
-        
+
         let output = command.output();
-        
+
         let output = match output {
             Ok(output) => output,
             Err(e) => {
-                let args = command.get_args().map(|s| s.to_str().unwrap()).collect::<Vec<_>>().join(" ");
-                println!("{} {}", command.get_program().to_os_string().to_str().unwrap(), args);
+                let args = command
+                    .get_args()
+                    .map(|s| s.to_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!(
+                    "{} {}",
+                    command.get_program().to_os_string().to_str().unwrap(),
+                    args
+                );
                 return Err(anyhow!("Error linking in runtime: {}", e));
             }
         };
 
         if let Some(code) = output.status.code() {
             if code != 0 {
-                let args = command.get_args().map(|s| s.to_str().unwrap()).collect::<Vec<_>>().join(" ");
-                println!("{} {}", command.get_program().to_os_string().to_str().unwrap(), args);
+                let args = command
+                    .get_args()
+                    .map(|s| s.to_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!(
+                    "{} {}",
+                    command.get_program().to_os_string().to_str().unwrap(),
+                    args
+                );
                 println!("{}", String::from_utf8_lossy(&output.stderr));
-                return Err(anyhow!("Error linking in runtime, returned error code {}", code));
+                return Err(anyhow!(
+                    "Error linking in runtime, returned error code {}",
+                    code
+                ));
             }
         }
         Ok(())
     }
-    
+
     fn get_pre_enzyme_bitcode_filename(out: &str) -> String {
         format!("{}.pre-enzyme.bc", out)
     }
@@ -312,60 +380,101 @@ impl Compiler {
         format!("{}.o", out)
     }
 
-    fn jit<'ctx, T>(name: &str, ee: &ExecutionEngine<'ctx>) -> Result<JitFunction<'ctx, T>> 
-    where T: UnsafeFunctionPointer
+    fn jit<'ctx, T>(name: &str, ee: &ExecutionEngine<'ctx>) -> Result<JitFunction<'ctx, T>>
+    where
+        T: UnsafeFunctionPointer,
     {
         let maybe_fn = unsafe { ee.get_function::<T>(name) };
         match maybe_fn {
             Ok(f) => Ok(f),
-            Err(err) => {
-                Err(anyhow!("Error during jit for {}: {}", name, err))
-            },
+            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
         }
     }
 
     pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
         let index = self.borrow_data_layout().get_data_index(name)?;
         let nnz = self.borrow_data_layout().get_data_length(name)?;
-        Some(&data[index..index+nnz])
+        Some(&data[index..index + nnz])
     }
 
     pub fn set_u0(&self, yy: &mut [f64], yp: &mut [f64], data: &mut [f64]) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            return Err(anyhow!(
+                "Expected {} states, got {}",
+                number_of_states,
+                yy.len()
+            ));
         }
         if yp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
+            return Err(anyhow!(
+                "Expected {} state derivatives, got {}",
+                number_of_states,
+                yp.len()
+            ));
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_mut_ptr();
             let yp_ptr = yp.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
-            unsafe { compiler.jit_functions.set_u0.call(data_ptr, yy_ptr, yp_ptr); }
+            unsafe {
+                compiler.jit_functions.set_u0.call(data_ptr, yy_ptr, yp_ptr);
+            }
         });
         Ok(())
     }
 
-    pub fn set_u0_grad(&self, yy: &mut [f64], dyy: &mut [f64], yp: &mut [f64], dyp: &mut [f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
+    pub fn set_u0_grad(
+        &self,
+        yy: &mut [f64],
+        dyy: &mut [f64],
+        yp: &mut [f64],
+        dyp: &mut [f64],
+        data: &mut [f64],
+        ddata: &mut [f64],
+    ) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            return Err(anyhow!(
+                "Expected {} states, got {}",
+                number_of_states,
+                yy.len()
+            ));
         }
         if yp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
+            return Err(anyhow!(
+                "Expected {} state derivatives, got {}",
+                number_of_states,
+                yp.len()
+            ));
         }
         if dyy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states for dyy, got {}", number_of_states, dyy.len()));
+            return Err(anyhow!(
+                "Expected {} states for dyy, got {}",
+                number_of_states,
+                dyy.len()
+            ));
         }
         if dyp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives for dyp, got {}", number_of_states, dyp.len()));
+            return Err(anyhow!(
+                "Expected {} state derivatives for dyp, got {}",
+                number_of_states,
+                dyp.len()
+            ));
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            return Err(anyhow!(
+                "Expected {} data, got {}",
+                self.data_len(),
+                data.len()
+            ));
         }
         if ddata.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
+            return Err(anyhow!(
+                "Expected {} data for ddata, got {}",
+                self.data_len(),
+                ddata.len()
+            ));
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_mut_ptr();
@@ -374,19 +483,34 @@ impl Compiler {
             let dyy_ptr = dyy.as_mut_ptr();
             let dyp_ptr = dyp.as_mut_ptr();
             let ddata_ptr = ddata.as_mut_ptr();
-            unsafe { compiler.jit_grad_functions.set_u0_grad.call(data_ptr, ddata_ptr, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr); }
+            unsafe {
+                compiler
+                    .jit_grad_functions
+                    .set_u0_grad
+                    .call(data_ptr, ddata_ptr, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr);
+            }
         });
         Ok(())
     }
 
-    pub fn calc_stop(&self, t: f64, yy: &[f64], yp: &[f64], data: &mut [f64], stop: &mut [f64]) -> Result<()> {
-
+    pub fn calc_stop(
+        &self,
+        t: f64,
+        yy: &[f64],
+        yp: &[f64],
+        data: &mut [f64],
+        stop: &mut [f64],
+    ) -> Result<()> {
         let (n_states, _, _, n_data, n_stop) = self.get_dims();
         if yy.len() != n_states {
             return Err(anyhow!("Expected {} states, got {}", n_states, yy.len()));
         }
         if yp.len() != n_states {
-            return Err(anyhow!("Expected {} state derivatives, got {}", n_states, yp.len()));
+            return Err(anyhow!(
+                "Expected {} state derivatives, got {}",
+                n_states,
+                yp.len()
+            ));
         }
         if data.len() != n_data {
             return Err(anyhow!("Expected {} data, got {}", n_data, data.len()));
@@ -399,40 +523,70 @@ impl Compiler {
             let yp_ptr = yp.as_ptr();
             let data_ptr = data.as_mut_ptr();
             let stop_ptr = stop.as_mut_ptr();
-            unsafe { compiler.jit_functions.calc_stop.call(t, yy_ptr, yp_ptr, data_ptr, stop_ptr); }
+            unsafe {
+                compiler
+                    .jit_functions
+                    .calc_stop
+                    .call(t, yy_ptr, yp_ptr, data_ptr, stop_ptr);
+            }
         });
         Ok(())
     }
-        
 
-    pub fn residual(&self, t: f64, yy: &[f64], yp: &[f64], data: &mut [f64], rr: &mut [f64]) -> Result<()> {
+    pub fn residual(
+        &self,
+        t: f64,
+        yy: &[f64],
+        yp: &[f64],
+        data: &mut [f64],
+        rr: &mut [f64],
+    ) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            return Err(anyhow!(
+                "Expected {} states, got {}",
+                number_of_states,
+                yy.len()
+            ));
         }
         if yp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
+            return Err(anyhow!(
+                "Expected {} state derivatives, got {}",
+                number_of_states,
+                yp.len()
+            ));
         }
         if rr.len() != number_of_states {
-            return Err(anyhow!("Expected {} residual states, got {}", number_of_states, rr.len()));
+            return Err(anyhow!(
+                "Expected {} residual states, got {}",
+                number_of_states,
+                rr.len()
+            ));
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            return Err(anyhow!(
+                "Expected {} data, got {}",
+                self.data_len(),
+                data.len()
+            ));
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
             let yp_ptr = yp.as_ptr();
             let rr_ptr = rr.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
-            unsafe { compiler.jit_functions.residual.call(t, yy_ptr, yp_ptr, data_ptr, rr_ptr); }
+            unsafe {
+                compiler
+                    .jit_functions
+                    .residual
+                    .call(t, yy_ptr, yp_ptr, data_ptr, rr_ptr);
+            }
         });
         Ok(())
     }
 
     pub fn data_len(&self) -> usize {
-        self.with(|compiler| {
-            compiler.data_layout.data().len()
-        })
+        self.with(|compiler| compiler.data_layout.data().len())
     }
 
     pub fn get_new_data(&self) -> Vec<f64> {
@@ -440,31 +594,74 @@ impl Compiler {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn residual_grad(&self, t: f64, yy: &[f64], dyy: &[f64], yp: &[f64], dyp: &[f64], data: &mut [f64], ddata: &mut [f64], rr: &mut [f64], drr: &mut [f64]) -> Result<()> {
+    pub fn residual_grad(
+        &self,
+        t: f64,
+        yy: &[f64],
+        dyy: &[f64],
+        yp: &[f64],
+        dyp: &[f64],
+        data: &mut [f64],
+        ddata: &mut [f64],
+        rr: &mut [f64],
+        drr: &mut [f64],
+    ) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            return Err(anyhow!(
+                "Expected {} states, got {}",
+                number_of_states,
+                yy.len()
+            ));
         }
         if yp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
+            return Err(anyhow!(
+                "Expected {} state derivatives, got {}",
+                number_of_states,
+                yp.len()
+            ));
         }
         if rr.len() != number_of_states {
-            return Err(anyhow!("Expected {} residual states, got {}", number_of_states, rr.len()));
+            return Err(anyhow!(
+                "Expected {} residual states, got {}",
+                number_of_states,
+                rr.len()
+            ));
         }
         if dyy.len() != number_of_states {
-            return Err(anyhow!("Expected {} states for dyy, got {}", number_of_states, dyy.len()));
+            return Err(anyhow!(
+                "Expected {} states for dyy, got {}",
+                number_of_states,
+                dyy.len()
+            ));
         }
         if dyp.len() != number_of_states {
-            return Err(anyhow!("Expected {} state derivatives for dyp, got {}", number_of_states, dyp.len()));
+            return Err(anyhow!(
+                "Expected {} state derivatives for dyp, got {}",
+                number_of_states,
+                dyp.len()
+            ));
         }
         if drr.len() != number_of_states {
-            return Err(anyhow!("Expected {} residual states for drr, got {}", number_of_states, drr.len()));
+            return Err(anyhow!(
+                "Expected {} residual states for drr, got {}",
+                number_of_states,
+                drr.len()
+            ));
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            return Err(anyhow!(
+                "Expected {} data, got {}",
+                self.data_len(),
+                data.len()
+            ));
         }
         if ddata.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
+            return Err(anyhow!(
+                "Expected {} data for ddata, got {}",
+                self.data_len(),
+                ddata.len()
+            ));
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
@@ -475,7 +672,11 @@ impl Compiler {
             let drr_ptr = drr.as_mut_ptr();
             let data_ptr = data.as_mut_ptr();
             let ddata_ptr = ddata.as_mut_ptr();
-            unsafe { compiler.jit_grad_functions.residual_grad.call(t, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr, data_ptr, ddata_ptr, rr_ptr, drr_ptr); }
+            unsafe {
+                compiler.jit_grad_functions.residual_grad.call(
+                    t, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr, data_ptr, ddata_ptr, rr_ptr, drr_ptr,
+                );
+            }
         });
         Ok(())
     }
@@ -483,43 +684,93 @@ impl Compiler {
     pub fn calc_out(&self, t: f64, yy: &[f64], yp: &[f64], data: &mut [f64]) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            return Err(anyhow!(
+                "Expected {} states, got {}",
+                number_of_states,
+                yy.len()
+            ));
         }
         if yp.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
+            return Err(anyhow!(
+                "Expected {} state derivatives, got {}",
+                number_of_states,
+                yp.len()
+            ));
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            return Err(anyhow!(
+                "Expected {} data, got {}",
+                self.data_len(),
+                data.len()
+            ));
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
             let yp_ptr = yp.as_ptr();
             let data_ptr = data.as_mut_ptr();
-            unsafe { compiler.jit_functions.calc_out.call(t, yy_ptr, yp_ptr, data_ptr ); }
+            unsafe {
+                compiler
+                    .jit_functions
+                    .calc_out
+                    .call(t, yy_ptr, yp_ptr, data_ptr);
+            }
         });
         Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn calc_out_grad(&self, t: f64, yy: &[f64], dyy: &[f64], yp: &[f64], dyp: &[f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
+    pub fn calc_out_grad(
+        &self,
+        t: f64,
+        yy: &[f64],
+        dyy: &[f64],
+        yp: &[f64],
+        dyp: &[f64],
+        data: &mut [f64],
+        ddata: &mut [f64],
+    ) -> Result<()> {
         let number_of_states = *self.borrow_number_of_states();
         if yy.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} states, got {}", number_of_states, yy.len()));
+            return Err(anyhow!(
+                "Expected {} states, got {}",
+                number_of_states,
+                yy.len()
+            ));
         }
         if yp.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} state derivatives, got {}", number_of_states, yp.len()));
+            return Err(anyhow!(
+                "Expected {} state derivatives, got {}",
+                number_of_states,
+                yp.len()
+            ));
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            return Err(anyhow!(
+                "Expected {} data, got {}",
+                self.data_len(),
+                data.len()
+            ));
         }
         if dyy.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} states for dyy, got {}", number_of_states, dyy.len()));
+            return Err(anyhow!(
+                "Expected {} states for dyy, got {}",
+                number_of_states,
+                dyy.len()
+            ));
         }
         if dyp.len() != *self.borrow_number_of_states() {
-            return Err(anyhow!("Expected {} state derivatives for dyp, got {}", number_of_states, dyp.len()));
+            return Err(anyhow!(
+                "Expected {} state derivatives for dyp, got {}",
+                number_of_states,
+                dyp.len()
+            ));
         }
         if ddata.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
+            return Err(anyhow!(
+                "Expected {} data for ddata, got {}",
+                self.data_len(),
+                ddata.len()
+            ));
         }
         self.with_data(|compiler| {
             let yy_ptr = yy.as_ptr();
@@ -528,62 +779,121 @@ impl Compiler {
             let dyy_ptr = dyy.as_ptr();
             let dyp_ptr = dyp.as_ptr();
             let ddata_ptr = ddata.as_mut_ptr();
-            unsafe { compiler.jit_grad_functions.calc_out_grad.call(t, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr, data_ptr, ddata_ptr); }
+            unsafe {
+                compiler
+                    .jit_grad_functions
+                    .calc_out_grad
+                    .call(t, yy_ptr, dyy_ptr, yp_ptr, dyp_ptr, data_ptr, ddata_ptr);
+            }
         });
         Ok(())
     }
 
     /// Get various dimensions of the model
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data, n_stop)`
     pub fn get_dims(&self) -> (usize, usize, usize, usize, usize) {
         let mut n_states = 0u32;
-        let mut n_inputs= 0u32;
+        let mut n_inputs = 0u32;
         let mut n_outputs = 0u32;
-        let mut n_data= 0u32;
+        let mut n_data = 0u32;
         let mut n_stop = 0u32;
-        self.with(|compiler| {
-            unsafe { compiler.data.jit_functions.get_dims.call(&mut n_states, &mut n_inputs, &mut n_outputs, &mut n_data, &mut n_stop); }
+        self.with(|compiler| unsafe {
+            compiler.data.jit_functions.get_dims.call(
+                &mut n_states,
+                &mut n_inputs,
+                &mut n_outputs,
+                &mut n_data,
+                &mut n_stop,
+            );
         });
-        (n_states as usize, n_inputs as usize, n_outputs as usize, n_data as usize, n_stop as usize)
+        (
+            n_states as usize,
+            n_inputs as usize,
+            n_outputs as usize,
+            n_data as usize,
+            n_stop as usize,
+        )
     }
 
     pub fn set_inputs(&self, inputs: &[f64], data: &mut [f64]) -> Result<()> {
         let (_, n_inputs, _, _, _) = self.get_dims();
         if n_inputs != inputs.len() {
-            return Err(anyhow!("Expected {} inputs, got {}", n_inputs, inputs.len()));
+            return Err(anyhow!(
+                "Expected {} inputs, got {}",
+                n_inputs,
+                inputs.len()
+            ));
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            return Err(anyhow!(
+                "Expected {} data, got {}",
+                self.data_len(),
+                data.len()
+            ));
         }
         self.with_data(|compiler| {
             let data_ptr = data.as_mut_ptr();
-            unsafe { compiler.jit_functions.set_inputs.call(inputs.as_ptr(), data_ptr); }
+            unsafe {
+                compiler
+                    .jit_functions
+                    .set_inputs
+                    .call(inputs.as_ptr(), data_ptr);
+            }
         });
         Ok(())
     }
 
-    pub fn set_inputs_grad(&self, inputs: &[f64], dinputs: &[f64], data: &mut [f64], ddata: &mut [f64]) -> Result<()> {
+    pub fn set_inputs_grad(
+        &self,
+        inputs: &[f64],
+        dinputs: &[f64],
+        data: &mut [f64],
+        ddata: &mut [f64],
+    ) -> Result<()> {
         let (_, n_inputs, _, _, _) = self.get_dims();
         if n_inputs != inputs.len() {
-            return Err(anyhow!("Expected {} inputs, got {}", n_inputs, inputs.len()));
+            return Err(anyhow!(
+                "Expected {} inputs, got {}",
+                n_inputs,
+                inputs.len()
+            ));
         }
         if data.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data, got {}", self.data_len(), data.len()));
+            return Err(anyhow!(
+                "Expected {} data, got {}",
+                self.data_len(),
+                data.len()
+            ));
         }
         if dinputs.len() != n_inputs {
-            return Err(anyhow!("Expected {} inputs for dinputs, got {}", n_inputs, dinputs.len()));
+            return Err(anyhow!(
+                "Expected {} inputs for dinputs, got {}",
+                n_inputs,
+                dinputs.len()
+            ));
         }
         if ddata.len() != self.data_len() {
-            return Err(anyhow!("Expected {} data for ddata, got {}", self.data_len(), ddata.len()));
+            return Err(anyhow!(
+                "Expected {} data for ddata, got {}",
+                self.data_len(),
+                ddata.len()
+            ));
         }
         self.with_data(|compiler| {
             let data_ptr = data.as_mut_ptr();
             let ddata_ptr = ddata.as_mut_ptr();
             let dinputs_ptr = dinputs.as_ptr();
-            unsafe { compiler.jit_grad_functions.set_inputs_grad.call(inputs.as_ptr(), dinputs_ptr, data_ptr, ddata_ptr); }
+            unsafe {
+                compiler.jit_grad_functions.set_inputs_grad.call(
+                    inputs.as_ptr(),
+                    dinputs_ptr,
+                    data_ptr,
+                    ddata_ptr,
+                );
+            }
         });
         Ok(())
     }
@@ -599,7 +909,13 @@ impl Compiler {
         let tensor_data_len_ptr: *mut u32 = &mut tensor_data_len;
         self.with(|compiler| {
             let data_ptr = data.as_ptr();
-            unsafe { compiler.data.jit_functions.get_out.call(data_ptr, tensor_data_ptr_ptr, tensor_data_len_ptr); }
+            unsafe {
+                compiler.data.jit_functions.get_out.call(
+                    data_ptr,
+                    tensor_data_ptr_ptr,
+                    tensor_data_len_ptr,
+                );
+            }
         });
         assert!(tensor_data_len as usize == n_outputs);
         unsafe { std::slice::from_raw_parts(tensor_data_ptr, tensor_data_len as usize) }
@@ -611,27 +927,31 @@ impl Compiler {
             return Err(anyhow!("Expected {} states, got {}", n_states, id.len()));
         }
         self.with_data(|compiler| {
-            unsafe { compiler.jit_functions.set_id.call(id.as_mut_ptr()); };
+            unsafe {
+                compiler.jit_functions.set_id.call(id.as_mut_ptr());
+            };
             Ok(())
         })
     }
 
     fn get_native_machine() -> Result<TargetMachine> {
-        Target::initialize_native(&InitializationConfig::default()).map_err(|e| anyhow!("{}", e))?;
+        Target::initialize_native(&InitializationConfig::default())
+            .map_err(|e| anyhow!("{}", e))?;
         let opt = OptimizationLevel::Default;
         let reloc = RelocMode::Default;
         let model = CodeModel::Default;
         let target_triple = TargetMachine::get_default_triple();
-        let target  = Target::from_triple(&target_triple).unwrap();
-        let target_machine = target.create_target_machine(
-            &target_triple,
-            TargetMachine::get_host_cpu_name().to_str().unwrap(),
-            TargetMachine::get_host_cpu_features().to_str().unwrap(),
-            opt,
-            reloc,
-            model
-        )
-        .unwrap();
+        let target = Target::from_triple(&target_triple).unwrap();
+        let target_machine = target
+            .create_target_machine(
+                &target_triple,
+                TargetMachine::get_host_cpu_name().to_str().unwrap(),
+                TargetMachine::get_host_cpu_features().to_str().unwrap(),
+                opt,
+                reloc,
+                model,
+            )
+            .unwrap();
         Ok(target_machine)
     }
 
@@ -642,15 +962,9 @@ impl Compiler {
         let model = CodeModel::Default;
         let target_triple = TargetTriple::create("wasm32-unknown-emscripten");
         let target = Target::from_triple(&target_triple).unwrap();
-        let target_machine = target.create_target_machine(
-            &target_triple,
-            "generic",
-            "",
-            opt,
-            reloc,
-            model
-        )
-        .unwrap();
+        let target_machine = target
+            .create_target_machine(&target_triple, "generic", "", opt, reloc, model)
+            .unwrap();
         Ok(target_machine)
     }
 
@@ -667,16 +981,20 @@ impl Compiler {
 
     pub fn write_object_file(&self, path: &Path) -> Result<()> {
         let target_machine = Compiler::get_native_machine()?;
-        self.with_data(|data|
-                target_machine.write_to_file(data.codegen.module(), FileType::Object, path).map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
-        )
+        self.with_data(|data| {
+            target_machine
+                .write_to_file(data.codegen.module(), FileType::Object, path)
+                .map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
+        })
     }
 
     pub fn write_wasm_object_file(&self, path: &Path) -> Result<()> {
         let target_machine = Compiler::get_wasm_machine()?;
-        self.with_data(|data|
-                target_machine.write_to_file(data.codegen.module(), FileType::Object, path).map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
-        )
+        self.with_data(|data| {
+            target_machine
+                .write_to_file(data.codegen.module(), FileType::Object, path)
+                .map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
+        })
     }
 
     pub fn number_of_states(&self) -> usize {
@@ -689,13 +1007,14 @@ impl Compiler {
     pub fn number_of_outputs(&self) -> usize {
         *self.borrow_number_of_outputs()
     }
-
 }
-
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser::{parse_ds_string, parse_ms_string}, continuous::ModelInfo};
+    use crate::{
+        continuous::ModelInfo,
+        parser::{parse_ds_string, parse_ms_string},
+    };
     use approx::assert_relative_eq;
 
     use super::*;
@@ -713,7 +1032,9 @@ mod tests {
         let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
         assert_eq!(model_info.errors.len(), 0);
         let discrete_model = DiscreteModel::from(&model_info);
-        let object = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_object_file").unwrap();
+        let object =
+            Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_object_file")
+                .unwrap();
         let path = Path::new("main.o");
         object.write_object_file(path).unwrap();
     }
@@ -730,13 +1051,22 @@ mod tests {
         let mut up0 = vec![1.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
-        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler
+            .set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice())
+            .unwrap();
         assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
         assert_relative_eq!(up0.as_slice(), vec![0.].as_slice());
-        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
+        compiler
+            .residual(
+                0.,
+                u0.as_slice(),
+                up0.as_slice(),
+                data.as_mut_slice(),
+                res.as_mut_slice(),
+            )
+            .unwrap();
         assert_relative_eq!(res.as_slice(), vec![1.].as_slice());
     }
-
 
     #[test]
     fn test_stop() {
@@ -762,28 +1092,49 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_stop").unwrap();
+        let compiler =
+            Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_stop")
+                .unwrap();
         let mut u0 = vec![1.];
         let mut up0 = vec![1.];
         let mut res = vec![0.];
         let mut stop = vec![0.];
         let mut data = compiler.get_new_data();
-        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
-        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
-        compiler.calc_stop(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), stop.as_mut_slice()).unwrap();
+        compiler
+            .set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice())
+            .unwrap();
+        compiler
+            .residual(
+                0.,
+                u0.as_slice(),
+                up0.as_slice(),
+                data.as_mut_slice(),
+                res.as_mut_slice(),
+            )
+            .unwrap();
+        compiler
+            .calc_stop(
+                0.,
+                u0.as_slice(),
+                up0.as_slice(),
+                data.as_mut_slice(),
+                stop.as_mut_slice(),
+            )
+            .unwrap();
         assert_relative_eq!(stop[0], 0.5);
         assert_eq!(stop.len(), 1);
     }
 
     fn tensor_test_common(text: &str, tmp_loc: &str, tensor_name: &str) -> Vec<Vec<f64>> {
-        let full_text = format!("
+        let full_text = format!(
+            "
             {}
-        ", text);
+        ",
+            text
+        );
         let model = parse_ds_string(full_text.as_str()).unwrap();
         let discrete_model = match DiscreteModel::build("$name", &model) {
-            Ok(model) => {
-                model
-            }
+            Ok(model) => model,
             Err(e) => {
                 panic!("{}", e.as_error_message(full_text.as_str()));
             }
@@ -800,11 +1151,30 @@ mod tests {
         }
         let mut results = Vec::new();
         let inputs = vec![1.; n_inputs];
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
-        compiler.set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice()).unwrap();
-        compiler.residual(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice(), res.as_mut_slice()).unwrap();
-        compiler.calc_out(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice()).unwrap();
-        results.push(compiler.get_tensor_data(tensor_name, data.as_slice()).unwrap().to_vec());
+        compiler
+            .set_inputs(inputs.as_slice(), data.as_mut_slice())
+            .unwrap();
+        compiler
+            .set_u0(u0.as_mut_slice(), up0.as_mut_slice(), data.as_mut_slice())
+            .unwrap();
+        compiler
+            .residual(
+                0.,
+                u0.as_slice(),
+                up0.as_slice(),
+                data.as_mut_slice(),
+                res.as_mut_slice(),
+            )
+            .unwrap();
+        compiler
+            .calc_out(0., u0.as_slice(), up0.as_slice(), data.as_mut_slice())
+            .unwrap();
+        results.push(
+            compiler
+                .get_tensor_data(tensor_name, data.as_slice())
+                .unwrap()
+                .to_vec(),
+        );
         for i in 0..n_inputs {
             let mut dinputs = vec![0.; n_inputs];
             dinputs[i] = 1.0;
@@ -812,11 +1182,54 @@ mod tests {
             let mut du0 = vec![0.];
             let mut dup0 = vec![0.];
             let mut dres = vec![0.];
-            compiler.set_inputs_grad(inputs.as_slice(), dinputs.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), up0.as_mut_slice(), dup0.as_mut_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.residual_grad(0., u0.as_slice(), du0.as_slice(), up0.as_slice(), dup0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
-            compiler.calc_out_grad(0., u0.as_slice(), du0.as_slice(), up0.as_slice(), dup0.as_slice(), grad_data[i].as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            results.push(compiler.get_tensor_data(tensor_name, ddata.as_slice()).unwrap().to_vec());
+            compiler
+                .set_inputs_grad(
+                    inputs.as_slice(),
+                    dinputs.as_slice(),
+                    grad_data[i].as_mut_slice(),
+                    ddata.as_mut_slice(),
+                )
+                .unwrap();
+            compiler
+                .set_u0_grad(
+                    u0.as_mut_slice(),
+                    du0.as_mut_slice(),
+                    up0.as_mut_slice(),
+                    dup0.as_mut_slice(),
+                    grad_data[i].as_mut_slice(),
+                    ddata.as_mut_slice(),
+                )
+                .unwrap();
+            compiler
+                .residual_grad(
+                    0.,
+                    u0.as_slice(),
+                    du0.as_slice(),
+                    up0.as_slice(),
+                    dup0.as_slice(),
+                    grad_data[i].as_mut_slice(),
+                    ddata.as_mut_slice(),
+                    res.as_mut_slice(),
+                    dres.as_mut_slice(),
+                )
+                .unwrap();
+            compiler
+                .calc_out_grad(
+                    0.,
+                    u0.as_slice(),
+                    du0.as_slice(),
+                    up0.as_slice(),
+                    dup0.as_slice(),
+                    grad_data[i].as_mut_slice(),
+                    ddata.as_mut_slice(),
+                )
+                .unwrap();
+            results.push(
+                compiler
+                    .get_tensor_data(tensor_name, ddata.as_slice())
+                    .unwrap()
+                    .to_vec(),
+            );
         }
         results
     }
@@ -852,7 +1265,9 @@ mod tests {
         }
     }
 
-    tensor_test!{
+    tensor_test! {
+        heaviside_function0: "r { heaviside(-0.1) }" expect "r" vec![0.0],
+        heaviside_function1: "r { heaviside(0.0) }" expect "r" vec![1.0],
         exp_function: "r { exp(2) }" expect "r" vec![f64::exp(2.0)],
         pow_function: "r { pow(4.3245, 0.5) }" expect "r" vec![f64::powf(4.3245, 0.5)],
         arcsinh_function: "r { arcsinh(0.5) }" expect "r" vec![f64::asinh(0.5)],
@@ -906,7 +1321,7 @@ mod tests {
         " expect "r" vec![(((0.05138515824298745 * f64::asinh(-0.7999999999999998 / ((1.897_366_596_101_027_5e-5 * f64::powf(f64::max(f64::min(30730.7554386, 51217.92521874824), 0.000512179257309275), 0.5)) * f64::powf(51217.9257309275 - f64::max(f64::min(30730.7554386, 51217.92521874824), 0.000512179257309275), 0.5)))) + (((((((2.16216 + (0.07645 * f64::tanh(30.834 - (57.858397200000006 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (2.1581 * f64::tanh(52.294 - (53.412228 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) - (0.14169 * f64::tanh(11.0923 - (21.0852666 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (0.2051 * f64::tanh(1.4684 - (5.829105600000001 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (0.2531 * f64::tanh(4.291641337386018 - (8.069908814589667 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) - (0.02167 * f64::tanh(-87.5 + (177.0 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (1e-06 * ((1.0 / f64::max(f64::min(0.6, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + f64::max(f64::min(0.6, 0.9999999999), 1e-10))))))) - ((0.05138515824298745 * f64::asinh(0.6666666666666666 / ((0.0006324555320336759 * f64::powf(f64::max(f64::min(19986.6095951, 24983.261744011077), 0.000249832619938437), 0.5)) * f64::powf(24983.2619938437 - f64::max(f64::min(19986.6095951, 24983.261744011077), 0.000249832619938437), 0.5)))) + ((((((((((0.194 + (1.5 * f64::exp(-120.0 * f64::max(f64::min(0.8, 0.9999999999), 1e-10)))) + (0.0351 * f64::tanh(-3.44578313253012 + (12.048192771084336 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.0045 * f64::tanh(-7.1344537815126055 + (8.403361344537815 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.035 * f64::tanh(-18.466 + (20.0 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.0147 * f64::tanh(-14.705882352941176 + (29.41176470588235 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.102 * f64::tanh(-1.3661971830985917 + (7.042253521126761 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.022 * f64::tanh(-54.8780487804878 + (60.975609756097555 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.011 * f64::tanh(-5.486725663716814 + (44.24778761061947 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) + (0.0155 * f64::tanh(-3.6206896551724133 + (34.48275862068965 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) + (1e-06 * ((1.0 / f64::max(f64::min(0.8, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + f64::max(f64::min(0.8, 0.9999999999), 1e-10))))))))],
         pybamm_subexpression5: "r_i { (1.0 / max(min(0.6, 0.9999999999), 1e-10)),}" expect "r" vec![1.0 / f64::max(f64::min(0.6, 0.9999999999), 1e-10)],
         pybamm_subexpression6: "r_i { arcsinh(1.8973665961010275e-05), }" expect "r" vec![f64::asinh(1.897_366_596_101_027_5e-5)],
-        pybamm_subexpression7: "r_i { (1.5 * exp(-120.0 * max(min(0.8, 0.9999999999), 1e-10))), }" expect "r" vec![1.5 * f64::exp(-120.0 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))], 
+        pybamm_subexpression7: "r_i { (1.5 * exp(-120.0 * max(min(0.8, 0.9999999999), 1e-10))), }" expect "r" vec![1.5 * f64::exp(-120.0 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))],
         pybamm_subexpression8: "r_i { (0.07645 * tanh(30.834 - (57.858397200000006 * max(min(0.6, 0.9999999999), 1e-10)))), }" expect "r" vec![0.07645 * f64::tanh(30.834 - (57.858397200000006 * f64::max(f64::min(0.6, 0.9999999999), 1e-10)))],
         pybamm_subexpression9: "r_i { (1e-06 * ((1.0 / max(min(0.8, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + max(min(0.8, 0.9999999999), 1e-10))))), }" expect "r" vec![1e-06 * ((1.0 / f64::max(f64::min(0.8, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + f64::max(f64::min(0.8, 0.9999999999), 1e-10))))],
         pybamm_subexpression10: "r_i { (1.0 / (-1.0 + max(min(0.8, 0.9999999999), 1e-10))), }" expect "r" vec![1.0 / (-1.0 + f64::max(f64::min(0.8, 0.9999999999), 1e-10))],
@@ -914,7 +1329,7 @@ mod tests {
         derived: "r_i {2, 3} k_i { 2 * r_i }" expect "k" vec![4., 6.],
         concatenate: "r_i {2, 3} k_i { r_i, 2 * r_i }" expect "k" vec![2., 3., 4., 6.],
         ones_matrix_dense: "I_ij { (0:2, 0:2): 1 }" expect "I" vec![1., 1., 1., 1.],
-        dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" vec![1., 2., 3., 4.], 
+        dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" vec![1., 2., 3., 4.],
         dense_vector: "x_i { (0:4): 1, (4:5): 2 }" expect "x" vec![1., 1., 1., 1., 2.],
         identity_matrix_diagonal: "I_ij { (0..2, 0..2): 1 }" expect "I" vec![1., 1.],
         concatenate_diagonal: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): A_ij, (2:4, 2:4): A_ij }" expect "B" vec![1., 1., 1., 1.],
@@ -964,7 +1379,7 @@ mod tests {
         )*
         }
     }
-    
+
     tensor_grad_test! {
         const_grad: "r { 3 }" expect "r" vec![0.],
         const_vec_grad: "r_i { 3, 4 }" expect "r" vec![0., 0.],
@@ -973,7 +1388,6 @@ mod tests {
         state_grad: "r { 2 * y }" expect "r" vec![2.],
         input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.],
     }
-
 
     #[test]
     fn test_repeated_grad() {
@@ -1003,14 +1417,16 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = match DiscreteModel::build("test_repeated_grad", &model) {
-            Ok(model) => {
-                model
-            }
+            Ok(model) => model,
             Err(e) => {
                 panic!("{}", e.as_error_message(full_text));
             }
         };
-        let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_repeated_grad").unwrap();
+        let compiler = Compiler::from_discrete_model(
+            &discrete_model,
+            "test_output/compiler_test_repeated_grad",
+        )
+        .unwrap();
         let mut u0 = vec![1.];
         let mut up0 = vec![1.];
         let mut du0 = vec![1.];
@@ -1024,9 +1440,37 @@ mod tests {
         for _ in 0..3 {
             let inputs = vec![2.; n_inputs];
             let dinputs = vec![1.; n_inputs];
-            compiler.set_inputs_grad(inputs.as_slice(), dinputs.as_slice(), data.as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.set_u0_grad(u0.as_mut_slice(), du0.as_mut_slice(), up0.as_mut_slice(), dup0.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice()).unwrap();
-            compiler.residual_grad(0., u0.as_slice(), du0.as_slice(), up0.as_slice(), dup0.as_slice(), data.as_mut_slice(), ddata.as_mut_slice(), res.as_mut_slice(), dres.as_mut_slice()).unwrap();
+            compiler
+                .set_inputs_grad(
+                    inputs.as_slice(),
+                    dinputs.as_slice(),
+                    data.as_mut_slice(),
+                    ddata.as_mut_slice(),
+                )
+                .unwrap();
+            compiler
+                .set_u0_grad(
+                    u0.as_mut_slice(),
+                    du0.as_mut_slice(),
+                    up0.as_mut_slice(),
+                    dup0.as_mut_slice(),
+                    data.as_mut_slice(),
+                    ddata.as_mut_slice(),
+                )
+                .unwrap();
+            compiler
+                .residual_grad(
+                    0.,
+                    u0.as_slice(),
+                    du0.as_slice(),
+                    up0.as_slice(),
+                    dup0.as_slice(),
+                    data.as_mut_slice(),
+                    ddata.as_mut_slice(),
+                    res.as_mut_slice(),
+                    dres.as_mut_slice(),
+                )
+                .unwrap();
             assert_relative_eq!(dres.as_slice(), vec![-8.].as_slice());
         }
     }
@@ -1062,7 +1506,11 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_additional_functions").unwrap();
+        let compiler = Compiler::from_discrete_model(
+            &discrete_model,
+            "test_output/compiler_test_additional_functions",
+        )
+        .unwrap();
         let (n_states, n_inputs, n_outputs, n_data, _n_stop) = compiler.get_dims();
         assert_eq!(n_states, 2);
         assert_eq!(n_inputs, 1);
@@ -1071,8 +1519,10 @@ mod tests {
 
         let mut data = compiler.get_new_data();
         let inputs = vec![1.1];
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
-        
+        compiler
+            .set_inputs(inputs.as_slice(), data.as_mut_slice())
+            .unwrap();
+
         let inputs = compiler.get_tensor_data("k", data.as_slice()).unwrap();
         assert_relative_eq!(inputs, vec![1.1].as_slice());
 
@@ -1082,15 +1532,27 @@ mod tests {
 
         let mut u = vec![0., 0.];
         let mut up = vec![0., 0.];
-        compiler.set_u0(u.as_mut_slice(), up.as_mut_slice(), data.as_mut_slice()).unwrap();
+        compiler
+            .set_u0(u.as_mut_slice(), up.as_mut_slice(), data.as_mut_slice())
+            .unwrap();
         assert_relative_eq!(u.as_slice(), vec![1., 2.].as_slice());
         assert_relative_eq!(up.as_slice(), vec![0., 0.].as_slice());
 
         let mut rr = vec![1., 1.];
-        compiler.residual(0., u.as_slice(), up.as_slice(), data.as_mut_slice(), rr.as_mut_slice()).unwrap();
+        compiler
+            .residual(
+                0.,
+                u.as_slice(),
+                up.as_slice(),
+                data.as_mut_slice(),
+                rr.as_mut_slice(),
+            )
+            .unwrap();
         assert_relative_eq!(rr.as_slice(), vec![0., 0.].as_slice());
 
-        compiler.calc_out(0., u.as_slice(), up.as_slice(), data.as_mut_slice()).unwrap();
+        compiler
+            .calc_out(0., u.as_slice(), up.as_slice(), data.as_mut_slice())
+            .unwrap();
         let out = compiler.get_out(data.as_slice());
         assert_relative_eq!(out, vec![1., 2., 4.].as_slice());
     }

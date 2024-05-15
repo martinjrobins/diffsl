@@ -7,5 +7,6 @@ pub use data_layout::DataLayout;
 pub mod translation;
 pub use translation::{Translation, TranslationFrom, TranslationTo};
 
+#[allow(clippy::too_many_arguments)]
 pub mod compiler;
 pub use compiler::Compiler;

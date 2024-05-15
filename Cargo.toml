@@ -1,6 +1,6 @@
 [package]
 name = "diffsl"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "A compiler for a domain-specific language for ordinary differential equations (ODE)."
 license-file = "LICENSE.txt"

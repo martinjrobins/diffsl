@@ -212,7 +212,9 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_tensor(tensor);
         }
         self.insert_tensor(model.out());
-        self.insert_tensor(model.lhs());
+        if let Some(lhs) = model.lhs() {
+            self.insert_tensor(lhs);
+        }
         self.insert_tensor(model.rhs());
     }
 
@@ -1624,22 +1626,28 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_param(name, alloca);
         }
 
-        self.insert_dot_state(model.state_dot());
-        self.insert_data(model);
-        self.insert_indices();
+        // only put code in this function if we have a state_dot and lhs
+        if model.state_dot().is_some() && model.lhs().is_some() {
+            let state_dot = model.state_dot().unwrap();
+            let lhs = model.lhs().unwrap();
 
-        // calculate time dependant definitions
-        for tensor in model.time_dep_defns() {
-            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+            self.insert_dot_state(state_dot);
+            self.insert_data(model);
+            self.insert_indices();
+
+            // calculate time dependant definitions
+            for tensor in model.time_dep_defns() {
+                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+            }
+
+            for a in model.dstate_dep_defns() {
+                self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+            }
+
+            // mass
+            let res_ptr = self.get_param("rr");
+            self.jit_compile_tensor(lhs, Some(*res_ptr))?;
         }
-
-        for a in model.dstate_dep_defns() {
-            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
-        }
-
-        // mass
-        let res_ptr = self.get_param("rr");
-        self.jit_compile_tensor(model.lhs(), Some(*res_ptr))?;
 
         self.builder.build_return(None)?;
 

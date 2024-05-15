@@ -73,9 +73,13 @@ impl DataLayout {
         model.time_indep_defns().iter().for_each(&mut add_tensor);
         model.time_dep_defns().iter().for_each(&mut add_tensor);
         add_tensor(model.state());
-        add_tensor(model.state_dot());
+        if let Some(state_dot) = model.state_dot() {
+            add_tensor(state_dot);
+        }
         model.state_dep_defns().iter().for_each(&mut add_tensor);
-        add_tensor(model.lhs());
+        if let Some(lhs) = model.lhs() {
+            add_tensor(lhs);
+        }
         add_tensor(model.rhs());
         add_tensor(model.out());
 

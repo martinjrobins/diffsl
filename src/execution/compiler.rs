@@ -70,6 +70,7 @@ pub struct Compiler {
     number_of_states: usize,
     number_of_parameters: usize,
     number_of_outputs: usize,
+    has_mass: bool,
     data_layout: DataLayout,
     output_base_filename: String,
 }
@@ -131,12 +132,14 @@ impl Compiler {
             acc + data_layout.get_data_length(name).unwrap()
         });
         let number_of_outputs = data_layout.get_data_length("out").unwrap();
+        let has_mass = model.lhs().is_some();
         CompilerTryBuilder {
             data_layout,
             number_of_states,
             number_of_parameters,
             number_of_outputs,
             context,
+            has_mass,
             output_base_filename: out.to_owned(),
             data_builder: |context| {
                 let module = context.create_module(model.name());
@@ -518,7 +521,14 @@ impl Compiler {
         });
     }
 
+    pub fn has_mass(&self) -> bool {
+        *self.borrow_has_mass()
+    }
+
     pub fn mass(&self, t: f64, yp: &[f64], data: &mut [f64], rr: &mut [f64]) {
+        if !self.borrow_has_mass() {
+            panic!("Model does not have a mass function");
+        }
         let number_of_states = *self.borrow_number_of_states();
         if yp.len() != number_of_states {
             panic!("Expected {} states, got {}", number_of_states, yp.len());
@@ -916,15 +926,12 @@ mod tests {
         ";
         let compiler = Compiler::from_discrete_str(text).unwrap();
         let mut u0 = vec![0.];
-        let up0 = vec![2.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
         compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         assert_relative_eq!(res.as_slice(), vec![-1.].as_slice());
-        compiler.mass(0., up0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
-        assert_relative_eq!(res.as_slice(), vec![2.].as_slice());
     }
 
     #[test]

@@ -671,8 +671,8 @@ mod tests {
         let models = parse_ms_string(text).unwrap();
         let model_info = ModelInfo::build("circuit", &models).unwrap();
         assert_eq!(model_info.variables.len(), 3);
-        assert!(model_info.variables.get("i").is_some());
-        assert!(model_info.variables.get("t").is_some());
+        assert!(model_info.variables.contains_key("i"));
+        assert!(model_info.variables.contains_key("t"));
         assert_eq!(model_info.stmts.len(), 0);
         assert_eq!(model_info.errors.len(), 0);
     }

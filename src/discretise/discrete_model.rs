@@ -28,7 +28,7 @@ use super::ValidationErrors;
 // M(t, u_dot) = F(t, u)
 pub struct DiscreteModel<'s> {
     name: &'s str,
-    lhs: Tensor<'s>,
+    lhs: Option<Tensor<'s>>,
     rhs: Tensor<'s>,
     out: Tensor<'s>,
     time_indep_defns: Vec<Tensor<'s>>,
@@ -37,7 +37,7 @@ pub struct DiscreteModel<'s> {
     dstate_dep_defns: Vec<Tensor<'s>>,
     inputs: Vec<Tensor<'s>>,
     state: Tensor<'s>,
-    state_dot: Tensor<'s>,
+    state_dot: Option<Tensor<'s>>,
     is_algebraic: Vec<bool>,
     stop: Option<Tensor<'s>>,
 }
@@ -61,11 +61,15 @@ impl<'s> fmt::Display for DiscreteModel<'s> {
             writeln!(f, "{}", defn)?;
         }
         writeln!(f, "{}", self.state)?;
-        writeln!(f, "{}", self.state_dot)?;
+        if let Some(state_dot) = &self.state_dot {
+            writeln!(f, "{}", state_dot)?;
+        }
         for defn in &self.state_dep_defns {
             writeln!(f, "{}", defn)?;
         }
-        writeln!(f, "{}", self.lhs)?;
+        if let Some(lhs) = &self.lhs {
+            writeln!(f, "{}", lhs)?;
+        }
         writeln!(f, "{}", self.rhs)?;
         if let Some(stop) = &self.stop {
             writeln!(f, "{}", stop)?;
@@ -80,7 +84,7 @@ impl<'s> DiscreteModel<'s> {
     pub fn new(name: &'s str) -> Self {
         Self {
             name,
-            lhs: Tensor::new_empty("M"),
+            lhs: None,
             rhs: Tensor::new_empty("F"),
             out: Tensor::new_empty("out"),
             time_indep_defns: Vec::new(),
@@ -89,7 +93,7 @@ impl<'s> DiscreteModel<'s> {
             dstate_dep_defns: Vec::new(),
             inputs: Vec::new(),
             state: Tensor::new_empty("u"),
-            state_dot: Tensor::new_empty("u_dot"),
+            state_dot: None,
             is_algebraic: Vec::new(),
             stop: None,
         }
@@ -223,7 +227,6 @@ impl<'s> DiscreteModel<'s> {
         let mut env = Env::default();
         let mut ret = Self::new(name);
         let mut read_state = false;
-        let mut read_dot_state = false;
         let mut read_out = false;
         let mut span_f = None;
         let mut span_m = None;
@@ -257,9 +260,8 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "dudt" => {
-                            read_dot_state = true;
                             if let Some(built) = Self::build_array(tensor, &mut env) {
-                                ret.state_dot = built;
+                                ret.state_dot = Some(built);
                             }
                             if ret.state.rank() > 1 {
                                 env.errs_mut().push(ValidationError::new(
@@ -285,7 +287,7 @@ impl<'s> DiscreteModel<'s> {
                         "M" => {
                             span_m = Some(span);
                             if let Some(built) = Self::build_array(tensor, &mut env) {
-                                ret.lhs = built;
+                                ret.lhs = Some(built);
                             }
                             // check that M is not state dependent and only depends on dudt
                             let m = env.get("M").unwrap();
@@ -368,18 +370,22 @@ impl<'s> DiscreteModel<'s> {
         }
 
         // set is_algebraic for every state based on equations
-        for i in 0..std::cmp::min(
-            ret.state_dot.elmts().len(),
-            std::cmp::min(ret.lhs.elmts().len(), ret.rhs.elmts().len()),
-        ) {
-            let sp = &ret.state_dot.elmts()[i];
-            let feq = ret.lhs.elmts()[i].expr();
-            let geq = ret.rhs.elmts()[i].expr();
-            let geq_deps = geq.get_dependents();
-            ret.is_algebraic.push(true);
-            if let Some(sp_name) = sp.name() {
-                if Some(sp_name) == feq.kind.as_name() && !geq_deps.contains(sp_name) {
-                    ret.is_algebraic[i] = false;
+        if ret.state_dot.is_some() && ret.lhs.is_some() {
+            let state_dot = ret.state_dot.as_ref().unwrap();
+            let lhs = ret.lhs.as_ref().unwrap();
+            for i in 0..std::cmp::min(
+                state_dot.elmts().len(),
+                std::cmp::min(lhs.elmts().len(), ret.rhs.elmts().len()),
+            ) {
+                let sp = &state_dot.elmts()[i];
+                let feq = lhs.elmts()[i].expr();
+                let geq = ret.rhs.elmts()[i].expr();
+                let geq_deps = geq.get_dependents();
+                ret.is_algebraic.push(true);
+                if let Some(sp_name) = sp.name() {
+                    if Some(sp_name) == feq.kind.as_name() && !geq_deps.contains(sp_name) {
+                        ret.is_algebraic[i] = false;
+                    }
                 }
             }
         }
@@ -402,66 +408,6 @@ impl<'s> DiscreteModel<'s> {
             }
         }
 
-        // if dudt is not defined, add it
-        if !read_dot_state {
-            let zero = Ast {
-                kind: AstKind::new_num(0.0),
-                span: None,
-            };
-            let indices = if ret.state.shape().is_empty() {
-                None
-            } else {
-                let first = Ast {
-                    kind: AstKind::new_integer(0),
-                    span: None,
-                };
-                let last = Ast {
-                    kind: AstKind::new_integer(i64::try_from(ret.state.shape()[0]).unwrap()),
-                    span: None,
-                };
-                let index = Ast {
-                    kind: AstKind::new_indice(first, Some(last), Some(":")),
-                    span: None,
-                };
-                Some(Ast {
-                    kind: AstKind::new_vector(vec![index]),
-                    span: None,
-                })
-            };
-
-            let zero_block = Ast {
-                kind: AstKind::new_tensor_elmt(zero, indices),
-                span: None,
-            };
-            let indices = ret.state.indices().to_vec();
-            let default_dudt = ast::Tensor::new("dudt", indices, vec![zero_block]);
-            if let Some(built) = Self::build_array(&default_dudt, &mut env) {
-                ret.state_dot = built;
-            }
-            read_dot_state = true;
-        }
-
-        // if M is not defined, add it
-        if span_m.is_none() {
-            span_m = Some(span_all);
-            let name = "M";
-            let dudt_block = Ast {
-                kind: AstKind::new_tensor_elmt(
-                    Ast {
-                        kind: AstKind::new_indexed_name("dudt", ret.state_dot.indices().to_vec()),
-                        span: None,
-                    },
-                    None,
-                ),
-                span: None,
-            };
-            let indices = ret.state_dot.indices().to_vec();
-            let default_m = ast::Tensor::new(name, indices, vec![dudt_block]);
-            if let Some(built) = Self::build_array(&default_m, &mut env) {
-                ret.lhs = built;
-            }
-        }
-
         // check that we've read all the required arrays
         if !read_state {
             env.errs_mut().push(ValidationError::new(
@@ -469,21 +415,9 @@ impl<'s> DiscreteModel<'s> {
                 span_all,
             ));
         }
-        if !read_dot_state {
-            env.errs_mut().push(ValidationError::new(
-                "missing 'dudt' array".to_string(),
-                span_all,
-            ));
-        }
         if span_f.is_none() {
             env.errs_mut().push(ValidationError::new(
                 "missing 'F' array".to_string(),
-                span_all,
-            ));
-        }
-        if span_m.is_none() {
-            env.errs_mut().push(ValidationError::new(
-                "missing 'M' array".to_string(),
                 span_all,
             ));
         }
@@ -494,10 +428,10 @@ impl<'s> DiscreteModel<'s> {
             ));
         }
         if let Some(span) = span_f {
-            Self::check_match(&ret.lhs, &ret.state, span, &mut env);
+            Self::check_match(&ret.rhs, &ret.state, span, &mut env);
         }
         if let Some(span) = span_m {
-            Self::check_match(&ret.rhs, &ret.state, span, &mut env);
+            Self::check_match(ret.lhs.as_ref().unwrap(), &ret.state, span, &mut env);
         }
 
         if env.errs().is_empty() {
@@ -703,11 +637,11 @@ impl<'s> DiscreteModel<'s> {
         let dstate_dep_defns = Vec::new();
         DiscreteModel {
             name,
-            lhs,
+            lhs: Some(lhs),
             rhs,
             inputs,
             state,
-            state_dot,
+            state_dot: Some(state_dot),
             out: out_array,
             time_indep_defns,
             time_dep_defns,
@@ -740,16 +674,16 @@ impl<'s> DiscreteModel<'s> {
         &self.state
     }
 
-    pub fn state_dot(&self) -> &Tensor<'s> {
-        &self.state_dot
+    pub fn state_dot(&self) -> Option<&Tensor<'s>> {
+        self.state_dot.as_ref()
     }
 
     pub fn out(&self) -> &Tensor<'s> {
         &self.out
     }
 
-    pub fn lhs(&self) -> &Tensor<'s> {
-        &self.lhs
+    pub fn lhs(&self) -> Option<&Tensor<'s>> {
+        self.lhs.as_ref()
     }
 
     pub fn rhs(&self) -> &Tensor<'s> {
@@ -798,7 +732,7 @@ mod tests {
         assert_eq!(discrete.time_dep_defns[0].name(), "inputVoltage");
         assert_eq!(discrete.state_dep_defns.len(), 1);
         assert_eq!(discrete.state_dep_defns[0].name(), "doubleI");
-        assert_eq!(discrete.lhs.name(), "M");
+        assert_eq!(discrete.lhs().unwrap().name(), "M");
         assert_eq!(discrete.rhs.name(), "F");
         assert_eq!(discrete.state.shape()[0], 1);
         assert_eq!(discrete.state.elmts().len(), 1);

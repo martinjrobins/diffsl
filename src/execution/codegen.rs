@@ -9,8 +9,7 @@ use inkwell::values::{
     BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, GlobalValue,
     IntValue, PointerValue,
 };
-use inkwell::{AddressSpace, IntPredicate};
-use inkwell_140::FloatPredicate;
+use inkwell::{AddressSpace, IntPredicate, FloatPredicate};
 use std::collections::HashMap;
 use std::iter::zip;
 

@@ -70,6 +70,7 @@ llvm-sys-170 = { package = "llvm-sys", version = "170.0.1", optional = true }
 
 [build-dependencies]
 cmake = "0.1.50"
+bindgen = "0.69.4"
 
 [dev-dependencies]
 divan = "0.1.14"

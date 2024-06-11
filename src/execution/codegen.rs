@@ -1,15 +1,16 @@
 use anyhow::{anyhow, Result};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
+use inkwell::context::AsContextRef;
 use inkwell::intrinsics::Intrinsic;
-use inkwell::module::{Linkage, Module};
+use inkwell::module::Module;
 use inkwell::passes::PassManager;
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, FloatType, IntType};
+use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, GlobalValue,
-    IntValue, PointerValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
+use llvm_sys::prelude::LLVMValueRef;
 use std::collections::HashMap;
 use std::iter::zip;
 
@@ -17,6 +18,9 @@ type RealType = f64;
 
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
+use crate::enzyme::{
+    CConcreteType_DT_Double, CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis, EnzymeCreateForwardDiff, EnzymeFreeTypeTree, EnzymeLogicRef, EnzymeMergeTypeTree, EnzymeNewTypeTree, EnzymeNewTypeTreeCT, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq, FreeEnzymeLogic, FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue, CDIFFE_TYPE_DFT_CONSTANT, CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED
+};
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 
 /// Convenience type alias for the `sum` function.
@@ -1719,9 +1723,32 @@ impl<'ctx> CodeGen<'ctx> {
             globals.enzyme_dupnoneed.as_pointer_value(),
             "enzyme_dupnoneed",
         )?;
+        let mut input_activity = Vec::new();
+        let mut arg_trees = Vec::new();
         for (i, _arg) in original_function.get_param_iter().enumerate() {
             let param_index = start_param_index[i];
             let fn_arg = function.get_nth_param(param_index).unwrap();
+
+            // we'll probably only get double or pointers to doubles, so let assume this for now
+            let concrete_type = match _arg.get_type() {
+                BasicTypeEnum::PointerType(_) => CConcreteType_DT_Pointer,
+                BasicTypeEnum::FloatType(_) => CConcreteType_DT_Double,
+                _ => panic!("unsupported type"),
+            };
+            let new_tree = unsafe { EnzymeNewTypeTreeCT(concrete_type, self.context.as_ctx_ref() as *mut LLVMOpaqueContext) };
+            unsafe { EnzymeTypeTreeOnlyEq(new_tree, -1) };
+
+            // pointer to double
+            if concrete_type == CConcreteType_DT_Pointer {
+                let inner_concrete_type = match _arg.get_type().into_pointer_type().get_element_type() {
+                    AnyTypeEnum::FloatType(_) => CConcreteType_DT_Double,
+                    _ => panic!("unsupported type"),
+                };
+                let inner_new_tree = unsafe { EnzymeNewTypeTreeCT(inner_concrete_type, self.context.as_ctx_ref() as *mut LLVMOpaqueContext) };
+                //unsafe { EnzymeTypeTreeOnlyEq(inner_new_tree, -1) };
+                unsafe { EnzymeMergeTypeTree(new_tree, inner_new_tree) };
+            }
+            arg_trees.push(new_tree);
             match args_type[i] {
                 CompileGradientArgType::Dup => {
                     // let enzyme know its an active arg
@@ -1733,6 +1760,8 @@ impl<'ctx> CodeGen<'ctx> {
                     // pass in the darg value
                     let fn_darg = function.get_nth_param(param_index + 1).unwrap();
                     enzyme_fn_args.push(fn_darg.into());
+
+                    input_activity.push(CDIFFE_TYPE_DFT_DUP_ARG);
                 }
                 CompileGradientArgType::DupNoNeed => {
                     // let enzyme know its an active arg we don't need
@@ -1744,6 +1773,8 @@ impl<'ctx> CodeGen<'ctx> {
                     // pass in the darg value
                     let fn_darg = function.get_nth_param(param_index + 1).unwrap();
                     enzyme_fn_args.push(fn_darg.into());
+
+                    input_activity.push(CDIFFE_TYPE_DFT_DUP_NONEED);
                 }
                 CompileGradientArgType::Const => {
                     // let enzyme know its a constant arg
@@ -1751,22 +1782,81 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // pass in the arg value
                     enzyme_fn_args.push(fn_arg.into());
+
+                    input_activity.push(CDIFFE_TYPE_DFT_CONSTANT);
                 }
             }
+        }
+        // if we have void ret, this must be false;
+        let ret_primary_ret = false;
+        let ret_activity = CDIFFE_TYPE_DFT_DUP_NONEED;
+        let ret_tree = unsafe { EnzymeNewTypeTree() };
+
+        // always optimize
+        let fnc_opt_base = true;
+        let logic_ref: EnzymeLogicRef = unsafe { CreateEnzymeLogic(fnc_opt_base as u8) };
+
+        let kv_tmp = IntList {
+            data: std::ptr::null_mut(),
+            size: 0,
+        };
+        let mut known_values = vec![kv_tmp; input_activity.len()];
+
+        let fn_type_info = CFnTypeInfo {
+            Arguments: arg_trees.as_mut_ptr(),
+            Return: ret_tree,
+            KnownValues: known_values.as_mut_ptr(),
+        };
+
+        let type_analysis: EnzymeTypeAnalysisRef =
+            unsafe { CreateTypeAnalysis(logic_ref, std::ptr::null_mut(), std::ptr::null_mut(), 0) };
+
+        let mut args_uncacheable = vec![0; arg_trees.len()];
+
+        let enzyme_function = unsafe {
+            EnzymeCreateForwardDiff(
+                logic_ref, // Logic
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                original_function.as_value_ref() as *mut LLVMOpaqueValue,
+                ret_activity, // LLVM function, return type
+                input_activity.as_mut_ptr(),
+                input_activity.len(), // constant arguments
+                type_analysis,        // type analysis struct
+                ret_primary_ret as u8,
+                CDerivativeMode_DEM_ForwardMode, // return value, dret_used, top_level which was 1
+                1,                               // free memory
+                1,                               // vector mode width
+                std::ptr::null_mut(),
+                fn_type_info, // additional_arg, type info (return + args)
+                args_uncacheable.as_mut_ptr(),
+                args_uncacheable.len(), // uncacheable arguments
+                std::ptr::null_mut(),   // write augmented function to this
+            )
+        };
+
+        // free everything
+        unsafe { FreeEnzymeLogic(logic_ref) };
+        unsafe { FreeTypeAnalysis(type_analysis) };
+        unsafe { EnzymeFreeTypeTree(ret_tree) };
+        for tree in arg_trees {
+            unsafe { EnzymeFreeTypeTree(tree) };
         }
 
         // construct enzyme function
         // double df = __enzyme_fwddiff<double>((void*)f, enzyme_dup, x, dx, enzyme_dup, y, dy);
-        let enzyme_fn_type = void_type.fn_type(&enzyme_fn_type, false);
-        let orig_fn_name = original_function.get_name().to_str().unwrap();
-        let enzyme_fn_name = format!("__enzyme_fwddiff_{}", orig_fn_name);
-        let enzyme_function = self.module.add_function(
-            enzyme_fn_name.as_str(),
-            enzyme_fn_type,
-            Some(Linkage::External),
-        );
+        //let enzyme_fn_type = void_type.fn_type(&enzyme_fn_type, false);
+        //let orig_fn_name = original_function.get_name().to_str().unwrap();
+        //let enzyme_fn_name = format!("__enzyme_fwddiff_{}", orig_fn_name);
+        //let enzyme_function = self.module.add_function(
+        //    enzyme_fn_name.as_str(),
+        //    enzyme_fn_type,
+        //    Some(Linkage::External),
+        //);
 
         // call enzyme function
+        let enzyme_function =
+            unsafe { FunctionValue::new(enzyme_function as LLVMValueRef) }.unwrap();
         self.builder
             .build_call(enzyme_function, enzyme_fn_args.as_slice(), "enzyme_call")?;
 

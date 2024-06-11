@@ -8,8 +8,6 @@ use crate::parser::parse_ds_string;
 use crate::utils::find_executable;
 use crate::utils::find_runtime_path;
 use anyhow::Result;
-use inkwell::memory_buffer::MemoryBuffer;
-use inkwell::module::Module;
 use inkwell::targets::TargetMachine;
 use inkwell::{
     context::Context,
@@ -148,6 +146,7 @@ impl Compiler {
                 let mut codegen = CodeGen::new(model, context, module, real_type, real_type_str);
 
                 let _set_u0 = codegen.compile_set_u0(model)?;
+                // TODO: run some optimisation passes on the function before compiling the gradient
                 let _set_u0_grad = codegen.compile_gradient(
                     _set_u0,
                     &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
@@ -182,37 +181,7 @@ impl Compiler {
                 )?;
                 let _get_output = codegen.compile_get_tensor(model, "out")?;
 
-                let pre_enzyme_bitcodefilename = Compiler::get_pre_enzyme_bitcode_filename(out);
-                codegen
-                    .module()
-                    .write_bitcode_to_path(Path::new(&pre_enzyme_bitcodefilename));
-
-                let opt_name = Compiler::find_opt()?;
-                let enzyme_lib = Compiler::find_enzyme_lib()?;
-
-                let bitcodefilename = Compiler::get_bitcode_filename(out);
-                let output = Command::new(opt_name)
-                    .arg(pre_enzyme_bitcodefilename.as_str())
-                    .arg(format!("-load={}", enzyme_lib))
-                    .arg("-enzyme")
-                    .arg("--enable-new-pm=0")
-                    .arg("-O3")
-                    .arg("-o")
-                    .arg(bitcodefilename.as_str())
-                    .output()?;
-
-                if let Some(code) = output.status.code() {
-                    if code != 0 {
-                        println!("{}", String::from_utf8_lossy(&output.stderr));
-                        return Err(anyhow!("{} returned error code {}", opt_name, code));
-                    }
-                }
-
-                let buffer =
-                    MemoryBuffer::create_from_file(Path::new(bitcodefilename.as_str())).unwrap();
-                let module = Module::parse_bitcode_from_buffer(&buffer, context)
-                    .map_err(|e| anyhow::anyhow!("Error parsing bitcode: {:?}", e))?;
-                let ee = module
+                let ee = codegen.module()
                     .create_jit_execution_engine(OptimizationLevel::Default)
                     .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
 
@@ -387,9 +356,6 @@ impl Compiler {
         Ok(())
     }
 
-    fn get_pre_enzyme_bitcode_filename(out: &str) -> String {
-        format!("{}.pre-enzyme.bc", out)
-    }
 
     fn get_bitcode_filename(out: &str) -> String {
         format!("{}.bc", out)

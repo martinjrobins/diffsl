@@ -9,6 +9,7 @@ extern crate pest;
 #[macro_use]
 extern crate pest_derive;
 
+pub mod enzyme;
 pub mod ast;
 pub mod continuous;
 pub mod discretise;
@@ -26,6 +27,8 @@ pub extern crate inkwell_120 as inkwell;
 pub extern crate inkwell_130 as inkwell;
 #[cfg(feature = "inkwell-140")]
 pub extern crate inkwell_140 as inkwell;
+#[cfg(feature = "inkwell-140")]
+pub extern crate llvm_sys_140 as llvm_sys;
 #[cfg(feature = "inkwell-150")]
 pub extern crate inkwell_150 as inkwell;
 #[cfg(feature = "inkwell-160")]

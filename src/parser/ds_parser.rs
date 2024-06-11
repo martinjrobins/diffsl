@@ -1,3 +1,4 @@
+#![allow(clippy::empty_docs)]
 #[derive(Parser)]
 #[grammar = "parser/ds_grammar.pest"] // relative to src
 pub struct DsParser;

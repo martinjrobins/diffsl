@@ -181,7 +181,8 @@ impl Compiler {
                 )?;
                 let _get_output = codegen.compile_get_tensor(model, "out")?;
 
-                let ee = codegen.module()
+                let ee = codegen
+                    .module()
                     .create_jit_execution_engine(OptimizationLevel::Default)
                     .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
 
@@ -355,7 +356,6 @@ impl Compiler {
         }
         Ok(())
     }
-
 
     fn get_bitcode_filename(out: &str) -> String {
         format!("{}.bc", out)

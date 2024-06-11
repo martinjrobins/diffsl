@@ -7,7 +7,8 @@ use inkwell::module::Module;
 use inkwell::passes::PassManager;
 use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue
+    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
+    GlobalValue, IntValue, PointerValue,
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use llvm_sys::prelude::LLVMValueRef;
@@ -19,7 +20,12 @@ type RealType = f64;
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
 use crate::enzyme::{
-    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis, EnzymeCreateForwardDiff, EnzymeFreeTypeTree, EnzymeLogicRef, EnzymeMergeTypeTree, EnzymeNewTypeTreeCT, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq, FreeEnzymeLogic, FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue, CDIFFE_TYPE_DFT_CONSTANT, CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED
+    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Pointer,
+    CDerivativeMode_DEM_ForwardMode, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis,
+    EnzymeCreateForwardDiff, EnzymeFreeTypeTree, EnzymeLogicRef, EnzymeMergeTypeTree,
+    EnzymeNewTypeTreeCT, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq, FreeEnzymeLogic,
+    FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue, CDIFFE_TYPE_DFT_CONSTANT,
+    CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED,
 };
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 
@@ -1698,7 +1704,7 @@ impl<'ctx> CodeGen<'ctx> {
             let fn_arg = function.get_nth_param(param_index).unwrap();
 
             // we'll probably only get double or pointers to doubles, so let assume this for now
-            // todo: perhaps refactor this into a recursive function.....
+            // todo: perhaps refactor this into a recursive function, might be overkill
             let concrete_type = match _arg.get_type() {
                 BasicTypeEnum::PointerType(_) => CConcreteType_DT_Pointer,
                 BasicTypeEnum::FloatType(t) => {
@@ -1707,25 +1713,36 @@ impl<'ctx> CodeGen<'ctx> {
                     } else {
                         panic!("unsupported type")
                     }
-                },
+                }
                 _ => panic!("unsupported type"),
             };
-            let new_tree = unsafe { EnzymeNewTypeTreeCT(concrete_type, self.context.as_ctx_ref() as *mut LLVMOpaqueContext) };
+            let new_tree = unsafe {
+                EnzymeNewTypeTreeCT(
+                    concrete_type,
+                    self.context.as_ctx_ref() as *mut LLVMOpaqueContext,
+                )
+            };
             unsafe { EnzymeTypeTreeOnlyEq(new_tree, -1) };
 
             // pointer to double
             if concrete_type == CConcreteType_DT_Pointer {
-                let inner_concrete_type = match _arg.get_type().into_pointer_type().get_element_type() {
-                    AnyTypeEnum::FloatType(t) => {
-                        if t == self.context.f64_type() {
-                            CConcreteType_DT_Double
-                        } else {
-                            panic!("unsupported type")
+                let inner_concrete_type =
+                    match _arg.get_type().into_pointer_type().get_element_type() {
+                        AnyTypeEnum::FloatType(t) => {
+                            if t == self.context.f64_type() {
+                                CConcreteType_DT_Double
+                            } else {
+                                panic!("unsupported type")
+                            }
                         }
-                    },
-                    _ => panic!("unsupported type"),
+                        _ => panic!("unsupported type"),
+                    };
+                let inner_new_tree = unsafe {
+                    EnzymeNewTypeTreeCT(
+                        inner_concrete_type,
+                        self.context.as_ctx_ref() as *mut LLVMOpaqueContext,
+                    )
                 };
-                let inner_new_tree = unsafe { EnzymeNewTypeTreeCT(inner_concrete_type, self.context.as_ctx_ref() as *mut LLVMOpaqueContext) };
                 unsafe { EnzymeTypeTreeOnlyEq(inner_new_tree, -1) };
                 unsafe { EnzymeTypeTreeOnlyEq(inner_new_tree, -1) };
                 unsafe { EnzymeMergeTypeTree(new_tree, inner_new_tree) };
@@ -1764,7 +1781,12 @@ impl<'ctx> CodeGen<'ctx> {
         // if we have void ret, this must be false;
         let ret_primary_ret = false;
         let ret_activity = CDIFFE_TYPE_DFT_CONSTANT;
-        let ret_tree = unsafe { EnzymeNewTypeTreeCT(CConcreteType_DT_Anything, self.context.as_ctx_ref() as *mut LLVMOpaqueContext) };
+        let ret_tree = unsafe {
+            EnzymeNewTypeTreeCT(
+                CConcreteType_DT_Anything,
+                self.context.as_ctx_ref() as *mut LLVMOpaqueContext,
+            )
+        };
 
         // always optimize
         let fnc_opt_base = true;

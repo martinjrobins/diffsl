@@ -50,9 +50,7 @@ fn main() {
 
     // compile enzyme
     let (libdir, incdir) = compile_enzyme(llvm_lib_dir.clone());
-    let libnames = [
-        format!("EnzymeStatic-{}", llvm_version),
-    ];
+    let libnames = [format!("EnzymeStatic-{}", llvm_version)];
 
     // bind enzyme api
     let bindings_rs = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");

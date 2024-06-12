@@ -1,4 +1,6 @@
 use anyhow::anyhow;
+use inkwell::passes::PassManager;
+use inkwell::passes::PassManagerBuilder;
 use std::env;
 use std::path::Path;
 use uid::Id;
@@ -8,8 +10,6 @@ use crate::parser::parse_ds_string;
 use crate::utils::find_executable;
 use crate::utils::find_runtime_path;
 use anyhow::Result;
-use inkwell::memory_buffer::MemoryBuffer;
-use inkwell::module::Module;
 use inkwell::targets::TargetMachine;
 use inkwell::{
     context::Context,
@@ -145,16 +145,27 @@ impl Compiler {
                 let module = context.create_module(model.name());
                 let real_type = context.f64_type();
                 let real_type_str = "f64";
+
                 let mut codegen = CodeGen::new(model, context, module, real_type, real_type_str);
 
                 let _set_u0 = codegen.compile_set_u0(model)?;
-                let _set_u0_grad = codegen.compile_gradient(
-                    _set_u0,
-                    &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
-                )?;
                 let _calc_stop = codegen.compile_calc_stop(model)?;
                 let _rhs = codegen.compile_rhs(model)?;
                 let _mass = codegen.compile_mass(model)?;
+                let _calc_out = codegen.compile_calc_out(model)?;
+                let _set_id = codegen.compile_set_id(model)?;
+                let _get_dims = codegen.compile_get_dims(model)?;
+                let _set_inputs = codegen.compile_set_inputs(model)?;
+                let _get_output = codegen.compile_get_tensor(model, "out")?;
+
+                // optimise at -O2 no unrolling before giving to enzyme
+                let builder = PassManagerBuilder::create();
+                builder.set_optimization_level(OptimizationLevel::Default);
+                builder.set_disable_unroll_loops(true);
+                let pass_manager = PassManager::create(());
+                builder.populate_module_pass_manager(&pass_manager);
+                pass_manager.run_on(codegen.module());
+
                 let _rhs_grad = codegen.compile_gradient(
                     _rhs,
                     &[
@@ -164,7 +175,10 @@ impl Compiler {
                         CompileGradientArgType::DupNoNeed,
                     ],
                 )?;
-                let _calc_out = codegen.compile_calc_out(model)?;
+                let _set_inputs_grad = codegen.compile_gradient(
+                    _set_inputs,
+                    &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+                )?;
                 let _calc_out_grad = codegen.compile_gradient(
                     _calc_out,
                     &[
@@ -173,47 +187,14 @@ impl Compiler {
                         CompileGradientArgType::Dup,
                     ],
                 )?;
-                let _set_id = codegen.compile_set_id(model)?;
-                let _get_dims = codegen.compile_get_dims(model)?;
-                let _set_inputs = codegen.compile_set_inputs(model)?;
-                let _set_inputs_grad = codegen.compile_gradient(
-                    _set_inputs,
+                let _set_u0_grad = codegen.compile_gradient(
+                    _set_u0,
                     &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
                 )?;
-                let _get_output = codegen.compile_get_tensor(model, "out")?;
 
-                let pre_enzyme_bitcodefilename = Compiler::get_pre_enzyme_bitcode_filename(out);
-                codegen
+                let ee = codegen
                     .module()
-                    .write_bitcode_to_path(Path::new(&pre_enzyme_bitcodefilename));
-
-                let opt_name = Compiler::find_opt()?;
-                let enzyme_lib = Compiler::find_enzyme_lib()?;
-
-                let bitcodefilename = Compiler::get_bitcode_filename(out);
-                let output = Command::new(opt_name)
-                    .arg(pre_enzyme_bitcodefilename.as_str())
-                    .arg(format!("-load={}", enzyme_lib))
-                    .arg("-enzyme")
-                    .arg("--enable-new-pm=0")
-                    .arg("-O3")
-                    .arg("-o")
-                    .arg(bitcodefilename.as_str())
-                    .output()?;
-
-                if let Some(code) = output.status.code() {
-                    if code != 0 {
-                        println!("{}", String::from_utf8_lossy(&output.stderr));
-                        return Err(anyhow!("{} returned error code {}", opt_name, code));
-                    }
-                }
-
-                let buffer =
-                    MemoryBuffer::create_from_file(Path::new(bitcodefilename.as_str())).unwrap();
-                let module = Module::parse_bitcode_from_buffer(&buffer, context)
-                    .map_err(|e| anyhow::anyhow!("Error parsing bitcode: {:?}", e))?;
-                let ee = module
-                    .create_jit_execution_engine(OptimizationLevel::Default)
+                    .create_jit_execution_engine(OptimizationLevel::Aggressive)
                     .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
 
                 let set_u0 = Compiler::jit("set_u0", &ee)?;
@@ -385,10 +366,6 @@ impl Compiler {
             }
         }
         Ok(())
-    }
-
-    fn get_pre_enzyme_bitcode_filename(out: &str) -> String {
-        format!("{}.pre-enzyme.bc", out)
     }
 
     fn get_bitcode_filename(out: &str) -> String {

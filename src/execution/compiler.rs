@@ -1,4 +1,6 @@
 use anyhow::anyhow;
+use inkwell::passes::PassManager;
+use inkwell::passes::PassManagerBuilder;
 use std::env;
 use std::path::Path;
 use uid::Id;
@@ -143,17 +145,27 @@ impl Compiler {
                 let module = context.create_module(model.name());
                 let real_type = context.f64_type();
                 let real_type_str = "f64";
+
                 let mut codegen = CodeGen::new(model, context, module, real_type, real_type_str);
 
                 let _set_u0 = codegen.compile_set_u0(model)?;
-                // TODO: run some optimisation passes on the function before compiling the gradient
-                let _set_u0_grad = codegen.compile_gradient(
-                    _set_u0,
-                    &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
-                )?;
                 let _calc_stop = codegen.compile_calc_stop(model)?;
                 let _rhs = codegen.compile_rhs(model)?;
                 let _mass = codegen.compile_mass(model)?;
+                let _calc_out = codegen.compile_calc_out(model)?;
+                let _set_id = codegen.compile_set_id(model)?;
+                let _get_dims = codegen.compile_get_dims(model)?;
+                let _set_inputs = codegen.compile_set_inputs(model)?;
+                let _get_output = codegen.compile_get_tensor(model, "out")?;
+
+                // optimise at -O2 no unrolling before giving to enzyme
+                let builder = PassManagerBuilder::create();
+                builder.set_optimization_level(OptimizationLevel::Default);
+                builder.set_disable_unroll_loops(true);
+                let pass_manager = PassManager::create(());
+                builder.populate_module_pass_manager(&pass_manager);
+                pass_manager.run_on(codegen.module());
+
                 let _rhs_grad = codegen.compile_gradient(
                     _rhs,
                     &[
@@ -163,7 +175,10 @@ impl Compiler {
                         CompileGradientArgType::DupNoNeed,
                     ],
                 )?;
-                let _calc_out = codegen.compile_calc_out(model)?;
+                let _set_inputs_grad = codegen.compile_gradient(
+                    _set_inputs,
+                    &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+                )?;
                 let _calc_out_grad = codegen.compile_gradient(
                     _calc_out,
                     &[
@@ -172,18 +187,14 @@ impl Compiler {
                         CompileGradientArgType::Dup,
                     ],
                 )?;
-                let _set_id = codegen.compile_set_id(model)?;
-                let _get_dims = codegen.compile_get_dims(model)?;
-                let _set_inputs = codegen.compile_set_inputs(model)?;
-                let _set_inputs_grad = codegen.compile_gradient(
-                    _set_inputs,
+                let _set_u0_grad = codegen.compile_gradient(
+                    _set_u0,
                     &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
                 )?;
-                let _get_output = codegen.compile_get_tensor(model, "out")?;
 
                 let ee = codegen
                     .module()
-                    .create_jit_execution_engine(OptimizationLevel::Default)
+                    .create_jit_execution_engine(OptimizationLevel::Aggressive)
                     .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
 
                 let set_u0 = Compiler::jit("set_u0", &ee)?;

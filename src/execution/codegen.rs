@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::AsContextRef;
@@ -1405,6 +1406,14 @@ impl<'ctx> CodeGen<'ctx> {
         let fn_type = void_type.fn_type(&[real_ptr_type.into(), real_ptr_type.into()], false);
         let fn_arg_names = &["data", "u0"];
         let function = self.module.add_function("set_u0", fn_type, None);
+
+        // add noalias
+        let alias_id = Attribute::get_named_enum_kind_id("noalias");
+        let noalign = self.context.create_enum_attribute(alias_id, 0);
+        for i in &[0, 1] {
+            function.add_attribute(AttributeLoc::Param(*i), noalign);
+        }
+
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
         self.builder.position_at_end(basic_block);
@@ -1456,6 +1465,14 @@ impl<'ctx> CodeGen<'ctx> {
         );
         let fn_arg_names = &["t", "u", "data"];
         let function = self.module.add_function("calc_out", fn_type, None);
+
+        // add noalias
+        let alias_id = Attribute::get_named_enum_kind_id("noalias");
+        let noalign = self.context.create_enum_attribute(alias_id, 0);
+        for i in &[1, 2] {
+            function.add_attribute(AttributeLoc::Param(*i), noalign);
+        }
+
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
         self.builder.position_at_end(basic_block);
@@ -1506,6 +1523,14 @@ impl<'ctx> CodeGen<'ctx> {
         );
         let fn_arg_names = &["t", "u", "data", "root"];
         let function = self.module.add_function("calc_stop", fn_type, None);
+
+        // add noalias
+        let alias_id = Attribute::get_named_enum_kind_id("noalias");
+        let noalign = self.context.create_enum_attribute(alias_id, 0);
+        for i in &[1, 2, 3] {
+            function.add_attribute(AttributeLoc::Param(*i), noalign);
+        }
+
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
         self.builder.position_at_end(basic_block);
@@ -1554,6 +1579,14 @@ impl<'ctx> CodeGen<'ctx> {
         );
         let fn_arg_names = &["t", "u", "data", "rr"];
         let function = self.module.add_function("rhs", fn_type, None);
+
+        // add noalias
+        let alias_id = Attribute::get_named_enum_kind_id("noalias");
+        let noalign = self.context.create_enum_attribute(alias_id, 0);
+        for i in &[1, 2, 3] {
+            function.add_attribute(AttributeLoc::Param(*i), noalign);
+        }
+
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
         self.builder.position_at_end(basic_block);
@@ -1611,6 +1644,14 @@ impl<'ctx> CodeGen<'ctx> {
         );
         let fn_arg_names = &["t", "dudt", "data", "rr"];
         let function = self.module.add_function("mass", fn_type, None);
+
+        // add noalias
+        let alias_id = Attribute::get_named_enum_kind_id("noalias");
+        let noalign = self.context.create_enum_attribute(alias_id, 0);
+        for i in &[1, 2, 3] {
+            function.add_attribute(AttributeLoc::Param(*i), noalign);
+        }
+
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
         self.builder.position_at_end(basic_block);
@@ -1672,13 +1713,19 @@ impl<'ctx> CodeGen<'ctx> {
             .ptr_type(AddressSpace::default());
         let mut enzyme_fn_type: Vec<BasicMetadataTypeEnum> = vec![orig_fn_type_ptr.into()];
         let mut start_param_index: Vec<u32> = Vec::new();
+        let mut ptr_arg_indices: Vec<u32> = Vec::new();
         for (i, arg) in original_function.get_param_iter().enumerate() {
             start_param_index.push(u32::try_from(fn_type.len()).unwrap());
-            fn_type.push(arg.get_type().into());
+            let arg_type = arg.get_type();
+            fn_type.push(arg_type.into());
 
             // constant args with type T in the original funciton have 2 args of type [int, T]
             enzyme_fn_type.push(self.int_type.into());
             enzyme_fn_type.push(arg.get_type().into());
+
+            if arg_type.is_pointer_type() {
+                ptr_arg_indices.push(u32::try_from(i).unwrap());
+            }
 
             match args_type[i] {
                 CompileGradientArgType::Dup | CompileGradientArgType::DupNoNeed => {
@@ -1692,6 +1739,14 @@ impl<'ctx> CodeGen<'ctx> {
         let fn_type = void_type.fn_type(fn_type.as_slice(), false);
         let fn_name = format!("{}_grad", original_function.get_name().to_str().unwrap());
         let function = self.module.add_function(fn_name.as_str(), fn_type, None);
+
+        // add noalias
+        let alias_id = Attribute::get_named_enum_kind_id("noalias");
+        let noalign = self.context.create_enum_attribute(alias_id, 0);
+        for i in ptr_arg_indices {
+            function.add_attribute(AttributeLoc::Param(i), noalign);
+        }
+
         let basic_block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
         self.builder.position_at_end(basic_block);

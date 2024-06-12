@@ -14,10 +14,11 @@ fn compile_enzyme(llvm_dir: String) -> (String, String) {
 }
 
 fn enzyme_bindings(inc_dirs: &[String]) -> Result<Bindings, BindgenError> {
-    let mut builder = Builder::default().header("wrapper.h");
-
-    // turn on c++ mode
-    builder = builder.clang_arg("-x").clang_arg("c++");
+    let mut builder = Builder::default()
+        .header("wrapper.h")
+        .generate_comments(false)
+        .clang_arg("-x")
+        .clang_arg("c++");
 
     // add include dirs
     for dir in inc_dirs {

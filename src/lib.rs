@@ -196,6 +196,24 @@ mod tests {
     }
 
     #[test]
+    fn test_heat2d_example() {
+        let compiler = ds_example_compiler("heat2d");
+        let inputs = vec![];
+        let mut u0 = vec![0.0; 100];
+        let mut data = compiler.get_new_data();
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+
+        u0 = vec![0.0; 100];
+        let up0 = vec![0.0; 100];
+        let mut res = vec![0.0; 100];
+
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+        compiler.mass(0., up0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+        //todo: check output or snapshot?
+    }
+
+    #[test]
     fn test_object_file() {
         let text = "
         model logistic_growth(r -> NonNegative, k -> NonNegative, y(t), z(t)) { 

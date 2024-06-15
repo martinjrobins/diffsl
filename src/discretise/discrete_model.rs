@@ -250,8 +250,17 @@ impl<'s> DiscreteModel<'s> {
                         "u" => {
                             read_state = true;
                             if let Some(built) = Self::build_array(tensor, &mut env) {
+                                // check that u is dense
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "u must be a dense tensor".to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.state = built;
                             }
+
+                            // check that u is scalar or vector
                             if ret.state.rank() > 1 {
                                 env.errs_mut().push(ValidationError::new(
                                     "u must be a scalar or 1D vector".to_string(),
@@ -261,22 +270,47 @@ impl<'s> DiscreteModel<'s> {
                         }
                         "dudt" => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
+                                // check that dudt is dense
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "dudt must be a dense tensor".to_string(),
+                                        span,
+                                    ));
+                                }
+
+                                // check that dudt is scalar or vector
+                                if built.rank() > 1 {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "dudt must be a scalar or 1D vector".to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.state_dot = Some(built);
-                            }
-                            if ret.state.rank() > 1 {
-                                env.errs_mut().push(ValidationError::new(
-                                    "dudt must be a scalar or 1D vector".to_string(),
-                                    span,
-                                ));
                             }
                         }
                         "F" => {
                             span_f = Some(span);
                             if let Some(built) = Self::build_array(tensor, &mut env) {
+                                // check that F is scalar or 1D vector
+                                if built.rank() > 1 {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "F must be a scalar or 1D vector".to_string(),
+                                        span,
+                                    ));
+                                }
+
+                                // check that F is a dense tensor
+                                if !built.layout().is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "F must be a dense tensor".to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.rhs = built;
                             }
-                            // check that F is not dstatedt dependent and only depends on u
+
                             if let Some(f) = env.get("F") {
+                                // check that F is not dstatedt dependent and only depends on u
                                 if f.is_dstatedt_dependent() {
                                     env.errs_mut().push(ValidationError::new(
                                         "F must not be dependent on dudt".to_string(),
@@ -288,10 +322,26 @@ impl<'s> DiscreteModel<'s> {
                         "M" => {
                             span_m = Some(span);
                             if let Some(built) = Self::build_array(tensor, &mut env) {
+                                // check that M is dense
+                                if !built.layout().is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "M must be a dense tensor".to_string(),
+                                        span,
+                                    ));
+                                }
+
+                                // check that M is scalar or 1D vector
+                                if built.rank() > 1 {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "M must be a scalar or 1D vector".to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.lhs = Some(built);
                             }
-                            // check that M is not state dependent and only depends on dudt
+
                             if let Some(m) = env.get("M") {
+                                // check that M is not state dependent and only depends on dudt
                                 if m.is_state_dependent() {
                                     env.errs_mut().push(ValidationError::new(
                                         "M must not be dependent on u".to_string(),
@@ -302,10 +352,26 @@ impl<'s> DiscreteModel<'s> {
                         }
                         "stop" => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
+                                // check that stop is scalar or 1D vector
+                                if built.rank() > 1 {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "stop must be a scalar or 1D vector".to_string(),
+                                        tensor_ast.span,
+                                    ));
+                                }
+
+                                // check that stop is a dense tensor
+                                if !built.layout().is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "stop must be a dense tensor".to_string(),
+                                        tensor_ast.span,
+                                    ));
+                                }
                                 ret.stop = Some(built);
                             }
-                            // check that stop is not dependent on dudt
+
                             if let Some(stop) = env.get("stop") {
+                                // check that stop is not dependent on dudt
                                 if stop.is_dstatedt_dependent() {
                                     env.errs_mut().push(ValidationError::new(
                                         "stop must not be dependent on dudt".to_string(),
@@ -317,14 +383,24 @@ impl<'s> DiscreteModel<'s> {
                         "out" => {
                             read_out = true;
                             if let Some(built) = Self::build_array(tensor, &mut env) {
+                                // check out is dense
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "out must be a dense tensor".to_string(),
+                                        tensor_ast.span,
+                                    ));
+                                }
+
+                                // check that out is scalar or vector
                                 if built.rank() > 1 {
                                     env.errs_mut().push(ValidationError::new(
-                                        "output shape must be a scalar or 1D vector".to_string(),
+                                        "out must be a scalar or 1D vector".to_string(),
                                         tensor_ast.span,
                                     ));
                                 }
                                 ret.out = built;
                             }
+
                             // check that out is not dependent on dudt
                             if let Some(out) = env.get("out") {
                                 if out.is_dstatedt_dependent() {
@@ -1059,6 +1135,38 @@ mod tests {
                 y,
             }
         " ["M must not be dependent on u",],
+        error_reserved_sparse_matrix: "
+            u_ij {
+                (0, 0): 1,
+                (1, 1): 1,
+            }
+            dudt_ij {
+                (0, 0): 1,
+                (1, 1): 1,
+            }
+            M_ij {
+                (0, 0): 1,
+                (1, 1): 1,
+            }
+            F_ij {
+                (0, 0): 1,
+                (1, 1): 1,
+            }
+            out_ij {
+                (0, 0): 1,
+                (1, 1): 1,
+            }
+        " ["u must be a scalar or 1D vector", 
+           "u must be a dense tensor",
+           "dudt must be a scalar or 1D vector",
+           "dudt must be a dense tensor",
+           "M must be a scalar or 1D vector",
+           "M must be a dense tensor",
+           "F must be a scalar or 1D vector",
+           "F must be a dense tensor",
+           "out must be a scalar or 1D vector",
+           "out must be a dense tensor",
+           ],
 
 
     );

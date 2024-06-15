@@ -315,11 +315,10 @@ impl<'ctx> CodeGen<'ctx> {
                     // support some llvm intrinsics
                     "sin" | "cos" | "tan" | "exp" | "log" | "log10" | "sqrt" | "abs"
                     | "copysign" | "pow" | "min" | "max" => {
-                        let arg_len = 1;
-                        let intrinsic_name = match name {
-                            "min" => "minnum",
-                            "max" => "maxnum",
-                            _ => name,
+                        let (intrinsic_name, arg_len) = match name {
+                            "min" => ("minnum", 2),
+                            "max" => ("maxnum", 2),
+                            _ => (name, 1),
                         };
                         let llvm_name = format!("llvm.{}.{}", intrinsic_name, self.real_type_str);
                         let intrinsic = Intrinsic::find(&llvm_name).unwrap();

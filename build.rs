@@ -6,6 +6,7 @@ fn compile_enzyme(llvm_dir: String) -> (String, String) {
         .define("ENZYME_STATIC_LIB", "ON")
         .define("ENZYME_CLANG", "OFF")
         .define("LLVM_DIR", llvm_dir)
+        .define("CMAKE_CXX_FLAGS", "-Wno-comment -Wno-deprecated-declarations")
         .build();
     let dst_disp = dst.display();
     let lib_dir = format!("{}/lib", dst_disp);

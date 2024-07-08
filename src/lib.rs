@@ -45,8 +45,23 @@ pub extern crate inkwell_70 as inkwell;
 pub extern crate inkwell_80 as inkwell;
 #[cfg(feature = "inkwell-90")]
 pub extern crate inkwell_90 as inkwell;
+
+#[cfg(feature = "inkwell-100")]
+pub extern crate llvm_sys_100 as llvm_sys;
+#[cfg(feature = "inkwell-110")]
+pub extern crate llvm_sys_110 as llvm_sys;
+#[cfg(feature = "inkwell-120")]
+pub extern crate llvm_sys_120 as llvm_sys;
+#[cfg(feature = "inkwell-130")]
+pub extern crate llvm_sys_130 as llvm_sys;
 #[cfg(feature = "inkwell-140")]
 pub extern crate llvm_sys_140 as llvm_sys;
+#[cfg(feature = "inkwell-150")]
+pub extern crate llvm_sys_150 as llvm_sys;
+#[cfg(feature = "inkwell-160")]
+pub extern crate llvm_sys_160 as llvm_sys;
+#[cfg(feature = "inkwell-170")]
+pub extern crate llvm_sys_170 as llvm_sys;
 
 pub struct CompilerOptions {
     pub bitcode_only: bool,

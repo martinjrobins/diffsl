@@ -247,6 +247,36 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     #[llvm_versions(4.0..=14.0)]
+    fn build_gep<T: BasicType<'ctx>>(
+        &self,
+        _ty: T,
+        ptr: PointerValue<'ctx>,
+        ordered_indexes: &[IntValue<'ctx>],
+        name: &str,
+    ) -> Result<PointerValue<'ctx>> {
+        unsafe {
+            self.builder
+                .build_gep(ptr, ordered_indexes, name)
+                .map_err(|e| e.into())
+        }
+    }
+
+    #[llvm_versions(15.0..=latest)]
+    fn build_gep<T: BasicType<'ctx>>(
+        &self,
+        ty: T,
+        ptr: PointerValue<'ctx>,
+        ordered_indexes: &[IntValue<'ctx>],
+        name: &str,
+    ) -> Result<PointerValue<'ctx>> {
+        unsafe {
+            self.builder
+                .build_gep(ty, ptr, ordered_indexes, name)
+                .map_err(|e| e.into())
+        }
+    }
+
+    #[llvm_versions(4.0..=14.0)]
     fn build_load<T: BasicType<'ctx>>(
         &self,
         _ty: T,
@@ -927,20 +957,21 @@ impl<'ctx> CodeGen<'ctx> {
         let end_index =
             self.builder
                 .build_int_add(start_index, int_type.const_int(1, false), name)?;
-        let start_ptr = unsafe {
-            self.builder.build_gep(
-                *self.get_param("indices"),
-                &[start_index],
-                "start_index_ptr",
-            )?
-        };
+        let start_ptr = self.build_gep(
+            self.int_type,
+            *self.get_param("indices"),
+            &[start_index],
+            "start_index_ptr",
+        )?;
         let start_contract = self
             .build_load(self.int_type, start_ptr, "start")?
             .into_int_value();
-        let end_ptr = unsafe {
-            self.builder
-                .build_gep(*self.get_param("indices"), &[end_index], "end_index_ptr")?
-        };
+        let end_ptr = self.build_gep(
+            self.int_type,
+            *self.get_param("indices"),
+            &[end_index],
+            "end_index_ptr",
+        )?;
         let end_contract = self
             .build_load(self.int_type, end_ptr, "end")?
             .into_int_value();

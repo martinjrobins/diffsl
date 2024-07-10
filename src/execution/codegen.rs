@@ -6,7 +6,7 @@ use inkwell::context::AsContextRef;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
 use inkwell::passes::PassManager;
-use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, FloatType, IntType};
+use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, FloatType, IntType, BasicType};
 use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
     GlobalValue, IntValue, PointerValue,
@@ -243,6 +243,24 @@ impl<'ctx> CodeGen<'ctx> {
     fn insert_param(&mut self, name: &str, value: PointerValue<'ctx>) {
         self.variables.insert(name.to_owned(), value);
     }
+    
+    #[llvm_versions(4.0..=14.0)]
+    fn get_ptr_to_index<T: BasicType<'ctx>>(&self, _ty: T, ptr: &PointerValue<'ctx>, index: IntValue<'ctx>, name: &str) -> PointerValue<'ctx> {
+        unsafe {
+            self.create_entry_block_builder()
+                .build_in_bounds_gep(*ptr, &[index], name)
+                .unwrap()
+        }
+    }
+    
+    #[llvm_versions(15.0..=latest)]
+    fn get_ptr_to_index<T: BasicType<'ctx>>(&self, ty: T, ptr: &PointerValue<'ctx>, index: IntValue<'ctx>, name: &str) -> PointerValue<'ctx> {
+        unsafe {
+            self.create_entry_block_builder()
+                .build_in_bounds_gep(ty, *ptr, &[index], name)
+                .unwrap()
+        }
+    }
 
     fn insert_state(&mut self, u: &Tensor) {
         let mut data_index = 0;
@@ -253,11 +271,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .context
                     .i32_type()
                     .const_int(data_index.try_into().unwrap(), false);
-                let alloca = unsafe {
-                    self.create_entry_block_builder()
-                        .build_in_bounds_gep(*ptr, &[i], blk.name().unwrap())
-                        .unwrap()
-                };
+                let alloca = self.get_ptr_to_index(self.real_type, ptr, i, name);
                 self.variables.insert(name.to_owned(), alloca);
             }
             data_index += blk.nnz();
@@ -272,11 +286,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .context
                     .i32_type()
                     .const_int(data_index.try_into().unwrap(), false);
-                let alloca = unsafe {
-                    self.create_entry_block_builder()
-                        .build_in_bounds_gep(*ptr, &[i], blk.name().unwrap())
-                        .unwrap()
-                };
+                let alloca = self.get_ptr_to_index(self.real_type, ptr, i, blk.name().unwrap());
                 self.variables.insert(name.to_owned(), alloca);
             }
             data_index += blk.nnz();
@@ -289,11 +299,7 @@ impl<'ctx> CodeGen<'ctx> {
             .context
             .i32_type()
             .const_int(data_index.try_into().unwrap(), false);
-        let alloca = unsafe {
-            self.create_entry_block_builder()
-                .build_in_bounds_gep(ptr, &[i], tensor.name())
-                .unwrap()
-        };
+        let alloca = self.get_ptr_to_index(self.real_type, &ptr, i, tensor.name());
         self.variables.insert(tensor.name().to_owned(), alloca);
 
         //insert any named blocks
@@ -303,11 +309,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .context
                     .i32_type()
                     .const_int(data_index.try_into().unwrap(), false);
-                let alloca = unsafe {
-                    self.create_entry_block_builder()
-                        .build_in_bounds_gep(ptr, &[i], name)
-                        .unwrap()
-                };
+                let alloca = self.get_ptr_to_index(self.real_type, &ptr, i, name);
                 self.variables.insert(name.to_owned(), alloca);
             }
             // named blocks only supported for rank <= 1, so we can just add the nnz to get the next data index
@@ -922,13 +924,7 @@ impl<'ctx> CodeGen<'ctx> {
                     layout_index_plus_offset,
                     name,
                 )?;
-                let ptr = unsafe {
-                    self.builder.build_in_bounds_gep(
-                        *self.get_param("indices"),
-                        &[curr_index],
-                        name,
-                    )?
-                };
+                let ptr = self.get_ptr_to_index(self.int_type, self.get_param("indices"), curr_index, name);
                 let index = self.builder.build_load(ptr, name)?.into_int_value();
                 Ok(index)
             })
@@ -1040,13 +1036,7 @@ impl<'ctx> CodeGen<'ctx> {
                     layout_index_plus_offset,
                     name,
                 )?;
-                let ptr = unsafe {
-                    self.builder.build_in_bounds_gep(
-                        *self.get_param("indices"),
-                        &[curr_index],
-                        name,
-                    )?
-                };
+                let ptr = self.get_ptr_to_index(self.int_type, self.get_param("indices"), curr_index, name);
                 Ok(self.builder.build_load(ptr, name)?.into_int_value())
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
@@ -1246,20 +1236,12 @@ impl<'ctx> CodeGen<'ctx> {
                 let curr_index =
                     self.builder
                         .build_int_add(elmt_index_strided, translate_store_index, name)?;
-                let ptr = unsafe {
-                    self.builder.build_in_bounds_gep(
-                        *self.get_param("indices"),
-                        &[curr_index],
-                        name,
-                    )?
-                };
+                let ptr = self.get_ptr_to_index(self.int_type, self.get_param("indices"), curr_index, name);
                 self.builder.build_load(ptr, name)?.into_int_value()
             }
         };
-        let resi_ptr = unsafe {
-            self.builder
-                .build_in_bounds_gep(self.tensor_ptr(), &[res_index], name)?
-        };
+
+        let resi_ptr = self.get_ptr_to_index(self.real_type, &self.tensor_ptr(), res_index, name);
         self.builder.build_store(resi_ptr, float_value)?;
         Ok(())
     }
@@ -1365,9 +1347,7 @@ impl<'ctx> CodeGen<'ctx> {
                     panic!("unexpected layout");
                 };
                 let value_ptr = match iname_elmt_index {
-                    Some(index) => unsafe {
-                        self.builder.build_in_bounds_gep(*ptr, &[index], name)?
-                    },
+                    Some(index) => self.get_ptr_to_index(self.real_type, ptr, index, name),
                     None => *ptr,
                 };
                 Ok(self.builder.build_load(value_ptr, name)?.into_float_value())
@@ -2097,20 +2077,11 @@ impl<'ctx> CodeGen<'ctx> {
 
             // loop body - copy value from inputs to data
             let curr_input_index = index.as_basic_value().into_int_value();
-            let input_ptr = unsafe {
-                self.builder
-                    .build_in_bounds_gep(*ptr, &[curr_input_index], name.as_str())?
-            };
+            let input_ptr = self.get_ptr_to_index(self.real_type, ptr, curr_input_index, name.as_str());
             let curr_inputs_index =
                 self.builder
                     .build_int_add(inputs_start_index, curr_input_index, name.as_str())?;
-            let inputs_ptr = unsafe {
-                self.builder.build_in_bounds_gep(
-                    *self.get_param("inputs"),
-                    &[curr_inputs_index],
-                    name.as_str(),
-                )?
-            };
+            let inputs_ptr = self.get_ptr_to_index(self.real_type, self.get_param("inputs"), curr_inputs_index, name.as_str());
             let input_value = self
                 .builder
                 .build_load(inputs_ptr, name.as_str())?
@@ -2192,10 +2163,7 @@ impl<'ctx> CodeGen<'ctx> {
             let curr_id_index = self
                 .builder
                 .build_int_add(id_start_index, curr_blk_index, name)?;
-            let id_ptr = unsafe {
-                self.builder
-                    .build_in_bounds_gep(*self.get_param("id"), &[curr_id_index], name)?
-            };
+            let id_ptr = self.get_ptr_to_index(self.real_type, self.get_param("id"), curr_id_index, name);
             let is_algebraic_float = if *is_algebraic {
                 0.0 as RealType
             } else {

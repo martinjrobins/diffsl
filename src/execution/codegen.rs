@@ -12,6 +12,7 @@ use inkwell::values::{
     GlobalValue, IntValue, PointerValue,
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
+use inkwell_internals::llvm_versions;
 use llvm_sys::prelude::LLVMValueRef;
 use std::collections::HashMap;
 use std::iter::zip;
@@ -214,6 +215,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_tensor(model.rhs());
     }
 
+    #[llvm_versions(4.0..=14.0)]
     fn insert_indices(&mut self) {
         let indices = self.globals.as_ref().unwrap().indices;
         let zero = self.context.i32_type().const_int(0, false);
@@ -221,6 +223,19 @@ impl<'ctx> CodeGen<'ctx> {
             indices
                 .as_pointer_value()
                 .const_in_bounds_gep(&[zero, zero])
+        };
+        self.variables.insert("indices".to_owned(), ptr);
+    }
+
+    #[llvm_versions(15.0..latest)]
+    fn insert_indices(&mut self) {
+        let indices = self.globals.as_ref().unwrap().indices;
+        let i32_type = self.context.i32_type();
+        let zero = i32_type.const_int(0, false);
+        let ptr = unsafe {
+            indices
+                .as_pointer_value()
+                .const_in_bounds_gep(i32_type, &[zero, zero])
         };
         self.variables.insert("indices".to_owned(), ptr);
     }

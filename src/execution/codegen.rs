@@ -6,9 +6,7 @@ use inkwell::context::AsContextRef;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
 use inkwell::passes::PassManager;
-use inkwell::types::{
-    AnyTypeEnum, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType,
-};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
     GlobalValue, IntValue, PointerValue,
@@ -1859,13 +1857,13 @@ impl<'ctx> CodeGen<'ctx> {
         let mut enzyme_fn_args: Vec<BasicMetadataValueEnum> = Vec::new();
         let mut input_activity = Vec::new();
         let mut arg_trees = Vec::new();
-        for (i, _arg) in original_function.get_param_iter().enumerate() {
+        for (i, arg) in original_function.get_param_iter().enumerate() {
             let param_index = start_param_index[i];
             let fn_arg = function.get_nth_param(param_index).unwrap();
 
             // we'll probably only get double or pointers to doubles, so let assume this for now
             // todo: perhaps refactor this into a recursive function, might be overkill
-            let concrete_type = match _arg.get_type() {
+            let concrete_type = match arg.get_type() {
                 BasicTypeEnum::PointerType(_) => CConcreteType_DT_Pointer,
                 BasicTypeEnum::FloatType(t) => {
                     if t == self.context.f64_type() {
@@ -1886,17 +1884,8 @@ impl<'ctx> CodeGen<'ctx> {
 
             // pointer to double
             if concrete_type == CConcreteType_DT_Pointer {
-                let inner_concrete_type =
-                    match _arg.get_type().into_pointer_type().get_element_type() {
-                        AnyTypeEnum::FloatType(t) => {
-                            if t == self.context.f64_type() {
-                                CConcreteType_DT_Double
-                            } else {
-                                panic!("unsupported type")
-                            }
-                        }
-                        _ => panic!("unsupported type"),
-                    };
+                // assume the pointer is to a double
+                let inner_concrete_type = CConcreteType_DT_Double;
                 let inner_new_tree = unsafe {
                     EnzymeNewTypeTreeCT(
                         inner_concrete_type,

@@ -1,6 +1,8 @@
 use anyhow::anyhow;
-use inkwell::passes::PassManager;
-use inkwell::passes::PassManagerBuilder;
+use inkwell::{
+    passes::PassBuilderOptions,
+    targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
+};
 use std::env;
 use std::path::Path;
 use uid::Id;
@@ -10,11 +12,10 @@ use crate::parser::parse_ds_string;
 use crate::utils::find_executable;
 use crate::utils::find_runtime_path;
 use anyhow::Result;
-use inkwell::targets::TargetMachine;
 use inkwell::{
     context::Context,
     execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer},
-    targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple},
+    targets::{FileType, TargetTriple},
     OptimizationLevel,
 };
 use ouroboros::self_referencing;
@@ -159,12 +160,38 @@ impl Compiler {
                 let _get_output = codegen.compile_get_tensor(model, "out")?;
 
                 // optimise at -O2 no unrolling before giving to enzyme
-                let builder = PassManagerBuilder::create();
-                builder.set_optimization_level(OptimizationLevel::Default);
-                builder.set_disable_unroll_loops(true);
-                let pass_manager = PassManager::create(());
-                builder.populate_module_pass_manager(&pass_manager);
-                pass_manager.run_on(codegen.module());
+                let pass_options = PassBuilderOptions::create();
+                //pass_options.set_verify_each(true);
+                //pass_options.set_debug_logging(true);
+                //pass_options.set_loop_interleaving(true);
+                pass_options.set_loop_vectorization(false);
+                pass_options.set_loop_slp_vectorization(false);
+                pass_options.set_loop_unrolling(false);
+                //pass_options.set_forget_all_scev_in_loop_unroll(true);
+                //pass_options.set_licm_mssa_opt_cap(1);
+                //pass_options.set_licm_mssa_no_acc_for_promotion_cap(10);
+                //pass_options.set_call_graph_profile(true);
+                //pass_options.set_merge_functions(true);
+
+                let initialization_config = &InitializationConfig::default();
+                Target::initialize_all(initialization_config);
+                let triple = TargetMachine::get_default_triple();
+                let target = Target::from_triple(&triple).unwrap();
+                let machine = target
+                    .create_target_machine(
+                        &triple,
+                        "generic", //TargetMachine::get_host_cpu_name().to_string().as_str(),
+                        "",        //TargetMachine::get_host_cpu_features().to_string().as_str(),
+                        inkwell::OptimizationLevel::Default,
+                        inkwell::targets::RelocMode::Default,
+                        inkwell::targets::CodeModel::Default,
+                    )
+                    .unwrap();
+
+                codegen
+                    .module()
+                    .run_passes("default<O2>", &machine, pass_options)
+                    .unwrap();
 
                 let _rhs_grad = codegen.compile_gradient(
                     _rhs,

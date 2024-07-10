@@ -5,7 +5,6 @@ use inkwell::builder::Builder;
 use inkwell::context::AsContextRef;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
-use inkwell::passes::PassManager;
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
@@ -141,7 +140,6 @@ pub struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
-    fpm: PassManager<FunctionValue<'ctx>>,
     variables: HashMap<String, PointerValue<'ctx>>,
     functions: HashMap<String, FunctionValue<'ctx>>,
     fn_value_opt: Option<FunctionValue<'ctx>>,
@@ -161,16 +159,6 @@ impl<'ctx> CodeGen<'ctx> {
         real_type: FloatType<'ctx>,
         real_type_str: &str,
     ) -> Self {
-        let fpm = PassManager::create(&module);
-        fpm.add_instruction_combining_pass();
-        fpm.add_reassociate_pass();
-        fpm.add_gvn_pass();
-        fpm.add_cfg_simplification_pass();
-        fpm.add_basic_alias_analysis_pass();
-        fpm.add_promote_memory_to_register_pass();
-        fpm.add_instruction_combining_pass();
-        fpm.add_reassociate_pass();
-        fpm.initialize();
         let builder = context.create_builder();
         let layout = DataLayout::new(model);
         let globals = Globals::new(&layout, context, &module).ok();
@@ -178,7 +166,6 @@ impl<'ctx> CodeGen<'ctx> {
             context,
             module,
             builder,
-            fpm,
             real_type,
             real_type_str: real_type_str.to_owned(),
             variables: HashMap::new(),
@@ -227,7 +214,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.variables.insert("indices".to_owned(), ptr);
     }
 
-    #[llvm_versions(15.0..latest)]
+    #[llvm_versions(15.0..=latest)]
     fn insert_indices(&mut self) {
         let indices = self.globals.as_ref().unwrap().indices;
         let i32_type = self.context.i32_type();
@@ -1539,8 +1526,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.fpm.run_on(&function);
-
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -1596,8 +1581,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.fpm.run_on(&function);
-
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -1655,8 +1638,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.fpm.run_on(&function);
-
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -1721,7 +1702,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.fpm.run_on(&function);
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -1791,7 +1771,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.fpm.run_on(&function);
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -1998,7 +1977,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.fpm.run_on(&function);
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -2069,7 +2047,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.fpm.run_on(&function);
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -2127,7 +2104,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.fpm.run_on(&function);
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -2224,7 +2200,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.fpm.run_on(&function);
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -2312,7 +2287,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.fpm.run_on(&function);
             Ok(function)
         } else {
             function.print_to_stderr();

@@ -1,6 +1,6 @@
 [package]
 name = "diffsl"
-version = "0.1.7-beta.3"
+version = "0.1.8"
 edition = "2021"
 description = "A compiler for a domain-specific language for ordinary differential equations (ODE)."
 license-file = "LICENSE.txt"
@@ -89,4 +89,3 @@ debug = false
 
 [package.metadata.docs.rs]
 features = ["llvm15-0"]
-cargo-args = ["-j1"]

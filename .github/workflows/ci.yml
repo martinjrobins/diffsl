@@ -24,13 +24,13 @@ jobs:
       - run: cargo fmt --all -- --check
         
   unit-tests:
-    name: Tests - ${{ matrix.os }} - ${{ matrix.toolchain }}
+    name: Tests - ${{ matrix.os }} - ${{ matrix.toolchain }} - ${{ matrix.llvm }}
     runs-on: ubuntu-latest
     strategy:
         matrix:
           llvm:
-            - 14
-            - 15
+            - "14"
+            - "15"
           toolchain:
             - stable
           os:

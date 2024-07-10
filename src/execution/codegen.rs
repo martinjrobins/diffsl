@@ -247,6 +247,26 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     #[llvm_versions(4.0..=14.0)]
+    fn build_load<T: BasicType<'ctx>>(
+        &self,
+        _ty: T,
+        ptr: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        self.builder.build_load(ptr, name).map_err(|e| e.into())
+    }
+
+    #[llvm_versions(15.0..=latest)]
+    fn build_load<T: BasicType<'ctx>>(
+        &self,
+        ty: T,
+        ptr: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        self.builder.build_load(ty, ptr, name).map_err(|e| e.into())
+    }
+
+    #[llvm_versions(4.0..=14.0)]
     fn get_ptr_to_index<T: BasicType<'ctx>>(
         builder: &Builder<'ctx>,
         _ty: T,
@@ -785,12 +805,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         // load and increment the expression index
         let expr_index = self
-            .builder
-            .build_load(expr_index_ptr, "expr_index")?
+            .build_load(self.int_type, expr_index_ptr, "expr_index")?
             .into_int_value();
         let elmt_index = self
-            .builder
-            .build_load(elmt_index_ptr, "elmt_index")?
+            .build_load(self.int_type, elmt_index_ptr, "elmt_index")?
             .into_int_value();
         let next_expr_index = self
             .builder
@@ -806,8 +824,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         if contract_sum.is_some() {
             let contract_sum_value = self
-                .builder
-                .build_load(contract_sum.unwrap(), "contract_sum")?
+                .build_load(self.real_type, contract_sum.unwrap(), "contract_sum")?
                 .into_float_value();
             let new_contract_sum_value = self.builder.build_float_add(
                 contract_sum_value,
@@ -839,8 +856,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
                 let contract_sum_value = self
-                    .builder
-                    .build_load(contract_sum.unwrap(), "contract_sum")?
+                    .build_load(self.real_type, contract_sum.unwrap(), "contract_sum")?
                     .into_float_value();
                 let next_elmt_index =
                     self.builder
@@ -919,14 +935,15 @@ impl<'ctx> CodeGen<'ctx> {
             )?
         };
         let start_contract = self
-            .builder
-            .build_load(start_ptr, "start")?
+            .build_load(self.int_type, start_ptr, "start")?
             .into_int_value();
         let end_ptr = unsafe {
             self.builder
                 .build_gep(*self.get_param("indices"), &[end_index], "end_index_ptr")?
         };
-        let end_contract = self.builder.build_load(end_ptr, "end")?.into_int_value();
+        let end_contract = self
+            .build_load(self.int_type, end_ptr, "end")?
+            .into_int_value();
 
         // initialise the contract sum
         self.builder
@@ -965,7 +982,7 @@ impl<'ctx> CodeGen<'ctx> {
                     curr_index,
                     name,
                 );
-                let index = self.builder.build_load(ptr, name)?.into_int_value();
+                let index = self.build_load(self.int_type, ptr, name)?.into_int_value();
                 Ok(index)
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
@@ -979,8 +996,7 @@ impl<'ctx> CodeGen<'ctx> {
             Some(expr_index),
         )?;
         let contract_sum_value = self
-            .builder
-            .build_load(contract_sum_ptr, "contract_sum")?
+            .build_load(self.real_type, contract_sum_ptr, "contract_sum")?
             .into_float_value();
         let new_contract_sum_value =
             self.builder
@@ -1083,7 +1099,7 @@ impl<'ctx> CodeGen<'ctx> {
                     curr_index,
                     name,
                 );
-                Ok(self.builder.build_load(ptr, name)?.into_int_value())
+                Ok(self.build_load(self.int_type, ptr, name)?.into_int_value())
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
@@ -1289,7 +1305,7 @@ impl<'ctx> CodeGen<'ctx> {
                     curr_index,
                     name,
                 );
-                self.builder.build_load(ptr, name)?.into_int_value()
+                self.build_load(self.int_type, ptr, name)?.into_int_value()
             }
         };
 
@@ -1410,19 +1426,22 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                     None => *ptr,
                 };
-                Ok(self.builder.build_load(value_ptr, name)?.into_float_value())
+                Ok(self
+                    .build_load(self.real_type, value_ptr, name)?
+                    .into_float_value())
             }
             AstKind::Name(name) => {
                 // must be a scalar, just load the value
                 let ptr = self.get_param(name);
-                Ok(self.builder.build_load(*ptr, name)?.into_float_value())
+                Ok(self
+                    .build_load(self.real_type, *ptr, name)?
+                    .into_float_value())
             }
             AstKind::NamedGradient(name) => {
                 let name_str = name.to_string();
                 let ptr = self.get_param(name_str.as_str());
                 Ok(self
-                    .builder
-                    .build_load(*ptr, name_str.as_str())?
+                    .build_load(self.real_type, *ptr, name_str.as_str())?
                     .into_float_value())
             }
             AstKind::Index(_) => todo!(),
@@ -2155,8 +2174,7 @@ impl<'ctx> CodeGen<'ctx> {
                 name.as_str(),
             );
             let input_value = self
-                .builder
-                .build_load(inputs_ptr, name.as_str())?
+                .build_load(self.real_type, inputs_ptr, name.as_str())?
                 .into_float_value();
             self.builder.build_store(input_ptr, input_value)?;
 

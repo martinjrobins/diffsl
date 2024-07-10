@@ -94,6 +94,6 @@ You can install DiffSL using cargo. You will need to indicate the llvm version y
 cargo add diffsl --features llvm14-0
 ```
 
-Other versions of llvm are also supported given by the features `llvm4-0`, `llvm5-0`, `llvm6-0`, `llvm7-0`, `llvm8-0`, `llvm9-0`, `llvm10-0`, `llvm11-0`, `llvm12-0`, `llvm13-0`, `llvm14-0`, `llvm15-0`, `llvm16-0`, `llvm17-0`.
+Other versions of llvm are also supported given by the features `llvm13-0`, `llvm14-0`, `llvm15-0`, `llvm16-0`, `llvm17-0`.
 
 

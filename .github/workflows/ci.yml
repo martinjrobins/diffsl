@@ -25,23 +25,29 @@ jobs:
         
   unit-tests:
     name: Tests - ${{ matrix.os }} - ${{ matrix.toolchain }} - ${{ matrix.llvm }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
         matrix:
           llvm:
             - "14"
             - "15"
+            - "16"
+            - "17"
           toolchain:
             - stable
           os:
             - ubuntu-latest
-            - macos-latest
-            - windows-latest
           include:
             - toolchain: beta
               os: ubuntu-latest
+              llvm: "14"
             - toolchain: nightly
               os: ubuntu-latest
+              llvm: "14"
+            - toolchain: stable
+              os: macos-13
+              llvm: "14"
+
 
     steps:
     - uses: actions/checkout@v4

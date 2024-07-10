@@ -254,10 +254,7 @@ impl<'ctx> CodeGen<'ctx> {
         index: IntValue<'ctx>,
         name: &str,
     ) -> PointerValue<'ctx> {
-        unsafe {
-                builder.build_in_bounds_gep(*ptr, &[index], name)
-                .unwrap()
-        }
+        unsafe { builder.build_in_bounds_gep(*ptr, &[index], name).unwrap() }
     }
 
     #[llvm_versions(15.0..=latest)]
@@ -284,7 +281,13 @@ impl<'ctx> CodeGen<'ctx> {
                     .context
                     .i32_type()
                     .const_int(data_index.try_into().unwrap(), false);
-                let alloca = Self::get_ptr_to_index(&self.create_entry_block_builder(), self.real_type, ptr, i, blk.name().unwrap());
+                let alloca = Self::get_ptr_to_index(
+                    &self.create_entry_block_builder(),
+                    self.real_type,
+                    ptr,
+                    i,
+                    blk.name().unwrap(),
+                );
                 self.variables.insert(name.to_owned(), alloca);
             }
             data_index += blk.nnz();
@@ -299,7 +302,13 @@ impl<'ctx> CodeGen<'ctx> {
                     .context
                     .i32_type()
                     .const_int(data_index.try_into().unwrap(), false);
-                let alloca = Self::get_ptr_to_index(&self.create_entry_block_builder(), self.real_type, ptr, i, blk.name().unwrap());
+                let alloca = Self::get_ptr_to_index(
+                    &self.create_entry_block_builder(),
+                    self.real_type,
+                    ptr,
+                    i,
+                    blk.name().unwrap(),
+                );
                 self.variables.insert(name.to_owned(), alloca);
             }
             data_index += blk.nnz();
@@ -312,7 +321,13 @@ impl<'ctx> CodeGen<'ctx> {
             .context
             .i32_type()
             .const_int(data_index.try_into().unwrap(), false);
-        let alloca = Self::get_ptr_to_index(&self.create_entry_block_builder(), self.real_type, &ptr, i, tensor.name());
+        let alloca = Self::get_ptr_to_index(
+            &self.create_entry_block_builder(),
+            self.real_type,
+            &ptr,
+            i,
+            tensor.name(),
+        );
         self.variables.insert(tensor.name().to_owned(), alloca);
 
         //insert any named blocks
@@ -322,7 +337,13 @@ impl<'ctx> CodeGen<'ctx> {
                     .context
                     .i32_type()
                     .const_int(data_index.try_into().unwrap(), false);
-                let alloca = Self::get_ptr_to_index(&self.create_entry_block_builder(), self.real_type, &ptr, i, name);
+                let alloca = Self::get_ptr_to_index(
+                    &self.create_entry_block_builder(),
+                    self.real_type,
+                    &ptr,
+                    i,
+                    name,
+                );
                 self.variables.insert(name.to_owned(), alloca);
             }
             // named blocks only supported for rank <= 1, so we can just add the nnz to get the next data index
@@ -1272,7 +1293,13 @@ impl<'ctx> CodeGen<'ctx> {
             }
         };
 
-        let resi_ptr = Self::get_ptr_to_index(&self.builder, self.real_type, &self.tensor_ptr(), res_index, name);
+        let resi_ptr = Self::get_ptr_to_index(
+            &self.builder,
+            self.real_type,
+            &self.tensor_ptr(),
+            res_index,
+            name,
+        );
         self.builder.build_store(resi_ptr, float_value)?;
         Ok(())
     }
@@ -1378,7 +1405,9 @@ impl<'ctx> CodeGen<'ctx> {
                     panic!("unexpected layout");
                 };
                 let value_ptr = match iname_elmt_index {
-                    Some(index) => Self::get_ptr_to_index(&self.builder, self.real_type, ptr, index, name),
+                    Some(index) => {
+                        Self::get_ptr_to_index(&self.builder, self.real_type, ptr, index, name)
+                    }
                     None => *ptr,
                 };
                 Ok(self.builder.build_load(value_ptr, name)?.into_float_value())
@@ -2108,8 +2137,13 @@ impl<'ctx> CodeGen<'ctx> {
 
             // loop body - copy value from inputs to data
             let curr_input_index = index.as_basic_value().into_int_value();
-            let input_ptr =
-                Self::get_ptr_to_index(&self.builder, self.real_type, ptr, curr_input_index, name.as_str());
+            let input_ptr = Self::get_ptr_to_index(
+                &self.builder,
+                self.real_type,
+                ptr,
+                curr_input_index,
+                name.as_str(),
+            );
             let curr_inputs_index =
                 self.builder
                     .build_int_add(inputs_start_index, curr_input_index, name.as_str())?;
@@ -2201,8 +2235,13 @@ impl<'ctx> CodeGen<'ctx> {
             let curr_id_index = self
                 .builder
                 .build_int_add(id_start_index, curr_blk_index, name)?;
-            let id_ptr =
-                Self::get_ptr_to_index(&self.builder, self.real_type, self.get_param("id"), curr_id_index, name);
+            let id_ptr = Self::get_ptr_to_index(
+                &self.builder,
+                self.real_type,
+                self.get_param("id"),
+                curr_id_index,
+                name,
+            );
             let is_algebraic_float = if *is_algebraic {
                 0.0 as RealType
             } else {

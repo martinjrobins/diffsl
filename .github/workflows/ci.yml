@@ -40,8 +40,10 @@ jobs:
           include:
             - toolchain: beta
               os: ubuntu-latest
+              llvm: "14"
             - toolchain: nightly
               os: ubuntu-latest
+              llvm: "14"
 
     steps:
     - uses: actions/checkout@v4

@@ -28,6 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
         matrix:
+          llvm:
+            - 14
+            - 15
           toolchain:
             - stable
           os:
@@ -49,23 +52,30 @@ jobs:
         path: |
           ${{ env.CARGO_HOME }}
           target
-        key: unit-test-${{ runner.os }}-${{ matrix.toolchain}}
+        key: unit-test-${{ runner.os }}-${{ matrix.toolchain}}-${{ matrix.llvm }}
     - name: Set up Rust
       run: rustup default ${{ matrix.toolchain }} && rustup update ${{ matrix.toolchain }} --no-self-update && rustup component add clippy rust-docs
     - name: Rust version
       run: rustc -Vv
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@v1
+    - name: Install LLVM and Clang (Ubuntu)
+      uses: KyleMayes/install-llvm-action@v2
+      if : matrix.os == 'ubuntu-latest'
       with:
-        version: "14.0"
+        version: ${{ matrix.llvm }}.0
+    - name: Install LLVM and Clang (macOS)
+      if : matrix.os == 'macos-13'
+      run: |
+        brew install llvm@${{ matrix.llvm }}
+        echo "LLVM_SYS_${{ matrix.llvm }}0_PREFIX=/usr/local/opt/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
+        echo "LLVM_DIR=/usr/local/opt/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
     - name: Run tests
-      run: cargo test --verbose --features llvm14-0
+      run: cargo test --verbose --features llvm${{ matrix.llvm }}-0
     - name: Run Clippy
       if: matrix.toolchain == 'stable'
-      run: cargo clippy --verbose --features llvm14-0
+      run: cargo clippy --verbose --features llvm${{ matrix.llvm }}-0
     - name: Run Docs
       if: matrix.toolchain == 'nightly'
-      run: cargo rustdoc --features llvm14-0
+      run: cargo rustdoc --features llvm${{ matrix.llvm }}-0
   book:
     runs-on: ubuntu-latest
     steps:

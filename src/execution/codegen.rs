@@ -99,7 +99,7 @@ pub type GetOutFunc = unsafe extern "C" fn(
 );
 
 struct Globals<'ctx> {
-    indices: GlobalValue<'ctx>,
+    indices: Option<GlobalValue<'ctx>>,
 }
 
 impl<'ctx> Globals<'ctx> {
@@ -107,7 +107,10 @@ impl<'ctx> Globals<'ctx> {
         layout: &DataLayout,
         context: &'ctx inkwell::context::Context,
         module: &Module<'ctx>,
-    ) -> Result<Self> {
+    ) -> Self {
+        if layout.indices().is_empty() {
+            return Self { indices: None };
+        }
         let int_type = context.i32_type();
         let indices_array_type =
             int_type.array_type(u32::try_from(layout.indices().len()).unwrap());
@@ -119,14 +122,14 @@ impl<'ctx> Globals<'ctx> {
         let indices_value = int_type.const_array(indices_array_values.as_slice());
         let _int_ptr_type = int_type.ptr_type(AddressSpace::default());
         let globals = Self {
-            indices: module.add_global(
+            indices: Some(module.add_global(
                 indices_array_type,
                 Some(AddressSpace::default()),
                 "indices",
-            ),
+            )),
         };
-        globals.indices.set_initializer(&indices_value);
-        Ok(globals)
+        globals.indices.unwrap().set_initializer(&indices_value);
+        globals
     }
 }
 
@@ -148,7 +151,7 @@ pub struct CodeGen<'ctx> {
     real_type_str: String,
     int_type: IntType<'ctx>,
     layout: DataLayout,
-    globals: Option<Globals<'ctx>>,
+    globals: Globals<'ctx>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -161,7 +164,7 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Self {
         let builder = context.create_builder();
         let layout = DataLayout::new(model);
-        let globals = Globals::new(&layout, context, &module).ok();
+        let globals = Globals::new(&layout, context, &module);
         Self {
             context,
             module,
@@ -204,27 +207,29 @@ impl<'ctx> CodeGen<'ctx> {
 
     #[llvm_versions(4.0..=14.0)]
     fn insert_indices(&mut self) {
-        let indices = self.globals.as_ref().unwrap().indices;
-        let zero = self.context.i32_type().const_int(0, false);
-        let ptr = unsafe {
-            indices
-                .as_pointer_value()
-                .const_in_bounds_gep(&[zero, zero])
-        };
-        self.variables.insert("indices".to_owned(), ptr);
+        if let Some(indices) = self.globals.indices.as_ref() {
+            let zero = self.context.i32_type().const_int(0, false);
+            let ptr = unsafe {
+                indices
+                    .as_pointer_value()
+                    .const_in_bounds_gep(&[zero, zero])
+            };
+            self.variables.insert("indices".to_owned(), ptr);
+        }
     }
 
     #[llvm_versions(15.0..=latest)]
     fn insert_indices(&mut self) {
-        let indices = self.globals.as_ref().unwrap().indices;
-        let i32_type = self.context.i32_type();
-        let zero = i32_type.const_int(0, false);
-        let ptr = unsafe {
-            indices
-                .as_pointer_value()
-                .const_in_bounds_gep(i32_type, &[zero, zero])
-        };
-        self.variables.insert("indices".to_owned(), ptr);
+        if let Some(indices) = self.globals.indices.as_ref() {
+            let i32_type = self.context.i32_type();
+            let zero = i32_type.const_int(0, false);
+            let ptr = unsafe {
+                indices
+                    .as_pointer_value()
+                    .const_in_bounds_gep(i32_type, &[zero])
+            };
+            self.variables.insert("indices".to_owned(), ptr);
+        }
     }
 
     fn insert_param(&mut self, name: &str, value: PointerValue<'ctx>) {

@@ -276,12 +276,13 @@ impl<'s> DiscreteModel<'s> {
                                 ret.rhs = built;
                             }
                             // check that F is not dstatedt dependent and only depends on u
-                            let f = env.get("F").unwrap();
-                            if f.is_dstatedt_dependent() {
-                                env.errs_mut().push(ValidationError::new(
-                                    "F must not be dependent on dudt".to_string(),
-                                    span,
-                                ));
+                            if let Some(f) = env.get("F") {
+                                if f.is_dstatedt_dependent() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "F must not be dependent on dudt".to_string(),
+                                        span,
+                                    ));
+                                }
                             }
                         }
                         "M" => {
@@ -290,12 +291,13 @@ impl<'s> DiscreteModel<'s> {
                                 ret.lhs = Some(built);
                             }
                             // check that M is not state dependent and only depends on dudt
-                            let m = env.get("M").unwrap();
-                            if m.is_state_dependent() {
-                                env.errs_mut().push(ValidationError::new(
-                                    "M must not be dependent on u".to_string(),
-                                    span,
-                                ));
+                            if let Some(m) = env.get("M") {
+                                if m.is_state_dependent() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "M must not be dependent on u".to_string(),
+                                        span,
+                                    ));
+                                }
                             }
                         }
                         "stop" => {
@@ -303,12 +305,13 @@ impl<'s> DiscreteModel<'s> {
                                 ret.stop = Some(built);
                             }
                             // check that stop is not dependent on dudt
-                            let stop = env.get("stop").unwrap();
-                            if stop.is_dstatedt_dependent() {
-                                env.errs_mut().push(ValidationError::new(
-                                    "stop must not be dependent on dudt".to_string(),
-                                    tensor_ast.span,
-                                ));
+                            if let Some(stop) = env.get("stop") {
+                                if stop.is_dstatedt_dependent() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "stop must not be dependent on dudt".to_string(),
+                                        tensor_ast.span,
+                                    ));
+                                }
                             }
                         }
                         "out" => {
@@ -323,12 +326,13 @@ impl<'s> DiscreteModel<'s> {
                                 ret.out = built;
                             }
                             // check that out is not dependent on dudt
-                            let out = env.get("out").unwrap();
-                            if out.is_dstatedt_dependent() {
-                                env.errs_mut().push(ValidationError::new(
-                                    "out must not be dependent on dudt".to_string(),
-                                    tensor_ast.span,
-                                ));
+                            if let Some(out) = env.get("out") {
+                                if out.is_dstatedt_dependent() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "out must not be dependent on dudt".to_string(),
+                                        tensor_ast.span,
+                                    ));
+                                }
                             }
                         }
                         _name => {
@@ -1053,8 +1057,6 @@ mod tests {
                 y,
             }
         " ["M must not be dependent on u",],
-
-
     );
 
     macro_rules! tensor_fail_tests {

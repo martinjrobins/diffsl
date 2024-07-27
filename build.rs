@@ -18,11 +18,23 @@ fn compile_enzyme(llvm_dir: String) -> (String, String) {
 }
 
 fn enzyme_bindings(inc_dirs: &[String]) -> Result<Bindings, BindgenError> {
+    dbg!(inc_dirs);
     let mut builder = Builder::default()
         .header("wrapper.h")
         .generate_comments(false)
         .clang_arg("-x")
-        .clang_arg("c++");
+        .clang_arg("c++")
+        .clang_arg("-fvisibility=default")
+        .allowlist_function("CreateEnzymeLogic")
+        .allowlist_function("FreeEnzymeLogic")
+        .allowlist_function("CreateTypeAnalysis")
+        .allowlist_function("FreeTypeAnalysis")
+        .allowlist_function("EnzymeNewTypeTreeCT")
+        .allowlist_function("EnzymeFreeTypeTree")
+        .allowlist_function("EnzymeMergeTypeTree")
+        .allowlist_function("EnzymeTypeTreeOnlyEq")
+        .allowlist_function("EnzymeCreateForwardDiff")
+        ;
 
     // add include dirs
     for dir in inc_dirs {
@@ -32,6 +44,7 @@ fn enzyme_bindings(inc_dirs: &[String]) -> Result<Bindings, BindgenError> {
 }
 
 fn main() {
+    // Get llvm directory from llvm-sys dependency
     // get env vars matching DEP_LLVM_*_LIBDIR regex
     let llvm_dirs: Vec<_> = env::vars()
         .filter(|(k, _)| k.starts_with("DEP_LLVM_") && k.ends_with("_LIBDIR"))
@@ -53,8 +66,19 @@ fn main() {
         .collect::<String>()
         + "include";
 
-    // compile enzyme
-    let (libdir, incdir) = compile_enzyme(llvm_lib_dir.clone());
+    // compile enzyme or use provided paths
+    let (libdir, incdir) = if cfg!(feature = "no-build-enzyme") {
+        let incdir = env::var("ENZYME_INCLUDE_DIR").ok();
+        let libdir = env::var("ENZYME_LIBRARY_DIR").ok();
+        if let (Some(incdir), Some(libdir)) = (incdir, libdir) {
+            (libdir, incdir)
+        } else {
+            panic!("environment variables ENZYME_INCLUDE_DIR and ENZYME_LIBRARY_DIR must be set if not building enzyme");
+        }
+    } else {
+        compile_enzyme(llvm_lib_dir.clone())
+    };
+
     let libnames = [format!("EnzymeStatic-{}", llvm_version)];
 
     // bind enzyme api

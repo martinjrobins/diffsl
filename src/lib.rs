@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use continuous::ModelInfo;
 use discretise::DiscreteModel;
-use execution::Compiler;
+use execution::LlvmCompiler;
 use parser::{parse_ds_string, parse_ms_string};
 use std::{ffi::OsStr, path::Path};
 
@@ -12,6 +12,7 @@ extern crate pest_derive;
 pub mod ast;
 pub mod continuous;
 pub mod discretise;
+#[cfg(feature = "enzyme")]
 pub mod enzyme;
 pub mod execution;
 pub mod parser;
@@ -130,7 +131,7 @@ pub fn compile_text(
     } else {
         panic!("No model found");
     };
-    let compiler = Compiler::from_discrete_model(&discrete_model, out)?;
+    let compiler = LlvmCompiler::from_discrete_model(&discrete_model, out)?;
 
     if options.bitcode_only {
         return Ok(());
@@ -149,13 +150,13 @@ mod tests {
 
     use super::*;
 
-    fn ds_example_compiler(example: &str) -> Compiler {
+    fn ds_example_compiler(example: &str) -> LlvmCompiler {
         let text = std::fs::read_to_string(format!("examples/{}.ds", example)).unwrap();
         let model = parse_ds_string(text.as_str()).unwrap();
         let model = DiscreteModel::build(example, &model)
             .unwrap_or_else(|e| panic!("{}", e.as_error_message(text.as_str())));
         let out = format!("test_output/lib_examples_{}", example);
-        Compiler::from_discrete_model(&model, out.as_str()).unwrap()
+        LlvmCompiler::from_discrete_model(&model, out.as_str()).unwrap()
     }
 
     #[test]
@@ -200,7 +201,7 @@ mod tests {
         assert_eq!(model_info.errors.len(), 0);
         let discrete_model = DiscreteModel::from(&model_info);
         let object =
-            Compiler::from_discrete_model(&discrete_model, "test_output/lib_test_object_file")
+            LlvmCompiler::from_discrete_model(&discrete_model, "test_output/lib_test_object_file")
                 .unwrap();
         let path = Path::new("main.o");
         object.write_object_file(path).unwrap();

@@ -30,9 +30,8 @@ use super::codegen::SetInputsGradientFunc;
 use super::codegen::U0GradientFunc;
 use super::codegen::{CalcOutGradientFunc, MassFunc, RhsFunc, RhsGradientFunc};
 use super::{
-    codegen::{CalcOutFunc, StopFunc, U0Func},
-    data_layout::DataLayout,
-    CodeGen,
+    codegen::{CalcOutFunc, StopFunc, U0Func, CodeGen},
+    super::data_layout::DataLayout,
 };
 
 struct JitFunctions<'ctx> {
@@ -61,7 +60,7 @@ struct CompilerData<'ctx> {
 }
 
 #[self_referencing]
-pub struct Compiler {
+pub struct LlvmCompiler {
     context: Context,
 
     #[borrows(context)]
@@ -76,14 +75,14 @@ pub struct Compiler {
     output_base_filename: String,
 }
 
-impl Compiler {
+impl LlvmCompiler {
     const OPT_VARIENTS: [&'static str; 2] = ["opt-14", "opt"];
     const CLANG_VARIENTS: [&'static str; 2] = ["clang", "clang-14"];
     fn find_opt() -> Result<&'static str> {
-        find_executable(&Compiler::OPT_VARIENTS)
+        find_executable(&LlvmCompiler::OPT_VARIENTS)
     }
     fn find_clang() -> Result<&'static str> {
-        find_executable(&Compiler::CLANG_VARIENTS)
+        find_executable(&LlvmCompiler::CLANG_VARIENTS)
     }
     /// search for the enzyme library in the environment variables
     fn find_enzyme_lib() -> Result<String> {
@@ -117,7 +116,7 @@ impl Compiler {
             .unwrap_or_else(|e| panic!("{}", e.as_error_message(code)));
         let dir = env::temp_dir();
         let path = dir.join(name.clone());
-        Compiler::from_discrete_model(&model, path.to_str().unwrap())
+        LlvmCompiler::from_discrete_model(&model, path.to_str().unwrap())
     }
 
     pub fn from_discrete_model(model: &DiscreteModel, out: &str) -> Result<Self> {
@@ -134,7 +133,7 @@ impl Compiler {
         });
         let number_of_outputs = data_layout.get_data_length("out").unwrap();
         let has_mass = model.lhs().is_some();
-        CompilerTryBuilder {
+        LlvmCompilerTryBuilder {
             data_layout,
             number_of_states,
             number_of_parameters,
@@ -224,20 +223,20 @@ impl Compiler {
                     .create_jit_execution_engine(OptimizationLevel::Aggressive)
                     .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
 
-                let set_u0 = Compiler::jit("set_u0", &ee)?;
-                let rhs = Compiler::jit("rhs", &ee)?;
-                let mass = Compiler::jit("mass", &ee)?;
-                let calc_stop = Compiler::jit("calc_stop", &ee)?;
-                let calc_out = Compiler::jit("calc_out", &ee)?;
-                let set_id = Compiler::jit("set_id", &ee)?;
-                let get_dims = Compiler::jit("get_dims", &ee)?;
-                let set_inputs = Compiler::jit("set_inputs", &ee)?;
-                let get_out = Compiler::jit("get_out", &ee)?;
+                let set_u0 = LlvmCompiler::jit("set_u0", &ee)?;
+                let rhs = LlvmCompiler::jit("rhs", &ee)?;
+                let mass = LlvmCompiler::jit("mass", &ee)?;
+                let calc_stop = LlvmCompiler::jit("calc_stop", &ee)?;
+                let calc_out = LlvmCompiler::jit("calc_out", &ee)?;
+                let set_id = LlvmCompiler::jit("set_id", &ee)?;
+                let get_dims = LlvmCompiler::jit("get_dims", &ee)?;
+                let set_inputs = LlvmCompiler::jit("set_inputs", &ee)?;
+                let get_out = LlvmCompiler::jit("get_out", &ee)?;
 
-                let set_inputs_grad = Compiler::jit("set_inputs_grad", &ee)?;
-                let calc_out_grad = Compiler::jit("calc_out_grad", &ee)?;
-                let rhs_grad = Compiler::jit("rhs_grad", &ee)?;
-                let set_u0_grad = Compiler::jit("set_u0_grad", &ee)?;
+                let set_inputs_grad = LlvmCompiler::jit("set_inputs_grad", &ee)?;
+                let calc_out_grad = LlvmCompiler::jit("calc_out_grad", &ee)?;
+                let rhs_grad = LlvmCompiler::jit("rhs_grad", &ee)?;
+                let set_u0_grad = LlvmCompiler::jit("set_u0_grad", &ee)?;
 
                 let data = CompilerData {
                     codegen,
@@ -266,12 +265,12 @@ impl Compiler {
     }
 
     pub fn compile(&self, standalone: bool, wasm: bool) -> Result<()> {
-        let opt_name = Compiler::find_opt()?;
-        let clang_name = Compiler::find_clang()?;
-        let enzyme_lib = Compiler::find_enzyme_lib()?;
+        let opt_name = LlvmCompiler::find_opt()?;
+        let clang_name = LlvmCompiler::find_clang()?;
+        let enzyme_lib = LlvmCompiler::find_enzyme_lib()?;
         let out = self.borrow_output_base_filename();
-        let object_filename = Compiler::get_object_filename(out);
-        let bitcodefilename = Compiler::get_bitcode_filename(out);
+        let object_filename = LlvmCompiler::get_object_filename(out);
+        let bitcodefilename = LlvmCompiler::get_bitcode_filename(out);
         let mut command = Command::new(clang_name);
         command
             .arg(bitcodefilename.as_str())
@@ -862,7 +861,7 @@ impl Compiler {
     }
 
     pub fn write_object_file(&self, path: &Path) -> Result<()> {
-        let target_machine = Compiler::get_native_machine()?;
+        let target_machine = LlvmCompiler::get_native_machine()?;
         self.with_data(|data| {
             target_machine
                 .write_to_file(data.codegen.module(), FileType::Object, path)
@@ -871,7 +870,7 @@ impl Compiler {
     }
 
     pub fn write_wasm_object_file(&self, path: &Path) -> Result<()> {
-        let target_machine = Compiler::get_wasm_machine()?;
+        let target_machine = LlvmCompiler::get_wasm_machine()?;
         self.with_data(|data| {
             target_machine
                 .write_to_file(data.codegen.module(), FileType::Object, path)
@@ -915,7 +914,7 @@ mod tests {
         assert_eq!(model_info.errors.len(), 0);
         let discrete_model = DiscreteModel::from(&model_info);
         let object =
-            Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_object_file")
+            LlvmCompiler::from_discrete_model(&discrete_model, "test_output/compiler_test_object_file")
                 .unwrap();
         let path = Path::new("main.o");
         object.write_object_file(path).unwrap();
@@ -928,7 +927,7 @@ mod tests {
         F { -y }
         out { y }
         ";
-        let compiler = Compiler::from_discrete_str(text).unwrap();
+        let compiler = LlvmCompiler::from_discrete_str(text).unwrap();
         let mut u0 = vec![0.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
@@ -963,7 +962,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_stop")
+            LlvmCompiler::from_discrete_model(&discrete_model, "test_output/compiler_test_stop")
                 .unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
@@ -990,7 +989,7 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text.as_str()));
             }
         };
-        let compiler = Compiler::from_discrete_model(&discrete_model, tmp_loc).unwrap();
+        let compiler = LlvmCompiler::from_discrete_model(&discrete_model, tmp_loc).unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
@@ -1237,7 +1236,7 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text));
             }
         };
-        let compiler = Compiler::from_discrete_model(
+        let compiler = LlvmCompiler::from_discrete_model(
             &discrete_model,
             "test_output/compiler_test_repeated_grad",
         )
@@ -1309,7 +1308,7 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::from_discrete_model(
+        let compiler = LlvmCompiler::from_discrete_model(
             &discrete_model,
             "test_output/compiler_test_additional_functions",
         )

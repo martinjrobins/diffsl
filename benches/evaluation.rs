@@ -1,4 +1,4 @@
-use diffsl::{discretise::DiscreteModel, execution::Compiler, parser::parse_ds_string};
+use diffsl::{discretise::DiscreteModel, execution::LlvmCompiler, parser::parse_ds_string};
 use divan::Bencher;
 use ndarray::Array1;
 
@@ -6,7 +6,7 @@ fn main() {
     divan::main();
 }
 
-fn setup(n: usize, f_text: &str, name: &str) -> Compiler {
+fn setup(n: usize, f_text: &str, name: &str) -> LlvmCompiler {
     let u = vec![1.0; n];
     let full_text = format!(
         "
@@ -29,7 +29,7 @@ fn setup(n: usize, f_text: &str, name: &str) -> Compiler {
     let model = parse_ds_string(&full_text).unwrap();
     let discrete_model = DiscreteModel::build(name, &model).unwrap();
     let out = format!("test_output/benches_evaluation_{}", name);
-    Compiler::from_discrete_model(&discrete_model, out.as_str()).unwrap()
+    LlvmCompiler::from_discrete_model(&discrete_model, out.as_str()).unwrap()
 }
 
 #[divan::bench(consts = [1, 10, 100, 1000])]

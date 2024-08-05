@@ -14,11 +14,13 @@ name = "diffsl"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-llvm13-0 = ["inkwell-130", "llvm-sys-130"]
-llvm14-0 = ["inkwell-140", "llvm-sys-140"]
-llvm15-0 = ["inkwell-150", "llvm-sys-150"]
-llvm16-0 = ["inkwell-160", "llvm-sys-160"]
-llvm17-0 = ["inkwell-170", "llvm-sys-170"]
+llvm13-0 = ["inkwell-130", "llvm-sys-130", "inkwell_internals", "llvm", "enzyme"]
+llvm14-0 = ["inkwell-140", "llvm-sys-140", "inkwell_internals", "llvm", "enzyme"]
+llvm15-0 = ["inkwell-150", "llvm-sys-150", "inkwell_internals", "llvm", "enzyme"]
+llvm16-0 = ["inkwell-160", "llvm-sys-160", "inkwell_internals", "llvm", "enzyme"]
+llvm17-0 = ["inkwell-170", "llvm-sys-170", "inkwell_internals", "llvm", "enzyme"]
+enzyme = ["bindgen", "cmake"]
+llvm = []
 
 [dependencies]
 ndarray = { version = ">=0.15.0", features = ["approx-0_5"] } 
@@ -40,11 +42,15 @@ llvm-sys-140 = { package = "llvm-sys", version = "140.0.2", optional = true }
 llvm-sys-150 = { package = "llvm-sys", version = "150.0.3", optional = true }
 llvm-sys-160 = { package = "llvm-sys", version = "160.1.0", optional = true }
 llvm-sys-170 = { package = "llvm-sys", version = "170.0.1", optional = true }
-inkwell_internals = "0.9.0"
+inkwell_internals = { version = "0.9.0", optional = true }
+cranelift = "0.110.1"
+cranelift-module = "0.110.1"
+cranelift-jit = "0.110.1"
+cranelift-native = "0.110.1"
 
 [build-dependencies]
-cmake = "0.1.50"
-bindgen = "0.69.4"
+bindgen = { version = "0.69.4", optional = true }
+cmake = { version = "0.1.50", optional = true }
 
 [dev-dependencies]
 divan = "0.1.14"

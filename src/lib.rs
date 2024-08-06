@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use continuous::ModelInfo;
 use discretise::DiscreteModel;
+#[cfg(feature = "llvm")]
 use execution::LlvmCompiler;
 use parser::{parse_ds_string, parse_ms_string};
 use std::{ffi::OsStr, path::Path};

@@ -756,6 +756,8 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
+    
+
     // for dense blocks we can loop through the nested loops to calculate the index, then we compile the expression passing in this index
     fn jit_compile_dense_block(
         &mut self,

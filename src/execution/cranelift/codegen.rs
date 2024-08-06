@@ -1,14 +1,13 @@
 use anyhow::{anyhow, Result};
 use codegen::ir::{FuncRef, StackSlot};
 use cranelift::prelude::*;
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, Linkage, Module};
+use cranelift_jit::JITModule;
+use cranelift_module::{Linkage, Module};
 use std::collections::HashMap;
-use std::slice;
 
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{Tensor, TensorBlock};
-use crate::execution::{DataLayout, Translation, TranslationFrom};
+use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 
 
 
@@ -30,6 +29,13 @@ struct CraneliftCodeGen<'a> {
 }
 
 impl<'ctx> CraneliftCodeGen<'ctx> {
+    fn fconst(&mut self, value: f64) -> Value {
+        match self.real_type {
+            types::F32 => self.builder.ins().f32const(value as f32),
+            types::F64 => self.builder.ins().f64const(value),
+            _ => panic!("unexpected real type"),
+        }
+    }
     fn jit_compile_expr(
         &mut self,
         name: &str,
@@ -78,15 +84,9 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             AstKind::CallArg(arg) => {
                 self.jit_compile_expr(name, &arg.expression, index, elmt, expr_index)
             }
-            AstKind::Number(value) => Ok(
-                match self.real_type {
-                    types::F32 => self.builder.ins().f32const(*value as f32),
-                    types::F64 => self.builder.ins().f64const(*value as f64),
-                    _ => panic!("unexpected real type"),
-                }
-            ),
+            AstKind::Number(value) => Ok(self.fconst(*value)),
             AstKind::IndexedName(iname) => {
-                let ptr = self.variables.get(name).unwrap();
+                let ptr = self.tensors.get(name).unwrap();
                 let layout = self.layout.get_layout(iname.name).unwrap();
                 let iname_elmt_index = if layout.is_dense() {
                     // permute indices based on the index chars of this tensor
@@ -114,7 +114,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                             stride *= shapei;
                             let stride_intval = self.builder.ins().iconst(self.int_type, i64::try_from(stride).unwrap());
                             let stride_mul_i = self.builder.ins().imul(stride_intval, iname_i);
-                            let iname_elmt_index =
+                            iname_elmt_index =
                                 self.builder.ins().iadd(iname_elmt_index, stride_mul_i);
                         }
                         Some(iname_elmt_index)
@@ -137,12 +137,12 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             }
             AstKind::Name(name) => {
                 // must be a scalar, just load the value
-                let ptr = self.variables.get(*name).unwrap();
+                let ptr = self.tensors.get(*name).unwrap();
                 Ok(self.builder.ins().load(self.real_type, self.mem_flags, *ptr, 0))
             }
             AstKind::NamedGradient(name) => {
                 let name_str = name.to_string();
-                let ptr = self.variables.get(&name_str).unwrap();
+                let ptr = self.tensors.get(&name_str).unwrap();
                 Ok(self.builder.ins().load(self.real_type, self.mem_flags, *ptr, 0))
             }
             AstKind::Index(_) => todo!(),
@@ -259,6 +259,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         let int_type = self.int_type;
 
         let mut preblock = self.builder.create_block();
+        self.builder.seal_block(preblock);
         let expr_rank = elmt.expr_layout().rank();
         let expr_shape = elmt
             .expr_layout()
@@ -295,7 +296,8 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             self.builder.switch_to_block(block);
 
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
-                self.builder.ins().stack_store(zero, contract_sum.unwrap(), 0);
+                let fzero = self.fconst(0.0);
+                self.builder.ins().stack_store(fzero, contract_sum.unwrap(), 0);
             }
 
             indices.push(curr_index);
@@ -328,7 +330,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 .ins()
                 .stack_store(new_contract_sum_value, contract_sum.unwrap(), 0);
         } else {
-            preblock = self.jit_compile_broadcast_and_store(
+            self.jit_compile_broadcast_and_store(
                 name,
                 elmt,
                 float_value,
@@ -360,8 +362,9 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             // increment index
             let next_index = self.builder.ins().iadd(indices[i], one);
             let block = self.builder.create_block();
+            let loop_cond = self.builder.ins().icmp_imm(IntCC::UnsignedLessThan, next_index, expr_shape[i]);
             self.builder.ins().brif(
-                self.builder.ins().icmp_imm(IntCC::UnsignedLessThan, next_index, expr_shape[i]),
+                loop_cond,
                 blocks[i],
                 &[next_index],
                 block,
@@ -370,7 +373,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             self.builder.seal_block(blocks[i]);
             self.builder.seal_block(block);
             self.builder.switch_to_block(block);
-            preblock = block;
         }
         Ok(())
     }
@@ -388,8 +390,11 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             }
         }
         let int_type = self.int_type;
+        let zero = self.builder.ins().iconst(int_type, 0);
+        let one = self.builder.ins().iconst(int_type, 1);
+        let two = self.builder.ins().iconst(int_type, 2);
 
-        let preblock = self.builder.get_insert_block().unwrap();
+
         let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
         let translation_index = self
             .layout
@@ -397,87 +402,71 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             .unwrap();
         let translation_index = translation_index + translation.get_from_index_in_data_layout();
 
-        let contract_sum_ptr = self.builder.build_alloca(self.real_type, "contract_sum")?;
+        // initialise the contract sum
+        let contract_sum_var = self.decl_stack_slot(self.real_type, None);
 
         // loop through each contraction
-        let block = self.context.append_basic_block(self.fn_value(), name);
-        self.builder.build_unconditional_branch(block)?;
-        self.builder.position_at_end(block);
+        let block = self.builder.create_block();
+        let contract_index = self.builder.append_block_param(block, self.int_type);
+        let initial_contract_index = zero;
+        let final_contract_index = self.builder.ins().iconst(
+            int_type,
+            i64::try_from(elmt.layout().nnz()).unwrap(),
+        );
+        self.builder.ins().jump(block, &[initial_contract_index]);
+        self.builder.switch_to_block(block);
 
-        let contract_index = self.builder.build_phi(int_type, "i")?;
-        let final_contract_index =
-            int_type.const_int(elmt.layout().nnz().try_into().unwrap(), false);
-        contract_index.add_incoming(&[(&int_type.const_int(0, false), preblock)]);
 
-        let start_index = self.builder.build_int_add(
-            int_type.const_int(translation_index.try_into().unwrap(), false),
-            self.builder.build_int_mul(
-                int_type.const_int(2, false),
-                contract_index.as_basic_value().into_int_value(),
-                name,
-            )?,
-            name,
-        )?;
-        let end_index =
-            self.builder
-                .build_int_add(start_index, int_type.const_int(1, false), name)?;
-        let start_ptr = self.build_gep(
-            self.int_type,
-            *self.get_param("indices"),
-            &[start_index],
-            "start_index_ptr",
-        )?;
-        let start_contract = self
-            .build_load(self.int_type, start_ptr, "start")?
-            .into_int_value();
-        let end_ptr = self.build_gep(
-            self.int_type,
-            *self.get_param("indices"),
-            &[end_index],
-            "end_index_ptr",
-        )?;
-        let end_contract = self
-            .build_load(self.int_type, end_ptr, "end")?
-            .into_int_value();
+        // start and end indices stored next to each other in the indices array
+        // start_index = translation_index + 2 * contract_index
+        let translation_index_val = self.builder.ins().iconst(int_type, i64::try_from(translation_index).unwrap());
+        let double_contract_index = self.builder.ins().imul(
+            two,
+            contract_index,
+        );
+        let start_index = self.builder.ins().iadd(
+            translation_index_val,
+           double_contract_index 
+        );
+        // end_index = start_index + 1
+        let end_index = self.builder.ins().iadd(start_index, one);
 
-        // initialise the contract sum
-        self.builder
-            .build_store(contract_sum_ptr, self.real_type.const_float(0.0))?;
+        // index into the indices array to get the start and end indices
+        // start_contract = indices[translation_index + 2 * contract_index]
+        // end_contract = indices[translation_index + 2 * contract_index + 1]
+        let indices_array = *self.tensors.get("indices").unwrap();
+        let ptr = self.builder.ins().iadd(indices_array, start_index);
+        let start_contract = self.builder.ins().load(self.int_type, self.mem_flags, ptr, 0);
+        let ptr = self.builder.ins().iadd(indices_array, end_index);
+        let end_contract = self.builder.ins().load(self.int_type, self.mem_flags, ptr, 0);
+        
 
         // loop through each element in the contraction
-        let contract_block = self
-            .context
-            .append_basic_block(self.fn_value(), format!("{}_contract", name).as_str());
-        self.builder.build_unconditional_branch(contract_block)?;
-        self.builder.position_at_end(contract_block);
+        let contract_block = self.builder.create_block();
+        let expr_index = self.builder.append_block_param(contract_block, self.int_type);
+        self.builder.ins().jump(block, &[start_contract]);
+        self.builder.switch_to_block(block);
 
-        let expr_index_phi = self.builder.build_phi(int_type, "j")?;
-        expr_index_phi.add_incoming(&[(&start_contract, block)]);
+        // init sum
+        let fzero = self.fconst(0.0);
+        self.builder.ins().stack_store(fzero, contract_sum_var, 0);
 
         // loop body - load index from layout
-        let expr_index = expr_index_phi.as_basic_value().into_int_value();
-        let elmt_index_mult_rank = self.builder.build_int_mul(
+        let rank_val = self.builder.ins().iconst(self.int_type, i64::try_from(elmt.expr_layout().rank()).unwrap());
+        let elmt_index_mult_rank = self.builder.ins().imul(
             expr_index,
-            int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false),
-            name,
-        )?;
+            rank_val
+        );
         let indices_int = (0..elmt.expr_layout().rank())
+            // index = indices[layout_index + i + elmt_index * rank]
             .map(|i| {
-                let layout_index_plus_offset =
-                    int_type.const_int((layout_index + i).try_into().unwrap(), false);
-                let curr_index = self.builder.build_int_add(
+                let layout_index_plus_offset = self.builder.ins().iconst(self.int_type, i64::try_from(layout_index + i).unwrap());
+                let curr_index = self.builder.ins().iadd(
                     elmt_index_mult_rank,
-                    layout_index_plus_offset,
-                    name,
-                )?;
-                let ptr = Self::get_ptr_to_index(
-                    &self.builder,
-                    self.int_type,
-                    self.get_param("indices"),
-                    curr_index,
-                    name,
+                    layout_index_plus_offset
                 );
-                let index = self.build_load(self.int_type, ptr, name)?.into_int_value();
+                let ptr = self.builder.ins().iadd(indices_array, curr_index);
+                let index = self.builder.ins().load(self.int_type, self.mem_flags, ptr, 0);
                 Ok(index)
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
@@ -490,338 +479,281 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             elmt,
             Some(expr_index),
         )?;
-        let contract_sum_value = self
-            .build_load(self.real_type, contract_sum_ptr, "contract_sum")?
-            .into_float_value();
-        let new_contract_sum_value =
-            self.builder
-                .build_float_add(contract_sum_value, float_value, "new_contract_sum")?;
-        self.builder
-            .build_store(contract_sum_ptr, new_contract_sum_value)?;
+        let contract_sum_value = self.builder.ins().stack_load(self.real_type, contract_sum_var, 0);
+        let new_contract_sum_value = self.builder.ins().fadd(contract_sum_value, float_value);
+        self.builder.ins().stack_store(new_contract_sum_value, contract_sum_var, 0);
 
         // increment contract loop index
-        let next_elmt_index =
-            self.builder
-                .build_int_add(expr_index, int_type.const_int(1, false), name)?;
-        expr_index_phi.add_incoming(&[(&next_elmt_index, contract_block)]);
+        let next_elmt_index = self.builder.ins().iadd(expr_index, one);
 
         // contract loop condition
-        let loop_while = self.builder.build_int_compare(
-            IntPredicate::ULT,
-            next_elmt_index,
-            end_contract,
-            name,
-        )?;
-        let post_contract_block = self.context.append_basic_block(self.fn_value(), name);
-        self.builder
-            .build_conditional_branch(loop_while, contract_block, post_contract_block)?;
-        self.builder.position_at_end(post_contract_block);
+        let loop_while = self.builder.ins().icmp(IntCC::UnsignedLessThan, next_elmt_index, end_contract);
+        let post_contract_block = self.builder.create_block();
+        self.builder.ins().brif(loop_while, contract_block, &[next_elmt_index], post_contract_block, &[]);
+        self.builder.seal_block(contract_block);
+        self.builder.seal_block(post_contract_block);
+        
+        self.builder.switch_to_block(post_contract_block);
 
         // store the result
         self.jit_compile_store(
             name,
             elmt,
-            contract_index.as_basic_value().into_int_value(),
+            contract_index,
             new_contract_sum_value,
             translation,
         )?;
 
         // increment outer loop index
-        let next_contract_index = self.builder.build_int_add(
-            contract_index.as_basic_value().into_int_value(),
-            int_type.const_int(1, false),
-            name,
-        )?;
-        contract_index.add_incoming(&[(&next_contract_index, post_contract_block)]);
+        let next_contract_index = self.builder.ins().iadd(
+            contract_index, one
+        );
+
 
         // outer loop condition
-        let loop_while = self.builder.build_int_compare(
-            IntPredicate::ULT,
-            next_contract_index,
-            final_contract_index,
-            name,
-        )?;
-        let post_block = self.context.append_basic_block(self.fn_value(), name);
-        self.builder
-            .build_conditional_branch(loop_while, block, post_block)?;
-        self.builder.position_at_end(post_block);
+        let loop_while = self.builder.ins().icmp(IntCC::UnsignedLessThan, next_contract_index, final_contract_index);
+        let post_block = self.builder.create_block();
+        self.builder.ins().brif(loop_while, block, &[next_contract_index], post_block, &[]);
+        self.builder.seal_block(block);
+        self.builder.switch_to_block(post_block);
+        self.builder.seal_block(post_block);
 
         Ok(())
     }
 
-
-
-
-    /// When you write out instructions in Cranelift, you get back `Value`s. You
-    /// can then use these references in other instructions.
-    fn translate_expr(&mut self, expr: Expr) -> Value {
-        match expr {
-            Expr::Literal(literal) => {
-                let imm: i32 = literal.parse().unwrap();
-                self.builder.ins().iconst(self.int, i64::from(imm))
-            }
-
-            Expr::Add(lhs, rhs) => {
-                let lhs = self.translate_expr(*lhs);
-                let rhs = self.translate_expr(*rhs);
-                self.builder.ins().iadd(lhs, rhs)
-            }
-
-            Expr::Sub(lhs, rhs) => {
-                let lhs = self.translate_expr(*lhs);
-                let rhs = self.translate_expr(*rhs);
-                self.builder.ins().isub(lhs, rhs)
-            }
-
-            Expr::Mul(lhs, rhs) => {
-                let lhs = self.translate_expr(*lhs);
-                let rhs = self.translate_expr(*rhs);
-                self.builder.ins().imul(lhs, rhs)
-            }
-
-            Expr::Div(lhs, rhs) => {
-                let lhs = self.translate_expr(*lhs);
-                let rhs = self.translate_expr(*rhs);
-                self.builder.ins().udiv(lhs, rhs)
-            }
-
-            Expr::Eq(lhs, rhs) => self.translate_icmp(IntCC::Equal, *lhs, *rhs),
-            Expr::Ne(lhs, rhs) => self.translate_icmp(IntCC::NotEqual, *lhs, *rhs),
-            Expr::Lt(lhs, rhs) => self.translate_icmp(IntCC::SignedLessThan, *lhs, *rhs),
-            Expr::Le(lhs, rhs) => self.translate_icmp(IntCC::SignedLessThanOrEqual, *lhs, *rhs),
-            Expr::Gt(lhs, rhs) => self.translate_icmp(IntCC::SignedGreaterThan, *lhs, *rhs),
-            Expr::Ge(lhs, rhs) => self.translate_icmp(IntCC::SignedGreaterThanOrEqual, *lhs, *rhs),
-            Expr::Call(name, args) => self.translate_call(name, args),
-            Expr::GlobalDataAddr(name) => self.translate_global_data_addr(name),
-            Expr::Identifier(name) => {
-                // `use_var` is used to read the value of a variable.
-                let variable = self.variables.get(&name).expect("variable not defined");
-                self.builder.use_var(*variable)
-            }
-            Expr::Assign(name, expr) => self.translate_assign(name, *expr),
-            Expr::IfElse(condition, then_body, else_body) => {
-                self.translate_if_else(*condition, then_body, else_body)
-            }
-            Expr::WhileLoop(condition, loop_body) => {
-                self.translate_while_loop(*condition, loop_body)
-            }
-        }
-    }
-
-    fn translate_assign(&mut self, name: String, expr: Expr) -> Value {
-        // `def_var` is used to write the value of a variable. Note that
-        // variables can have multiple definitions. Cranelift will
-        // convert them into SSA form for itself automatically.
-        let new_value = self.translate_expr(expr);
-        let variable = self.variables.get(&name).unwrap();
-        self.builder.def_var(*variable, new_value);
-        new_value
-    }
-
-    fn translate_icmp(&mut self, cmp: IntCC, lhs: Expr, rhs: Expr) -> Value {
-        let lhs = self.translate_expr(lhs);
-        let rhs = self.translate_expr(rhs);
-        self.builder.ins().icmp(cmp, lhs, rhs)
-    }
-
-    fn translate_if_else(
+    // for sparse blocks we can loop through the non-zero elements and extract the index from the layout, then we compile the expression passing in this index
+    // TODO: havn't implemented contractions yet
+    fn jit_compile_sparse_block(
         &mut self,
-        condition: Expr,
-        then_body: Vec<Expr>,
-        else_body: Vec<Expr>,
-    ) -> Value {
-        let condition_value = self.translate_expr(condition);
+        name: &str,
+        elmt: &TensorBlock,
+        translation: &Translation,
+    ) -> Result<()> {
+        let int_type = self.int_type;
 
-        let then_block = self.builder.create_block();
-        let else_block = self.builder.create_block();
-        let merge_block = self.builder.create_block();
+        let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
 
-        // If-else constructs in the toy language have a return value.
-        // In traditional SSA form, this would produce a PHI between
-        // the then and else bodies. Cranelift uses block parameters,
-        // so set up a parameter in the merge block, and we'll pass
-        // the return values to it from the branches.
-        self.builder.append_block_param(merge_block, self.int);
+        // loop through the non-zero elements
+        let zero = self.builder.ins().iconst(int_type, 0);
+        let one = self.builder.ins().iconst(int_type, 1);
+        let start_index = zero;
+        let end_index = self.builder.ins().iconst(
+            int_type,
+            i64::try_from(elmt.layout().nnz()).unwrap(),
+        );
 
-        // Test the if condition and conditionally branch.
-        self.builder
-            .ins()
-            .brif(condition_value, then_block, &[], else_block, &[]);
+        let mut block = self.builder.create_block();
+        let curr_index = self.builder.append_block_param(block, int_type);
+        self.builder.ins().jump(block, &[start_index]);
+        self.builder.switch_to_block(block);
 
-        self.builder.switch_to_block(then_block);
-        self.builder.seal_block(then_block);
-        let mut then_return = self.builder.ins().iconst(self.int, 0);
-        for expr in then_body {
-            then_return = self.translate_expr(expr);
-        }
+        // loop body - load index from layout
+        let elmt_index = curr_index;
+        let rank_val = self.builder.ins().iconst(int_type, i64::try_from(elmt.expr_layout().rank()).unwrap());
+        let elmt_index_mult_rank = self.builder.ins().imul(
+            elmt_index,
+            rank_val
+        );
+        let indices_int = (0..elmt.expr_layout().rank())
+            // index = indices[layout_index + i + elmt_index * rank]
+            .map(|i| {
+                let layout_index_plus_offset = self.builder.ins().iconst(int_type, i64::try_from(layout_index + i).unwrap());
+                let curr_index = self.builder.ins().iadd(
+                    elmt_index_mult_rank,
+                    layout_index_plus_offset,
+                );
+                let ptr = self.builder.ins().iadd(*self.tensors.get("indices").unwrap(), curr_index);
+                let index = self.builder.ins().load(self.int_type, self.mem_flags, ptr, 0);
+                Ok(index)
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
-        // Jump to the merge block, passing it the block return value.
-        self.builder.ins().jump(merge_block, &[then_return]);
+        // loop body - eval expression
+        let float_value = self.jit_compile_expr(
+            name,
+            elmt.expr(),
+            indices_int.as_slice(),
+            elmt,
+            Some(elmt_index),
+        )?;
 
-        self.builder.switch_to_block(else_block);
-        self.builder.seal_block(else_block);
-        let mut else_return = self.builder.ins().iconst(self.int, 0);
-        for expr in else_body {
-            else_return = self.translate_expr(expr);
-        }
+        block = self.jit_compile_broadcast_and_store(
+            name,
+            elmt,
+            float_value,
+            elmt_index,
+            translation,
+            block,
+        )?;
 
-        // Jump to the merge block, passing it the block return value.
-        self.builder.ins().jump(merge_block, &[else_return]);
+        // increment loop index
+        let next_index = self.builder.ins().iadd(elmt_index, one);
 
-        // Switch to the merge block for subsequent statements.
-        self.builder.switch_to_block(merge_block);
+        // loop condition
+        let loop_while = self.builder.ins().icmp(IntCC::UnsignedLessThan, next_index, end_index);
+        let post_block = self.builder.create_block();
 
-        // We've now seen all the predecessors of the merge block.
-        self.builder.seal_block(merge_block);
-
-        // Read the value of the if-else by reading the merge block
-        // parameter.
-        let phi = self.builder.block_params(merge_block)[0];
-
-        phi
+        self.builder.ins().brif(loop_while, block, &[next_index], post_block, &[]);
+        self.builder.seal_block(block);
+        self.builder.switch_to_block(post_block);
+        self.builder.seal_block(post_block);
+        Ok(())
     }
 
-    fn translate_while_loop(&mut self, condition: Expr, loop_body: Vec<Expr>) -> Value {
-        let header_block = self.builder.create_block();
-        let body_block = self.builder.create_block();
-        let exit_block = self.builder.create_block();
+     // for diagonal blocks we can loop through the diagonal elements and the index is just the same for each element, then we compile the expression passing in this index
+    fn jit_compile_diagonal_block(
+        &mut self,
+        name: &str,
+        elmt: &TensorBlock,
+        translation: &Translation,
+    ) -> Result<()> {
+        let int_type = self.int_type;
 
-        self.builder.ins().jump(header_block, &[]);
-        self.builder.switch_to_block(header_block);
+        // loop through the non-zero elements
+        let zero = self.builder.ins().iconst(int_type, 0);
+        let one = self.builder.ins().iconst(int_type, 1);
+        let mut block = self.builder.create_block();
+        let start_index = zero;
+        let end_index = self.builder.ins().iconst(int_type, i64::try_from(elmt.expr_layout().nnz()).unwrap());
+        let curr_index = self.builder.append_block_param(block, int_type);
+        self.builder.ins().jump(block, &[start_index]);
+        self.builder.switch_to_block(block);
 
-        let condition_value = self.translate_expr(condition);
-        self.builder
-            .ins()
-            .brif(condition_value, body_block, &[], exit_block, &[]);
+        // loop body - index is just the same for each element
+        let elmt_index = curr_index;
+        let indices_int = vec![elmt_index; elmt.expr_layout().rank()];
 
-        self.builder.switch_to_block(body_block);
-        self.builder.seal_block(body_block);
+        // loop body - eval expression
+        let float_value = self.jit_compile_expr(
+            name,
+            elmt.expr(),
+            indices_int.as_slice(),
+            elmt,
+            Some(elmt_index),
+        )?;
 
-        for expr in loop_body {
-            self.translate_expr(expr);
-        }
-        self.builder.ins().jump(header_block, &[]);
+        // loop body - store result
+        block = self.jit_compile_broadcast_and_store(
+            name,
+            elmt,
+            float_value,
+            elmt_index,
+            translation,
+            block,
+        )?;
 
-        self.builder.switch_to_block(exit_block);
+        // increment loop index
+        let next_index = self.builder.ins().iadd(elmt_index, one);
+        let loop_while = self.builder.ins().icmp(IntCC::UnsignedLessThan, next_index, end_index);
+        let post_block = self.builder.create_block();
+        self.builder.ins().brif(loop_while, block, &[next_index], post_block, &[]);
+        self.builder.seal_block(block);
+        self.builder.switch_to_block(post_block);
+        self.builder.seal_block(post_block);
 
-        // We've reached the bottom of the loop, so there will be no
-        // more backedges to the header to exits to the bottom.
-        self.builder.seal_block(header_block);
-        self.builder.seal_block(exit_block);
-
-        // Just return 0 for now.
-        self.builder.ins().iconst(self.int, 0)
+        Ok(())
     }
 
-    fn translate_call(&mut self, name: String, args: Vec<Expr>) -> Value {
-        let mut sig = self.module.make_signature();
+     fn jit_compile_broadcast_and_store(
+        &mut self,
+        name: &str,
+        elmt: &TensorBlock,
+        float_value: Value,
+        expr_index: Value,
+        translation: &Translation,
+        pre_block: Block,
+    ) -> Result<Block> {
+        let int_type = self.int_type;
+        let one = self.builder.ins().iconst(int_type, 1);
+        let zero = self.builder.ins().iconst(int_type, 0);
+        match translation.source {
+            TranslationFrom::Broadcast {
+                broadcast_by: _,
+                broadcast_len,
+            } => {
+                let bcast_block = self.builder.create_block();
+                let bcast_start_index = zero;
+                let bcast_end_index = self.builder.ins().iconst(int_type, i64::try_from(broadcast_len).unwrap());
+                let bcast_index = self.builder.append_block_param(bcast_block, self.int_type);
 
-        // Add a parameter for each argument.
-        for _arg in &args {
-            sig.params.push(AbiParam::new(self.int));
-        }
+                // setup loop block
+                self.builder.ins().jump(bcast_block, &[bcast_start_index]);
+                self.builder.seal_block(bcast_block);
+                self.builder.switch_to_block(bcast_block);
 
-        // For simplicity for now, just make all calls return a single I64.
-        sig.returns.push(AbiParam::new(self.int));
 
-        // TODO: Streamline the API here?
-        let callee = self
-            .module
-            .declare_function(&name, Linkage::Import, &sig)
-            .expect("problem declaring function");
-        let local_callee = self.module.declare_func_in_func(callee, self.builder.func);
+                // store value at index = expr_index * broadcast_len + bcast_index
+                let tmp = self.builder.ins().imul(expr_index, bcast_end_index);
+                let store_index = self.builder.ins().iadd(
+                    tmp,
+                    bcast_index,
+                );
+                self.jit_compile_store(name, elmt, store_index, float_value, translation)?;
 
-        let mut arg_values = Vec::new();
-        for arg in args {
-            arg_values.push(self.translate_expr(arg))
-        }
-        let call = self.builder.ins().call(local_callee, &arg_values);
-        self.builder.inst_results(call)[0]
-    }
+                // increment index
+                let bcast_next_index = self.builder.ins().iadd(
+                    bcast_index,
+                    one,
+                );
+                let bcast_cond = self.builder.ins().icmp(IntCC::UnsignedLessThan, bcast_next_index, bcast_end_index);
+                let post_bcast_block = self.builder.create_block();
+                self.builder.ins().brif(bcast_cond, bcast_block, &[bcast_next_index], post_bcast_block, &[]);
+                self.builder.seal_block(bcast_block);
+                self.builder.switch_to_block(post_bcast_block);
 
-    fn translate_global_data_addr(&mut self, name: String) -> Value {
-        let sym = self
-            .module
-            .declare_data(&name, Linkage::Export, true, false)
-            .expect("problem declaring data object");
-        let local_id = self.module.declare_data_in_func(sym, self.builder.func);
-
-        let pointer = self.module.target_config().pointer_type();
-        self.builder.ins().symbol_value(pointer, local_id)
-    }
-}
-
-fn declare_variables(
-    int: types::Type,
-    builder: &mut FunctionBuilder,
-    params: &[String],
-    the_return: &str,
-    stmts: &[Expr],
-    entry_block: Block,
-) -> HashMap<String, Variable> {
-    let mut variables = HashMap::new();
-    let mut index = 0;
-
-    for (i, name) in params.iter().enumerate() {
-        // TODO: cranelift_frontend should really have an API to make it easy to set
-        // up param variables.
-        let val = builder.block_params(entry_block)[i];
-        let var = declare_variable(int, builder, &mut variables, &mut index, name);
-        builder.def_var(var, val);
-    }
-    let zero = builder.ins().iconst(int, 0);
-    let return_variable = declare_variable(int, builder, &mut variables, &mut index, the_return);
-    builder.def_var(return_variable, zero);
-    for expr in stmts {
-        declare_variables_in_stmt(int, builder, &mut variables, &mut index, expr);
-    }
-
-    variables
-}
-
-/// Recursively descend through the AST, translating all implicit
-/// variable declarations.
-fn declare_variables_in_stmt(
-    int: types::Type,
-    builder: &mut FunctionBuilder,
-    variables: &mut HashMap<String, Variable>,
-    index: &mut usize,
-    expr: &Expr,
-) {
-    match *expr {
-        Expr::Assign(ref name, _) => {
-            declare_variable(int, builder, variables, index, name);
-        }
-        Expr::IfElse(ref _condition, ref then_body, ref else_body) => {
-            for stmt in then_body {
-                declare_variables_in_stmt(int, builder, variables, index, stmt);
+                // return the current block for later
+                Ok(post_bcast_block)
             }
-            for stmt in else_body {
-                declare_variables_in_stmt(int, builder, variables, index, stmt);
+            TranslationFrom::ElementWise | TranslationFrom::DiagonalContraction { .. } => {
+                self.jit_compile_store(name, elmt, expr_index, float_value, translation)?;
+                Ok(pre_block)
             }
+            _ => Err(anyhow!("Invalid translation")),
         }
-        Expr::WhileLoop(ref _condition, ref loop_body) => {
-            for stmt in loop_body {
-                declare_variables_in_stmt(int, builder, variables, index, stmt);
+    }
+
+    fn jit_compile_store(
+        &mut self,
+        _name: &str,
+        elmt: &TensorBlock,
+        store_index: Value,
+        float_value: Value,
+        translation: &Translation,
+    ) -> Result<()> {
+        let int_type = self.int_type;
+        let rank = elmt.layout().rank();
+        let res_index = match &translation.target {
+            TranslationTo::Contiguous { start, end: _ } => {
+                let start_const = self.builder.ins().iconst(int_type, i64::try_from(*start).unwrap());
+                self.builder.ins().iadd(start_const, store_index)
             }
-        }
-        _ => (),
+            TranslationTo::Sparse { indices: _ } => {
+                // load store index from layout
+                let translate_index = self
+                    .layout
+                    .get_translation_index(elmt.expr_layout(), elmt.layout())
+                    .unwrap();
+                let translate_store_index =
+                    translate_index + translation.get_to_index_in_data_layout();
+                let translate_store_index = self.builder.ins().iconst(int_type, i64::try_from(translate_store_index).unwrap());
+                let rank_const = self.builder.ins().iconst(int_type, i64::try_from(rank).unwrap());
+                let elmt_index_strided = self.builder.ins().imul(store_index, rank_const);
+                let curr_index = self.builder.ins().iadd(elmt_index_strided, translate_store_index);
+                let ptr = self.builder.ins().iadd(*self.tensors.get("indices").unwrap(), curr_index);
+                self.builder.ins().load(self.int_type, self.mem_flags, ptr, 0)
+            }
+        };
+
+        let ptr = self.builder.ins().iadd(*self.tensor_ptr.as_ref().unwrap(), res_index);
+        self.builder.ins().store(
+            self.mem_flags,
+            float_value,
+            ptr,
+            0,
+        );
+
+        Ok(())
     }
 }
 
-/// Declare a single variable declaration.
-fn declare_variable(
-    int: types::Type,
-    builder: &mut FunctionBuilder,
-    variables: &mut HashMap<String, Variable>,
-    index: &mut usize,
-    name: &str,
-) -> Variable {
-    let var = Variable::new(*index);
-    if !variables.contains_key(name) {
-        variables.insert(name.into(), var);
-        builder.declare_var(var, int);
-        *index += 1;
-    }
-    var
-}
+

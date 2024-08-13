@@ -47,6 +47,7 @@ cranelift = "0.110.1"
 cranelift-module = "0.110.1"
 cranelift-jit = "0.110.1"
 cranelift-native = "0.110.1"
+target-lexicon = "0.12.16"
 
 [build-dependencies]
 bindgen = { version = "0.69.4", optional = true }

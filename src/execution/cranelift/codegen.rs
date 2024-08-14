@@ -5,6 +5,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 use target_lexicon::{PointerWidth, Triple};
 use std::collections::HashMap;
+use std::iter::zip;
 
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
@@ -152,158 +153,261 @@ impl CraneliftModule {
         let arg_names = &["t", "u", "data", "root"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        self.insert_state(model.state());
-        self.insert_data(model);
-        self.insert_indices();
-
         if let Some(stop) = model.stop() {
-            let res_ptr = self.get_param("root");
-            self.jit_compile_tensor(stop, Some(*res_ptr))?;
+            codegen.jit_compile_tensor(stop, None)?;
         }
-        self.builder.build_return(None)?;
-
-        if function.verify(true) {
-            Ok(function)
-        } else {
-            function.print_to_stderr();
-            unsafe {
-                function.delete();
-            }
-            Err(anyhow!("Invalid generated function."))
-        }
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function("calc_stop")
     }
 
-    pub fn compile_rhs<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
-        self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(
-            &[
-                self.real_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
-            ],
-            false,
-        );
-        let fn_arg_names = &["t", "u", "data", "rr"];
-        let function = self.module.add_function("rhs", fn_type, None);
-
-        // add noalias
-        let alias_id = Attribute::get_named_enum_kind_id("noalias");
-        let noalign = self.context.create_enum_attribute(alias_id, 0);
-        for i in &[1, 2, 3] {
-            function.add_attribute(AttributeLoc::Param(*i), noalign);
-        }
-
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(basic_block);
-
-        for (i, arg) in function.get_param_iter().enumerate() {
-            let name = fn_arg_names[i];
-            let alloca = self.function_arg_alloca(name, arg);
-            self.insert_param(name, alloca);
-        }
-
-        self.insert_state(model.state());
-        self.insert_data(model);
-        self.insert_indices();
+    pub fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+        let arg_types = &[
+            self.real_type.into(),
+            self.real_ptr_type.into(),
+            self.real_ptr_type.into(),
+            self.real_ptr_type.into(),
+        ];
+        let arg_names = &["t", "u", "data", "rr"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
         // calculate time dependant definitions
         for tensor in model.time_dep_defns() {
-            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+            codegen.jit_compile_tensor(tensor, None)?;
         }
 
         // TODO: could split state dep defns into before and after F
         for a in model.state_dep_defns() {
-            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+            codegen.jit_compile_tensor(a, None)?;
         }
 
         // F
-        let res_ptr = self.get_param("rr");
-        self.jit_compile_tensor(model.rhs(), Some(*res_ptr))?;
+        let res = *codegen.variables.get("rr").unwrap();
+        codegen.jit_compile_tensor(model.rhs(), Some(res))?;
 
-        self.builder.build_return(None)?;
-
-        if function.verify(true) {
-            Ok(function)
-        } else {
-            function.print_to_stderr();
-            unsafe {
-                function.delete();
-            }
-            Err(anyhow!("Invalid generated function."))
-        }
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function("rhs")
     }
 
-    pub fn compile_mass<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
-        self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(
-            &[
-                self.real_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
-            ],
-            false,
-        );
-        let fn_arg_names = &["t", "dudt", "data", "rr"];
-        let function = self.module.add_function("mass", fn_type, None);
-
-        // add noalias
-        let alias_id = Attribute::get_named_enum_kind_id("noalias");
-        let noalign = self.context.create_enum_attribute(alias_id, 0);
-        for i in &[1, 2, 3] {
-            function.add_attribute(AttributeLoc::Param(*i), noalign);
-        }
-
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(basic_block);
-
-        for (i, arg) in function.get_param_iter().enumerate() {
-            let name = fn_arg_names[i];
-            let alloca = self.function_arg_alloca(name, arg);
-            self.insert_param(name, alloca);
-        }
+    pub fn compile_mass(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+        let arg_types = &[
+            self.real_type.into(),
+            self.real_ptr_type.into(),
+            self.real_ptr_type.into(),
+            self.real_ptr_type.into(),
+        ];
+        let arg_names = &["t", "dudt", "data", "rr"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
         // only put code in this function if we have a state_dot and lhs
         if model.state_dot().is_some() && model.lhs().is_some() {
-            let state_dot = model.state_dot().unwrap();
-            let lhs = model.lhs().unwrap();
-
-            self.insert_dot_state(state_dot);
-            self.insert_data(model);
-            self.insert_indices();
-
             // calculate time dependant definitions
             for tensor in model.time_dep_defns() {
-                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                codegen.jit_compile_tensor(tensor, None)?;
             }
 
             for a in model.dstate_dep_defns() {
-                self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+                codegen.jit_compile_tensor(a, None)?;
             }
 
             // mass
-            let res_ptr = self.get_param("rr");
-            self.jit_compile_tensor(lhs, Some(*res_ptr))?;
+            let lhs = model.lhs().unwrap();
+            let res = codegen.variables.get("rr").unwrap();
+            codegen.jit_compile_tensor(lhs, Some(*res))?;
         }
 
-        self.builder.build_return(None)?;
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function("mass")
+    }
 
-        if function.verify(true) {
-            Ok(function)
+    pub fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+        let arg_types = &[
+            self.int_ptr_type.into(),
+            self.int_ptr_type.into(),
+            self.int_ptr_type.into(),
+            self.int_ptr_type.into(),
+            self.int_ptr_type.into(),
+        ];
+        let arg_names = &["states", "inputs", "outputs", "data", "stop"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        let number_of_states = i64::try_from(model.state().nnz()).unwrap();
+        let number_of_inputs = i64::try_from(model.inputs().iter().fold(0, |acc, x| acc + x.nnz())).unwrap();
+        let number_of_outputs = i64::try_from(model.out().nnz()).unwrap();
+        let number_of_stop = if let Some(stop) = model.stop() {
+            i64::try_from(stop.nnz()).unwrap()
         } else {
-            function.print_to_stderr();
-            unsafe {
-                function.delete();
-            }
-            Err(anyhow!("Invalid generated function."))
+            0
+        };
+        let data_len = i64::try_from(codegen.layout.data().len()).unwrap();
+
+        for (val, name) in [
+            (number_of_states, "states"),
+            (number_of_inputs, "inputs"),
+            (number_of_outputs, "outputs"),
+            (data_len, "data"),
+            (number_of_stop, "stop"),
+        ] {
+            let val = codegen.builder.ins().iconst(codegen.int_type, val);
+            let ptr = codegen.variables.get(name).unwrap();
+            let ptr = codegen.builder.use_var(*ptr);
+            codegen.builder.ins().store(codegen.mem_flags, val, ptr, 0);
         }
+
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function("gen_dims")
+    }
+
+    pub fn compile_get_tensor(
+        &mut self,
+        model: &DiscreteModel,
+        name: &str,
+    ) -> Result<FuncId> {
+        let arg_types = &[
+            self.real_ptr_type.into(),
+            self.real_ptr_type.into(),
+            self.int_ptr_type.into(),
+        ];
+        let arg_names = &["data", "tensor_data", "tensor_size"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+
+        let tensor_ptr = codegen.variables.get(name).unwrap();
+        let tensor_ptr = codegen.builder.use_var(*tensor_ptr);
+
+        let tensor_size = i64::try_from(codegen.layout.get_layout(name).unwrap().nnz()).unwrap();
+        let tensor_size = codegen.builder.ins().iconst(codegen.int_type, tensor_size);
+    
+        for (val, name) in [(tensor_ptr, "tensor_data"), (tensor_size, "tensor_size")] {
+            let ptr = codegen.variables.get(name).unwrap();
+            let ptr = codegen.builder.use_var(*ptr);
+            codegen.builder.ins().store(codegen.mem_flags, val, ptr, 0);
+        }
+
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function("get_tensor")
+    }
+
+    pub fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+        let arg_types = &[
+            self.real_ptr_type.into(),
+            self.real_ptr_type.into(),
+        ];
+        let arg_names = &["inputs", "data"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        let mut inputs_index = 0usize;
+        let base_data_ptr = codegen.variables.get("data").unwrap();
+        let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
+        for input in model.inputs() {
+            codegen.insert_tensor(input, base_data_ptr);
+            let data_ptr = codegen.variables.get(input.name()).unwrap();
+            let data_ptr = codegen.builder.use_var(*data_ptr);
+            let input_ptr = codegen.variables.get("inputs").unwrap();
+            let input_ptr = codegen.builder.use_var(*input_ptr);
+
+            // loop thru the elements of this input and set them using the inputs ptr
+            let inputs_start_index = codegen.builder.ins().iconst(codegen.int_type, i64::try_from(inputs_index).unwrap());
+            let start_index = codegen.builder.ins().iconst(codegen.int_type, 0);
+
+            let input_block = codegen.builder.create_block();
+            let curr_input_index = codegen.builder.append_block_param(input_block, codegen.int_type);
+            codegen.builder.ins().jump(input_block, &[start_index]);
+            codegen.builder.switch_to_block(input_block);
+
+            // loop body - copy value from inputs to data
+            let indexed_input_ptr = codegen.builder.ins().iadd(input_ptr, curr_input_index);
+            let indexed_data_ptr = codegen.builder.ins().iadd(data_ptr, curr_input_index);
+            let input_value = codegen.builder.ins().load(codegen.real_type, codegen.mem_flags, indexed_input_ptr, 0);
+            codegen.builder.ins().store(codegen.mem_flags, input_value, indexed_data_ptr, 0);
+
+
+            // increment loop index
+            let one = codegen.builder.ins().iconst(codegen.int_type, 1);
+            let next_index = codegen.builder.ins().iadd(curr_input_index, one);
+
+            let loop_while = codegen.builder.ins().icmp_imm(IntCC::UnsignedLessThan, next_index, i64::try_from(input.nnz()).unwrap());
+            let post_block = codegen.builder.create_block();
+            codegen.builder.ins().brif(
+                loop_while,
+                input_block,
+                &[next_index],
+                post_block,
+                &[],
+            );
+            codegen.builder.seal_block(input_block);
+            codegen.builder.seal_block(post_block);
+            codegen.builder.switch_to_block(post_block);
+
+            // get ready for next input
+            inputs_index += input.nnz();
+        }
+
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function("set_inputs")
+    }
+
+    pub fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+        let arg_types = &[self.real_ptr_type.into()];
+        let arg_names = &["id"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        let mut id_index = 0usize;
+        for (blk, is_algebraic) in zip(model.state().elmts(), model.is_algebraic()) {
+            // loop thru the elements of this state blk and set the corresponding elements of id
+            let id_start_index = codegen.builder.ins().iconst(codegen.int_type, i64::try_from(id_index).unwrap());
+            let blk_start_index = codegen.builder.ins().iconst(codegen.int_type, 0);
+            
+            let blk_block = codegen.builder.create_block();
+            let curr_blk_index = codegen.builder.append_block_param(blk_block, codegen.int_type);
+            codegen.builder.ins().jump(blk_block, &[blk_start_index]);
+
+            codegen.builder.switch_to_block(blk_block);
+
+            // loop body - copy value from inputs to data
+            let input_id_ptr = codegen.variables.get("id").unwrap();
+            let input_id_ptr = codegen.builder.use_var(*input_id_ptr);
+            let curr_id_index= codegen.builder.ins().iadd(id_start_index, curr_blk_index);
+            let indexed_id_ptr = codegen.builder.ins().iadd(input_id_ptr, curr_id_index);
+
+
+            let is_algebraic_float = if *is_algebraic {
+                0.0
+            } else {
+                1.0
+            };
+            let is_algebraic_value = codegen.fconst(is_algebraic_float);
+            codegen.builder.ins().store(codegen.mem_flags, indexed_id_ptr, is_algebraic_value, 0);
+
+            // increment loop index
+            let one = codegen.builder.ins().iconst(codegen.int_type, 1);
+            let next_index = codegen.builder.ins().iadd(curr_blk_index, one);
+
+            let loop_while = codegen.builder.ins().icmp_imm(IntCC::UnsignedLessThan, next_index, i64::try_from(blk.nnz()).unwrap());
+            let post_block = codegen.builder.create_block();
+            codegen.builder.ins().brif(
+                loop_while,
+                blk_block,
+                &[next_index],
+                post_block,
+                &[],
+            );
+            codegen.builder.seal_block(blk_block);
+            codegen.builder.seal_block(post_block);
+            codegen.builder.switch_to_block(post_block);
+
+            // get ready for next blk
+            id_index += blk.nnz();
+        }
+
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function("set_id")
     }
 
 }
@@ -1064,32 +1168,31 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
     fn declare_variable(
         &mut self,
         ty: types::Type,
-        index: &mut usize,
         name: &str,
         val: Value,
     ) -> Variable {
-        let var = Variable::new(*index);
+        let index = self.variables.len();
+        let var = Variable::new(index);
         if !self.variables.contains_key(name) {
             self.variables.insert(name.into(), var);
             self.builder.declare_var(var, ty);
             self.builder.def_var(var, val);
-            *index += 1;
         }
         var
     }
 
-    fn insert_tensor(&mut self, tensor: &Tensor, ptr: Value, index: &mut usize) {
+    fn insert_tensor(&mut self, tensor: &Tensor, ptr: Value) {
         let mut tensor_data_index = i64::try_from(self.layout.get_data_index(tensor.name()).unwrap()).unwrap();
         let tensor_data_index_val = self.builder.ins().iconst(self.int_type, tensor_data_index);
         let tensor_data_ptr = self.builder.ins().iadd(ptr, tensor_data_index_val);
-        self.declare_variable(self.real_ptr_type, index, tensor.name(), tensor_data_ptr);
+        self.declare_variable(self.real_ptr_type, tensor.name(), tensor_data_ptr);
         
         //insert any named blocks
         for blk in tensor.elmts() {
             if let Some(name) = blk.name() {
                 let tensor_data_index_val = self.builder.ins().iconst(self.int_type, tensor_data_index);
                 let tensor_data_ptr = self.builder.ins().iadd(ptr, tensor_data_index_val);
-                self.declare_variable(self.real_ptr_type, index, name, tensor_data_ptr);
+                self.declare_variable(self.real_ptr_type, name, tensor_data_ptr);
             }
             // named blocks only supported for rank <= 1, so we can just add the nnz to get the next data index
             tensor_data_index += i64::try_from(blk.nnz()).unwrap();
@@ -1139,20 +1242,23 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         };
 
         // insert arg vars
-        let mut index = 0;
         for (i, (arg_name, arg_type)) in arg_names.iter().zip(arg_types.iter()).enumerate() {
-            let val = builder.block_params(entry_block)[i];
-            codegen.declare_variable(*arg_type, &mut index, *arg_name, val);
+            let val = codegen.builder.block_params(entry_block)[i];
+            codegen.declare_variable(*arg_type,  *arg_name, val);
         }
 
         // insert u if it exists in args
         if let Some(u) = codegen.variables.get("u") {
-            codegen.insert_tensor(model.state(), codegen.builder.use_var(*u), &mut index);
+            let u_ptr = codegen.builder.use_var(*u);
+            codegen.insert_tensor(model.state(), u_ptr);
         }
 
-        // insert dudt if it exists in args
+        // insert dudt if it exists in args and is used in the model
         if let Some(dudt) = codegen.variables.get("dudt") {
-            codegen.insert_tensor(model.rhs(), codegen.builder.use_var(*dudt), &mut index);
+            if let Some(state_dot) = model.state_dot() {
+                let statedot_ptr = codegen.builder.use_var(*dudt);
+                codegen.insert_tensor(state_dot, statedot_ptr);
+            }
         }
 
         // insert all tensors in data if it exists in args
@@ -1169,10 +1275,10 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             }
             let tensors = tensors.chain(others.into_iter());
 
-            let data_ptr = builder.use_var(*data);
+            let data_ptr = codegen.builder.use_var(*data);
 
             for tensor in tensors {
-                codegen.insert_tensor(tensor, data_ptr, &mut index);
+                codegen.insert_tensor(tensor, data_ptr);
             }
         }
         codegen

@@ -4,6 +4,9 @@ pub mod llvm;
 pub use llvm::compiler::LlvmCompiler;
 
 pub mod cranelift;
+pub mod interface;
+pub mod compiler;
+pub mod module;
 
 
 pub mod data_layout;

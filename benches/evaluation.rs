@@ -1,4 +1,7 @@
-use diffsl::{discretise::DiscreteModel, execution::module::CodegenModule, parser::parse_ds_string, Compiler, CraneliftModule};
+use diffsl::{
+    discretise::DiscreteModel, execution::module::CodegenModule, parser::parse_ds_string, Compiler,
+    CraneliftModule,
+};
 use divan::Bencher;
 use ndarray::Array1;
 
@@ -30,8 +33,6 @@ fn setup<M: CodegenModule>(n: usize, f_text: &str, name: &str) -> Compiler<M> {
     let discrete_model = DiscreteModel::build(name, &model).unwrap();
     Compiler::from_discrete_model(&discrete_model).unwrap()
 }
-
-
 
 #[cfg(feature = "llvm")]
 #[divan::bench(consts = [1, 10, 100, 1000])]

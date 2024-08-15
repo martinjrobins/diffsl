@@ -17,9 +17,9 @@ use inkwell::values::{
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 use inkwell_internals::llvm_versions;
 use llvm_sys::prelude::LLVMValueRef;
-use target_lexicon::Triple;
 use std::collections::HashMap;
 use std::iter::zip;
+use target_lexicon::Triple;
 
 type RealType = f64;
 
@@ -50,14 +50,20 @@ impl CodegenModule for LlvmModule {
     fn new(triple: Triple, model: &DiscreteModel) -> Self {
         let context = AliasableBox::from_unique(Box::new(Context::create()));
         let real_type_str = "f64";
-        let codegen = CodeGen::new(model, context.as_ref(), context.f64_type(), context.i32_type(), real_type_str).unwrap();
+        let codegen = CodeGen::new(
+            model,
+            context.as_ref(),
+            context.f64_type(),
+            context.i32_type(),
+            real_type_str,
+        )
+        .unwrap();
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
         Self {
             codegen,
             context,
-            triple
+            triple,
         }
-
     }
 
     fn layout(&self) -> &DataLayout {
@@ -66,7 +72,11 @@ impl CodegenModule for LlvmModule {
 
     fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8> {
         let name = func_id.get_name().to_str().unwrap();
-        let maybe_fn = self.codegen.ee.get_function_address(name).map_err(|e| anyhow!("Error getting function address: {:?}", e));
+        let maybe_fn = self
+            .codegen
+            .ee
+            .get_function_address(name)
+            .map_err(|e| anyhow!("Error getting function address: {:?}", e));
         match maybe_fn {
             Ok(f) => Ok(f as *const u8),
             Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
@@ -185,12 +195,7 @@ impl CodegenModule for LlvmModule {
     fn post_autodiff_optimisation(&mut self) -> Result<()> {
         Ok(())
     }
-
-
-
 }
- 
-
 
 struct Globals<'ctx> {
     indices: Option<GlobalValue<'ctx>>,
@@ -261,9 +266,9 @@ impl<'ctx> CodeGen<'ctx> {
         let layout = DataLayout::new(model);
         let module = context.create_module(model.name());
         let globals = Globals::new(&layout, context, &module);
-        let ee = module 
-                .create_jit_execution_engine(OptimizationLevel::Aggressive)
-                .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
+        let ee = module
+            .create_jit_execution_engine(OptimizationLevel::Aggressive)
+            .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
         Ok(Self {
             context,
             module,
@@ -855,8 +860,6 @@ impl<'ctx> CodeGen<'ctx> {
             ));
         }
     }
-
-    
 
     // for dense blocks we can loop through the nested loops to calculate the index, then we compile the expression passing in this index
     fn jit_compile_dense_block(

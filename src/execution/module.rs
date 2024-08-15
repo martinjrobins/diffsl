@@ -1,10 +1,9 @@
-use target_lexicon::Triple;
 use anyhow::Result;
+use target_lexicon::Triple;
 
 use crate::discretise::DiscreteModel;
 
 use super::DataLayout;
-
 
 pub trait CodegenModule {
     type FuncId;
@@ -32,5 +31,3 @@ pub trait CodegenModule {
 
     fn layout(&self) -> &DataLayout;
 }
-
-

@@ -12,9 +12,9 @@ pub mod parser;
 pub mod utils;
 
 pub use execution::compiler::Compiler;
+pub use execution::cranelift::codegen::CraneliftModule;
 #[cfg(feature = "llvm")]
 pub use execution::llvm::codegen::LlvmModule;
-pub use execution::cranelift::codegen::CraneliftModule;
 
 #[cfg(feature = "inkwell-130")]
 extern crate inkwell_130 as inkwell;

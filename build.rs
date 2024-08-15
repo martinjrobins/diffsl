@@ -1,7 +1,7 @@
 #[cfg(feature = "enzyme")]
 mod enzyme {
-    use std::{env, path::PathBuf};
     use bindgen::{BindgenError, Bindings, Builder};
+    use std::{env, path::PathBuf};
 
     fn compile_enzyme(llvm_dir: String) -> (String, String) {
         let dst = cmake::Config::new("Enzyme/enzyme")
@@ -61,7 +61,8 @@ mod enzyme {
 
         // bind enzyme api
         let bindings_rs = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
-        let bindings = enzyme_bindings(&[llvm_inc_dir, incdir]).expect("Couldn't generate bindings!");
+        let bindings =
+            enzyme_bindings(&[llvm_inc_dir, incdir]).expect("Couldn't generate bindings!");
         bindings
             .write_to_file(bindings_rs)
             .expect("Couldn't write file bindings.rs!");
@@ -80,5 +81,3 @@ fn main() {
     #[cfg(feature = "enzyme")]
     enzyme::enzyme_main();
 }
-
-

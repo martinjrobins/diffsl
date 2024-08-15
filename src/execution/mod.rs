@@ -1,7 +1,5 @@
 #[cfg(feature = "llvm")]
 pub mod llvm;
-#[cfg(feature = "llvm")]
-pub use llvm::compiler::LlvmCompiler;
 
 pub mod cranelift;
 pub mod interface;

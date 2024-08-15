@@ -1,8 +1,6 @@
-use std::env;
-
 use crate::{discretise::DiscreteModel, execution::interface::{CalcOutFunc, GetDimsFunc, GetOutFunc, MassFunc, RhsFunc, SetIdFunc, SetInputsFunc, StopFunc, U0Func}, parser::parse_ds_string};
 
-use super::{interface::{CalcOutGradientFunc, RhsGradientFunc, SetInputsGradientFunc, U0GradientFunc}, module::CodeGenModule};
+use super::{interface::{CalcOutGradientFunc, RhsGradientFunc, SetInputsGradientFunc, U0GradientFunc}, module::CodegenModule};
 use anyhow::Result;
 use target_lexicon::Triple;
 use uid::Id;
@@ -27,7 +25,7 @@ struct JitGradFunctions {
     set_inputs_grad: SetInputsGradientFunc,
 }
 
-pub struct Compiler<M: CodeGenModule> {
+pub struct Compiler<M: CodegenModule> {
     module: M,
     jit_functions: JitFunctions,
     jit_grad_functions: JitGradFunctions,
@@ -36,22 +34,19 @@ pub struct Compiler<M: CodeGenModule> {
     number_of_parameters: usize,
     number_of_outputs: usize,
     has_mass: bool,
-    output_base_filename: String,
 }
 
-impl<M: CodeGenModule> Compiler<M> {
+impl<M: CodegenModule> Compiler<M> {
     pub fn from_discrete_str(code: &str) -> Result<Self> {
         let uid = Id::<u32>::new();
         let name = format!("diffsl_{}", uid);
         let model = parse_ds_string(code).unwrap();
         let model = DiscreteModel::build(name.as_str(), &model)
             .unwrap_or_else(|e| panic!("{}", e.as_error_message(code)));
-        let dir = env::temp_dir();
-        let path = dir.join(name.clone());
-        Self::from_discrete_model(&model, path.to_str().unwrap())
+        Self::from_discrete_model(&model)
     }
 
-    pub fn from_discrete_model(model: &DiscreteModel, out: &str) -> Result<Self> {
+    pub fn from_discrete_model(model: &DiscreteModel) -> Result<Self> {
         let number_of_states = *model.state().shape().first().unwrap_or(&1);
         let input_names = model
             .inputs()
@@ -77,27 +72,28 @@ impl<M: CodeGenModule> Compiler<M> {
 
         module.pre_autodiff_optimisation()?;
 
-        let set_u0_grad = module.compile_set_u0_grad(set_u0)?;
-        let rhs_grad = module.compile_rhs_grad(rhs)?;
-        let calc_out_grad = module.compile_calc_out_grad(calc_out)?;
-        let set_inputs_grad = module.compile_set_inputs_grad(set_inputs)?;
+        let set_u0_grad = module.compile_set_u0_grad(&set_u0)?;
+        let rhs_grad = module.compile_rhs_grad(&rhs)?;
+        let calc_out_grad = module.compile_calc_out_grad(&calc_out)?;
+        let set_inputs_grad = module.compile_set_inputs_grad(&set_inputs)?;
 
         module.post_autodiff_optimisation()?;
 
-        let set_u0 = module.jit(set_u0)?;
-        let rhs = module.jit(rhs)?;
-        let mass = module.jit(mass)?;
-        let calc_stop = module.jit(calc_stop)?;
-        let calc_out = module.jit(calc_out)?;
-        let set_id = module.jit(set_id)?;
-        let get_dims = module.jit(get_dims)?;
-        let set_inputs = module.jit(set_inputs)?;
-        let get_out= module.jit(get_output)?;
+        let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(module.jit(set_u0)?) };
+        let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(module.jit(rhs)?) };
+        let mass = unsafe { std::mem::transmute::<*const u8, MassFunc>(module.jit(mass)?) };
+        let calc_out = unsafe { std::mem::transmute::<*const u8, CalcOutFunc>(module.jit(calc_out)?) };
+        let calc_stop = unsafe { std::mem::transmute::<*const u8, StopFunc>(module.jit(calc_stop)?) };
+        let set_id = unsafe { std::mem::transmute::<*const u8, SetIdFunc>(module.jit(set_id)?) };
+        let get_dims = unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(module.jit(get_dims)?) };
+        let set_inputs = unsafe { std::mem::transmute::<*const u8, SetInputsFunc>(module.jit(set_inputs)?) };
+        let get_out = unsafe { std::mem::transmute::<*const u8, GetOutFunc>(module.jit(get_output)?) };
 
-        let set_u0_grad = module.jit(set_u0_grad)?;
-        let rhs_grad = module.jit(rhs_grad)?;
-        let calc_out_grad = module.jit(calc_out_grad)?;
-        let set_inputs_grad = module.jit(set_inputs_grad)?;
+        let set_u0_grad = unsafe { std::mem::transmute::<*const u8, U0GradientFunc>(module.jit(set_u0_grad)?) };
+        let rhs_grad = unsafe { std::mem::transmute::<*const u8, RhsGradientFunc>(module.jit(rhs_grad)?) };
+        let calc_out_grad = unsafe { std::mem::transmute::<*const u8, CalcOutGradientFunc>(module.jit(calc_out_grad)?) };
+        let set_inputs_grad = unsafe { std::mem::transmute::<*const u8, SetInputsGradientFunc>(module.jit(set_inputs_grad)?) };
+
 
         Ok(Self {
             module,
@@ -122,48 +118,21 @@ impl<M: CodeGenModule> Compiler<M> {
             number_of_parameters,
             number_of_outputs,
             has_mass,
-            output_base_filename: out.to_string(),
         })
     }
 
 
-    fn get_bitcode_filename(out: &str) -> String {
-        format!("{}.bc", out)
-    }
-
-    fn get_object_filename(out: &str) -> String {
-        format!("{}.o", out)
-    }
-
-    fn jit<'ctx, T>(name: &str, ee: &ExecutionEngine<'ctx>) -> Result<JitFunction<'ctx, T>>
-    where
-        T: UnsafeFunctionPointer,
-    {
-        let maybe_fn = unsafe { ee.get_function::<T>(name) };
-        match maybe_fn {
-            Ok(f) => Ok(f),
-            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
-        }
-    }
-
     pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
-        let index = self.borrow_data_layout().get_data_index(name)?;
-        let nnz = self.borrow_data_layout().get_data_length(name)?;
+        let index = self.module.layout().get_data_index(name)?;
+        let nnz = self.module.layout().get_data_length(name)?;
         Some(&data[index..index + nnz])
     }
 
     pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) {
-        let number_of_states = *self.borrow_number_of_states();
-        if yy.len() != number_of_states {
-            panic!("Expected {} states, got {}", number_of_states, yy.len());
+        if yy.len() != self.number_of_states {
+            panic!("Expected {} states, got {}", self.number_of_states, yy.len());
         }
-        self.with_data(|compiler| {
-            let yy_ptr = yy.as_mut_ptr();
-            let data_ptr = data.as_mut_ptr();
-            unsafe {
-                compiler.jit_functions.set_u0.call(data_ptr, yy_ptr);
-            }
-        });
+        unsafe { (self.jit_functions.set_u0)(yy.as_mut_ptr(), data.as_mut_ptr()) };
     }
 
     pub fn set_u0_grad(
@@ -173,14 +142,13 @@ impl<M: CodeGenModule> Compiler<M> {
         data: &mut [f64],
         ddata: &mut [f64],
     ) {
-        let number_of_states = *self.borrow_number_of_states();
-        if yy.len() != number_of_states {
-            panic!("Expected {} states, got {}", number_of_states, yy.len());
+        if yy.len() != self.number_of_states {
+            panic!("Expected {} states, got {}", self.number_of_states, yy.len());
         }
-        if dyy.len() != number_of_states {
+        if dyy.len() != self.number_of_states {
             panic!(
                 "Expected {} states for dyy, got {}",
-                number_of_states,
+                self.number_of_states,
                 dyy.len()
             );
         }
@@ -194,18 +162,7 @@ impl<M: CodeGenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        self.with_data(|compiler| {
-            let yy_ptr = yy.as_mut_ptr();
-            let data_ptr = data.as_mut_ptr();
-            let dyy_ptr = dyy.as_mut_ptr();
-            let ddata_ptr = ddata.as_mut_ptr();
-            unsafe {
-                compiler
-                    .jit_grad_functions
-                    .set_u0_grad
-                    .call(data_ptr, ddata_ptr, yy_ptr, dyy_ptr);
-            }
-        });
+        unsafe { (self.jit_grad_functions.set_u0_grad)(data.as_mut_ptr(), ddata.as_mut_ptr(), yy.as_mut_ptr(), dyy.as_mut_ptr()) };
     }
 
     pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) {
@@ -219,81 +176,52 @@ impl<M: CodeGenModule> Compiler<M> {
         if stop.len() != n_stop {
             panic!("Expected {} stop, got {}", n_stop, stop.len());
         }
-        self.with_data(|compiler| {
-            let yy_ptr = yy.as_ptr();
-            let data_ptr = data.as_mut_ptr();
-            let stop_ptr = stop.as_mut_ptr();
-            unsafe {
-                compiler
-                    .jit_functions
-                    .calc_stop
-                    .call(t, yy_ptr, data_ptr, stop_ptr);
-            }
-        });
+        unsafe { (self.jit_functions.calc_stop)(t, yy.as_ptr(), data.as_mut_ptr(), stop.as_mut_ptr()) };
     }
 
     pub fn rhs(&self, t: f64, yy: &[f64], data: &mut [f64], rr: &mut [f64]) {
-        let number_of_states = *self.borrow_number_of_states();
-        if yy.len() != number_of_states {
-            panic!("Expected {} states, got {}", number_of_states, yy.len());
+        if yy.len() != self.number_of_states {
+            panic!("Expected {} states, got {}", self.number_of_states, yy.len());
         }
-        if rr.len() != number_of_states {
+        if rr.len() != self.number_of_states {
             panic!(
                 "Expected {} residual states, got {}",
-                number_of_states,
+                self.number_of_states,
                 rr.len()
             );
         }
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        self.with_data(|compiler| {
-            let yy_ptr = yy.as_ptr();
-            let rr_ptr = rr.as_mut_ptr();
-            let data_ptr = data.as_mut_ptr();
-            unsafe {
-                compiler.jit_functions.rhs.call(t, yy_ptr, data_ptr, rr_ptr);
-            }
-        });
+        unsafe { (self.jit_functions.rhs)(t, yy.as_ptr(), data.as_mut_ptr(), rr.as_mut_ptr()) };
     }
 
     pub fn has_mass(&self) -> bool {
-        *self.borrow_has_mass()
+        self.has_mass
     }
 
     pub fn mass(&self, t: f64, yp: &[f64], data: &mut [f64], rr: &mut [f64]) {
-        if !self.borrow_has_mass() {
+        if !self.has_mass {
             panic!("Model does not have a mass function");
         }
-        let number_of_states = *self.borrow_number_of_states();
-        if yp.len() != number_of_states {
-            panic!("Expected {} states, got {}", number_of_states, yp.len());
+        if yp.len() != self.number_of_states {
+            panic!("Expected {} states, got {}", self.number_of_states, yp.len());
         }
-        if rr.len() != number_of_states {
+        if rr.len() != self.number_of_states {
             panic!(
                 "Expected {} residual states, got {}",
-                number_of_states,
+                self.number_of_states,
                 rr.len()
             );
         }
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        self.with_data(|compiler| {
-            let yp_ptr = yp.as_ptr();
-            let rr_ptr = rr.as_mut_ptr();
-            let data_ptr = data.as_mut_ptr();
-            unsafe {
-                compiler
-                    .jit_functions
-                    .mass
-                    .call(t, yp_ptr, data_ptr, rr_ptr);
-            }
-        });
+        unsafe { (self.jit_functions.mass)(t, yp.as_ptr(), data.as_mut_ptr(), rr.as_mut_ptr()) };
     }
 
     pub fn data_len(&self) -> usize {
-        self.with(|compiler| compiler.data_layout.data().len())
+        self.module.layout().data().len()
     }
 
     pub fn get_new_data(&self) -> Vec<f64> {
@@ -311,28 +239,27 @@ impl<M: CodeGenModule> Compiler<M> {
         rr: &mut [f64],
         drr: &mut [f64],
     ) {
-        let number_of_states = *self.borrow_number_of_states();
-        if yy.len() != number_of_states {
-            panic!("Expected {} states, got {}", number_of_states, yy.len());
+        if yy.len() != self.number_of_states {
+            panic!("Expected {} states, got {}", self.number_of_states, yy.len());
         }
-        if rr.len() != number_of_states {
+        if rr.len() != self.number_of_states {
             panic!(
                 "Expected {} residual states, got {}",
-                number_of_states,
+                self.number_of_states,
                 rr.len()
             );
         }
-        if dyy.len() != number_of_states {
+        if dyy.len() != self.number_of_states {
             panic!(
                 "Expected {} states for dyy, got {}",
-                number_of_states,
+                self.number_of_states,
                 dyy.len()
             );
         }
-        if drr.len() != number_of_states {
+        if drr.len() != self.number_of_states {
             panic!(
                 "Expected {} residual states for drr, got {}",
-                number_of_states,
+                self.number_of_states,
                 drr.len()
             );
         }
@@ -346,37 +273,17 @@ impl<M: CodeGenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        self.with_data(|compiler| {
-            let yy_ptr = yy.as_ptr();
-            let rr_ptr = rr.as_mut_ptr();
-            let dyy_ptr = dyy.as_ptr();
-            let drr_ptr = drr.as_mut_ptr();
-            let data_ptr = data.as_mut_ptr();
-            let ddata_ptr = ddata.as_mut_ptr();
-            unsafe {
-                compiler
-                    .jit_grad_functions
-                    .rhs_grad
-                    .call(t, yy_ptr, dyy_ptr, data_ptr, ddata_ptr, rr_ptr, drr_ptr);
-            }
-        });
+        unsafe { (self.jit_grad_functions.rhs_grad)(t, yy.as_ptr(), dyy.as_ptr(), data.as_mut_ptr(), ddata.as_mut_ptr(), rr.as_mut_ptr(), drr.as_mut_ptr()) };
     }
 
     pub fn calc_out(&self, t: f64, yy: &[f64], data: &mut [f64]) {
-        let number_of_states = *self.borrow_number_of_states();
-        if yy.len() != *self.borrow_number_of_states() {
-            panic!("Expected {} states, got {}", number_of_states, yy.len());
+        if yy.len() != self.number_of_states {
+            panic!("Expected {} states, got {}", self.number_of_states, yy.len());
         }
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        self.with_data(|compiler| {
-            let yy_ptr = yy.as_ptr();
-            let data_ptr = data.as_mut_ptr();
-            unsafe {
-                compiler.jit_functions.calc_out.call(t, yy_ptr, data_ptr);
-            }
-        });
+        unsafe { (self.jit_functions.calc_out)(t, yy.as_ptr(), data.as_mut_ptr()) };
     }
 
     pub fn calc_out_grad(
@@ -387,17 +294,16 @@ impl<M: CodeGenModule> Compiler<M> {
         data: &mut [f64],
         ddata: &mut [f64],
     ) {
-        let number_of_states = *self.borrow_number_of_states();
-        if yy.len() != *self.borrow_number_of_states() {
-            panic!("Expected {} states, got {}", number_of_states, yy.len());
+        if yy.len() != self.number_of_states {
+            panic!("Expected {} states, got {}", self.number_of_states, yy.len());
         }
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        if dyy.len() != *self.borrow_number_of_states() {
+        if dyy.len() != self.number_of_states {
             panic!(
                 "Expected {} states for dyy, got {}",
-                number_of_states,
+                self.number_of_states,
                 dyy.len()
             );
         }
@@ -408,18 +314,7 @@ impl<M: CodeGenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        self.with_data(|compiler| {
-            let yy_ptr = yy.as_ptr();
-            let data_ptr = data.as_mut_ptr();
-            let dyy_ptr = dyy.as_ptr();
-            let ddata_ptr = ddata.as_mut_ptr();
-            unsafe {
-                compiler
-                    .jit_grad_functions
-                    .calc_out_grad
-                    .call(t, yy_ptr, dyy_ptr, data_ptr, ddata_ptr);
-            }
-        });
+        unsafe { (self.jit_grad_functions.calc_out_grad)(t, yy.as_ptr(), dyy.as_ptr(), data.as_mut_ptr(), ddata.as_mut_ptr()) };
     }
 
     /// Get various dimensions of the model
@@ -433,15 +328,7 @@ impl<M: CodeGenModule> Compiler<M> {
         let mut n_outputs = 0u32;
         let mut n_data = 0u32;
         let mut n_stop = 0u32;
-        self.with(|compiler| unsafe {
-            compiler.data.jit_functions.get_dims.call(
-                &mut n_states,
-                &mut n_inputs,
-                &mut n_outputs,
-                &mut n_data,
-                &mut n_stop,
-            );
-        });
+        unsafe {(self.jit_functions.get_dims)(&mut n_states, &mut n_inputs, &mut n_outputs, &mut n_data, &mut n_stop)};
         (
             n_states as usize,
             n_inputs as usize,
@@ -459,15 +346,7 @@ impl<M: CodeGenModule> Compiler<M> {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        self.with_data(|compiler| {
-            let data_ptr = data.as_mut_ptr();
-            unsafe {
-                compiler
-                    .jit_functions
-                    .set_inputs
-                    .call(inputs.as_ptr(), data_ptr);
-            }
-        });
+        unsafe {(self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr())};
     }
 
     pub fn set_inputs_grad(
@@ -498,19 +377,7 @@ impl<M: CodeGenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        self.with_data(|compiler| {
-            let data_ptr = data.as_mut_ptr();
-            let ddata_ptr = ddata.as_mut_ptr();
-            let dinputs_ptr = dinputs.as_ptr();
-            unsafe {
-                compiler.jit_grad_functions.set_inputs_grad.call(
-                    inputs.as_ptr(),
-                    dinputs_ptr,
-                    data_ptr,
-                    ddata_ptr,
-                );
-            }
-        });
+        unsafe {(self.jit_grad_functions.set_inputs_grad)(inputs.as_ptr(), dinputs.as_ptr(), data.as_mut_ptr(), ddata.as_mut_ptr())};
     }
 
     pub fn get_out(&self, data: &[f64]) -> &[f64] {
@@ -522,16 +389,7 @@ impl<M: CodeGenModule> Compiler<M> {
         let mut tensor_data_len = 0u32;
         let tensor_data_ptr_ptr: *mut *mut f64 = &mut tensor_data_ptr;
         let tensor_data_len_ptr: *mut u32 = &mut tensor_data_len;
-        self.with(|compiler| {
-            let data_ptr = data.as_ptr();
-            unsafe {
-                compiler.data.jit_functions.get_out.call(
-                    data_ptr,
-                    tensor_data_ptr_ptr,
-                    tensor_data_len_ptr,
-                );
-            }
-        });
+        unsafe {(self.jit_functions.get_out)(data.as_ptr(), tensor_data_ptr_ptr, tensor_data_len_ptr)};
         assert!(tensor_data_len as usize == n_outputs);
         unsafe { std::slice::from_raw_parts(tensor_data_ptr, tensor_data_len as usize) }
     }
@@ -541,84 +399,17 @@ impl<M: CodeGenModule> Compiler<M> {
         if n_states != id.len() {
             panic!("Expected {} states, got {}", n_states, id.len());
         }
-        self.with_data(|compiler| {
-            unsafe {
-                compiler.jit_functions.set_id.call(id.as_mut_ptr());
-            };
-        });
-    }
-
-    fn get_native_machine() -> Result<TargetMachine> {
-        Target::initialize_native(&InitializationConfig::default())
-            .map_err(|e| anyhow!("{}", e))?;
-        let opt = OptimizationLevel::Default;
-        let reloc = RelocMode::Default;
-        let model = CodeModel::Default;
-        let target_triple = TargetMachine::get_default_triple();
-        let target = Target::from_triple(&target_triple).unwrap();
-        let target_machine = target
-            .create_target_machine(
-                &target_triple,
-                TargetMachine::get_host_cpu_name().to_str().unwrap(),
-                TargetMachine::get_host_cpu_features().to_str().unwrap(),
-                opt,
-                reloc,
-                model,
-            )
-            .unwrap();
-        Ok(target_machine)
-    }
-
-    fn get_wasm_machine() -> Result<TargetMachine> {
-        Target::initialize_webassembly(&InitializationConfig::default());
-        let opt = OptimizationLevel::Default;
-        let reloc = RelocMode::Default;
-        let model = CodeModel::Default;
-        let target_triple = TargetTriple::create("wasm32-unknown-emscripten");
-        let target = Target::from_triple(&target_triple).unwrap();
-        let target_machine = target
-            .create_target_machine(&target_triple, "generic", "", opt, reloc, model)
-            .unwrap();
-        Ok(target_machine)
-    }
-
-    pub fn write_bitcode_to_path(&self, path: &Path) -> Result<()> {
-        self.with_data(|data| {
-            let result = data.codegen.module().write_bitcode_to_path(path);
-            if result {
-                Ok(())
-            } else {
-                Err(anyhow!("Error writing bitcode to path"))
-            }
-        })
-    }
-
-    pub fn write_object_file(&self, path: &Path) -> Result<()> {
-        let target_machine = LlvmCompiler::get_native_machine()?;
-        self.with_data(|data| {
-            target_machine
-                .write_to_file(data.codegen.module(), FileType::Object, path)
-                .map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
-        })
-    }
-
-    pub fn write_wasm_object_file(&self, path: &Path) -> Result<()> {
-        let target_machine = LlvmCompiler::get_wasm_machine()?;
-        self.with_data(|data| {
-            target_machine
-                .write_to_file(data.codegen.module(), FileType::Object, path)
-                .map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
-        })
+        unsafe {(self.jit_functions.set_id)(id.as_mut_ptr())};
     }
 
     pub fn number_of_states(&self) -> usize {
-        *self.borrow_number_of_states()
+        self.number_of_states
     }
     pub fn number_of_parameters(&self) -> usize {
-        *self.borrow_number_of_parameters()
+        self.number_of_parameters
     }
 
     pub fn number_of_outputs(&self) -> usize {
-        *self.borrow_number_of_outputs()
+        self.number_of_outputs
     }
 }

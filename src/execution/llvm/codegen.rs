@@ -1,18 +1,23 @@
+use aliasable::boxed::AliasableBox;
 use anyhow::{anyhow, Result};
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
-use inkwell::context::AsContextRef;
+use inkwell::context::{AsContextRef, Context};
+use inkwell::execution_engine::ExecutionEngine;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
+use inkwell::passes::PassBuilderOptions;
+use inkwell::targets::{InitializationConfig, Target, TargetTriple};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
     GlobalValue, IntValue, PointerValue,
 };
-use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
+use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 use inkwell_internals::llvm_versions;
 use llvm_sys::prelude::LLVMValueRef;
+use target_lexicon::Triple;
 use std::collections::HashMap;
 use std::iter::zip;
 
@@ -28,75 +33,164 @@ use crate::enzyme::{
     FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue, CDIFFE_TYPE_DFT_CONSTANT,
     CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED,
 };
+use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 
-/// Convenience type alias for the `sum` function.
-///
-/// Calling this is innately `unsafe` because there's no guarantee it doesn't
-/// do `unsafe` operations internally.
-pub type StopFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *mut RealType,
-    root: *mut RealType,
-);
-pub type RhsFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *mut RealType,
-    rr: *mut RealType,
-);
-pub type RhsGradientFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    du: *const RealType,
-    data: *mut RealType,
-    ddata: *mut RealType,
-    rr: *mut RealType,
-    drr: *mut RealType,
-);
-pub type MassFunc = unsafe extern "C" fn(
-    time: RealType,
-    v: *const RealType,
-    data: *mut RealType,
-    mv: *mut RealType,
-);
-pub type U0Func = unsafe extern "C" fn(data: *mut RealType, u: *mut RealType);
-pub type U0GradientFunc = unsafe extern "C" fn(
-    data: *mut RealType,
-    ddata: *mut RealType,
-    u: *mut RealType,
-    du: *mut RealType,
-);
-pub type CalcOutFunc =
-    unsafe extern "C" fn(time: RealType, u: *const RealType, data: *mut RealType);
-pub type CalcOutGradientFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    du: *const RealType,
-    data: *mut RealType,
-    ddata: *mut RealType,
-);
-pub type GetDimsFunc = unsafe extern "C" fn(
-    states: *mut u32,
-    inputs: *mut u32,
-    outputs: *mut u32,
-    data: *mut u32,
-    stop: *mut u32,
-);
-pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const RealType, data: *mut RealType);
-pub type SetInputsGradientFunc = unsafe extern "C" fn(
-    inputs: *const RealType,
-    dinputs: *const RealType,
-    data: *mut RealType,
-    ddata: *mut RealType,
-);
-pub type SetIdFunc = unsafe extern "C" fn(id: *mut RealType);
-pub type GetOutFunc = unsafe extern "C" fn(
-    data: *const RealType,
-    tensor_data: *mut *mut RealType,
-    tensor_size: *mut u32,
-);
+pub struct LlvmModule {
+    // actually has lifetime of `context`
+    // declared first so it's droped before `context`
+    codegen: CodeGen<'static>,
+    // safety: we must never move out of this box as long as codgen is alive
+    context: AliasableBox<Context>,
+    triple: Triple,
+}
+
+impl CodegenModule for LlvmModule {
+    type FuncId = FunctionValue<'static>;
+    fn new(triple: Triple, model: &DiscreteModel) -> Self {
+        let context = AliasableBox::from_unique(Box::new(Context::create()));
+        let real_type_str = "f64";
+        let codegen = CodeGen::new(model, context.as_ref(), context.f64_type(), context.i32_type(), real_type_str).unwrap();
+        let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
+        Self {
+            codegen,
+            context,
+            triple
+        }
+
+    }
+
+    fn layout(&self) -> &DataLayout {
+        &self.codegen.layout
+    }
+
+    fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8> {
+        let name = func_id.get_name().to_str().unwrap();
+        let maybe_fn = self.codegen.ee.get_function_address(name).map_err(|e| anyhow!("Error getting function address: {:?}", e));
+        match maybe_fn {
+            Ok(f) => Ok(f as *const u8),
+            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
+        }
+    }
+
+    fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen.compile_set_u0(model)
+    }
+
+    fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen.compile_calc_out(model)
+    }
+
+    fn compile_calc_stop(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen.compile_calc_stop(model)
+    }
+
+    fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen.compile_rhs(model)
+    }
+
+    fn compile_mass(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen.compile_mass(model)
+    }
+
+    fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen.compile_get_dims(model)
+    }
+
+    fn compile_get_tensor(&mut self, model: &DiscreteModel, name: &str) -> Result<Self::FuncId> {
+        self.codegen.compile_get_tensor(model, name)
+    }
+
+    fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen.compile_set_inputs(model)
+    }
+
+    fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen.compile_set_id(model)
+    }
+
+    fn compile_set_u0_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
+        self.codegen.compile_gradient(
+            *func_id,
+            &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+        )
+    }
+
+    fn compile_rhs_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
+        self.codegen.compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::DupNoNeed,
+            ],
+        )
+    }
+
+    fn compile_calc_out_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
+        self.codegen.compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Dup,
+            ],
+        )
+    }
+
+    fn compile_set_inputs_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
+        self.codegen.compile_gradient(
+            *func_id,
+            &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+        )
+    }
+
+    fn pre_autodiff_optimisation(&mut self) -> Result<()> {
+        // optimise at -O2 no unrolling before giving to enzyme
+        let pass_options = PassBuilderOptions::create();
+        //pass_options.set_verify_each(true);
+        //pass_options.set_debug_logging(true);
+        //pass_options.set_loop_interleaving(true);
+        pass_options.set_loop_vectorization(false);
+        pass_options.set_loop_slp_vectorization(false);
+        pass_options.set_loop_unrolling(false);
+        //pass_options.set_forget_all_scev_in_loop_unroll(true);
+        //pass_options.set_licm_mssa_opt_cap(1);
+        //pass_options.set_licm_mssa_no_acc_for_promotion_cap(10);
+        //pass_options.set_call_graph_profile(true);
+        //pass_options.set_merge_functions(true);
+
+        let initialization_config = &InitializationConfig::default();
+        Target::initialize_all(initialization_config);
+        let triple = TargetTriple::create(self.triple.to_string().as_str());
+        let target = Target::from_triple(&triple).unwrap();
+        let machine = target
+            .create_target_machine(
+                &triple,
+                "generic", //TargetMachine::get_host_cpu_name().to_string().as_str(),
+                "",        //TargetMachine::get_host_cpu_features().to_string().as_str(),
+                inkwell::OptimizationLevel::Default,
+                inkwell::targets::RelocMode::Default,
+                inkwell::targets::CodeModel::Default,
+            )
+            .unwrap();
+
+        self.codegen
+            .module()
+            .run_passes("default<O2>", &machine, pass_options)
+            .map_err(|e| anyhow!("Failed to run passes: {:?}", e))
+    }
+
+    fn post_autodiff_optimisation(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+
+
+}
+ 
+
 
 struct Globals<'ctx> {
     indices: Option<GlobalValue<'ctx>>,
@@ -152,20 +246,25 @@ pub struct CodeGen<'ctx> {
     int_type: IntType<'ctx>,
     layout: DataLayout,
     globals: Globals<'ctx>,
+    ee: ExecutionEngine<'ctx>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
     pub fn new(
         model: &DiscreteModel,
         context: &'ctx inkwell::context::Context,
-        module: Module<'ctx>,
         real_type: FloatType<'ctx>,
+        int_type: IntType<'ctx>,
         real_type_str: &str,
-    ) -> Self {
+    ) -> Result<Self> {
         let builder = context.create_builder();
         let layout = DataLayout::new(model);
+        let module = context.create_module(model.name());
         let globals = Globals::new(&layout, context, &module);
-        Self {
+        let ee = module 
+                .create_jit_execution_engine(OptimizationLevel::Aggressive)
+                .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
+        Ok(Self {
             context,
             module,
             builder,
@@ -176,9 +275,10 @@ impl<'ctx> CodeGen<'ctx> {
             fn_value_opt: None,
             tensor_ptr_opt: None,
             layout,
-            int_type: context.i32_type(),
+            int_type,
             globals,
-        }
+            ee,
+        })
     }
 
     pub fn write_bitcode_to_path(&self, path: &std::path::Path) {

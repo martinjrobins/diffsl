@@ -9,9 +9,10 @@ use std::iter::zip;
 
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
+use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 
-struct CraneliftModule {
+pub struct CraneliftModule {
     /// The function builder context, which is reused across multiple
     /// FunctionBuilder instances.
     builder_context: FunctionBuilderContext,
@@ -40,8 +41,77 @@ struct CraneliftModule {
              
 }
 
-
 impl CraneliftModule {
+    fn declare_function(&mut self, name: &str) -> Result<FuncId> {
+        // Next, declare the function to jit. Functions must be declared
+        // before they can be called, or defined.
+        //
+        // TODO: This may be an area where the API should be streamlined; should
+        // we have a version of `declare_function` that automatically declares
+        // the function?
+        let id = self
+            .module
+            .declare_function(name, Linkage::Export, &self.ctx.func.signature)
+            .map_err(|e| anyhow!(e.to_string()))?;
+
+        // Define the function to jit. This finishes compilation, although
+        // there may be outstanding relocations to perform. Currently, jit
+        // cannot finish relocations until all functions to be called are
+        // defined. For this toy demo for now, we'll just finalize the
+        // function below.
+        self.module
+            .define_function(id, &mut self.ctx)
+            .map_err(|e| anyhow!(e.to_string()))?;
+
+
+        // Now that compilation is finished, we can clear out the context state.
+        self.module.clear_context(&mut self.ctx);
+        
+        Ok(id)
+    }
+}
+
+impl CodegenModule for CraneliftModule {
+    type FuncId = FuncId;
+
+    fn compile_calc_out_grad(&mut self, _func_id: &Self::FuncId) -> Result<Self::FuncId> {
+        todo!()
+    }
+
+    fn compile_rhs_grad(&mut self, _func_id: &Self::FuncId) -> Result<Self::FuncId> {
+        todo!()
+    }
+
+    fn compile_set_inputs_grad(&mut self, _func_id: &Self::FuncId) -> Result<Self::FuncId> {
+        todo!()
+    }
+
+    fn compile_set_u0_grad(&mut self, _func_id: &Self::FuncId) -> Result<Self::FuncId> {
+        todo!()
+    }
+
+
+    fn jit(&mut self, id: Self::FuncId) -> Result<*const u8> {
+        // We can now retrieve a pointer to the machine code.
+        Ok(self.module.get_finalized_function(id))
+    }
+
+    fn layout(&self) -> &DataLayout {
+        &self.layout
+    }
+
+    fn post_autodiff_optimisation(&mut self) -> Result<()> {
+        // Finalize the functions which we just defined, which resolves any
+        // outstanding relocations (patching in addresses, now that they're
+        // available).
+        self.module.finalize_definitions()?;
+        Ok(())
+    }
+
+    fn pre_autodiff_optimisation(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     fn new(triple: Triple, model: &DiscreteModel) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -78,32 +148,8 @@ impl CraneliftModule {
         }
     }
 
-    fn declare_function(&mut self, name: &str) -> Result<FuncId> {
-        // Next, declare the function to jit. Functions must be declared
-        // before they can be called, or defined.
-        //
-        // TODO: This may be an area where the API should be streamlined; should
-        // we have a version of `declare_function` that automatically declares
-        // the function?
-        let id = self
-            .module
-            .declare_function(&name, Linkage::Export, &self.ctx.func.signature)
-            .map_err(|e| anyhow!(e.to_string()))?;
-
-        // Define the function to jit. This finishes compilation, although
-        // there may be outstanding relocations to perform. Currently, jit
-        // cannot finish relocations until all functions to be called are
-        // defined. For this toy demo for now, we'll just finalize the
-        // function below.
-        self.module
-            .define_function(id, &mut self.ctx)
-            .map_err(|e| anyhow!(e.to_string()))?;
-
-        Ok(id)
-    }
-
-    pub fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<FuncId> {
-        let arg_types = &[self.real_ptr_type.into(), self.real_ptr_type.into()];
+    fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+        let arg_types = &[self.real_ptr_type, self.real_ptr_type];
         let arg_names = &["data", "u0"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -120,14 +166,14 @@ impl CraneliftModule {
         self.declare_function("u0")
     }
 
-    pub fn compile_calc_out(
+    fn compile_calc_out(
         &mut self,
         model: &DiscreteModel,
     ) -> Result<FuncId> {
         let arg_types = &[
-            self.real_type.into(),
-            self.real_ptr_type.into(),
-            self.real_ptr_type.into(),
+            self.real_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
         ];
         let arg_names = &["t", "u", "data"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
@@ -140,15 +186,15 @@ impl CraneliftModule {
 
     }
 
-    pub fn compile_calc_stop(
+    fn compile_calc_stop(
         &mut self,
         model: &DiscreteModel,
     ) -> Result<FuncId> {
         let arg_types = &[
-            self.real_type.into(),
-            self.real_ptr_type.into(),
-            self.real_ptr_type.into(),
-            self.real_ptr_type.into(),
+            self.real_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
         ];
         let arg_names = &["t", "u", "data", "root"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
@@ -161,12 +207,12 @@ impl CraneliftModule {
         self.declare_function("calc_stop")
     }
 
-    pub fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+    fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[
-            self.real_type.into(),
-            self.real_ptr_type.into(),
-            self.real_ptr_type.into(),
-            self.real_ptr_type.into(),
+            self.real_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
         ];
         let arg_names = &["t", "u", "data", "rr"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
@@ -190,12 +236,12 @@ impl CraneliftModule {
         self.declare_function("rhs")
     }
 
-    pub fn compile_mass(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+    fn compile_mass(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[
-            self.real_type.into(),
-            self.real_ptr_type.into(),
-            self.real_ptr_type.into(),
-            self.real_ptr_type.into(),
+            self.real_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
         ];
         let arg_names = &["t", "dudt", "data", "rr"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
@@ -222,13 +268,13 @@ impl CraneliftModule {
         self.declare_function("mass")
     }
 
-    pub fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+    fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[
-            self.int_ptr_type.into(),
-            self.int_ptr_type.into(),
-            self.int_ptr_type.into(),
-            self.int_ptr_type.into(),
-            self.int_ptr_type.into(),
+            self.int_ptr_type,
+            self.int_ptr_type,
+            self.int_ptr_type,
+            self.int_ptr_type,
+            self.int_ptr_type,
         ];
         let arg_names = &["states", "inputs", "outputs", "data", "stop"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
@@ -261,15 +307,15 @@ impl CraneliftModule {
         self.declare_function("gen_dims")
     }
 
-    pub fn compile_get_tensor(
+    fn compile_get_tensor(
         &mut self,
         model: &DiscreteModel,
         name: &str,
     ) -> Result<FuncId> {
         let arg_types = &[
-            self.real_ptr_type.into(),
-            self.real_ptr_type.into(),
-            self.int_ptr_type.into(),
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.int_ptr_type,
         ];
         let arg_names = &["data", "tensor_data", "tensor_size"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
@@ -292,10 +338,10 @@ impl CraneliftModule {
         self.declare_function("get_tensor")
     }
 
-    pub fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+    fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[
-            self.real_ptr_type.into(),
-            self.real_ptr_type.into(),
+            self.real_ptr_type,
+            self.real_ptr_type,
         ];
         let arg_names = &["inputs", "data"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
@@ -309,9 +355,10 @@ impl CraneliftModule {
             let data_ptr = codegen.builder.use_var(*data_ptr);
             let input_ptr = codegen.variables.get("inputs").unwrap();
             let input_ptr = codegen.builder.use_var(*input_ptr);
+            let inputs_start_index = codegen.builder.ins().iconst(codegen.int_type, i64::try_from(inputs_index).unwrap());
+            let input_ptr = codegen.builder.ins().iadd(input_ptr, inputs_start_index);
 
             // loop thru the elements of this input and set them using the inputs ptr
-            let inputs_start_index = codegen.builder.ins().iconst(codegen.int_type, i64::try_from(inputs_index).unwrap());
             let start_index = codegen.builder.ins().iconst(codegen.int_type, 0);
 
             let input_block = codegen.builder.create_block();
@@ -352,8 +399,8 @@ impl CraneliftModule {
         self.declare_function("set_inputs")
     }
 
-    pub fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<FuncId> {
-        let arg_types = &[self.real_ptr_type.into()];
+    fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+        let arg_types = &[self.real_ptr_type];
         let arg_names = &["id"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -420,7 +467,6 @@ struct CraneliftCodeGen<'a> {
     int_type: types::Type,
     real_type: types::Type,
     real_ptr_type: types::Type,
-    int_ptr_type: types::Type,
     builder: FunctionBuilder<'a>,
     module: &'a mut JITModule,
     tensor_ptr: Option<Value>,
@@ -578,7 +624,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
 
                         let callee = self
                             .module
-                            .declare_function(&name, Linkage::Import, &sig)
+                            .declare_function(name, Linkage::Import, &sig)
                             .expect("problem declaring function");
                         Some(self.module.declare_func_in_func(callee, self.builder.func))
                     },
@@ -599,7 +645,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         if let Some(var) = var {
             self.tensor_ptr = Some(self.builder.use_var(var));
         } else {
-            let res_ptr_var = *self.variables.get(a.name()).expect(format!("tensor {} not defined", a.name()).as_str());
+            let res_ptr_var = *self.variables.get(a.name()).unwrap_or_else(|| panic!("tensor {} not defined", a.name()));
             let res_ptr = self.builder.use_var(res_ptr_var);
             self.tensor_ptr = Some(res_ptr);
         }
@@ -1231,7 +1277,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             int_type: module.int_type,
             real_type: module.real_type,
             real_ptr_type: module.real_ptr_type,
-            int_ptr_type: module.int_ptr_type,
             builder,
             module: &mut module.module,
             tensor_ptr: None,
@@ -1244,7 +1289,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         // insert arg vars
         for (i, (arg_name, arg_type)) in arg_names.iter().zip(arg_types.iter()).enumerate() {
             let val = codegen.builder.block_params(entry_block)[i];
-            codegen.declare_variable(*arg_type,  *arg_name, val);
+            codegen.declare_variable(*arg_type,  arg_name, val);
         }
 
         // insert u if it exists in args
@@ -1273,7 +1318,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             if let Some(lhs) = model.lhs() {
                 others.push(lhs);
             }
-            let tensors = tensors.chain(others.into_iter());
+            let tensors = tensors.chain(others);
 
             let data_ptr = codegen.builder.use_var(*data);
 

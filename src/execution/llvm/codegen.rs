@@ -4,21 +4,21 @@ use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::{AsContextRef, Context};
-use inkwell::execution_engine::ExecutionEngine;
+use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{InitializationConfig, Target, TargetTriple};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
-    GlobalValue, IntValue, PointerValue,
+    AnyValue, AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 use inkwell_internals::llvm_versions;
 use llvm_sys::prelude::LLVMValueRef;
 use std::collections::HashMap;
 use std::iter::zip;
+use std::pin::Pin;
 use target_lexicon::Triple;
 
 type RealType = f64;
@@ -36,47 +36,81 @@ use crate::enzyme::{
 use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 
-pub struct LlvmModule {
+struct ImmovableLlvmModule {
     // actually has lifetime of `context`
     // declared first so it's droped before `context`
-    codegen: CodeGen<'static>,
+    codegen: Option<CodeGen<'static>>,
     // safety: we must never move out of this box as long as codgen is alive
     context: AliasableBox<Context>,
     triple: Triple,
+    _pin: std::marker::PhantomPinned,
+}
+
+pub struct LlvmModule(Pin<Box<ImmovableLlvmModule>>);
+
+impl LlvmModule {
+    pub fn print(&self) {
+        self.codegen().module().print_to_stderr();
+    }
+    fn codegen_mut(&mut self) -> &mut CodeGen<'static> {
+        unsafe { self.0.as_mut().get_unchecked_mut().codegen.as_mut().unwrap() }
+    }
+    fn codegen(&self) -> &CodeGen<'static> {
+        self.0.as_ref().get_ref().codegen.as_ref().unwrap()
+    }
+    pub fn jit2<O: UnsafeFunctionPointer>(&mut self, name: &str) -> Result<JitFunction<'static, O>> {
+        let maybe_fn = unsafe { 
+            self
+            .codegen_mut()
+            .ee
+            .get_function::<O>(name)
+        };
+        match maybe_fn {
+            Ok(f) => Ok(f),
+            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
+        }
+    }
 }
 
 impl CodegenModule for LlvmModule {
     type FuncId = FunctionValue<'static>;
     fn new(triple: Triple, model: &DiscreteModel) -> Self {
         let context = AliasableBox::from_unique(Box::new(Context::create()));
+        let mut pinned = Self (
+            Box::pin(ImmovableLlvmModule {
+                codegen: None,
+                context,
+                triple,
+                _pin: std::marker::PhantomPinned,
+            })
+        );
+
+        let context_ref = pinned.0.context.as_ref();
         let real_type_str = "f64";
         let codegen = CodeGen::new(
             model,
-            context.as_ref(),
-            context.f64_type(),
-            context.i32_type(),
+            context_ref,
+            context_ref.f64_type(),
+            context_ref.i32_type(),
             real_type_str,
         )
         .unwrap();
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
-        Self {
-            codegen,
-            context,
-            triple,
-        }
+        unsafe { pinned.0.as_mut().get_unchecked_mut().codegen = Some(codegen) };
+        pinned
     }
 
     fn layout(&self) -> &DataLayout {
-        &self.codegen.layout
+        &self.codegen().layout
     }
+
 
     fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8> {
         let name = func_id.get_name().to_str().unwrap();
         let maybe_fn = self
-            .codegen
+            .codegen_mut()
             .ee
-            .get_function_address(name)
-            .map_err(|e| anyhow!("Error getting function address: {:?}", e));
+            .get_function_address(name);
         match maybe_fn {
             Ok(f) => Ok(f as *const u8),
             Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
@@ -84,50 +118,50 @@ impl CodegenModule for LlvmModule {
     }
 
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen.compile_set_u0(model)
+        self.codegen_mut().compile_set_u0(model)
     }
 
     fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen.compile_calc_out(model)
+        self.codegen_mut().compile_calc_out(model)
     }
 
     fn compile_calc_stop(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen.compile_calc_stop(model)
+        self.codegen_mut().compile_calc_stop(model)
     }
 
     fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen.compile_rhs(model)
+        self.codegen_mut().compile_rhs(model)
     }
 
     fn compile_mass(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen.compile_mass(model)
+        self.codegen_mut().compile_mass(model)
     }
 
     fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen.compile_get_dims(model)
+        self.codegen_mut().compile_get_dims(model)
     }
 
     fn compile_get_tensor(&mut self, model: &DiscreteModel, name: &str) -> Result<Self::FuncId> {
-        self.codegen.compile_get_tensor(model, name)
+        self.codegen_mut().compile_get_tensor(model, name)
     }
 
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen.compile_set_inputs(model)
+        self.codegen_mut().compile_set_inputs(model)
     }
 
     fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen.compile_set_id(model)
+        self.codegen_mut().compile_set_id(model)
     }
 
     fn compile_set_u0_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
-        self.codegen.compile_gradient(
+        self.codegen_mut().compile_gradient(
             *func_id,
             &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
         )
     }
 
     fn compile_rhs_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
-        self.codegen.compile_gradient(
+        self.codegen_mut().compile_gradient(
             *func_id,
             &[
                 CompileGradientArgType::Const,
@@ -139,7 +173,7 @@ impl CodegenModule for LlvmModule {
     }
 
     fn compile_calc_out_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
-        self.codegen.compile_gradient(
+        self.codegen_mut().compile_gradient(
             *func_id,
             &[
                 CompileGradientArgType::Const,
@@ -150,7 +184,7 @@ impl CodegenModule for LlvmModule {
     }
 
     fn compile_set_inputs_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
-        self.codegen.compile_gradient(
+        self.codegen_mut().compile_gradient(
             *func_id,
             &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
         )
@@ -173,7 +207,7 @@ impl CodegenModule for LlvmModule {
 
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
-        let triple = TargetTriple::create(self.triple.to_string().as_str());
+        let triple = TargetTriple::create(self.0.triple.to_string().as_str());
         let target = Target::from_triple(&triple).unwrap();
         let machine = target
             .create_target_machine(
@@ -186,7 +220,7 @@ impl CodegenModule for LlvmModule {
             )
             .unwrap();
 
-        self.codegen
+        self.codegen_mut()
             .module()
             .run_passes("default<O2>", &machine, pass_options)
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))
@@ -1604,7 +1638,7 @@ impl<'ctx> CodeGen<'ctx> {
         let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(&[real_ptr_type.into(), real_ptr_type.into()], false);
-        let fn_arg_names = &["data", "u0"];
+        let fn_arg_names = &["u0", "data"];
         let function = self.module.add_function("set_u0", fn_type, None);
 
         // add noalias

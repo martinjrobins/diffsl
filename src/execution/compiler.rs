@@ -190,10 +190,10 @@ impl<M: CodegenModule> Compiler<M> {
         }
         unsafe {
             (self.jit_grad_functions.set_u0_grad)(
-                data.as_mut_ptr(),
-                ddata.as_mut_ptr(),
                 yy.as_mut_ptr(),
                 dyy.as_mut_ptr(),
+                data.as_mut_ptr(),
+                ddata.as_mut_ptr(),
             )
         };
     }

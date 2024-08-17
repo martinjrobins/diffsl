@@ -146,7 +146,7 @@ impl CodegenModule for CraneliftModule {
 
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[self.real_ptr_type, self.real_ptr_type];
-        let arg_names = &["data", "u0"];
+        let arg_names = &["u0", "data"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
         for a in model.time_indep_defns() {

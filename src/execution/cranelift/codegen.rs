@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Ok, Result};
-use codegen::ir::{FuncRef, StackSlot};
+use codegen::ir::{FuncRef, GlobalValue, StackSlot};
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use std::collections::HashMap;
 use std::iter::zip;
-use target_lexicon::{PointerWidth, Triple};
+use target_lexicon::{Endianness, PointerWidth, Triple};
 
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
@@ -23,7 +23,7 @@ pub struct CraneliftModule {
     ctx: codegen::Context,
 
     /// The data description, which is to data objects what `ctx` is to functions.
-    data_description: DataDescription,
+    //data_description: DataDescription,
 
     /// The module, with the jit backend, which manages the JIT'd
     /// functions.
@@ -31,7 +31,9 @@ pub struct CraneliftModule {
 
     layout: DataLayout,
 
-    triple: Triple,
+    indices_id: DataId,
+
+    //triple: Triple,
 
     int_type: types::Type,
     real_type: types::Type,
@@ -71,20 +73,102 @@ impl CraneliftModule {
 impl CodegenModule for CraneliftModule {
     type FuncId = FuncId;
 
-    fn compile_calc_out_grad(&mut self, _func_id: &Self::FuncId) -> Result<Self::FuncId> {
-        todo!()
+    fn compile_calc_out_grad(&mut self, _func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId> {
+        let arg_types = &[self.real_type, self.real_ptr_type, self.real_ptr_type, self.real_ptr_type, self.real_ptr_type];
+        let arg_names = &["t", "u", "du", "data", "ddata"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        let name = model.out().name();
+        codegen.jit_compile_tensor(
+            model.out(),
+            Some(*codegen.variables.get(name).unwrap()),
+            false,
+        )?;
+
+        let name = codegen.get_tangent_tensor_name(model.out().name());
+        codegen.jit_compile_tensor(
+            model.out(),
+            Some(*codegen.variables.get(name.as_str()).unwrap()),
+            true,
+        )?;
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+
+        self.declare_function("calc_out_grad")
     }
 
-    fn compile_rhs_grad(&mut self, _func_id: &Self::FuncId) -> Result<Self::FuncId> {
-        todo!()
+    fn compile_rhs_grad(&mut self, _func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId> {
+        let arg_types = &[
+            self.real_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+        ];
+        let arg_names = &["t", "u", "du", "data", "ddata", "rr", "drr"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        // calculate time dependant definitions
+        for tensor in model.time_dep_defns() {
+            codegen.jit_compile_tensor(tensor, None, false)?;
+            codegen.jit_compile_tensor(tensor, None, true)?;
+        }
+
+        // TODO: could split state dep defns into before and after F
+        for a in model.state_dep_defns() {
+            codegen.jit_compile_tensor(a, None, false)?;
+            codegen.jit_compile_tensor(a, None, true)?;
+        }
+
+        // F
+        let res = *codegen.variables.get("rr").unwrap();
+        codegen.jit_compile_tensor(model.rhs(), Some(res), false)?;
+        let res = *codegen.variables.get("drr").unwrap();
+        codegen.jit_compile_tensor(model.rhs(), Some(res), true)?;
+
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function("rhs_grad")
     }
 
-    fn compile_set_inputs_grad(&mut self, _func_id: &Self::FuncId) -> Result<Self::FuncId> {
-        todo!()
+    fn compile_set_inputs_grad(&mut self, _func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId> {
+        let arg_types = &[self.real_ptr_type, self.real_ptr_type, self.real_ptr_type, self.real_ptr_type];
+        let arg_names = &["inputs", "dinputs", "data", "ddata"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        let base_data_ptr = codegen.variables.get("data").unwrap();
+        let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
+        codegen.jit_compile_set_inputs(model, base_data_ptr, false);
+
+        let base_data_ptr = codegen.variables.get("ddata").unwrap();
+        let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
+        codegen.jit_compile_set_inputs(model, base_data_ptr, true);
+
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function("set_inputs_grad")
     }
 
-    fn compile_set_u0_grad(&mut self, _func_id: &Self::FuncId) -> Result<Self::FuncId> {
-        todo!()
+    fn compile_set_u0_grad(&mut self, _func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId> {
+        let arg_types = &[self.real_ptr_type, self.real_ptr_type, self.real_ptr_type, self.real_ptr_type];
+        let arg_names = &["u0", "du0", "data", "ddata"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        for a in model.time_indep_defns() {
+            codegen.jit_compile_tensor(a, None, false)?;
+            codegen.jit_compile_tensor(a, None, true)?;
+        }
+
+        codegen.jit_compile_tensor(model.state(), Some(*codegen.variables.get("u0").unwrap()), false)?;
+        codegen.jit_compile_tensor(model.state(), Some(*codegen.variables.get("du0").unwrap()), true)?;
+
+        // Emit the return instruction.
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+
+        self.declare_function("u0_grad")
     }
 
     fn jit(&mut self, id: Self::FuncId) -> Result<*const u8> {
@@ -108,7 +192,7 @@ impl CodegenModule for CraneliftModule {
         Ok(())
     }
 
-    fn new(triple: Triple, model: &DiscreteModel) -> Self {
+    fn new(triple: Triple, model: &DiscreteModel) -> Result<Self> {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
@@ -120,7 +204,7 @@ impl CodegenModule for CraneliftModule {
             .unwrap();
         let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
-        let module = JITModule::new(builder);
+        let mut module = JITModule::new(builder);
 
         let ptr_type = match triple.pointer_width().unwrap() {
             PointerWidth::U16 => types::I16,
@@ -130,18 +214,35 @@ impl CodegenModule for CraneliftModule {
 
         let layout = DataLayout::new(model);
 
-        Self {
+        // write indices data as a global data object
+        // convect the indices to bytes
+        let mut vec8: Vec<u8> = vec![];
+        for elem in layout.indices() {
+            let conv = match triple.endianness().unwrap() {
+                Endianness::Little => elem.to_le_bytes(),
+                Endianness::Big => elem.to_be_bytes(),
+            };
+            vec8.extend(conv.into_iter());
+        }
+
+        // put the indices data into a DataDescription
+        let mut data_description = DataDescription::new();
+        data_description.define(vec8.into_boxed_slice());
+        let indices_id = module
+            .declare_data("indices", Linkage::Local, false, false)?;
+        module.define_data(indices_id, &data_description)?;
+        
+        Ok(Self {
             builder_context: FunctionBuilderContext::new(),
             ctx: module.make_context(),
-            data_description: DataDescription::new(),
             module,
+            indices_id,
             int_type: types::I64,
             real_type: types::F64,
             real_ptr_type: ptr_type,
             int_ptr_type: ptr_type,
-            triple,
             layout,
-        }
+        })
     }
 
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<FuncId> {
@@ -150,10 +251,10 @@ impl CodegenModule for CraneliftModule {
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
         for a in model.time_indep_defns() {
-            codegen.jit_compile_tensor(a, None)?;
+            codegen.jit_compile_tensor(a, None, false)?;
         }
 
-        codegen.jit_compile_tensor(model.state(), Some(*codegen.variables.get("u0").unwrap()))?;
+        codegen.jit_compile_tensor(model.state(), Some(*codegen.variables.get("u0").unwrap()), false)?;
 
         // Emit the return instruction.
         codegen.builder.ins().return_(&[]);
@@ -170,6 +271,7 @@ impl CodegenModule for CraneliftModule {
         codegen.jit_compile_tensor(
             model.out(),
             Some(*codegen.variables.get(model.out().name()).unwrap()),
+            false,
         )?;
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
@@ -188,7 +290,7 @@ impl CodegenModule for CraneliftModule {
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
         if let Some(stop) = model.stop() {
-            codegen.jit_compile_tensor(stop, None)?;
+            codegen.jit_compile_tensor(stop, None, false)?;
         }
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
@@ -207,17 +309,17 @@ impl CodegenModule for CraneliftModule {
 
         // calculate time dependant definitions
         for tensor in model.time_dep_defns() {
-            codegen.jit_compile_tensor(tensor, None)?;
+            codegen.jit_compile_tensor(tensor, None, false)?;
         }
 
         // TODO: could split state dep defns into before and after F
         for a in model.state_dep_defns() {
-            codegen.jit_compile_tensor(a, None)?;
+            codegen.jit_compile_tensor(a, None, false)?;
         }
 
         // F
         let res = *codegen.variables.get("rr").unwrap();
-        codegen.jit_compile_tensor(model.rhs(), Some(res))?;
+        codegen.jit_compile_tensor(model.rhs(), Some(res), false)?;
 
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
@@ -238,17 +340,17 @@ impl CodegenModule for CraneliftModule {
         if model.state_dot().is_some() && model.lhs().is_some() {
             // calculate time dependant definitions
             for tensor in model.time_dep_defns() {
-                codegen.jit_compile_tensor(tensor, None)?;
+                codegen.jit_compile_tensor(tensor, None, false)?;
             }
 
             for a in model.dstate_dep_defns() {
-                codegen.jit_compile_tensor(a, None)?;
+                codegen.jit_compile_tensor(a, None, false)?;
             }
 
             // mass
             let lhs = model.lhs().unwrap();
             let res = codegen.variables.get("rr").unwrap();
-            codegen.jit_compile_tensor(lhs, Some(*res))?;
+            codegen.jit_compile_tensor(lhs, Some(*res), false)?;
         }
 
         codegen.builder.ins().return_(&[]);
@@ -318,71 +420,16 @@ impl CodegenModule for CraneliftModule {
         self.declare_function("get_tensor")
     }
 
+    
+
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[self.real_ptr_type, self.real_ptr_type];
         let arg_names = &["inputs", "data"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let mut inputs_index = 0usize;
         let base_data_ptr = codegen.variables.get("data").unwrap();
         let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
-        for input in model.inputs() {
-            codegen.insert_tensor(input, base_data_ptr);
-            let data_ptr = codegen.variables.get(input.name()).unwrap();
-            let data_ptr = codegen.builder.use_var(*data_ptr);
-            let input_ptr = codegen.variables.get("inputs").unwrap();
-            let input_ptr = codegen.builder.use_var(*input_ptr);
-            let inputs_start_index = codegen
-                .builder
-                .ins()
-                .iconst(codegen.int_type, i64::try_from(inputs_index).unwrap());
-            let input_ptr = codegen.builder.ins().iadd(input_ptr, inputs_start_index);
-
-            // loop thru the elements of this input and set them using the inputs ptr
-            let start_index = codegen.builder.ins().iconst(codegen.int_type, 0);
-
-            let input_block = codegen.builder.create_block();
-            let curr_input_index = codegen
-                .builder
-                .append_block_param(input_block, codegen.int_type);
-            codegen.builder.ins().jump(input_block, &[start_index]);
-            codegen.builder.switch_to_block(input_block);
-
-            // loop body - copy value from inputs to data
-            let indexed_input_ptr = codegen.builder.ins().iadd(input_ptr, curr_input_index);
-            let indexed_data_ptr = codegen.builder.ins().iadd(data_ptr, curr_input_index);
-            let input_value = codegen.builder.ins().load(
-                codegen.real_type,
-                codegen.mem_flags,
-                indexed_input_ptr,
-                0,
-            );
-            codegen
-                .builder
-                .ins()
-                .store(codegen.mem_flags, input_value, indexed_data_ptr, 0);
-
-            // increment loop index
-            let one = codegen.builder.ins().iconst(codegen.int_type, 1);
-            let next_index = codegen.builder.ins().iadd(curr_input_index, one);
-
-            let loop_while = codegen.builder.ins().icmp_imm(
-                IntCC::UnsignedLessThan,
-                next_index,
-                i64::try_from(input.nnz()).unwrap(),
-            );
-            let post_block = codegen.builder.create_block();
-            codegen
-                .builder
-                .ins()
-                .brif(loop_while, input_block, &[next_index], post_block, &[]);
-            codegen.builder.seal_block(input_block);
-            codegen.builder.seal_block(post_block);
-            codegen.builder.switch_to_block(post_block);
-
-            // get ready for next input
-            inputs_index += input.nnz();
-        }
+        codegen.jit_compile_set_inputs(model, base_data_ptr, false);
 
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
@@ -458,6 +505,7 @@ struct CraneliftCodeGen<'a> {
     int_type: types::Type,
     real_type: types::Type,
     real_ptr_type: types::Type,
+    int_ptr_type: types::Type,
     builder: FunctionBuilder<'a>,
     module: &'a mut JITModule,
     tensor_ptr: Option<Value>,
@@ -465,6 +513,7 @@ struct CraneliftCodeGen<'a> {
     mem_flags: MemFlags,
     functions: HashMap<String, FuncRef>,
     layout: &'a DataLayout,
+    indices: GlobalValue,
 }
 
 impl<'ctx> CraneliftCodeGen<'ctx> {
@@ -524,8 +573,13 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 self.jit_compile_expr(name, &arg.expression, index, elmt, expr_index)
             }
             AstKind::Number(value) => Ok(self.fconst(*value)),
-            AstKind::IndexedName(iname) => {
-                let ptr = self.builder.use_var(*self.variables.get(name).unwrap());
+            AstKind::Name(iname) => {
+                let ptr = if iname.is_tangent {
+                    let name = self.get_tangent_tensor_name(iname.name);
+                    self.builder.use_var(*self.variables.get(name.as_str()).unwrap())
+                } else {
+                    self.builder.use_var(*self.variables.get(iname.name).unwrap())
+                };
                 let layout = self.layout.get_layout(iname.name).unwrap();
                 let iname_elmt_index = if layout.is_dense() {
                     // permute indices based on the index chars of this tensor
@@ -561,8 +615,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                         }
                         Some(iname_elmt_index)
                     } else {
-                        let zero = self.builder.ins().iconst(self.int_type, 0);
-                        Some(zero)
+                        None
                     }
                 } else if layout.is_sparse() || layout.is_diagonal() {
                     // must have come from jit_compile_sparse_block, so we can just use the elmt_index
@@ -579,14 +632,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     .builder
                     .ins()
                     .load(self.real_type, self.mem_flags, value_ptr, 0))
-            }
-            AstKind::Name(name) => {
-                // must be a scalar, just load the value
-                let ptr = self.builder.use_var(*self.variables.get(*name).unwrap());
-                Ok(self
-                    .builder
-                    .ins()
-                    .load(self.real_type, self.mem_flags, ptr, 0))
             }
             AstKind::NamedGradient(name) => {
                 let name_str = name.to_string();
@@ -612,9 +657,10 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 let function = match name {
                     // support some standard library functions
                     "sin" | "cos" | "tan" | "exp" | "log" | "log10" | "sqrt" | "abs"
-                    | "copysign" | "pow" | "min" | "max" => {
+                    | "copysign" | "pow" | "min" | "max" | "sigmoid" | "arcsinh" | "arccosh"
+                    | "heaviside" | "tanh" | "sinh" | "cosh" => {
                         let args = match name {
-                            "pow" => vec![self.real_type, self.real_type],
+                            "pow" | "copysign" | "min" | "max" => vec![self.real_type, self.real_type],
                             _ => vec![self.real_type],
                         };
                         let ret_type = self.real_type;
@@ -639,7 +685,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         }
     }
 
-    fn jit_compile_tensor(&mut self, a: &Tensor, var: Option<Variable>) -> Result<Value> {
+    fn jit_compile_tensor(&mut self, a: &Tensor, var: Option<Variable>, is_tangent: bool) -> Result<Value> {
         // set up the tensor storage pointer and index into this data
         if let Some(var) = var {
             self.tensor_ptr = Some(self.builder.use_var(var));
@@ -655,7 +701,8 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         // treat scalar as a special case
         if a.rank() == 0 {
             let elmt = a.elmts().first().unwrap();
-            let float_value = self.jit_compile_expr(a.name(), elmt.expr(), &[], elmt, None)?;
+            let expr = if is_tangent { elmt.tangent_expr() } else { elmt.expr() };
+            let float_value = self.jit_compile_expr(a.name(), expr, &[], elmt, None)?;
             self.builder
                 .ins()
                 .store(self.mem_flags, float_value, self.tensor_ptr.unwrap(), 0);
@@ -664,12 +711,12 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         for (i, blk) in a.elmts().iter().enumerate() {
             let default = format!("{}-{}", a.name(), i);
             let name = blk.name().unwrap_or(default.as_str());
-            self.jit_compile_block(name, a, blk)?;
+            self.jit_compile_block(name, a, blk, is_tangent)?;
         }
         Ok(self.tensor_ptr.unwrap())
     }
 
-    fn jit_compile_block(&mut self, name: &str, tensor: &Tensor, elmt: &TensorBlock) -> Result<()> {
+    fn jit_compile_block(&mut self, name: &str, tensor: &Tensor, elmt: &TensorBlock, is_tangent: bool) -> Result<()> {
         let translation = Translation::new(
             elmt.expr_layout(),
             elmt.layout(),
@@ -678,15 +725,15 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         );
 
         if elmt.expr_layout().is_dense() {
-            self.jit_compile_dense_block(name, elmt, &translation)
+            self.jit_compile_dense_block(name, elmt, &translation, is_tangent)
         } else if elmt.expr_layout().is_diagonal() {
-            self.jit_compile_diagonal_block(name, elmt, &translation)
+            self.jit_compile_diagonal_block(name, elmt, &translation, is_tangent)
         } else if elmt.expr_layout().is_sparse() {
             match translation.source {
                 TranslationFrom::SparseContraction { .. } => {
-                    self.jit_compile_sparse_contraction_block(name, elmt, &translation)
+                    self.jit_compile_sparse_contraction_block(name, elmt, &translation, is_tangent)
                 }
-                _ => self.jit_compile_sparse_block(name, elmt, &translation),
+                _ => self.jit_compile_sparse_block(name, elmt, &translation, is_tangent),
             }
         } else {
             return Err(anyhow!(
@@ -711,6 +758,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         name: &str,
         elmt: &TensorBlock,
         translation: &Translation,
+        is_tangent: bool,
     ) -> Result<()> {
         let int_type = self.int_type;
 
@@ -778,9 +826,10 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             .ins()
             .stack_store(next_expr_index, expr_index_var, 0);
 
+        let expr = if is_tangent { elmt.tangent_expr() } else { elmt.expr() };
         let float_value = self.jit_compile_expr(
             name,
-            elmt.expr(),
+            expr,
             indices.as_slice(),
             elmt,
             Some(expr_index),
@@ -849,6 +898,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         name: &str,
         elmt: &TensorBlock,
         translation: &Translation,
+        is_tangent: bool,
     ) -> Result<()> {
         match translation.source {
             TranslationFrom::SparseContraction { .. } => {}
@@ -899,9 +949,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         // index into the indices array to get the start and end indices
         // start_contract = indices[translation_index + 2 * contract_index]
         // end_contract = indices[translation_index + 2 * contract_index + 1]
-        let indices_array = self
-            .builder
-            .use_var(*self.variables.get("indices").unwrap());
+        let indices_array = self.builder.ins().global_value(self.int_ptr_type, self.indices);
         let ptr = self.builder.ins().iadd(indices_array, start_index);
         let start_contract = self
             .builder
@@ -952,9 +1000,10 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
         // loop body - eval expression and increment sum
+        let expr = if is_tangent { elmt.tangent_expr() } else { elmt.expr() };
         let float_value = self.jit_compile_expr(
             name,
-            elmt.expr(),
+            expr,
             indices_int.as_slice(),
             elmt,
             Some(expr_index),
@@ -1025,6 +1074,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         name: &str,
         elmt: &TensorBlock,
         translation: &Translation,
+        is_tangent: bool,
     ) -> Result<()> {
         let int_type = self.int_type;
 
@@ -1039,7 +1089,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             .ins()
             .iconst(int_type, i64::try_from(elmt.layout().nnz()).unwrap());
 
-        let mut block = self.builder.create_block();
+        let block = self.builder.create_block();
         let curr_index = self.builder.append_block_param(block, int_type);
         self.builder.ins().jump(block, &[start_index]);
         self.builder.switch_to_block(block);
@@ -1062,9 +1112,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     .builder
                     .ins()
                     .iadd(elmt_index_mult_rank, layout_index_plus_offset);
-                let indices_ptr = self
-                    .builder
-                    .use_var(*self.variables.get("indices").unwrap());
+                let indices_ptr = self.builder.ins().global_value(self.int_ptr_type, self.indices);
                 let ptr = self.builder.ins().iadd(indices_ptr, curr_index);
                 let index = self
                     .builder
@@ -1075,15 +1123,16 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
         // loop body - eval expression
+        let expr = if is_tangent { elmt.tangent_expr() } else { elmt.expr() };
         let float_value = self.jit_compile_expr(
             name,
-            elmt.expr(),
+            expr,
             indices_int.as_slice(),
             elmt,
             Some(elmt_index),
         )?;
 
-        block = self.jit_compile_broadcast_and_store(
+        self.jit_compile_broadcast_and_store(
             name,
             elmt,
             float_value,
@@ -1117,13 +1166,14 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         name: &str,
         elmt: &TensorBlock,
         translation: &Translation,
+        is_tangent: bool,
     ) -> Result<()> {
         let int_type = self.int_type;
 
         // loop through the non-zero elements
         let zero = self.builder.ins().iconst(int_type, 0);
         let one = self.builder.ins().iconst(int_type, 1);
-        let mut block = self.builder.create_block();
+        let block = self.builder.create_block();
         let start_index = zero;
         let end_index = self
             .builder
@@ -1138,16 +1188,17 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         let indices_int = vec![elmt_index; elmt.expr_layout().rank()];
 
         // loop body - eval expression
+        let expr = if is_tangent { elmt.tangent_expr() } else { elmt.expr() };
         let float_value = self.jit_compile_expr(
             name,
-            elmt.expr(),
+            expr,
             indices_int.as_slice(),
             elmt,
             Some(elmt_index),
         )?;
 
         // loop body - store result
-        block = self.jit_compile_broadcast_and_store(
+        self.jit_compile_broadcast_and_store(
             name,
             elmt,
             float_value,
@@ -1200,7 +1251,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
 
                 // setup loop block
                 self.builder.ins().jump(bcast_block, &[bcast_start_index]);
-                self.builder.seal_block(bcast_block);
                 self.builder.switch_to_block(bcast_block);
 
                 // store value at index = expr_index * broadcast_len + bcast_index
@@ -1224,6 +1274,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     &[],
                 );
                 self.builder.seal_block(bcast_block);
+                self.builder.seal_block(post_bcast_block);
                 self.builder.switch_to_block(post_bcast_block);
 
                 // return the current block for later
@@ -1276,9 +1327,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     .builder
                     .ins()
                     .iadd(elmt_index_strided, translate_store_index);
-                let indices_ptr = self
-                    .builder
-                    .use_var(*self.variables.get("indices").unwrap());
+                let indices_ptr = self.builder.ins().global_value(self.int_ptr_type, self.indices);
                 let ptr = self.builder.ins().iadd(indices_ptr, curr_index);
                 self.builder
                     .ins()
@@ -1308,20 +1357,33 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         var
     }
 
-    fn insert_tensor(&mut self, tensor: &Tensor, ptr: Value) {
-        let mut tensor_data_index =
-            i64::try_from(self.layout.get_data_index(tensor.name()).unwrap()).unwrap();
+    fn get_tangent_tensor_name(&self, name: &str) -> String {
+        format!("{}__tangent__", name)
+    }
+
+    fn insert_tensor(&mut self, tensor: &Tensor, ptr: Value, data_index: i64, is_tangent: bool) {
+        let mut tensor_data_index = data_index;
         let tensor_data_index_val = self.builder.ins().iconst(self.int_type, tensor_data_index);
         let tensor_data_ptr = self.builder.ins().iadd(ptr, tensor_data_index_val);
-        self.declare_variable(self.real_ptr_type, tensor.name(), tensor_data_ptr);
+        let tensor_name = if is_tangent {
+            self.get_tangent_tensor_name(tensor.name()) 
+        } else { 
+            tensor.name().to_owned()
+        };
+        self.declare_variable(self.real_ptr_type, tensor_name.as_str(), tensor_data_ptr);
 
         //insert any named blocks
         for blk in tensor.elmts() {
             if let Some(name) = blk.name() {
+                let blk_name = if is_tangent {
+                    self.get_tangent_tensor_name(name)
+                } else {
+                    name.to_owned()
+                };
                 let tensor_data_index_val =
                     self.builder.ins().iconst(self.int_type, tensor_data_index);
                 let tensor_data_ptr = self.builder.ins().iadd(ptr, tensor_data_index_val);
-                self.declare_variable(self.real_ptr_type, name, tensor_data_ptr);
+                self.declare_variable(self.real_ptr_type, blk_name.as_str(), tensor_data_ptr);
             }
             // named blocks only supported for rank <= 1, so we can just add the nnz to get the next data index
             tensor_data_index += i64::try_from(blk.nnz()).unwrap();
@@ -1344,6 +1406,8 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         // Create the builder to build a function.
         let mut builder = FunctionBuilder::new(&mut module.ctx.func, &mut module.builder_context);
 
+        let indices = module.module.declare_data_in_func(module.indices_id, builder.func);
+
         // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
 
@@ -1365,9 +1429,11 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             int_type: module.int_type,
             real_type: module.real_type,
             real_ptr_type: module.real_ptr_type,
+            int_ptr_type: module.int_ptr_type,
             builder,
             module: &mut module.module,
             tensor_ptr: None,
+            indices,
             variables: HashMap::new(),
             mem_flags: MemFlags::new(),
             functions: HashMap::new(),
@@ -1383,14 +1449,19 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         // insert u if it exists in args
         if let Some(u) = codegen.variables.get("u") {
             let u_ptr = codegen.builder.use_var(*u);
-            codegen.insert_tensor(model.state(), u_ptr);
+            codegen.insert_tensor(model.state(), u_ptr, 0, false);
+        }
+
+        if let Some(du) = codegen.variables.get("du") {
+            let du_ptr = codegen.builder.use_var(*du);
+            codegen.insert_tensor(model.state(), du_ptr, 0, true);
         }
 
         // insert dudt if it exists in args and is used in the model
         if let Some(dudt) = codegen.variables.get("dudt") {
             if let Some(state_dot) = model.state_dot() {
                 let statedot_ptr = codegen.builder.use_var(*dudt);
-                codegen.insert_tensor(state_dot, statedot_ptr);
+                codegen.insert_tensor(state_dot, statedot_ptr, 0, false);
             }
         }
 
@@ -1411,9 +1482,94 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             let data_ptr = codegen.builder.use_var(*data);
 
             for tensor in tensors {
-                codegen.insert_tensor(tensor, data_ptr);
+                let data_index = i64::try_from(codegen.layout.get_data_index(tensor.name()).unwrap()).unwrap();
+                codegen.insert_tensor(tensor, data_ptr, data_index, false);
+            }
+        }
+
+        // insert all tangent tensors in tangent_data if it exists in args
+        if let Some(data) = codegen.variables.get("ddata") {
+            let tensors = model.inputs().iter();
+            let tensors = tensors.chain(model.time_indep_defns().iter());
+            let tensors = tensors.chain(model.time_dep_defns().iter());
+            let tensors = tensors.chain(model.state_dep_defns().iter());
+            let mut others = Vec::new();
+            others.push(model.out());
+            others.push(model.rhs());
+            if let Some(lhs) = model.lhs() {
+                others.push(lhs);
+            }
+            let tensors = tensors.chain(others);
+
+            let data_ptr = codegen.builder.use_var(*data);
+
+            for tensor in tensors {
+                let data_index = i64::try_from(codegen.layout.get_data_index(tensor.name()).unwrap()).unwrap();
+                codegen.insert_tensor(tensor, data_ptr, data_index, true);
             }
         }
         codegen
+    }
+
+    fn jit_compile_set_inputs(&mut self, model: &DiscreteModel, base_data_ptr: Value, is_tangent: bool) {
+        let mut inputs_index = 0;
+        for input in model.inputs() {
+            let data_index = i64::try_from(self.layout.get_data_index(input.name()).unwrap()).unwrap();
+            self.insert_tensor(input, base_data_ptr, data_index, is_tangent);
+            let data_ptr = self.variables.get(input.name()).unwrap();
+            let data_ptr = self.builder.use_var(*data_ptr);
+            let input_ptr = self.variables.get("inputs").unwrap();
+            let input_ptr = self.builder.use_var(*input_ptr);
+            let inputs_start_index = self
+                .builder
+                .ins()
+                .iconst(self.int_type, i64::try_from(inputs_index).unwrap());
+            let input_ptr = self.builder.ins().iadd(input_ptr, inputs_start_index);
+
+            // loop thru the elements of this input and set them using the inputs ptr
+            let start_index = self.builder.ins().iconst(self.int_type, 0);
+
+            let input_block = self.builder.create_block();
+            let curr_input_index = self
+                .builder
+                .append_block_param(input_block, self.int_type);
+            self.builder.ins().jump(input_block, &[start_index]);
+            self.builder.switch_to_block(input_block);
+
+            // loop body - copy value from inputs to data
+            let indexed_input_ptr = self.builder.ins().iadd(input_ptr, curr_input_index);
+            let indexed_data_ptr = self.builder.ins().iadd(data_ptr, curr_input_index);
+            let input_value = self.builder.ins().load(
+                self.real_type,
+                self.mem_flags,
+                indexed_input_ptr,
+                0,
+            );
+            self
+                .builder
+                .ins()
+                .store(self.mem_flags, input_value, indexed_data_ptr, 0);
+
+            // increment loop index
+            let one = self.builder.ins().iconst(self.int_type, 1);
+            let next_index = self.builder.ins().iadd(curr_input_index, one);
+
+            let loop_while = self.builder.ins().icmp_imm(
+                IntCC::UnsignedLessThan,
+                next_index,
+                i64::try_from(input.nnz()).unwrap(),
+            );
+            let post_block = self.builder.create_block();
+            self
+                .builder
+                .ins()
+                .brif(loop_while, input_block, &[next_index], post_block, &[]);
+            self.builder.seal_block(input_block);
+            self.builder.seal_block(post_block);
+            self.builder.switch_to_block(post_block);
+
+            // get ready for next input
+            inputs_index += input.nnz();
+        }
     }
 }

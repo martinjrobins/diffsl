@@ -40,7 +40,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
         // name       = @{ 'a'..'z' ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
         // domain_name = @{ 'A'..'Z' ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
         Rule::name | Rule::domain_name => Ast {
-            kind: AstKind::Name(pair.as_str()),
+            kind: AstKind::Name(ast::Name { name: pair.as_str(), indices: vec![], is_tangent: false }),
             span,
         },
 
@@ -356,7 +356,7 @@ mod tests {
         }
         assert_eq!(models[0].statements.len(), 1);
         if let AstKind::Equation(eqn) = &models[0].statements[0].kind {
-            assert!(matches!(eqn.lhs.kind, AstKind::Name(name) if name == "i"));
+            assert!(matches!(&eqn.lhs.kind, AstKind::Name(name) if name.name == "i"));
             assert!(matches!(&eqn.rhs.kind, AstKind::Binop(binop) if binop.op == '*'));
         } else {
             panic!("not an equation")
@@ -424,7 +424,7 @@ mod tests {
             if let AstKind::CallArg(arg) = &submodel.args[0].kind {
                 assert_eq!(arg.name.unwrap(), "v");
                 assert!(
-                    matches!(arg.expression.kind, AstKind::Name(name) if name == "inputVoltage")
+                    matches!(&arg.expression.kind, AstKind::Name(name) if name.name == "inputVoltage")
                 );
             } else {
                 unreachable!("not a call arg")

@@ -62,7 +62,7 @@ impl<M: CodegenModule> Compiler<M> {
             .iter()
             .map(|input| input.name().to_owned())
             .collect::<Vec<_>>();
-        let mut module = M::new(Triple::host(), model);
+        let mut module = M::new(Triple::host(), model)?;
         let number_of_parameters = input_names.iter().fold(0, |acc, name| {
             acc + module.layout().get_data_length(name).unwrap()
         });
@@ -81,10 +81,10 @@ impl<M: CodegenModule> Compiler<M> {
 
         module.pre_autodiff_optimisation()?;
 
-        let set_u0_grad = module.compile_set_u0_grad(&set_u0)?;
-        let rhs_grad = module.compile_rhs_grad(&rhs)?;
-        let calc_out_grad = module.compile_calc_out_grad(&calc_out)?;
-        let set_inputs_grad = module.compile_set_inputs_grad(&set_inputs)?;
+        let set_u0_grad = module.compile_set_u0_grad(&set_u0, model)?;
+        let rhs_grad = module.compile_rhs_grad(&rhs, model)?;
+        let calc_out_grad = module.compile_calc_out_grad(&calc_out, model)?;
+        let set_inputs_grad = module.compile_set_inputs_grad(&set_inputs, model)?;
 
         module.post_autodiff_optimisation()?;
 
@@ -506,21 +506,39 @@ impl<M: CodegenModule> Compiler<M> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser::parse_ds_string, LlvmModule};
+    use crate::{parser::parse_ds_string, CraneliftModule, LlvmModule};
     use approx::assert_relative_eq;
 
     use super::*;
 
     type LlvmCompiler = Compiler<LlvmModule>;
+    type CraneliftCompiler = Compiler<CraneliftModule>;
 
     #[test]
-    fn test_from_discrete_str() {
+    fn test_from_discrete_str_llvm() {
         let text = "
         u { y = 1 }
         F { -y }
         out { y }
         ";
         let compiler = LlvmCompiler::from_discrete_str(text).unwrap();
+        let mut u0 = vec![0.];
+        let mut res = vec![0.];
+        let mut data = compiler.get_new_data();
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+        assert_relative_eq!(res.as_slice(), vec![-1.].as_slice());
+    }
+
+    #[test]
+    fn test_from_discrete_str_cranelift() {
+        let text = "
+        u { y = 1 }
+        F { -y }
+        out { y }
+        ";
+        let compiler = CraneliftCompiler::from_discrete_str(text).unwrap();
         let mut u0 = vec![0.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
@@ -566,7 +584,7 @@ mod tests {
         assert_eq!(stop.len(), 1);
     }
 
-    fn tensor_test_common(text: &str, tensor_name: &str) -> Vec<Vec<f64>> {
+    fn tensor_test_common<T: CodegenModule>(text: &str, tensor_name: &str) -> Vec<Vec<f64>> {
         let full_text = format!(
             "
             {}
@@ -580,7 +598,7 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text.as_str()));
             }
         };
-        let compiler = LlvmCompiler::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
@@ -662,7 +680,11 @@ mod tests {
                         y,
                     }}
                 ", $text);
-                let results = tensor_test_common(full_text.as_str(), $tensor_name);
+
+                let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name);
+                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+
+                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name);
                 assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
             }
         )*
@@ -776,7 +798,11 @@ mod tests {
                         y,
                     }}
                 ", $text);
-                let results = tensor_test_common(full_text.as_str(), $tensor_name);
+
+                let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name);
+                assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+
+                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name);
                 assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
             }
         )*

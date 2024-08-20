@@ -11,7 +11,7 @@ use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{InitializationConfig, Target, TargetTriple};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{
-    AnyValue, AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue
+    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 use inkwell_internals::llvm_versions;
@@ -74,7 +74,7 @@ impl LlvmModule {
 
 impl CodegenModule for LlvmModule {
     type FuncId = FunctionValue<'static>;
-    fn new(triple: Triple, model: &DiscreteModel) -> Self {
+    fn new(triple: Triple, model: &DiscreteModel) -> Result<Self> {
         let context = AliasableBox::from_unique(Box::new(Context::create()));
         let mut pinned = Self (
             Box::pin(ImmovableLlvmModule {
@@ -93,11 +93,10 @@ impl CodegenModule for LlvmModule {
             context_ref.f64_type(),
             context_ref.i32_type(),
             real_type_str,
-        )
-        .unwrap();
+        )?;
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
         unsafe { pinned.0.as_mut().get_unchecked_mut().codegen = Some(codegen) };
-        pinned
+        Ok(pinned)
     }
 
     fn layout(&self) -> &DataLayout {
@@ -153,14 +152,14 @@ impl CodegenModule for LlvmModule {
         self.codegen_mut().compile_set_id(model)
     }
 
-    fn compile_set_u0_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
+    fn compile_set_u0_grad(&mut self, func_id: &Self::FuncId, _model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
         )
     }
 
-    fn compile_rhs_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
+    fn compile_rhs_grad(&mut self, func_id: &Self::FuncId, _model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[
@@ -172,7 +171,7 @@ impl CodegenModule for LlvmModule {
         )
     }
 
-    fn compile_calc_out_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
+    fn compile_calc_out_grad(&mut self, func_id: &Self::FuncId, _model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[
@@ -183,7 +182,7 @@ impl CodegenModule for LlvmModule {
         )
     }
 
-    fn compile_set_inputs_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId> {
+    fn compile_set_inputs_grad(&mut self, func_id: &Self::FuncId, _model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
@@ -1534,7 +1533,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.jit_compile_expr(name, &arg.expression, index, elmt, expr_index)
             }
             AstKind::Number(value) => Ok(self.real_type.const_float(*value)),
-            AstKind::IndexedName(iname) => {
+            AstKind::Name(iname) => {
                 let ptr = self.get_param(iname.name);
                 let layout = self.layout.get_layout(iname.name).unwrap();
                 let iname_elmt_index = if layout.is_dense() {
@@ -1588,13 +1587,6 @@ impl<'ctx> CodeGen<'ctx> {
                 };
                 Ok(self
                     .build_load(self.real_type, value_ptr, name)?
-                    .into_float_value())
-            }
-            AstKind::Name(name) => {
-                // must be a scalar, just load the value
-                let ptr = self.get_param(name);
-                Ok(self
-                    .build_load(self.real_type, *ptr, name)?
                     .into_float_value())
             }
             AstKind::NamedGradient(name) => {

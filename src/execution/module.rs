@@ -5,10 +5,10 @@ use crate::discretise::DiscreteModel;
 
 use super::DataLayout;
 
-pub trait CodegenModule {
+pub trait CodegenModule: Sized {
     type FuncId;
 
-    fn new(triple: Triple, model: &DiscreteModel) -> Self;
+    fn new(triple: Triple, model: &DiscreteModel) -> Result<Self>;
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_calc_stop(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
@@ -19,10 +19,10 @@ pub trait CodegenModule {
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
 
-    fn compile_set_u0_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId>;
-    fn compile_rhs_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId>;
-    fn compile_calc_out_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId>;
-    fn compile_set_inputs_grad(&mut self, func_id: &Self::FuncId) -> Result<Self::FuncId>;
+    fn compile_set_u0_grad(&mut self, func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId>;
+    fn compile_rhs_grad(&mut self, func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId>;
+    fn compile_calc_out_grad(&mut self, func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId>;
+    fn compile_set_inputs_grad(&mut self, func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId>;
 
     fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8>;
 

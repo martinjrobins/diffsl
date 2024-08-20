@@ -141,6 +141,7 @@ pub struct Monop<'a> {
 pub struct Call<'a> {
     pub fn_name: &'a str,
     pub args: Vec<Box<Ast<'a>>>,
+    pub is_tangent: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -432,6 +433,7 @@ impl<'a> AstKind<'a> {
         AstKind::Call(Call {
             fn_name: "dot",
             args: vec![Box::new(child)],
+            is_tangent: false,
         })
     }
     pub fn new_indice(first: Ast<'a>, last: Option<Ast<'a>>, sep: Option<&'a str>) -> Self {
@@ -557,115 +559,12 @@ impl<'a> Ast<'a> {
                 }
             },
             AstKind::Call(call) => {
-                let mut tangent_args = Vec::new();
                 let mut args = Vec::new();
                 for arg in call.args.iter() {
-                    tangent_args.push(arg.tangent());
                     args.push(arg.as_ref().clone());
+                    args.push(arg.tangent());
                 }
-                match call.fn_name {
-                    "sin" => {
-                        let cos = Self::new_call("cos", args);
-                        Self::new_binop('*', tangent_args.remove(0), cos)
-                    }
-                    "cos" => {
-                        let sin = Self::new_call("sin", args);
-                        let neg = Self::new_monop('-', sin);
-                        Self::new_binop('*', tangent_args.remove(0), neg)
-                    }
-                    "tan" => {
-                        let cos = Self::new_call("cos", tangent_args.clone());
-                        let cos2 = Self::new_binop('*', cos.clone(), cos);
-                        Self::new_binop('/', tangent_args.remove(0), cos2)
-                    },
-                    "exp" => Self::new_call("exp", tangent_args),
-                    "log" => Self::new_binop('/', tangent_args.remove(0), args.remove(0)),
-                    "log10" => {
-                        let ln10 = Self::new_number(10.0_f64.ln());
-                        let bottom = Self::new_binop('*', call.args[0].as_ref().clone(), ln10);
-                        Self::new_binop('/', tangent_args.remove(0), bottom)
-                    },
-                    "sqrt" => {
-                        let two = Self::new_number(2.0);
-                        let sqrt_fn = Self::new_call("sqrt", args);
-                        let bottom = Self::new_binop('*', two, sqrt_fn);
-                        Self::new_binop('/', tangent_args.remove(0), bottom)
-                    },
-                    "abs" => {
-                        let sign = Self::new_call("copysign", vec![Self::new_number(1.0), args.remove(0)]);
-                        Self::new_binop('*', tangent_args.remove(0), sign)
-                    },
-                    // todo: this is not correct if b(x) == 0
-                    "copysign" => {
-                        Self::new_call("copysign", vec![tangent_args.remove(0), args.remove(0)])
-                    },
-                    // d/dx(f(x)^g(x)) = f(x)^(g(x) - 1) (g(x) f'(x) + f(x) log(f(x)) g'(x))
-                    "pow" => {
-                        let g = args.remove(1);
-                        let f = args.remove(0);
-                        let g_dash = tangent_args.remove(1);
-                        let f_dash = tangent_args.remove(0);
-                        let g_minus_1 = Self::new_binop('-', g.clone(), Self::new_number(1.0));
-                        let f_pow_g_minus_1 = Self::new_call("pow", vec![f.clone(), g_minus_1]);
-                        let g_f_dash = Self::new_binop('*', g, f_dash);
-                        let f_g_dash = Self::new_binop('*', f.clone(), g_dash.clone());
-                        let log_f = Self::new_call("log", vec![f]);
-                        let f_log_f_g_dash = Self::new_binop('*', log_f, f_g_dash);
-                        let g_f_dash_plus_f_log_f_g_dash = Self::new_binop('+', g_f_dash, f_log_f_g_dash);
-                        Self::new_binop('*', f_pow_g_minus_1, g_f_dash_plus_f_log_f_g_dash)
-                    },
-                    "min" => {
-                        Self::new_call("min", tangent_args)
-                    },
-                    "max" => {
-                        Self::new_call("max", tangent_args)
-                    },
-                    // (f'(x))/(2 cosh(f(x)) + 2)       
-                    "sigmoid" => {
-                        let cosh = Self::new_call("cosh", args);
-                        let two = Self::new_number(2.0);
-                        let two_cosh_plus_two = Self::new_binop('+', Self::new_binop('*', two.clone(), cosh), two);
-                        Self::new_binop('/', tangent_args.remove(0), two_cosh_plus_two)
-                    },
-                    // d/dx(sinh^(-1)(f(x))) = (f'(x))/sqrt(f(x)^2 + 1)
-                    "arcsinh" => {
-                        let one = Self::new_number(1.0);
-                        let f_pow_2 = Self::new_binop('*', args[0].clone(), args.remove(0));
-                        let f_pow_2_plus_1 = Self::new_binop('+', f_pow_2, one);
-                        Self::new_binop('/', tangent_args.remove(0), Self::new_call("sqrt", vec![f_pow_2_plus_1]))
-                    },
-                    // d/dx(cosh^(-1)(f(x))) = (f'(x))/(sqrt(f(x) - 1) sqrt(f(x) + 1))
-                    "arcosh" => {
-                        let one = Self::new_number(1.0);
-                        let f_minus_1 = Self::new_binop('-', args[1].clone(), one.clone());
-                        let f_plus_1 = Self::new_binop('+', args.remove(1), one);
-                        let sqrt_f_minus_1 = Self::new_call("sqrt", vec![f_minus_1]);
-                        let sqrt_f_plus_1 = Self::new_call("sqrt", vec![f_plus_1]);
-                        let sqrt_f_minus_1_sqrt_f_plus_1 = Self::new_binop('*', sqrt_f_minus_1, sqrt_f_plus_1);
-                        Self::new_binop('/', tangent_args.remove(0), sqrt_f_minus_1_sqrt_f_plus_1)
-                    },
-                    // (f'(x))/(cosh^2(f(x)))
-                    "tanh" => {
-                        let cosh = Self::new_call("cosh", args);
-                        let cosh_2 = Self::new_binop('*', cosh.clone(), cosh);
-                        Self::new_binop('/', tangent_args.remove(0), cosh_2)
-                    },
-                    // d/dx(sinh(f(x))) = f'(x) cosh(f(x))
-                    "sinh" => {
-                        let cosh = Self::new_call("cosh", args);
-                        Self::new_binop('*', tangent_args.remove(0), cosh)
-                    },
-                    // d/dx(cosh(f(x))) = f'(x) sinh(f(x))
-                    "cosh" => {
-                        let sinh = Self::new_call("sinh", args);
-                        Self::new_binop('*', tangent_args.remove(0), sinh)
-                    },
-                    // todo: not correct at a(x) == 0
-                    "heaviside" => {
-                        Self::new_number(0.0)
-                    },
-                    _ => panic!("Tangent not implemented for function {}", call.fn_name),
-                }
+                Self::new_call(call.fn_name, args, true)
             },
             AstKind::CallArg(arg) => {
                 Self::new_call_arg(arg.name, arg.expression.tangent())
@@ -695,11 +594,12 @@ impl<'a> Ast<'a> {
         }
     }
 
-    pub fn new_call(fn_name: &'a str, args: Vec<Ast<'a>>) -> Self {
+    pub fn new_call(fn_name: &'a str, args: Vec<Ast<'a>>, is_tangent: bool) -> Self {
         Ast {
             kind: AstKind::Call(Call {
                 fn_name,
                 args: args.into_iter().map(Box::new).collect(),
+                is_tangent,
             }),
             span: None,
         }
@@ -764,6 +664,7 @@ impl<'a> Ast<'a> {
                     .iter()
                     .map(|m| Box::new(m.clone_and_subst(replacements)))
                     .collect(),
+                is_tangent: call.is_tangent,
             }),
             AstKind::CallArg(arg) => AstKind::CallArg(CallArg {
                 name: arg.name,

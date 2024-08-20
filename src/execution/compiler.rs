@@ -506,22 +506,22 @@ impl<M: CodegenModule> Compiler<M> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser::parse_ds_string, CraneliftModule, LlvmModule};
+    use crate::{parser::parse_ds_string, CraneliftModule};
     use approx::assert_relative_eq;
 
     use super::*;
 
-    type LlvmCompiler = Compiler<LlvmModule>;
-    type CraneliftCompiler = Compiler<CraneliftModule>;
 
+    #[cfg(feature = "llvm")]
     #[test]
     fn test_from_discrete_str_llvm() {
+        use crate::execution::llvm::codegen::LlvmModule;
         let text = "
         u { y = 1 }
         F { -y }
         out { y }
         ";
-        let compiler = LlvmCompiler::from_discrete_str(text).unwrap();
+        let compiler = Compiler::<LlvmModule>::from_discrete_str(text).unwrap();
         let mut u0 = vec![0.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
@@ -538,7 +538,7 @@ mod tests {
         F { -y }
         out { y }
         ";
-        let compiler = CraneliftCompiler::from_discrete_str(text).unwrap();
+        let compiler = Compiler::<CraneliftModule>::from_discrete_str(text).unwrap();
         let mut u0 = vec![0.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
@@ -572,7 +572,7 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = LlvmCompiler::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model).unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut stop = vec![0.];
@@ -681,8 +681,12 @@ mod tests {
                     }}
                 ", $text);
 
-                let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name);
-                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                #[cfg(feature = "llvm")]
+                {
+                    use crate::execution::llvm::codegen::LlvmModule;
+                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                }
 
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name);
                 assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
@@ -799,8 +803,12 @@ mod tests {
                     }}
                 ", $text);
 
-                let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name);
-                assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                #[cfg(feature = "llvm")]
+                {
+                    use crate::execution::llvm::codegen::LlvmModule;
+                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name);
+                    assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                }
 
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name);
                 assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
@@ -851,7 +859,7 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text));
             }
         };
-        let compiler = LlvmCompiler::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model).unwrap();
         let mut u0 = vec![1.];
         let mut du0 = vec![1.];
         let mut res = vec![0.];
@@ -919,7 +927,7 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = LlvmCompiler::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model).unwrap();
         let (n_states, n_inputs, n_outputs, n_data, _n_stop) = compiler.get_dims();
         assert_eq!(n_states, 2);
         assert_eq!(n_inputs, 1);

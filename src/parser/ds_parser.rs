@@ -74,6 +74,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
                 kind: AstKind::Call(ast::Call {
                     fn_name: parse_name(inner.next().unwrap()),
                     args: inner.map(parse_value).map(Box::new).collect(),
+                    is_tangent: false,
                 }),
                 span,
             }

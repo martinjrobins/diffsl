@@ -54,6 +54,9 @@ impl CraneliftModule {
             .declare_function(name, Linkage::Export, &self.ctx.func.signature)
             .map_err(|e| anyhow!(e.to_string()))?;
 
+        println!("Declared function: {}", name);
+        println!("IR:\n{}", self.ctx.func);
+
         // Define the function to jit. This finishes compilation, although
         // there may be outstanding relocations to perform. Currently, jit
         // cannot finish relocations until all functions to be called are
@@ -202,7 +205,17 @@ impl CodegenModule for CraneliftModule {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .unwrap();
-        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+
+        // add supported external rust functions
+        for func in crate::execution::functions::FUNCTIONS.iter() {
+            builder.symbol(func.0, func.1 as *const u8);
+            builder.symbol(CraneliftCodeGen::get_function_name(func.0, true), func.2 as *const u8);
+        }
+        for func in crate::execution::functions::TWO_ARG_FUNCTIONS.iter() {
+            builder.symbol(func.0, func.1 as *const u8);
+            builder.symbol(CraneliftCodeGen::get_function_name(func.0, true), func.2 as *const u8);
+        }
 
         let mut module = JITModule::new(builder);
 
@@ -555,7 +568,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     unknown => Err(anyhow!("unknown monop op '{}'", unknown)),
                 }
             }
-            AstKind::Call(call) => match self.get_function(call.fn_name) {
+            AstKind::Call(call) => match self.get_function(call.fn_name, call.is_tangent) {
                 Some(function) => {
                     let mut args = Vec::new();
                     for arg in call.args.iter() {
@@ -650,37 +663,36 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         }
     }
 
-    fn get_function(&mut self, name: &str) -> Option<FuncRef> {
-        match self.functions.get(name) {
+    fn get_function_name(name: &str, is_tangent: bool) -> String {
+        if is_tangent {
+            format!("{}__tangent__", name)
+        } else {
+            name.to_owned()
+        }
+    }
+
+    fn get_function(&mut self, base_name: &str, is_tangent: bool) -> Option<FuncRef> {
+        let name = Self::get_function_name(base_name, is_tangent);
+        match self.functions.get(name.as_str()) {
             Some(&func) => Some(func),
             None => {
-                let function = match name {
-                    // support some standard library functions
-                    "sin" | "cos" | "tan" | "exp" | "log" | "log10" | "sqrt" | "abs"
-                    | "copysign" | "pow" | "min" | "max" | "sigmoid" | "arcsinh" | "arccosh"
-                    | "heaviside" | "tanh" | "sinh" | "cosh" => {
-                        let args = match name {
-                            "pow" | "copysign" | "min" | "max" => vec![self.real_type, self.real_type],
-                            _ => vec![self.real_type],
-                        };
-                        let ret_type = self.real_type;
-
+                match crate::execution::functions::function_num_args(base_name, is_tangent) {
+                    Some(num_args) => {
                         let mut sig = self.module.make_signature();
-                        for arg in &args {
-                            sig.params.push(AbiParam::new(*arg));
+                        for _ in 0..num_args {
+                            sig.params.push(AbiParam::new(self.real_type));
                         }
-                        sig.returns.push(AbiParam::new(ret_type));
-
+                        sig.returns.push(AbiParam::new(self.real_type));
                         let callee = self
                             .module
-                            .declare_function(name, Linkage::Import, &sig)
+                            .declare_function(name.as_str(), Linkage::Import, &sig)
                             .expect("problem declaring function");
-                        Some(self.module.declare_func_in_func(callee, self.builder.func))
+                        let function = self.module.declare_func_in_func(callee, self.builder.func);
+                        self.functions.insert(name, function);
+                        Some(function)
                     }
-                    _ => None,
-                }?;
-                self.functions.insert(name.to_owned(), function);
-                Some(function)
+                    None => None,
+                }
             }
         }
     }

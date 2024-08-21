@@ -1,4 +1,3 @@
-
 #![allow(clippy::type_complexity)]
 pub const FUNCTIONS: &[(&str, fn(&f64) -> f64, fn(&f64, &f64) -> f64)] = &[
     ("sin", sin, dsin),
@@ -18,7 +17,11 @@ pub const FUNCTIONS: &[(&str, fn(&f64) -> f64, fn(&f64, &f64) -> f64)] = &[
     ("cosh", cosh, dcosh),
 ];
 
-pub const TWO_ARG_FUNCTIONS: &[(&str, fn(&f64, &f64) -> f64, fn(&f64, &f64, &f64, &f64) -> f64)] = &[
+pub const TWO_ARG_FUNCTIONS: &[(
+    &str,
+    fn(&f64, &f64) -> f64,
+    fn(&f64, &f64, &f64, &f64) -> f64,
+)] = &[
     ("copysign", copysign, dcopysign),
     ("pow", pow, dpow),
     ("min", min, dmin),
@@ -37,7 +40,6 @@ pub fn function_num_args(name: &str, is_tangent: bool) -> Option<usize> {
     }
     None
 }
-
 
 pub fn sin(x: &f64) -> f64 {
     x.sin()
@@ -154,7 +156,7 @@ pub fn sigmoid(x: &f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
 
-// (f'(x))/(2 cosh(f(x)) + 2)       
+// (f'(x))/(2 cosh(f(x)) + 2)
 pub fn dsigmoid(x: &f64, dx: &f64) -> f64 {
     let cosh = x.cosh();
     dx / (2.0 * cosh + 2.0)
@@ -197,7 +199,6 @@ pub fn tanh(x: &f64) -> f64 {
     x.tanh()
 }
 
-
 // (f'(x))/(cosh^2(f(x)))
 pub fn dtanh(x: &f64, dx: &f64) -> f64 {
     let cosh = x.cosh();
@@ -221,4 +222,3 @@ pub fn cosh(x: &f64) -> f64 {
 pub fn dcosh(x: &f64, dx: &f64) -> f64 {
     dx * x.sinh()
 }
-

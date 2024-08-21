@@ -455,7 +455,11 @@ impl<'a> AstKind<'a> {
         })
     }
     pub fn new_indexed_name(name: &'a str, indices: Vec<char>) -> Self {
-        AstKind::Name(Name { name, indices, is_tangent: false })
+        AstKind::Name(Name {
+            name,
+            indices,
+            is_tangent: false,
+        })
     }
     pub fn new_name(name: &'a str) -> Self {
         AstKind::Name(Name {
@@ -465,7 +469,11 @@ impl<'a> AstKind<'a> {
         })
     }
     pub fn new_tangent_indexed_name(name: &'a str, indices: Vec<char>) -> Self {
-        AstKind::Name(Name { name, indices, is_tangent: true })
+        AstKind::Name(Name {
+            name,
+            indices,
+            is_tangent: true,
+        })
     }
     pub fn new_time_derivative(name: &'a str, indices: Vec<char>) -> Self {
         AstKind::NamedGradient(NamedGradient {
@@ -534,29 +542,33 @@ pub struct Ast<'a> {
 impl<'a> Ast<'a> {
     pub fn tangent(&self) -> Self {
         match &self.kind {
-            AstKind::Binop(binop) => {
-                match binop.op {
-                    '+' | '-' => Self::new_binop(binop.op, binop.left.tangent(), binop.right.tangent()),
-                    '*' => {
-                        let lhs = Self::new_binop('*', binop.left.as_ref().clone(), binop.right.tangent());
-                        let rhs = Self::new_binop('*', binop.left.tangent(), binop.right.as_ref().clone());
-                        Self::new_binop('+', lhs, rhs)
-                    },
-                    '/' => {
-                        let left = Self::new_binop('/', binop.left.tangent(), binop.right.as_ref().clone());
-                        let right_top = Self::new_binop('*', binop.left.as_ref().clone(), binop.right.tangent());
-                        let right_bottom = Self::new_binop('*', binop.right.as_ref().clone(), binop.right.as_ref().clone());
-                        let right = Self::new_binop('/', right_top, right_bottom);
-                        Self::new_binop('-', left, right)
-                    },
-                    _ => panic!("Tangent not implemented for operator {}", binop.op),
+            AstKind::Binop(binop) => match binop.op {
+                '+' | '-' => Self::new_binop(binop.op, binop.left.tangent(), binop.right.tangent()),
+                '*' => {
+                    let lhs =
+                        Self::new_binop('*', binop.left.as_ref().clone(), binop.right.tangent());
+                    let rhs =
+                        Self::new_binop('*', binop.left.tangent(), binop.right.as_ref().clone());
+                    Self::new_binop('+', lhs, rhs)
                 }
+                '/' => {
+                    let left =
+                        Self::new_binop('/', binop.left.tangent(), binop.right.as_ref().clone());
+                    let right_top =
+                        Self::new_binop('*', binop.left.as_ref().clone(), binop.right.tangent());
+                    let right_bottom = Self::new_binop(
+                        '*',
+                        binop.right.as_ref().clone(),
+                        binop.right.as_ref().clone(),
+                    );
+                    let right = Self::new_binop('/', right_top, right_bottom);
+                    Self::new_binop('-', left, right)
+                }
+                _ => panic!("Tangent not implemented for operator {}", binop.op),
             },
-            AstKind::Monop(monop) => {
-                match monop.op {
-                    '-' => Self::new_monop('-', monop.child.tangent()),
-                    _ => panic!("Tangent not implemented for operator {}", monop.op),
-                }
+            AstKind::Monop(monop) => match monop.op {
+                '-' => Self::new_monop('-', monop.child.tangent()),
+                _ => panic!("Tangent not implemented for operator {}", monop.op),
             },
             AstKind::Call(call) => {
                 let mut args = Vec::new();
@@ -565,13 +577,9 @@ impl<'a> Ast<'a> {
                     args.push(arg.tangent());
                 }
                 Self::new_call(call.fn_name, args, true)
-            },
-            AstKind::CallArg(arg) => {
-                Self::new_call_arg(arg.name, arg.expression.tangent())
-            },
-            AstKind::Name(name) => {
-                Self::new_name(name.name, name.indices.clone(), true)
-            },
+            }
+            AstKind::CallArg(arg) => Self::new_call_arg(arg.name, arg.expression.tangent()),
+            AstKind::Name(name) => Self::new_name(name.name, name.indices.clone(), true),
             AstKind::Number(_) => Self::new_number(0.0),
             _ => panic!("Tangent not implemented for {:?}", self.kind),
         }
@@ -579,7 +587,11 @@ impl<'a> Ast<'a> {
 
     pub fn new_name(name: &'a str, indices: Vec<char>, is_tangent: bool) -> Self {
         Ast {
-            kind: AstKind::Name(Name { name, indices, is_tangent }),
+            kind: AstKind::Name(Name {
+                name,
+                indices,
+                is_tangent,
+            }),
             span: None,
         }
     }
@@ -607,7 +619,10 @@ impl<'a> Ast<'a> {
 
     pub fn new_monop(op: char, child: Ast<'a>) -> Self {
         Ast {
-            kind: AstKind::Monop(Monop { op, child: Box::new(child) }),
+            kind: AstKind::Monop(Monop {
+                op,
+                child: Box::new(child),
+            }),
             span: None,
         }
     }
@@ -682,7 +697,7 @@ impl<'a> Ast<'a> {
                         is_tangent: name.is_tangent,
                     })
                 }
-            },
+            }
             AstKind::NamedGradient(gradient) => AstKind::NamedGradient(NamedGradient {
                 gradient_of: Box::new(gradient.gradient_of.clone_and_subst(replacements)),
                 gradient_wrt: Box::new(gradient.gradient_wrt.clone_and_subst(replacements)),
@@ -750,7 +765,11 @@ impl<'a> Ast<'a> {
             AstKind::CallArg(arg) => {
                 arg.expression.collect_deps(deps);
             }
-            AstKind::Name(Name { name: found_name, indices: _, is_tangent: _}) => {
+            AstKind::Name(Name {
+                name: found_name,
+                indices: _,
+                is_tangent: _,
+            }) => {
                 deps.insert(found_name);
             }
             AstKind::NamedGradient(gradient) => {

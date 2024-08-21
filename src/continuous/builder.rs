@@ -237,7 +237,12 @@ impl<'s> ModelInfo<'s> {
                 //  - the lhs is a call with a name equal to one of the variables,
                 //  - that variable has a dependent t,
                 //  - there is a number equal to the lower bound of time in the argument corresponding to time
-                if let AstKind::Call(ast::Call { fn_name, args , is_tangent: _}) = &eqn.lhs.kind {
+                if let AstKind::Call(ast::Call {
+                    fn_name,
+                    args,
+                    is_tangent: _,
+                }) = &eqn.lhs.kind
+                {
                     if let Some(v_cell) = self.variables.get(fn_name) {
                         let v = v_cell.borrow();
                         if let Some(time_index) = v.time_index {

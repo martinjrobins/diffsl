@@ -19,10 +19,26 @@ pub trait CodegenModule: Sized {
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
 
-    fn compile_set_u0_grad(&mut self, func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId>;
-    fn compile_rhs_grad(&mut self, func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId>;
-    fn compile_calc_out_grad(&mut self, func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId>;
-    fn compile_set_inputs_grad(&mut self, func_id: &Self::FuncId, model: &DiscreteModel) -> Result<Self::FuncId>;
+    fn compile_set_u0_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        model: &DiscreteModel,
+    ) -> Result<Self::FuncId>;
+    fn compile_rhs_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        model: &DiscreteModel,
+    ) -> Result<Self::FuncId>;
+    fn compile_calc_out_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        model: &DiscreteModel,
+    ) -> Result<Self::FuncId>;
+    fn compile_set_inputs_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        model: &DiscreteModel,
+    ) -> Result<Self::FuncId>;
 
     fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8>;
 

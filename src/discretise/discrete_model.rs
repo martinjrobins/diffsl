@@ -387,7 +387,9 @@ impl<'s> DiscreteModel<'s> {
                 let geq_deps = geq.get_dependents();
                 ret.is_algebraic.push(true);
                 if let Some(sp_name) = sp.name() {
-                    if Some(sp_name) == feq.kind.as_name().map(|n| n.name) && !geq_deps.contains(sp_name) {
+                    if Some(sp_name) == feq.kind.as_name().map(|n| n.name)
+                        && !geq_deps.contains(sp_name)
+                    {
                         ret.is_algebraic[i] = false;
                     }
                 }
@@ -453,7 +455,10 @@ impl<'s> DiscreteModel<'s> {
             panic!("state var should have an equation")
         };
         let (f_astkind, g_astkind) = match ast_eqn.kind {
-            AstKind::RateEquation(eqn) => (AstKind::new_time_derivative(state.name, vec![]), eqn.rhs.kind),
+            AstKind::RateEquation(eqn) => (
+                AstKind::new_time_derivative(state.name, vec![]),
+                eqn.rhs.kind,
+            ),
             AstKind::Equation(eqn) => (
                 AstKind::new_num(0.0),
                 AstKind::new_binop('-', *eqn.rhs, *eqn.lhs),

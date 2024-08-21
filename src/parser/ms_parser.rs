@@ -40,7 +40,11 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
         // name       = @{ 'a'..'z' ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
         // domain_name = @{ 'A'..'Z' ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
         Rule::name | Rule::domain_name => Ast {
-            kind: AstKind::Name(ast::Name { name: pair.as_str(), indices: vec![], is_tangent: false }),
+            kind: AstKind::Name(ast::Name {
+                name: pair.as_str(),
+                indices: vec![],
+                is_tangent: false,
+            }),
             span,
         },
 
@@ -161,7 +165,12 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             // TODO: is there a better way of destructuring this?
             let mut inner = pair.into_inner();
             let (name, args) = if let Ast {
-                kind: AstKind::Call(ast::Call { fn_name, args, is_tangent: _ }),
+                kind:
+                    AstKind::Call(ast::Call {
+                        fn_name,
+                        args,
+                        is_tangent: _,
+                    }),
                 span: _,
             } = parse_value(inner.next().unwrap())
             {

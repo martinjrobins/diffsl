@@ -245,9 +245,7 @@ impl Env {
             AstKind::Number(_) => Some(Layout::new_scalar()),
             AstKind::Integer(_) => Some(Layout::new_scalar()),
             AstKind::Domain(d) => Some(Layout::new_dense(Shape::zeros(1) + d.dim)),
-            AstKind::Name(name) => {
-                self.get_layout_name(name.name, ast, &name.indices, indices)
-            }
+            AstKind::Name(name) => self.get_layout_name(name.name, ast, &name.indices, indices),
             _ => panic!("unrecognised ast node {:#?}", ast.kind),
         }
     }

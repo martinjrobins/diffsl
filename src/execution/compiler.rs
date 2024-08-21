@@ -511,7 +511,6 @@ mod tests {
 
     use super::*;
 
-
     #[cfg(feature = "llvm")]
     #[test]
     fn test_from_discrete_str_llvm() {

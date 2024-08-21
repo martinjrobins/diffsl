@@ -11,7 +11,8 @@ use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{InitializationConfig, Target, TargetTriple};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue
+    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
+    GlobalValue, IntValue, PointerValue,
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 use inkwell_internals::llvm_versions;
@@ -53,18 +54,23 @@ impl LlvmModule {
         self.codegen().module().print_to_stderr();
     }
     fn codegen_mut(&mut self) -> &mut CodeGen<'static> {
-        unsafe { self.0.as_mut().get_unchecked_mut().codegen.as_mut().unwrap() }
+        unsafe {
+            self.0
+                .as_mut()
+                .get_unchecked_mut()
+                .codegen
+                .as_mut()
+                .unwrap()
+        }
     }
     fn codegen(&self) -> &CodeGen<'static> {
         self.0.as_ref().get_ref().codegen.as_ref().unwrap()
     }
-    pub fn jit2<O: UnsafeFunctionPointer>(&mut self, name: &str) -> Result<JitFunction<'static, O>> {
-        let maybe_fn = unsafe { 
-            self
-            .codegen_mut()
-            .ee
-            .get_function::<O>(name)
-        };
+    pub fn jit2<O: UnsafeFunctionPointer>(
+        &mut self,
+        name: &str,
+    ) -> Result<JitFunction<'static, O>> {
+        let maybe_fn = unsafe { self.codegen_mut().ee.get_function::<O>(name) };
         match maybe_fn {
             Ok(f) => Ok(f),
             Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
@@ -76,14 +82,12 @@ impl CodegenModule for LlvmModule {
     type FuncId = FunctionValue<'static>;
     fn new(triple: Triple, model: &DiscreteModel) -> Result<Self> {
         let context = AliasableBox::from_unique(Box::new(Context::create()));
-        let mut pinned = Self (
-            Box::pin(ImmovableLlvmModule {
-                codegen: None,
-                context,
-                triple,
-                _pin: std::marker::PhantomPinned,
-            })
-        );
+        let mut pinned = Self(Box::pin(ImmovableLlvmModule {
+            codegen: None,
+            context,
+            triple,
+            _pin: std::marker::PhantomPinned,
+        }));
 
         let context_ref = pinned.0.context.as_ref();
         let real_type_str = "f64";
@@ -103,13 +107,9 @@ impl CodegenModule for LlvmModule {
         &self.codegen().layout
     }
 
-
     fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8> {
         let name = func_id.get_name().to_str().unwrap();
-        let maybe_fn = self
-            .codegen_mut()
-            .ee
-            .get_function_address(name);
+        let maybe_fn = self.codegen_mut().ee.get_function_address(name);
         match maybe_fn {
             Ok(f) => Ok(f as *const u8),
             Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
@@ -152,14 +152,22 @@ impl CodegenModule for LlvmModule {
         self.codegen_mut().compile_set_id(model)
     }
 
-    fn compile_set_u0_grad(&mut self, func_id: &Self::FuncId, _model: &DiscreteModel) -> Result<Self::FuncId> {
+    fn compile_set_u0_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
         )
     }
 
-    fn compile_rhs_grad(&mut self, func_id: &Self::FuncId, _model: &DiscreteModel) -> Result<Self::FuncId> {
+    fn compile_rhs_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[
@@ -171,7 +179,11 @@ impl CodegenModule for LlvmModule {
         )
     }
 
-    fn compile_calc_out_grad(&mut self, func_id: &Self::FuncId, _model: &DiscreteModel) -> Result<Self::FuncId> {
+    fn compile_calc_out_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[
@@ -182,7 +194,11 @@ impl CodegenModule for LlvmModule {
         )
     }
 
-    fn compile_set_inputs_grad(&mut self, func_id: &Self::FuncId, _model: &DiscreteModel) -> Result<Self::FuncId> {
+    fn compile_set_inputs_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],

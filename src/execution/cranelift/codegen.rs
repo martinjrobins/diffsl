@@ -81,8 +81,7 @@ impl CodegenModule for CraneliftModule {
             self.real_type,
             self.real_ptr_type,
             self.real_ptr_type,
-            self.real_ptr_type,
-            self.real_ptr_type,
+            self.real_ptr_type, self.real_ptr_type,
         ];
         let arg_names = &["t", "u", "du", "data", "ddata"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
@@ -262,13 +261,25 @@ impl CodegenModule for CraneliftModule {
 
         // write indices data as a global data object
         // convect the indices to bytes
+        let int_type = types::I32;
+        let real_type = types::F64;
         let mut vec8: Vec<u8> = vec![];
         for elem in layout.indices() {
-            let conv = match triple.endianness().unwrap() {
-                Endianness::Little => elem.to_le_bytes(),
-                Endianness::Big => elem.to_be_bytes(),
+            // convert indices to i64
+            if int_type == types::I64 {
+                let elemi64 = i64::from(*elem);
+                let conv = match triple.endianness().unwrap() {
+                    Endianness::Little => elemi64.to_le_bytes(),
+                    Endianness::Big => elemi64.to_be_bytes(),
+                };
+                vec8.extend(conv.into_iter());
+            } else {
+                let conv = match triple.endianness().unwrap() {
+                    Endianness::Little => elem.to_le_bytes(),
+                    Endianness::Big => elem.to_be_bytes(),
+                };
+                vec8.extend(conv.into_iter());
             };
-            vec8.extend(conv.into_iter());
         }
 
         // put the indices data into a DataDescription
@@ -282,8 +293,8 @@ impl CodegenModule for CraneliftModule {
             ctx: module.make_context(),
             module,
             indices_id,
-            int_type: types::I64,
-            real_type: types::F64,
+            int_type,
+            real_type,
             real_ptr_type: ptr_type,
             int_ptr_type: ptr_type,
             layout,
@@ -505,14 +516,14 @@ impl CodegenModule for CraneliftModule {
             let input_id_ptr = codegen.variables.get("id").unwrap();
             let input_id_ptr = codegen.builder.use_var(*input_id_ptr);
             let curr_id_index = codegen.builder.ins().iadd(id_start_index, curr_blk_index);
-            let indexed_id_ptr = codegen.builder.ins().iadd(input_id_ptr, curr_id_index);
+            let indexed_id_ptr = codegen.ptr_add_offset(codegen.real_type, input_id_ptr, curr_id_index);
 
             let is_algebraic_float = if *is_algebraic { 0.0 } else { 1.0 };
             let is_algebraic_value = codegen.fconst(is_algebraic_float);
             codegen
                 .builder
                 .ins()
-                .store(codegen.mem_flags, indexed_id_ptr, is_algebraic_value, 0);
+                .store(codegen.mem_flags, is_algebraic_value, indexed_id_ptr, 0);
 
             // increment loop index
             let one = codegen.builder.ins().iconst(codegen.int_type, 1);
@@ -566,6 +577,30 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             types::F64 => self.builder.ins().f64const(value),
             _ => panic!("unexpected real type"),
         }
+    }
+    fn ptr_add_offset_i64(&mut self, elmt_ty: types::Type, ptr: Value, offset: i64) -> Value {
+        // both ptr types are the same, so just use real_ptr_type
+        let ptr_ty = self.real_ptr_type;
+        let width = elmt_ty.bytes() as i64;
+        let offset_bytes = self.builder.ins().iconst(ptr_ty, offset * width);
+        self.builder.ins().iadd(ptr, offset_bytes)
+    }
+
+    fn ptr_add_offset(&mut self, elmt_ty: types::Type, ptr: Value, offset: Value) -> Value {
+        let width = elmt_ty.bytes() as i64;
+        // both ptr types are the same, so just use real_ptr_type
+        let ptr_ty = self.real_ptr_type;
+
+        let width_value = self.builder.ins().iconst(ptr_ty, width);
+        let offset_ptr = if self.int_type != ptr_ty {
+            self.builder.ins().sextend(ptr_ty, offset)
+        } else {
+            offset
+        };
+        let offset_bytes = self.builder.ins().imul(
+            offset_ptr, width_value
+        );
+        self.builder.ins().iadd(ptr, offset_bytes)
     }
     fn jit_compile_expr(
         &mut self,
@@ -625,6 +660,10 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     self.builder
                         .use_var(*self.variables.get(iname.name).unwrap())
                 };
+                // arg t is a special case (not a ptr)
+                if iname.name == "t" {
+                    return Ok(ptr);
+                }
                 let layout = self.layout.get_layout(iname.name).unwrap();
                 let iname_elmt_index = if layout.is_dense() {
                     // permute indices based on the index chars of this tensor
@@ -670,13 +709,11 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     panic!("unexpected layout");
                 };
                 let value_ptr = match iname_elmt_index {
-                    Some(offset) => self.builder.ins().iadd(ptr, offset),
+                    Some(offset) => self.ptr_add_offset(self.real_type, ptr, offset),
                     None => ptr,
                 };
-                Ok(self
-                    .builder
-                    .ins()
-                    .load(self.real_type, self.mem_flags, value_ptr, 0))
+                Ok(self.builder.ins().load(self.real_type, self.mem_flags, value_ptr, 0))
+                
             }
             AstKind::NamedGradient(name) => {
                 let name_str = name.to_string();
@@ -1008,28 +1045,29 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             .builder
             .ins()
             .global_value(self.int_ptr_type, self.indices);
-        let ptr = self.builder.ins().iadd(indices_array, start_index);
+        let ptr = self.ptr_add_offset(self.int_type, indices_array, start_index);
         let start_contract = self
             .builder
             .ins()
             .load(self.int_type, self.mem_flags, ptr, 0);
-        let ptr = self.builder.ins().iadd(indices_array, end_index);
+        let ptr = self.ptr_add_offset(self.int_type, indices_array, end_index);
         let end_contract = self
             .builder
             .ins()
             .load(self.int_type, self.mem_flags, ptr, 0);
+
+        // init sum
+        let fzero = self.fconst(0.0);
+        self.builder.ins().stack_store(fzero, contract_sum_var, 0);
 
         // loop through each element in the contraction
         let contract_block = self.builder.create_block();
         let expr_index = self
             .builder
             .append_block_param(contract_block, self.int_type);
-        self.builder.ins().jump(block, &[start_contract]);
-        self.builder.switch_to_block(block);
+        self.builder.ins().jump(contract_block, &[start_contract]);
+        self.builder.switch_to_block(contract_block);
 
-        // init sum
-        let fzero = self.fconst(0.0);
-        self.builder.ins().stack_store(fzero, contract_sum_var, 0);
 
         // loop body - load index from layout
         let rank_val = self.builder.ins().iconst(
@@ -1048,7 +1086,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     .builder
                     .ins()
                     .iadd(elmt_index_mult_rank, layout_index_plus_offset);
-                let ptr = self.builder.ins().iadd(indices_array, curr_index);
+                let ptr = self.ptr_add_offset(self.int_type, indices_array, curr_index);
                 let index = self
                     .builder
                     .ins()
@@ -1173,7 +1211,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     .builder
                     .ins()
                     .global_value(self.int_ptr_type, self.indices);
-                let ptr = self.builder.ins().iadd(indices_ptr, curr_index);
+                let ptr = self.ptr_add_offset(self.int_type, indices_ptr, curr_index);
                 let index = self
                     .builder
                     .ins()
@@ -1389,17 +1427,14 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     .builder
                     .ins()
                     .global_value(self.int_ptr_type, self.indices);
-                let ptr = self.builder.ins().iadd(indices_ptr, curr_index);
+                let ptr = self.ptr_add_offset(self.int_type, indices_ptr, curr_index);
                 self.builder
                     .ins()
                     .load(self.int_type, self.mem_flags, ptr, 0)
             }
         };
 
-        let ptr = self
-            .builder
-            .ins()
-            .iadd(*self.tensor_ptr.as_ref().unwrap(), res_index);
+        let ptr = self.ptr_add_offset(self.real_type, self.tensor_ptr.unwrap(), res_index);
         self.builder
             .ins()
             .store(self.mem_flags, float_value, ptr, 0);
@@ -1424,8 +1459,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
 
     fn insert_tensor(&mut self, tensor: &Tensor, ptr: Value, data_index: i64, is_tangent: bool) {
         let mut tensor_data_index = data_index;
-        let tensor_data_index_val = self.builder.ins().iconst(self.int_type, tensor_data_index);
-        let tensor_data_ptr = self.builder.ins().iadd(ptr, tensor_data_index_val);
+        let tensor_data_ptr = self.ptr_add_offset_i64(self.real_type, ptr, tensor_data_index);
         let tensor_name = if is_tangent {
             self.get_tangent_tensor_name(tensor.name())
         } else {
@@ -1441,9 +1475,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 } else {
                     name.to_owned()
                 };
-                let tensor_data_index_val =
-                    self.builder.ins().iconst(self.int_type, tensor_data_index);
-                let tensor_data_ptr = self.builder.ins().iadd(ptr, tensor_data_index_val);
+                let tensor_data_ptr = self.ptr_add_offset_i64(self.real_type, ptr, tensor_data_index);
                 self.declare_variable(self.real_ptr_type, blk_name.as_str(), tensor_data_ptr);
             }
             // named blocks only supported for rank <= 1, so we can just add the nnz to get the next data index
@@ -1595,7 +1627,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 .builder
                 .ins()
                 .iconst(self.int_type, i64::try_from(inputs_index).unwrap());
-            let input_ptr = self.builder.ins().iadd(input_ptr, inputs_start_index);
 
             // loop thru the elements of this input and set them using the inputs ptr
             let start_index = self.builder.ins().iconst(self.int_type, 0);
@@ -1606,8 +1637,12 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             self.builder.switch_to_block(input_block);
 
             // loop body - copy value from inputs to data
-            let indexed_input_ptr = self.builder.ins().iadd(input_ptr, curr_input_index);
-            let indexed_data_ptr = self.builder.ins().iadd(data_ptr, curr_input_index);
+            let curr_input_index_plus_start_index = self.builder.ins().iadd(
+                curr_input_index,
+                inputs_start_index,
+            );
+            let indexed_input_ptr = self.ptr_add_offset(self.real_type, input_ptr, curr_input_index_plus_start_index);
+            let indexed_data_ptr = self.ptr_add_offset(self.real_type, data_ptr, curr_input_index);
             let input_value =
                 self.builder
                     .ins()

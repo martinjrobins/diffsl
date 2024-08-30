@@ -579,7 +579,13 @@ impl<'a> Ast<'a> {
                 Self::new_call(call.fn_name, args, true)
             }
             AstKind::CallArg(arg) => Self::new_call_arg(arg.name, arg.expression.tangent()),
-            AstKind::Name(name) => Self::new_name(name.name, name.indices.clone(), true),
+            AstKind::Name(name) => {
+                if name.name == "t" {
+                    Self::new_number(0.0)
+                } else {
+                    Self::new_name(name.name, name.indices.clone(), true)
+                }
+            },
             AstKind::Number(_) => Self::new_number(0.0),
             _ => panic!("Tangent not implemented for {:?}", self.kind),
         }

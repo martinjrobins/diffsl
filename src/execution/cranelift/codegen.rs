@@ -52,8 +52,8 @@ impl CraneliftModule {
             .module
             .declare_function(name, Linkage::Export, &self.ctx.func.signature)?;
 
-        println!("Declared function: {}", name);
-        println!("IR:\n{}", self.ctx.func);
+        //println!("Declared function: {}", name);
+        //println!("IR:\n{}", self.ctx.func);
 
         // Define the function to jit. This finishes compilation, although
         // there may be outstanding relocations to perform. Currently, jit
@@ -226,6 +226,7 @@ impl CodegenModule for CraneliftModule {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
+        flag_builder.set("opt_level", "speed").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
         });

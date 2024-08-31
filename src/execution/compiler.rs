@@ -551,7 +551,7 @@ mod tests {
     fn test_stop_cranelift() {
         test_stop::<CraneliftModule>();
     }
-    
+
     #[cfg(feature = "llvm")]
     #[test]
     fn test_stop_llvm() {
@@ -839,7 +839,7 @@ mod tests {
     fn test_repeated_grad_cranelift() {
         test_repeated_grad_common::<CraneliftModule>();
     }
-    
+
     #[cfg(feature = "llvm")]
     #[test]
     fn test_repeated_grad_llvm() {

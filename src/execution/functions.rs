@@ -1,5 +1,9 @@
 #![allow(clippy::type_complexity)]
-pub const FUNCTIONS: &[(&str, extern "C" fn(f64) -> f64, extern "C" fn(f64, f64) -> f64)] = &[
+pub const FUNCTIONS: &[(
+    &str,
+    extern "C" fn(f64) -> f64,
+    extern "C" fn(f64, f64) -> f64,
+)] = &[
     ("sin", sin, dsin),
     ("cos", cos, dcos),
     ("tan", tan, dtan),
@@ -185,7 +189,8 @@ extern "C" fn heaviside(x: f64) -> f64 {
         1.0
     } else {
         0.0
-    }}
+    }
+}
 
 // todo: not correct at a(x) == 0
 extern "C" fn dheaviside(_x: f64, _dx: f64) -> f64 {

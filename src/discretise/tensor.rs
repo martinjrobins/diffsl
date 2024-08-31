@@ -29,7 +29,12 @@ impl<'s> TensorBlock<'s> {
         expr_layout: RcLayout,
         expr: Ast<'s>,
     ) -> Self {
-        println!("tensor {:?} = {} has tangent {}", name, expr, expr.tangent());
+        println!(
+            "tensor {:?} = {} has tangent {}",
+            name,
+            expr,
+            expr.tangent()
+        );
         Self {
             name,
             start,

@@ -588,7 +588,7 @@ impl<'a> Ast<'a> {
                 } else {
                     Self::new_name(name.name, name.indices.clone(), true)
                 }
-            },
+            }
             AstKind::Number(_) => Self::new_number(0.0),
             AstKind::NamedGradient(gradient) => {
                 let gradient_of = gradient.gradient_of.tangent();
@@ -598,7 +598,7 @@ impl<'a> Ast<'a> {
             _ => panic!("Tangent not implemented for {:?}", self.kind),
         }
     }
-    
+
     pub fn new_named_gradient(gradient_of: Ast<'a>, gradient_wrt: Ast<'a>) -> Self {
         Ast {
             kind: AstKind::NamedGradient(NamedGradient {
@@ -915,7 +915,7 @@ impl<'a> fmt::Display for Ast<'a> {
             }
             AstKind::Name(name) => {
                 write!(f, "{}", name)
-            },
+            }
             AstKind::Number(num) => write!(f, "{}", num),
             AstKind::Integer(num) => write!(f, "{}", num),
             AstKind::Unknown(unknown) => write!(

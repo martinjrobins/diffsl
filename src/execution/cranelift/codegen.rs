@@ -81,7 +81,8 @@ impl CodegenModule for CraneliftModule {
             self.real_type,
             self.real_ptr_type,
             self.real_ptr_type,
-            self.real_ptr_type, self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
         ];
         let arg_names = &["t", "u", "du", "data", "ddata"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
@@ -517,7 +518,8 @@ impl CodegenModule for CraneliftModule {
             let input_id_ptr = codegen.variables.get("id").unwrap();
             let input_id_ptr = codegen.builder.use_var(*input_id_ptr);
             let curr_id_index = codegen.builder.ins().iadd(id_start_index, curr_blk_index);
-            let indexed_id_ptr = codegen.ptr_add_offset(codegen.real_type, input_id_ptr, curr_id_index);
+            let indexed_id_ptr =
+                codegen.ptr_add_offset(codegen.real_type, input_id_ptr, curr_id_index);
 
             let is_algebraic_float = if *is_algebraic { 0.0 } else { 1.0 };
             let is_algebraic_value = codegen.fconst(is_algebraic_float);
@@ -598,9 +600,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         } else {
             offset
         };
-        let offset_bytes = self.builder.ins().imul(
-            offset_ptr, width_value
-        );
+        let offset_bytes = self.builder.ins().imul(offset_ptr, width_value);
         self.builder.ins().iadd(ptr, offset_bytes)
     }
     fn jit_compile_expr(
@@ -713,8 +713,10 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     Some(offset) => self.ptr_add_offset(self.real_type, ptr, offset),
                     None => ptr,
                 };
-                Ok(self.builder.ins().load(self.real_type, self.mem_flags, value_ptr, 0))
-                
+                Ok(self
+                    .builder
+                    .ins()
+                    .load(self.real_type, self.mem_flags, value_ptr, 0))
             }
             AstKind::NamedGradient(name) => {
                 let name_str = name.to_string();
@@ -1074,7 +1076,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             .append_block_param(contract_block, self.int_type);
         self.builder.ins().jump(contract_block, &[start_contract]);
         self.builder.switch_to_block(contract_block);
-
 
         // loop body - load index from layout
         let rank_val = self.builder.ins().iconst(
@@ -1482,7 +1483,8 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 } else {
                     name.to_owned()
                 };
-                let tensor_data_ptr = self.ptr_add_offset_i64(self.real_type, ptr, tensor_data_index);
+                let tensor_data_ptr =
+                    self.ptr_add_offset_i64(self.real_type, ptr, tensor_data_index);
                 self.declare_variable(self.real_ptr_type, blk_name.as_str(), tensor_data_ptr);
             }
             // named blocks only supported for rank <= 1, so we can just add the nnz to get the next data index
@@ -1621,11 +1623,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             };
             let data_ptr = self.variables.get(tensor_name.as_str()).unwrap();
             let data_ptr = self.builder.use_var(*data_ptr);
-            let input_name = if is_tangent {
-                "dinputs"
-            } else {
-                "inputs"
-            };
+            let input_name = if is_tangent { "dinputs" } else { "inputs" };
             let input_ptr = self.variables.get(input_name).unwrap();
             let input_ptr = self.builder.use_var(*input_ptr);
             let inputs_start_index = self
@@ -1642,11 +1640,12 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             self.builder.switch_to_block(input_block);
 
             // loop body - copy value from inputs to data
-            let curr_input_index_plus_start_index = self.builder.ins().iadd(
-                curr_input_index,
-                inputs_start_index,
-            );
-            let indexed_input_ptr = self.ptr_add_offset(self.real_type, input_ptr, curr_input_index_plus_start_index);
+            let curr_input_index_plus_start_index = self
+                .builder
+                .ins()
+                .iadd(curr_input_index, inputs_start_index);
+            let indexed_input_ptr =
+                self.ptr_add_offset(self.real_type, input_ptr, curr_input_index_plus_start_index);
             let indexed_data_ptr = self.ptr_add_offset(self.real_type, data_ptr, curr_input_index);
             let input_value =
                 self.builder

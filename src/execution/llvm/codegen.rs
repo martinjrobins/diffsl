@@ -10,7 +10,7 @@ use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{InitializationConfig, Target, TargetTriple};
 use inkwell::types::{
-    AnyTypeEnum, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType, PointerType,
+    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType,
 };
 use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
@@ -367,12 +367,22 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     #[llvm_versions(4.0..=14.0)]
-    fn pointer_type(_context: &'ctx Context, ty: AnyTypeEnum<'ctx>) -> PointerType<'ctx> {
+    fn pointer_type(_context: &'ctx Context, ty: BasicTypeEnum<'ctx>) -> PointerType<'ctx> {
         ty.ptr_type(AddressSpace::default())
     }
 
     #[llvm_versions(15.0..=latest)]
-    fn pointer_type(context: &'ctx Context, _ty: AnyTypeEnum<'ctx>) -> PointerType<'ctx> {
+    fn pointer_type(context: &'ctx Context, _ty: BasicTypeEnum<'ctx>) -> PointerType<'ctx> {
+        context.ptr_type(AddressSpace::default())
+    }
+
+    #[llvm_versions(4.0..=14.0)]
+    fn fn_pointer_type(_context: &'ctx Context, ty: FunctionType<'ctx>) -> PointerType<'ctx> {
+        ty.ptr_type(AddressSpace::default())
+    }
+
+    #[llvm_versions(15.0..=latest)]
+    fn fn_pointer_type(context: &'ctx Context, _ty: FunctionType<'ctx>) -> PointerType<'ctx> {
         context.ptr_type(AddressSpace::default())
     }
 
@@ -1957,8 +1967,9 @@ impl<'ctx> CodeGen<'ctx> {
 
         // construct the gradient function
         let mut fn_type: Vec<BasicMetadataTypeEnum> = Vec::new();
-        let orig_fn_type_ptr =
-            Self::pointer_type(self.context, original_function.get_type().into());
+
+        let orig_fn_type_ptr = Self::fn_pointer_type(self.context, original_function.get_type());
+
         let mut enzyme_fn_type: Vec<BasicMetadataTypeEnum> = vec![orig_fn_type_ptr.into()];
         let mut start_param_index: Vec<u32> = Vec::new();
         let mut ptr_arg_indices: Vec<u32> = Vec::new();

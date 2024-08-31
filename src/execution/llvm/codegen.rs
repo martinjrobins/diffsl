@@ -1,20 +1,28 @@
+use aliasable::boxed::AliasableBox;
 use anyhow::{anyhow, Result};
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
-use inkwell::context::AsContextRef;
+use inkwell::context::{AsContextRef, Context};
+use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType};
+use inkwell::passes::PassBuilderOptions;
+use inkwell::targets::{InitializationConfig, Target, TargetTriple};
+use inkwell::types::{
+    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType,
+};
 use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
     GlobalValue, IntValue, PointerValue,
 };
-use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
+use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 use inkwell_internals::llvm_versions;
 use llvm_sys::prelude::LLVMValueRef;
 use std::collections::HashMap;
 use std::iter::zip;
+use std::pin::Pin;
+use target_lexicon::Triple;
 
 type RealType = f64;
 
@@ -28,75 +36,217 @@ use crate::enzyme::{
     FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue, CDIFFE_TYPE_DFT_CONSTANT,
     CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED,
 };
+use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 
-/// Convenience type alias for the `sum` function.
-///
-/// Calling this is innately `unsafe` because there's no guarantee it doesn't
-/// do `unsafe` operations internally.
-pub type StopFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *mut RealType,
-    root: *mut RealType,
-);
-pub type RhsFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *mut RealType,
-    rr: *mut RealType,
-);
-pub type RhsGradientFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    du: *const RealType,
-    data: *mut RealType,
-    ddata: *mut RealType,
-    rr: *mut RealType,
-    drr: *mut RealType,
-);
-pub type MassFunc = unsafe extern "C" fn(
-    time: RealType,
-    v: *const RealType,
-    data: *mut RealType,
-    mv: *mut RealType,
-);
-pub type U0Func = unsafe extern "C" fn(data: *mut RealType, u: *mut RealType);
-pub type U0GradientFunc = unsafe extern "C" fn(
-    data: *mut RealType,
-    ddata: *mut RealType,
-    u: *mut RealType,
-    du: *mut RealType,
-);
-pub type CalcOutFunc =
-    unsafe extern "C" fn(time: RealType, u: *const RealType, data: *mut RealType);
-pub type CalcOutGradientFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    du: *const RealType,
-    data: *mut RealType,
-    ddata: *mut RealType,
-);
-pub type GetDimsFunc = unsafe extern "C" fn(
-    states: *mut u32,
-    inputs: *mut u32,
-    outputs: *mut u32,
-    data: *mut u32,
-    stop: *mut u32,
-);
-pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const RealType, data: *mut RealType);
-pub type SetInputsGradientFunc = unsafe extern "C" fn(
-    inputs: *const RealType,
-    dinputs: *const RealType,
-    data: *mut RealType,
-    ddata: *mut RealType,
-);
-pub type SetIdFunc = unsafe extern "C" fn(id: *mut RealType);
-pub type GetOutFunc = unsafe extern "C" fn(
-    data: *const RealType,
-    tensor_data: *mut *mut RealType,
-    tensor_size: *mut u32,
-);
+struct ImmovableLlvmModule {
+    // actually has lifetime of `context`
+    // declared first so it's droped before `context`
+    codegen: Option<CodeGen<'static>>,
+    // safety: we must never move out of this box as long as codgen is alive
+    context: AliasableBox<Context>,
+    triple: Triple,
+    _pin: std::marker::PhantomPinned,
+}
+
+pub struct LlvmModule(Pin<Box<ImmovableLlvmModule>>);
+
+impl LlvmModule {
+    pub fn print(&self) {
+        self.codegen().module().print_to_stderr();
+    }
+    fn codegen_mut(&mut self) -> &mut CodeGen<'static> {
+        unsafe {
+            self.0
+                .as_mut()
+                .get_unchecked_mut()
+                .codegen
+                .as_mut()
+                .unwrap()
+        }
+    }
+    fn codegen(&self) -> &CodeGen<'static> {
+        self.0.as_ref().get_ref().codegen.as_ref().unwrap()
+    }
+    pub fn jit2<O: UnsafeFunctionPointer>(
+        &mut self,
+        name: &str,
+    ) -> Result<JitFunction<'static, O>> {
+        let maybe_fn = unsafe { self.codegen_mut().ee.get_function::<O>(name) };
+        match maybe_fn {
+            Ok(f) => Ok(f),
+            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
+        }
+    }
+}
+
+impl CodegenModule for LlvmModule {
+    type FuncId = FunctionValue<'static>;
+    fn new(triple: Triple, model: &DiscreteModel) -> Result<Self> {
+        let context = AliasableBox::from_unique(Box::new(Context::create()));
+        let mut pinned = Self(Box::pin(ImmovableLlvmModule {
+            codegen: None,
+            context,
+            triple,
+            _pin: std::marker::PhantomPinned,
+        }));
+
+        let context_ref = pinned.0.context.as_ref();
+        let real_type_str = "f64";
+        let codegen = CodeGen::new(
+            model,
+            context_ref,
+            context_ref.f64_type(),
+            context_ref.i32_type(),
+            real_type_str,
+        )?;
+        let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
+        unsafe { pinned.0.as_mut().get_unchecked_mut().codegen = Some(codegen) };
+        Ok(pinned)
+    }
+
+    fn layout(&self) -> &DataLayout {
+        &self.codegen().layout
+    }
+
+    fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8> {
+        let name = func_id.get_name().to_str().unwrap();
+        let maybe_fn = self.codegen_mut().ee.get_function_address(name);
+        match maybe_fn {
+            Ok(f) => Ok(f as *const u8),
+            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
+        }
+    }
+
+    fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_set_u0(model)
+    }
+
+    fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_calc_out(model)
+    }
+
+    fn compile_calc_stop(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_calc_stop(model)
+    }
+
+    fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_rhs(model)
+    }
+
+    fn compile_mass(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_mass(model)
+    }
+
+    fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_get_dims(model)
+    }
+
+    fn compile_get_tensor(&mut self, model: &DiscreteModel, name: &str) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_get_tensor(model, name)
+    }
+
+    fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_set_inputs(model)
+    }
+
+    fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_set_id(model)
+    }
+
+    fn compile_set_u0_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+        )
+    }
+
+    fn compile_rhs_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::DupNoNeed,
+            ],
+        )
+    }
+
+    fn compile_calc_out_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Dup,
+            ],
+        )
+    }
+
+    fn compile_set_inputs_grad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+        )
+    }
+
+    fn pre_autodiff_optimisation(&mut self) -> Result<()> {
+        // optimise at -O2 no unrolling before giving to enzyme
+        let pass_options = PassBuilderOptions::create();
+        //pass_options.set_verify_each(true);
+        //pass_options.set_debug_logging(true);
+        //pass_options.set_loop_interleaving(true);
+        pass_options.set_loop_vectorization(false);
+        pass_options.set_loop_slp_vectorization(false);
+        pass_options.set_loop_unrolling(false);
+        //pass_options.set_forget_all_scev_in_loop_unroll(true);
+        //pass_options.set_licm_mssa_opt_cap(1);
+        //pass_options.set_licm_mssa_no_acc_for_promotion_cap(10);
+        //pass_options.set_call_graph_profile(true);
+        //pass_options.set_merge_functions(true);
+
+        let initialization_config = &InitializationConfig::default();
+        Target::initialize_all(initialization_config);
+        let triple = TargetTriple::create(self.0.triple.to_string().as_str());
+        let target = Target::from_triple(&triple).unwrap();
+        let machine = target
+            .create_target_machine(
+                &triple,
+                "generic", //TargetMachine::get_host_cpu_name().to_string().as_str(),
+                "",        //TargetMachine::get_host_cpu_features().to_string().as_str(),
+                inkwell::OptimizationLevel::Default,
+                inkwell::targets::RelocMode::Default,
+                inkwell::targets::CodeModel::Default,
+            )
+            .unwrap();
+
+        self.codegen_mut()
+            .module()
+            .run_passes("default<O2>", &machine, pass_options)
+            .map_err(|e| anyhow!("Failed to run passes: {:?}", e))
+    }
+
+    fn post_autodiff_optimisation(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
 
 struct Globals<'ctx> {
     indices: Option<GlobalValue<'ctx>>,
@@ -120,7 +270,6 @@ impl<'ctx> Globals<'ctx> {
             .map(|&i| int_type.const_int(i.try_into().unwrap(), false))
             .collect::<Vec<IntValue>>();
         let indices_value = int_type.const_array(indices_array_values.as_slice());
-        let _int_ptr_type = int_type.ptr_type(AddressSpace::default());
         let globals = Self {
             indices: Some(module.add_global(
                 indices_array_type,
@@ -148,37 +297,49 @@ pub struct CodeGen<'ctx> {
     fn_value_opt: Option<FunctionValue<'ctx>>,
     tensor_ptr_opt: Option<PointerValue<'ctx>>,
     real_type: FloatType<'ctx>,
+    real_ptr_type: PointerType<'ctx>,
     real_type_str: String,
     int_type: IntType<'ctx>,
+    int_ptr_type: PointerType<'ctx>,
     layout: DataLayout,
     globals: Globals<'ctx>,
+    ee: ExecutionEngine<'ctx>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
     pub fn new(
         model: &DiscreteModel,
         context: &'ctx inkwell::context::Context,
-        module: Module<'ctx>,
         real_type: FloatType<'ctx>,
+        int_type: IntType<'ctx>,
         real_type_str: &str,
-    ) -> Self {
+    ) -> Result<Self> {
         let builder = context.create_builder();
         let layout = DataLayout::new(model);
+        let module = context.create_module(model.name());
         let globals = Globals::new(&layout, context, &module);
-        Self {
+        let ee = module
+            .create_jit_execution_engine(OptimizationLevel::Aggressive)
+            .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
+        let real_ptr_type = Self::pointer_type(context, real_type.into());
+        let int_ptr_type = Self::pointer_type(context, int_type.into());
+        Ok(Self {
             context,
             module,
             builder,
             real_type,
+            real_ptr_type,
             real_type_str: real_type_str.to_owned(),
             variables: HashMap::new(),
             functions: HashMap::new(),
             fn_value_opt: None,
             tensor_ptr_opt: None,
             layout,
-            int_type: context.i32_type(),
+            int_type,
+            int_ptr_type,
             globals,
-        }
+            ee,
+        })
     }
 
     pub fn write_bitcode_to_path(&self, path: &std::path::Path) {
@@ -203,6 +364,26 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_tensor(lhs);
         }
         self.insert_tensor(model.rhs());
+    }
+
+    #[llvm_versions(4.0..=14.0)]
+    fn pointer_type(_context: &'ctx Context, ty: BasicTypeEnum<'ctx>) -> PointerType<'ctx> {
+        ty.ptr_type(AddressSpace::default())
+    }
+
+    #[llvm_versions(15.0..=latest)]
+    fn pointer_type(context: &'ctx Context, _ty: BasicTypeEnum<'ctx>) -> PointerType<'ctx> {
+        context.ptr_type(AddressSpace::default())
+    }
+
+    #[llvm_versions(4.0..=14.0)]
+    fn fn_pointer_type(_context: &'ctx Context, ty: FunctionType<'ctx>) -> PointerType<'ctx> {
+        ty.ptr_type(AddressSpace::default())
+    }
+
+    #[llvm_versions(15.0..=latest)]
+    fn fn_pointer_type(context: &'ctx Context, _ty: FunctionType<'ctx>) -> PointerType<'ctx> {
+        context.ptr_type(AddressSpace::default())
     }
 
     #[llvm_versions(4.0..=14.0)]
@@ -1395,7 +1576,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.jit_compile_expr(name, &arg.expression, index, elmt, expr_index)
             }
             AstKind::Number(value) => Ok(self.real_type.const_float(*value)),
-            AstKind::IndexedName(iname) => {
+            AstKind::Name(iname) => {
                 let ptr = self.get_param(iname.name);
                 let layout = self.layout.get_layout(iname.name).unwrap();
                 let iname_elmt_index = if layout.is_dense() {
@@ -1451,13 +1632,6 @@ impl<'ctx> CodeGen<'ctx> {
                     .build_load(self.real_type, value_ptr, name)?
                     .into_float_value())
             }
-            AstKind::Name(name) => {
-                // must be a scalar, just load the value
-                let ptr = self.get_param(name);
-                Ok(self
-                    .build_load(self.real_type, *ptr, name)?
-                    .into_float_value())
-            }
             AstKind::NamedGradient(name) => {
                 let name_str = name.to_string();
                 let ptr = self.get_param(name_str.as_str());
@@ -1496,10 +1670,12 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_set_u0<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(&[real_ptr_type.into(), real_ptr_type.into()], false);
-        let fn_arg_names = &["data", "u0"];
+        let fn_type = void_type.fn_type(
+            &[self.real_ptr_type.into(), self.real_ptr_type.into()],
+            false,
+        );
+        let fn_arg_names = &["u0", "data"];
         let function = self.module.add_function("set_u0", fn_type, None);
 
         // add noalias
@@ -1546,13 +1722,12 @@ impl<'ctx> CodeGen<'ctx> {
         model: &'m DiscreteModel,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
             &[
                 self.real_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
             ],
             false,
         );
@@ -1601,14 +1776,13 @@ impl<'ctx> CodeGen<'ctx> {
         model: &'m DiscreteModel,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
             &[
                 self.real_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
             ],
             false,
         );
@@ -1655,14 +1829,13 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_rhs<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
             &[
                 self.real_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
             ],
             false,
         );
@@ -1719,14 +1892,13 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_mass<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
             &[
                 self.real_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
             ],
             false,
         );
@@ -1795,9 +1967,9 @@ impl<'ctx> CodeGen<'ctx> {
 
         // construct the gradient function
         let mut fn_type: Vec<BasicMetadataTypeEnum> = Vec::new();
-        let orig_fn_type_ptr = original_function
-            .get_type()
-            .ptr_type(AddressSpace::default());
+
+        let orig_fn_type_ptr = Self::fn_pointer_type(self.context, original_function.get_type());
+
         let mut enzyme_fn_type: Vec<BasicMetadataTypeEnum> = vec![orig_fn_type_ptr.into()];
         let mut start_param_index: Vec<u32> = Vec::new();
         let mut ptr_arg_indices: Vec<u32> = Vec::new();
@@ -1995,14 +2167,13 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
         let fn_type = self.context.void_type().fn_type(
             &[
-                int_ptr_type.into(),
-                int_ptr_type.into(),
-                int_ptr_type.into(),
-                int_ptr_type.into(),
-                int_ptr_type.into(),
+                self.int_ptr_type.into(),
+                self.int_ptr_type.into(),
+                self.int_ptr_type.into(),
+                self.int_ptr_type.into(),
+                self.int_ptr_type.into(),
             ],
             false,
         );
@@ -2068,17 +2239,12 @@ impl<'ctx> CodeGen<'ctx> {
         name: &str,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_ptr_type = self
-            .real_type
-            .ptr_type(AddressSpace::default())
-            .ptr_type(AddressSpace::default());
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
-        let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
+        let real_ptr_ptr_type = Self::pointer_type(self.context, self.real_ptr_type.into());
         let fn_type = self.context.void_type().fn_type(
             &[
-                real_ptr_type.into(),
+                self.real_ptr_type.into(),
                 real_ptr_ptr_type.into(),
-                int_ptr_type.into(),
+                self.int_ptr_type.into(),
             ],
             false,
         );
@@ -2121,9 +2287,11 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(&[real_ptr_type.into(), real_ptr_type.into()], false);
+        let fn_type = void_type.fn_type(
+            &[self.real_ptr_type.into(), self.real_ptr_type.into()],
+            false,
+        );
         let function = self.module.add_function("set_inputs", fn_type, None);
         let mut block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -2217,9 +2385,8 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(&[real_ptr_type.into()], false);
+        let fn_type = void_type.fn_type(&[self.real_ptr_type.into()], false);
         let function = self.module.add_function("set_id", fn_type, None);
         let mut block = self.context.append_basic_block(function, "entry");
 

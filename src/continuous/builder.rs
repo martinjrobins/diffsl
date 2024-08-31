@@ -126,7 +126,7 @@ impl<'s> Variable<'s> {
                 let bounds = match &unknown.codomain {
                     Some(r) => match &r.kind {
                         AstKind::Range(r) => (r.lower, r.upper),
-                        AstKind::Name(name) => match *name {
+                        AstKind::Name(name) => match name.name {
                             "NonNegative" => (0.0, f64::INFINITY),
                             "R" => (-f64::INFINITY, f64::INFINITY),
                             _ => {
@@ -237,7 +237,12 @@ impl<'s> ModelInfo<'s> {
                 //  - the lhs is a call with a name equal to one of the variables,
                 //  - that variable has a dependent t,
                 //  - there is a number equal to the lower bound of time in the argument corresponding to time
-                if let AstKind::Call(ast::Call { fn_name, args }) = &eqn.lhs.kind {
+                if let AstKind::Call(ast::Call {
+                    fn_name,
+                    args,
+                    is_tangent: _,
+                }) = &eqn.lhs.kind
+                {
                     if let Some(v_cell) = self.variables.get(fn_name) {
                         let v = v_cell.borrow();
                         if let Some(time_index) = v.time_index {
@@ -516,7 +521,7 @@ impl<'s> ModelInfo<'s> {
                 if !self
                     .variables
                     .iter()
-                    .any(|(var_name, _)| *var_name == *name)
+                    .any(|(var_name, _)| *var_name == name.name)
                 {
                     self.errors
                         .push(Output::new(format!("name {} not found", name), expr.span))

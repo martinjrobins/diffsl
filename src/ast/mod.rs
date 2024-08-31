@@ -69,13 +69,17 @@ pub struct RateEquation<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct IndexedName<'a> {
+pub struct Name<'a> {
     pub name: &'a str,
     pub indices: Vec<char>,
+    pub is_tangent: bool,
 }
 
-impl<'a> fmt::Display for IndexedName<'a> {
+impl<'a> fmt::Display for Name<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.is_tangent {
+            write!(f, "d_")?;
+        }
         write!(f, "{}", self.name)?;
         if !self.indices.is_empty() {
             write!(f, "_")?;
@@ -140,6 +144,7 @@ pub struct Monop<'a> {
 pub struct Call<'a> {
     pub fn_name: &'a str,
     pub args: Vec<Box<Ast<'a>>>,
+    pub is_tangent: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -303,10 +308,9 @@ pub enum AstKind<'a> {
     CallArg(CallArg<'a>),
     Index(Index<'a>),
     Slice(Slice<'a>),
-    IndexedName(IndexedName<'a>),
+    Name(Name<'a>),
     Number(f64),
     Integer(i64),
-    Name(&'a str),
     NamedGradient(NamedGradient<'a>),
 }
 
@@ -365,10 +369,9 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
-    pub fn as_name(&self) -> Option<&str> {
+    pub fn as_name(&self) -> Option<&Name> {
         match self {
             AstKind::Name(n) => Some(n),
-            AstKind::IndexedName(n) => Some(n.name),
             _ => None,
         }
     }
@@ -433,6 +436,7 @@ impl<'a> AstKind<'a> {
         AstKind::Call(Call {
             fn_name: "dot",
             args: vec![Box::new(child)],
+            is_tangent: false,
         })
     }
     pub fn new_indice(first: Ast<'a>, last: Option<Ast<'a>>, sep: Option<&'a str>) -> Self {
@@ -453,16 +457,31 @@ impl<'a> AstKind<'a> {
             data: data.into_iter().map(Box::new).collect(),
         })
     }
-    pub fn new_name(name: &'a str) -> Self {
-        AstKind::Name(name)
-    }
     pub fn new_indexed_name(name: &'a str, indices: Vec<char>) -> Self {
-        AstKind::IndexedName(IndexedName { name, indices })
+        AstKind::Name(Name {
+            name,
+            indices,
+            is_tangent: false,
+        })
     }
-    pub fn new_time_derivative(name: &'a str) -> Self {
+    pub fn new_name(name: &'a str) -> Self {
+        AstKind::Name(Name {
+            name,
+            indices: Vec::new(),
+            is_tangent: false,
+        })
+    }
+    pub fn new_tangent_indexed_name(name: &'a str, indices: Vec<char>) -> Self {
+        AstKind::Name(Name {
+            name,
+            indices,
+            is_tangent: true,
+        })
+    }
+    pub fn new_time_derivative(name: &'a str, indices: Vec<char>) -> Self {
         AstKind::NamedGradient(NamedGradient {
             gradient_of: Box::new(Ast {
-                kind: Self::new_name(name),
+                kind: Self::new_indexed_name(name, indices),
                 span: None,
             }),
             gradient_wrt: Box::new(Ast {
@@ -524,9 +543,124 @@ pub struct Ast<'a> {
 }
 
 impl<'a> Ast<'a> {
+    pub fn tangent(&self) -> Self {
+        match &self.kind {
+            AstKind::Binop(binop) => match binop.op {
+                '+' | '-' => Self::new_binop(binop.op, binop.left.tangent(), binop.right.tangent()),
+                '*' => {
+                    let lhs =
+                        Self::new_binop('*', binop.left.as_ref().clone(), binop.right.tangent());
+                    let rhs =
+                        Self::new_binop('*', binop.left.tangent(), binop.right.as_ref().clone());
+                    Self::new_binop('+', lhs, rhs)
+                }
+                '/' => {
+                    let left =
+                        Self::new_binop('/', binop.left.tangent(), binop.right.as_ref().clone());
+                    let right_top =
+                        Self::new_binop('*', binop.left.as_ref().clone(), binop.right.tangent());
+                    let right_bottom = Self::new_binop(
+                        '*',
+                        binop.right.as_ref().clone(),
+                        binop.right.as_ref().clone(),
+                    );
+                    let right = Self::new_binop('/', right_top, right_bottom);
+                    Self::new_binop('-', left, right)
+                }
+                _ => panic!("Tangent not implemented for operator {}", binop.op),
+            },
+            AstKind::Monop(monop) => match monop.op {
+                '-' => Self::new_monop('-', monop.child.tangent()),
+                _ => panic!("Tangent not implemented for operator {}", monop.op),
+            },
+            AstKind::Call(call) => {
+                let mut args = Vec::new();
+                for arg in call.args.iter() {
+                    args.push(arg.as_ref().clone());
+                    args.push(arg.tangent());
+                }
+                Self::new_call(call.fn_name, args, true)
+            }
+            AstKind::CallArg(arg) => Self::new_call_arg(arg.name, arg.expression.tangent()),
+            AstKind::Name(name) => {
+                if name.name == "t" {
+                    Self::new_number(0.0)
+                } else {
+                    Self::new_name(name.name, name.indices.clone(), true)
+                }
+            }
+            AstKind::Number(_) => Self::new_number(0.0),
+            AstKind::NamedGradient(gradient) => {
+                let gradient_of = gradient.gradient_of.tangent();
+                let gradient_wrt = gradient.gradient_wrt.as_ref().clone();
+                Self::new_named_gradient(gradient_of, gradient_wrt)
+            }
+            _ => panic!("Tangent not implemented for {:?}", self.kind),
+        }
+    }
+
+    pub fn new_named_gradient(gradient_of: Ast<'a>, gradient_wrt: Ast<'a>) -> Self {
+        Ast {
+            kind: AstKind::NamedGradient(NamedGradient {
+                gradient_of: Box::new(gradient_of),
+                gradient_wrt: Box::new(gradient_wrt),
+            }),
+            span: None,
+        }
+    }
+
+    pub fn new_name(name: &'a str, indices: Vec<char>, is_tangent: bool) -> Self {
+        Ast {
+            kind: AstKind::Name(Name {
+                name,
+                indices,
+                is_tangent,
+            }),
+            span: None,
+        }
+    }
+
+    pub fn new_call_arg(name: Option<&'a str>, expression: Ast<'a>) -> Self {
+        Ast {
+            kind: AstKind::CallArg(CallArg {
+                name,
+                expression: Box::new(expression),
+            }),
+            span: None,
+        }
+    }
+
+    pub fn new_call(fn_name: &'a str, args: Vec<Ast<'a>>, is_tangent: bool) -> Self {
+        Ast {
+            kind: AstKind::Call(Call {
+                fn_name,
+                args: args.into_iter().map(Box::new).collect(),
+                is_tangent,
+            }),
+            span: None,
+        }
+    }
+
+    pub fn new_monop(op: char, child: Ast<'a>) -> Self {
+        Ast {
+            kind: AstKind::Monop(Monop {
+                op,
+                child: Box::new(child),
+            }),
+            span: None,
+        }
+    }
+
     pub fn new_binop(op: char, lhs: Ast<'a>, rhs: Ast<'a>) -> Self {
         Ast {
             kind: AstKind::new_binop(op, lhs, rhs),
+            span: None,
+        }
+    }
+
+    pub fn new_number(num: f64) -> Self {
+        Ast {
+            kind: AstKind::Number(num),
             span: None,
         }
     }
@@ -569,6 +703,7 @@ impl<'a> Ast<'a> {
                     .iter()
                     .map(|m| Box::new(m.clone_and_subst(replacements)))
                     .collect(),
+                is_tangent: call.is_tangent,
             }),
             AstKind::CallArg(arg) => AstKind::CallArg(CallArg {
                 name: arg.name,
@@ -576,15 +711,15 @@ impl<'a> Ast<'a> {
             }),
             AstKind::Number(num) => AstKind::Number(*num),
             AstKind::Integer(num) => AstKind::Integer(*num),
-            AstKind::IndexedName(name) => AstKind::IndexedName(IndexedName {
-                name: name.name,
-                indices: name.indices.clone(),
-            }),
             AstKind::Name(name) => {
-                if let Some(x) = replacements.get(name) {
-                    x.kind.clone()
+                if name.indices.is_empty() && replacements.contains_key(name.name) {
+                    replacements[name.name].kind.clone()
                 } else {
-                    AstKind::Name(name)
+                    AstKind::Name(Name {
+                        name: name.name,
+                        indices: name.indices.clone(),
+                        is_tangent: name.is_tangent,
+                    })
                 }
             }
             AstKind::NamedGradient(gradient) => AstKind::NamedGradient(NamedGradient {
@@ -654,10 +789,11 @@ impl<'a> Ast<'a> {
             AstKind::CallArg(arg) => {
                 arg.expression.collect_deps(deps);
             }
-            AstKind::IndexedName(found_name) => {
-                deps.insert(found_name.name);
-            }
-            AstKind::Name(found_name) => {
+            AstKind::Name(Name {
+                name: found_name,
+                indices: _,
+                is_tangent: _,
+            }) => {
                 deps.insert(found_name);
             }
             AstKind::NamedGradient(gradient) => {
@@ -728,7 +864,7 @@ impl<'a> Ast<'a> {
             AstKind::CallArg(arg) => {
                 arg.expression.collect_indices(indices);
             }
-            AstKind::IndexedName(found_name) => {
+            AstKind::Name(found_name) => {
                 indices.extend(found_name.indices.iter().cloned());
             }
             AstKind::Index(index) => {
@@ -751,7 +887,6 @@ impl<'a> Ast<'a> {
                 gradient.gradient_of.collect_indices(indices);
                 gradient.gradient_wrt.collect_indices(indices);
             }
-            AstKind::Name(_) => (),
             AstKind::DsModel(_) => (),
             AstKind::Number(_) => (),
             AstKind::Integer(_) => (),
@@ -778,8 +913,9 @@ impl<'a> fmt::Display for Ast<'a> {
                     model.name, model.unknowns, model.statements
                 )
             }
-            AstKind::Name(name) => write!(f, "{}", name),
-            AstKind::IndexedName(name) => write!(f, "{}", name),
+            AstKind::Name(name) => {
+                write!(f, "{}", name)
+            }
             AstKind::Number(num) => write!(f, "{}", num),
             AstKind::Integer(num) => write!(f, "{}", num),
             AstKind::Unknown(unknown) => write!(

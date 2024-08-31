@@ -1,160 +1,436 @@
-use crate::{
-    discretise::DiscreteModel,
-    execution::interface::{
-        CalcOutFunc, GetDimsFunc, GetOutFunc, MassFunc, RhsFunc, SetIdFunc, SetInputsFunc,
-        StopFunc, U0Func,
-    },
-    parser::parse_ds_string,
+use anyhow::anyhow;
+use inkwell::{
+    passes::PassBuilderOptions,
+    targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
 };
-
-use super::{
-    interface::{CalcOutGradientFunc, RhsGradientFunc, SetInputsGradientFunc, U0GradientFunc},
-    module::CodegenModule,
-};
-use anyhow::Result;
-use target_lexicon::Triple;
+use std::env;
+use std::path::Path;
 use uid::Id;
 
-struct JitFunctions {
-    set_u0: U0Func,
-    rhs: RhsFunc,
-    mass: MassFunc,
-    calc_out: CalcOutFunc,
-    calc_stop: StopFunc,
-    set_id: SetIdFunc,
-    get_dims: GetDimsFunc,
-    set_inputs: SetInputsFunc,
-    get_out: GetOutFunc,
+use crate::discretise::DiscreteModel;
+use crate::parser::parse_ds_string;
+use crate::utils::find_executable;
+use crate::utils::find_runtime_path;
+use anyhow::Result;
+use inkwell::{
+    context::Context,
+    execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer},
+    targets::{FileType, TargetTriple},
+    OptimizationLevel,
+};
+use ouroboros::self_referencing;
+use std::process::Command;
+
+use super::codegen::CompileGradientArgType;
+use super::codegen::GetDimsFunc;
+use super::codegen::GetOutFunc;
+use super::codegen::SetIdFunc;
+use super::codegen::SetInputsFunc;
+use super::codegen::SetInputsGradientFunc;
+use super::codegen::U0GradientFunc;
+use super::codegen::{CalcOutGradientFunc, MassFunc, RhsFunc, RhsGradientFunc};
+use super::{
+    codegen::{CalcOutFunc, StopFunc, U0Func, CodeGen},
+    super::data_layout::DataLayout,
+};
+
+struct JitFunctions<'ctx> {
+    set_u0: JitFunction<'ctx, U0Func>,
+    rhs: JitFunction<'ctx, RhsFunc>,
+    mass: JitFunction<'ctx, MassFunc>,
+    calc_out: JitFunction<'ctx, CalcOutFunc>,
+    calc_stop: JitFunction<'ctx, StopFunc>,
+    set_id: JitFunction<'ctx, SetIdFunc>,
+    get_dims: JitFunction<'ctx, GetDimsFunc>,
+    set_inputs: JitFunction<'ctx, SetInputsFunc>,
+    get_out: JitFunction<'ctx, GetOutFunc>,
 }
 
-struct JitGradFunctions {
-    set_u0_grad: U0GradientFunc,
-    rhs_grad: RhsGradientFunc,
-    calc_out_grad: CalcOutGradientFunc,
-    set_inputs_grad: SetInputsGradientFunc,
+struct JitGradFunctions<'ctx> {
+    set_u0_grad: JitFunction<'ctx, U0GradientFunc>,
+    rhs_grad: JitFunction<'ctx, RhsGradientFunc>,
+    calc_out_grad: JitFunction<'ctx, CalcOutGradientFunc>,
+    set_inputs_grad: JitFunction<'ctx, SetInputsGradientFunc>,
 }
 
-pub struct Compiler<M: CodegenModule> {
-    module: M,
-    jit_functions: JitFunctions,
-    jit_grad_functions: JitGradFunctions,
+struct CompilerData<'ctx> {
+    codegen: CodeGen<'ctx>,
+    jit_functions: JitFunctions<'ctx>,
+    jit_grad_functions: JitGradFunctions<'ctx>,
+}
+
+#[self_referencing]
+pub struct LlvmCompiler {
+    context: Context,
+
+    #[borrows(context)]
+    #[not_covariant]
+    data: CompilerData<'this>,
 
     number_of_states: usize,
     number_of_parameters: usize,
     number_of_outputs: usize,
     has_mass: bool,
+    data_layout: DataLayout,
+    output_base_filename: String,
 }
 
-impl<M: CodegenModule> Compiler<M> {
+impl LlvmCompiler {
+    const OPT_VARIENTS: [&'static str; 2] = ["opt-14", "opt"];
+    const CLANG_VARIENTS: [&'static str; 2] = ["clang", "clang-14"];
+    fn find_opt() -> Result<&'static str> {
+        find_executable(&LlvmCompiler::OPT_VARIENTS)
+    }
+    fn find_clang() -> Result<&'static str> {
+        find_executable(&LlvmCompiler::CLANG_VARIENTS)
+    }
+    /// search for the enzyme library in the environment variables
+    fn find_enzyme_lib() -> Result<String> {
+        let env_vars = ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "PATH"];
+        for var in env_vars.iter() {
+            if let Ok(val) = env::var(var) {
+                for path in val.split(':') {
+                    // check that LLVMEnzype*.so exists in this directory
+                    if let Ok(entries) = std::fs::read_dir(path) {
+                        for entry in entries.flatten() {
+                            if let Some(filename) = entry.file_name().to_str() {
+                                if filename.starts_with("LLVMEnzyme") && filename.ends_with(".so") {
+                                    return Ok(entry.path().to_str().unwrap().to_owned());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(anyhow!(
+            "LLVMEnzyme*.so not found in any of: {:?}",
+            env_vars
+        ))
+    }
     pub fn from_discrete_str(code: &str) -> Result<Self> {
         let uid = Id::<u32>::new();
         let name = format!("diffsl_{}", uid);
         let model = parse_ds_string(code).unwrap();
         let model = DiscreteModel::build(name.as_str(), &model)
             .unwrap_or_else(|e| panic!("{}", e.as_error_message(code)));
-        Self::from_discrete_model(&model)
+        let dir = env::temp_dir();
+        let path = dir.join(name.clone());
+        LlvmCompiler::from_discrete_model(&model, path.to_str().unwrap())
     }
 
-    pub fn from_discrete_model(model: &DiscreteModel) -> Result<Self> {
+    pub fn from_discrete_model(model: &DiscreteModel, out: &str) -> Result<Self> {
         let number_of_states = *model.state().shape().first().unwrap_or(&1);
         let input_names = model
             .inputs()
             .iter()
             .map(|input| input.name().to_owned())
             .collect::<Vec<_>>();
-        let mut module = M::new(Triple::host(), model)?;
+        let data_layout = DataLayout::new(model);
+        let context = Context::create();
         let number_of_parameters = input_names.iter().fold(0, |acc, name| {
-            acc + module.layout().get_data_length(name).unwrap()
+            acc + data_layout.get_data_length(name).unwrap()
         });
-        let number_of_outputs = module.layout().get_data_length("out").unwrap();
+        let number_of_outputs = data_layout.get_data_length("out").unwrap();
         let has_mass = model.lhs().is_some();
-
-        let set_u0 = module.compile_set_u0(model)?;
-        let calc_stop = module.compile_calc_stop(model)?;
-        let rhs = module.compile_rhs(model)?;
-        let mass = module.compile_mass(model)?;
-        let calc_out = module.compile_calc_out(model)?;
-        let set_id = module.compile_set_id(model)?;
-        let get_dims = module.compile_get_dims(model)?;
-        let set_inputs = module.compile_set_inputs(model)?;
-        let get_output = module.compile_get_tensor(model, "out")?;
-
-        module.pre_autodiff_optimisation()?;
-
-        let set_u0_grad = module.compile_set_u0_grad(&set_u0, model)?;
-        let rhs_grad = module.compile_rhs_grad(&rhs, model)?;
-        let calc_out_grad = module.compile_calc_out_grad(&calc_out, model)?;
-        let set_inputs_grad = module.compile_set_inputs_grad(&set_inputs, model)?;
-
-        module.post_autodiff_optimisation()?;
-
-        let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(module.jit(set_u0)?) };
-        let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(module.jit(rhs)?) };
-        let mass = unsafe { std::mem::transmute::<*const u8, MassFunc>(module.jit(mass)?) };
-        let calc_out =
-            unsafe { std::mem::transmute::<*const u8, CalcOutFunc>(module.jit(calc_out)?) };
-        let calc_stop =
-            unsafe { std::mem::transmute::<*const u8, StopFunc>(module.jit(calc_stop)?) };
-        let set_id = unsafe { std::mem::transmute::<*const u8, SetIdFunc>(module.jit(set_id)?) };
-        let get_dims =
-            unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(module.jit(get_dims)?) };
-        let set_inputs =
-            unsafe { std::mem::transmute::<*const u8, SetInputsFunc>(module.jit(set_inputs)?) };
-        let get_out =
-            unsafe { std::mem::transmute::<*const u8, GetOutFunc>(module.jit(get_output)?) };
-
-        let set_u0_grad =
-            unsafe { std::mem::transmute::<*const u8, U0GradientFunc>(module.jit(set_u0_grad)?) };
-        let rhs_grad =
-            unsafe { std::mem::transmute::<*const u8, RhsGradientFunc>(module.jit(rhs_grad)?) };
-        let calc_out_grad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutGradientFunc>(module.jit(calc_out_grad)?)
-        };
-        let set_inputs_grad = unsafe {
-            std::mem::transmute::<*const u8, SetInputsGradientFunc>(module.jit(set_inputs_grad)?)
-        };
-
-        Ok(Self {
-            module,
-            jit_functions: JitFunctions {
-                set_u0,
-                rhs,
-                mass,
-                calc_out,
-                calc_stop,
-                set_id,
-                get_dims,
-                set_inputs,
-                get_out,
-            },
-            jit_grad_functions: JitGradFunctions {
-                set_u0_grad,
-                rhs_grad,
-                calc_out_grad,
-                set_inputs_grad,
-            },
+        LlvmCompilerTryBuilder {
+            data_layout,
             number_of_states,
             number_of_parameters,
             number_of_outputs,
+            context,
             has_mass,
-        })
+            output_base_filename: out.to_owned(),
+            data_builder: |context| {
+                let module = context.create_module(model.name());
+                let real_type = context.f64_type();
+                let real_type_str = "f64";
+
+                let mut codegen = CodeGen::new(model, context, module, real_type, real_type_str);
+
+                let _set_u0 = codegen.compile_set_u0(model)?;
+                let _calc_stop = codegen.compile_calc_stop(model)?;
+                let _rhs = codegen.compile_rhs(model)?;
+                let _mass = codegen.compile_mass(model)?;
+                let _calc_out = codegen.compile_calc_out(model)?;
+                let _set_id = codegen.compile_set_id(model)?;
+                let _get_dims = codegen.compile_get_dims(model)?;
+                let _set_inputs = codegen.compile_set_inputs(model)?;
+                let _get_output = codegen.compile_get_tensor(model, "out")?;
+
+                // optimise at -O2 no unrolling before giving to enzyme
+                let pass_options = PassBuilderOptions::create();
+                //pass_options.set_verify_each(true);
+                //pass_options.set_debug_logging(true);
+                //pass_options.set_loop_interleaving(true);
+                pass_options.set_loop_vectorization(false);
+                pass_options.set_loop_slp_vectorization(false);
+                pass_options.set_loop_unrolling(false);
+                //pass_options.set_forget_all_scev_in_loop_unroll(true);
+                //pass_options.set_licm_mssa_opt_cap(1);
+                //pass_options.set_licm_mssa_no_acc_for_promotion_cap(10);
+                //pass_options.set_call_graph_profile(true);
+                //pass_options.set_merge_functions(true);
+
+                let initialization_config = &InitializationConfig::default();
+                Target::initialize_all(initialization_config);
+                let triple = TargetMachine::get_default_triple();
+                let target = Target::from_triple(&triple).unwrap();
+                let machine = target
+                    .create_target_machine(
+                        &triple,
+                        "generic", //TargetMachine::get_host_cpu_name().to_string().as_str(),
+                        "",        //TargetMachine::get_host_cpu_features().to_string().as_str(),
+                        inkwell::OptimizationLevel::Default,
+                        inkwell::targets::RelocMode::Default,
+                        inkwell::targets::CodeModel::Default,
+                    )
+                    .unwrap();
+
+                codegen
+                    .module()
+                    .run_passes("default<O2>", &machine, pass_options)
+                    .unwrap();
+
+                let _rhs_grad = codegen.compile_gradient(
+                    _rhs,
+                    &[
+                        CompileGradientArgType::Const,
+                        CompileGradientArgType::Dup,
+                        CompileGradientArgType::Dup,
+                        CompileGradientArgType::DupNoNeed,
+                    ],
+                )?;
+                let _set_inputs_grad = codegen.compile_gradient(
+                    _set_inputs,
+                    &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+                )?;
+                let _calc_out_grad = codegen.compile_gradient(
+                    _calc_out,
+                    &[
+                        CompileGradientArgType::Const,
+                        CompileGradientArgType::Dup,
+                        CompileGradientArgType::Dup,
+                    ],
+                )?;
+                let _set_u0_grad = codegen.compile_gradient(
+                    _set_u0,
+                    &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+                )?;
+
+                let ee = codegen
+                    .module()
+                    .create_jit_execution_engine(OptimizationLevel::Aggressive)
+                    .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
+
+                let set_u0 = LlvmCompiler::jit("set_u0", &ee)?;
+                let rhs = LlvmCompiler::jit("rhs", &ee)?;
+                let mass = LlvmCompiler::jit("mass", &ee)?;
+                let calc_stop = LlvmCompiler::jit("calc_stop", &ee)?;
+                let calc_out = LlvmCompiler::jit("calc_out", &ee)?;
+                let set_id = LlvmCompiler::jit("set_id", &ee)?;
+                let get_dims = LlvmCompiler::jit("get_dims", &ee)?;
+                let set_inputs = LlvmCompiler::jit("set_inputs", &ee)?;
+                let get_out = LlvmCompiler::jit("get_out", &ee)?;
+
+                let set_inputs_grad = LlvmCompiler::jit("set_inputs_grad", &ee)?;
+                let calc_out_grad = LlvmCompiler::jit("calc_out_grad", &ee)?;
+                let rhs_grad = LlvmCompiler::jit("rhs_grad", &ee)?;
+                let set_u0_grad = LlvmCompiler::jit("set_u0_grad", &ee)?;
+
+                let data = CompilerData {
+                    codegen,
+                    jit_functions: JitFunctions {
+                        set_u0,
+                        rhs,
+                        mass,
+                        calc_out,
+                        set_id,
+                        get_dims,
+                        set_inputs,
+                        get_out,
+                        calc_stop,
+                    },
+                    jit_grad_functions: JitGradFunctions {
+                        set_u0_grad,
+                        rhs_grad,
+                        calc_out_grad,
+                        set_inputs_grad,
+                    },
+                };
+                Ok(data)
+            },
+        }
+        .try_build()
+    }
+
+    pub fn compile(&self, standalone: bool, wasm: bool) -> Result<()> {
+        let opt_name = LlvmCompiler::find_opt()?;
+        let clang_name = LlvmCompiler::find_clang()?;
+        let enzyme_lib = LlvmCompiler::find_enzyme_lib()?;
+        let out = self.borrow_output_base_filename();
+        let object_filename = LlvmCompiler::get_object_filename(out);
+        let bitcodefilename = LlvmCompiler::get_bitcode_filename(out);
+        let mut command = Command::new(clang_name);
+        command
+            .arg(bitcodefilename.as_str())
+            .arg("-c")
+            .arg(format!("-fplugin={}", enzyme_lib))
+            .arg("-o")
+            .arg(object_filename.as_str());
+
+        if wasm {
+            command.arg("-target").arg("wasm32-unknown-emscripten");
+        }
+
+        let output = command.output().unwrap();
+
+        if let Some(code) = output.status.code() {
+            if code != 0 {
+                println!("{}", String::from_utf8_lossy(&output.stderr));
+                return Err(anyhow!("{} returned error code {}", opt_name, code));
+            }
+        }
+
+        // link the object file and our runtime library
+        let mut command = if wasm {
+            let emcc_varients = ["emcc"];
+            let command_name = find_executable(&emcc_varients)?;
+            let exported_functions = vec![
+                "Vector_destroy",
+                "Vector_create",
+                "Vector_create_with_capacity",
+                "Vector_push",
+                "Options_destroy",
+                "Options_create",
+                "Sundials_destroy",
+                "Sundials_create",
+                "Sundials_init",
+                "Sundials_solve",
+            ];
+            let mut linked_files = vec![
+                "libdiffeq_runtime_lib.a",
+                "libsundials_idas.a",
+                "libsundials_sunlinsolklu.a",
+                "libklu.a",
+                "libamd.a",
+                "libcolamd.a",
+                "libbtf.a",
+                "libsuitesparseconfig.a",
+                "libsundials_sunmatrixsparse.a",
+                "libargparse.a",
+            ];
+            if standalone {
+                linked_files.push("libdiffeq_runtime_wasm.a");
+            }
+            let linked_files = linked_files;
+            let runtime_path = find_runtime_path(&linked_files)?;
+            let mut command = Command::new(command_name);
+            command.arg("-o").arg(out).arg(object_filename.as_str());
+            for file in linked_files {
+                command.arg(Path::new(runtime_path.as_str()).join(file));
+            }
+            if !standalone {
+                let exported_functions = exported_functions
+                    .into_iter()
+                    .map(|s| format!("_{}", s))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                command
+                    .arg("-s")
+                    .arg(format!("EXPORTED_FUNCTIONS={}", exported_functions));
+                command.arg("--no-entry");
+            }
+            command
+        } else {
+            let mut command = Command::new(clang_name);
+            command.arg("-o").arg(out).arg(object_filename.as_str());
+            if standalone {
+                command.arg("-ldiffeq_runtime");
+            } else {
+                command.arg("-ldiffeq_runtime_lib");
+            }
+            command
+        };
+
+        let output = command.output();
+
+        let output = match output {
+            Ok(output) => output,
+            Err(e) => {
+                let args = command
+                    .get_args()
+                    .map(|s| s.to_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!(
+                    "{} {}",
+                    command.get_program().to_os_string().to_str().unwrap(),
+                    args
+                );
+                return Err(anyhow!("Error linking in runtime: {}", e));
+            }
+        };
+
+        if let Some(code) = output.status.code() {
+            if code != 0 {
+                let args = command
+                    .get_args()
+                    .map(|s| s.to_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!(
+                    "{} {}",
+                    command.get_program().to_os_string().to_str().unwrap(),
+                    args
+                );
+                println!("{}", String::from_utf8_lossy(&output.stderr));
+                return Err(anyhow!(
+                    "Error linking in runtime, returned error code {}",
+                    code
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn get_bitcode_filename(out: &str) -> String {
+        format!("{}.bc", out)
+    }
+
+    fn get_object_filename(out: &str) -> String {
+        format!("{}.o", out)
+    }
+
+    fn jit<'ctx, T>(name: &str, ee: &ExecutionEngine<'ctx>) -> Result<JitFunction<'ctx, T>>
+    where
+        T: UnsafeFunctionPointer,
+    {
+        let maybe_fn = unsafe { ee.get_function::<T>(name) };
+        match maybe_fn {
+            Ok(f) => Ok(f),
+            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
+        }
     }
 
     pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
-        let index = self.module.layout().get_data_index(name)?;
-        let nnz = self.module.layout().get_data_length(name)?;
+        let index = self.borrow_data_layout().get_data_index(name)?;
+        let nnz = self.borrow_data_layout().get_data_length(name)?;
         Some(&data[index..index + nnz])
     }
 
     pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
+        let number_of_states = *self.borrow_number_of_states();
+        if yy.len() != number_of_states {
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
-        unsafe { (self.jit_functions.set_u0)(yy.as_mut_ptr(), data.as_mut_ptr()) };
+        self.with_data(|compiler| {
+            let yy_ptr = yy.as_mut_ptr();
+            let data_ptr = data.as_mut_ptr();
+            unsafe {
+                compiler.jit_functions.set_u0.call(data_ptr, yy_ptr);
+            }
+        });
     }
 
     pub fn set_u0_grad(
@@ -164,17 +440,14 @@ impl<M: CodegenModule> Compiler<M> {
         data: &mut [f64],
         ddata: &mut [f64],
     ) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
+        let number_of_states = *self.borrow_number_of_states();
+        if yy.len() != number_of_states {
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
-        if dyy.len() != self.number_of_states {
+        if dyy.len() != number_of_states {
             panic!(
                 "Expected {} states for dyy, got {}",
-                self.number_of_states,
+                number_of_states,
                 dyy.len()
             );
         }
@@ -188,14 +461,18 @@ impl<M: CodegenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        unsafe {
-            (self.jit_grad_functions.set_u0_grad)(
-                yy.as_mut_ptr(),
-                dyy.as_mut_ptr(),
-                data.as_mut_ptr(),
-                ddata.as_mut_ptr(),
-            )
-        };
+        self.with_data(|compiler| {
+            let yy_ptr = yy.as_mut_ptr();
+            let data_ptr = data.as_mut_ptr();
+            let dyy_ptr = dyy.as_mut_ptr();
+            let ddata_ptr = ddata.as_mut_ptr();
+            unsafe {
+                compiler
+                    .jit_grad_functions
+                    .set_u0_grad
+                    .call(data_ptr, ddata_ptr, yy_ptr, dyy_ptr);
+            }
+        });
     }
 
     pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) {
@@ -209,62 +486,81 @@ impl<M: CodegenModule> Compiler<M> {
         if stop.len() != n_stop {
             panic!("Expected {} stop, got {}", n_stop, stop.len());
         }
-        unsafe {
-            (self.jit_functions.calc_stop)(t, yy.as_ptr(), data.as_mut_ptr(), stop.as_mut_ptr())
-        };
+        self.with_data(|compiler| {
+            let yy_ptr = yy.as_ptr();
+            let data_ptr = data.as_mut_ptr();
+            let stop_ptr = stop.as_mut_ptr();
+            unsafe {
+                compiler
+                    .jit_functions
+                    .calc_stop
+                    .call(t, yy_ptr, data_ptr, stop_ptr);
+            }
+        });
     }
 
     pub fn rhs(&self, t: f64, yy: &[f64], data: &mut [f64], rr: &mut [f64]) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
+        let number_of_states = *self.borrow_number_of_states();
+        if yy.len() != number_of_states {
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
-        if rr.len() != self.number_of_states {
+        if rr.len() != number_of_states {
             panic!(
                 "Expected {} residual states, got {}",
-                self.number_of_states,
+                number_of_states,
                 rr.len()
             );
         }
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        unsafe { (self.jit_functions.rhs)(t, yy.as_ptr(), data.as_mut_ptr(), rr.as_mut_ptr()) };
+        self.with_data(|compiler| {
+            let yy_ptr = yy.as_ptr();
+            let rr_ptr = rr.as_mut_ptr();
+            let data_ptr = data.as_mut_ptr();
+            unsafe {
+                compiler.jit_functions.rhs.call(t, yy_ptr, data_ptr, rr_ptr);
+            }
+        });
     }
 
     pub fn has_mass(&self) -> bool {
-        self.has_mass
+        *self.borrow_has_mass()
     }
 
     pub fn mass(&self, t: f64, yp: &[f64], data: &mut [f64], rr: &mut [f64]) {
-        if !self.has_mass {
+        if !self.borrow_has_mass() {
             panic!("Model does not have a mass function");
         }
-        if yp.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yp.len()
-            );
+        let number_of_states = *self.borrow_number_of_states();
+        if yp.len() != number_of_states {
+            panic!("Expected {} states, got {}", number_of_states, yp.len());
         }
-        if rr.len() != self.number_of_states {
+        if rr.len() != number_of_states {
             panic!(
                 "Expected {} residual states, got {}",
-                self.number_of_states,
+                number_of_states,
                 rr.len()
             );
         }
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        unsafe { (self.jit_functions.mass)(t, yp.as_ptr(), data.as_mut_ptr(), rr.as_mut_ptr()) };
+        self.with_data(|compiler| {
+            let yp_ptr = yp.as_ptr();
+            let rr_ptr = rr.as_mut_ptr();
+            let data_ptr = data.as_mut_ptr();
+            unsafe {
+                compiler
+                    .jit_functions
+                    .mass
+                    .call(t, yp_ptr, data_ptr, rr_ptr);
+            }
+        });
     }
 
     pub fn data_len(&self) -> usize {
-        self.module.layout().data().len()
+        self.with(|compiler| compiler.data_layout.data().len())
     }
 
     pub fn get_new_data(&self) -> Vec<f64> {
@@ -282,31 +578,28 @@ impl<M: CodegenModule> Compiler<M> {
         rr: &mut [f64],
         drr: &mut [f64],
     ) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
+        let number_of_states = *self.borrow_number_of_states();
+        if yy.len() != number_of_states {
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
-        if rr.len() != self.number_of_states {
+        if rr.len() != number_of_states {
             panic!(
                 "Expected {} residual states, got {}",
-                self.number_of_states,
+                number_of_states,
                 rr.len()
             );
         }
-        if dyy.len() != self.number_of_states {
+        if dyy.len() != number_of_states {
             panic!(
                 "Expected {} states for dyy, got {}",
-                self.number_of_states,
+                number_of_states,
                 dyy.len()
             );
         }
-        if drr.len() != self.number_of_states {
+        if drr.len() != number_of_states {
             panic!(
                 "Expected {} residual states for drr, got {}",
-                self.number_of_states,
+                number_of_states,
                 drr.len()
             );
         }
@@ -320,31 +613,37 @@ impl<M: CodegenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        unsafe {
-            (self.jit_grad_functions.rhs_grad)(
-                t,
-                yy.as_ptr(),
-                dyy.as_ptr(),
-                data.as_mut_ptr(),
-                ddata.as_mut_ptr(),
-                rr.as_mut_ptr(),
-                drr.as_mut_ptr(),
-            )
-        };
+        self.with_data(|compiler| {
+            let yy_ptr = yy.as_ptr();
+            let rr_ptr = rr.as_mut_ptr();
+            let dyy_ptr = dyy.as_ptr();
+            let drr_ptr = drr.as_mut_ptr();
+            let data_ptr = data.as_mut_ptr();
+            let ddata_ptr = ddata.as_mut_ptr();
+            unsafe {
+                compiler
+                    .jit_grad_functions
+                    .rhs_grad
+                    .call(t, yy_ptr, dyy_ptr, data_ptr, ddata_ptr, rr_ptr, drr_ptr);
+            }
+        });
     }
 
     pub fn calc_out(&self, t: f64, yy: &[f64], data: &mut [f64]) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
+        let number_of_states = *self.borrow_number_of_states();
+        if yy.len() != *self.borrow_number_of_states() {
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        unsafe { (self.jit_functions.calc_out)(t, yy.as_ptr(), data.as_mut_ptr()) };
+        self.with_data(|compiler| {
+            let yy_ptr = yy.as_ptr();
+            let data_ptr = data.as_mut_ptr();
+            unsafe {
+                compiler.jit_functions.calc_out.call(t, yy_ptr, data_ptr);
+            }
+        });
     }
 
     pub fn calc_out_grad(
@@ -355,20 +654,17 @@ impl<M: CodegenModule> Compiler<M> {
         data: &mut [f64],
         ddata: &mut [f64],
     ) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
+        let number_of_states = *self.borrow_number_of_states();
+        if yy.len() != *self.borrow_number_of_states() {
+            panic!("Expected {} states, got {}", number_of_states, yy.len());
         }
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        if dyy.len() != self.number_of_states {
+        if dyy.len() != *self.borrow_number_of_states() {
             panic!(
                 "Expected {} states for dyy, got {}",
-                self.number_of_states,
+                number_of_states,
                 dyy.len()
             );
         }
@@ -379,15 +675,18 @@ impl<M: CodegenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        unsafe {
-            (self.jit_grad_functions.calc_out_grad)(
-                t,
-                yy.as_ptr(),
-                dyy.as_ptr(),
-                data.as_mut_ptr(),
-                ddata.as_mut_ptr(),
-            )
-        };
+        self.with_data(|compiler| {
+            let yy_ptr = yy.as_ptr();
+            let data_ptr = data.as_mut_ptr();
+            let dyy_ptr = dyy.as_ptr();
+            let ddata_ptr = ddata.as_mut_ptr();
+            unsafe {
+                compiler
+                    .jit_grad_functions
+                    .calc_out_grad
+                    .call(t, yy_ptr, dyy_ptr, data_ptr, ddata_ptr);
+            }
+        });
     }
 
     /// Get various dimensions of the model
@@ -401,15 +700,15 @@ impl<M: CodegenModule> Compiler<M> {
         let mut n_outputs = 0u32;
         let mut n_data = 0u32;
         let mut n_stop = 0u32;
-        unsafe {
-            (self.jit_functions.get_dims)(
+        self.with(|compiler| unsafe {
+            compiler.data.jit_functions.get_dims.call(
                 &mut n_states,
                 &mut n_inputs,
                 &mut n_outputs,
                 &mut n_data,
                 &mut n_stop,
-            )
-        };
+            );
+        });
         (
             n_states as usize,
             n_inputs as usize,
@@ -427,7 +726,15 @@ impl<M: CodegenModule> Compiler<M> {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        unsafe { (self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr()) };
+        self.with_data(|compiler| {
+            let data_ptr = data.as_mut_ptr();
+            unsafe {
+                compiler
+                    .jit_functions
+                    .set_inputs
+                    .call(inputs.as_ptr(), data_ptr);
+            }
+        });
     }
 
     pub fn set_inputs_grad(
@@ -458,14 +765,19 @@ impl<M: CodegenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        unsafe {
-            (self.jit_grad_functions.set_inputs_grad)(
-                inputs.as_ptr(),
-                dinputs.as_ptr(),
-                data.as_mut_ptr(),
-                ddata.as_mut_ptr(),
-            )
-        };
+        self.with_data(|compiler| {
+            let data_ptr = data.as_mut_ptr();
+            let ddata_ptr = ddata.as_mut_ptr();
+            let dinputs_ptr = dinputs.as_ptr();
+            unsafe {
+                compiler.jit_grad_functions.set_inputs_grad.call(
+                    inputs.as_ptr(),
+                    dinputs_ptr,
+                    data_ptr,
+                    ddata_ptr,
+                );
+            }
+        });
     }
 
     pub fn get_out(&self, data: &[f64]) -> &[f64] {
@@ -477,9 +789,16 @@ impl<M: CodegenModule> Compiler<M> {
         let mut tensor_data_len = 0u32;
         let tensor_data_ptr_ptr: *mut *mut f64 = &mut tensor_data_ptr;
         let tensor_data_len_ptr: *mut u32 = &mut tensor_data_len;
-        unsafe {
-            (self.jit_functions.get_out)(data.as_ptr(), tensor_data_ptr_ptr, tensor_data_len_ptr)
-        };
+        self.with(|compiler| {
+            let data_ptr = data.as_ptr();
+            unsafe {
+                compiler.data.jit_functions.get_out.call(
+                    data_ptr,
+                    tensor_data_ptr_ptr,
+                    tensor_data_len_ptr,
+                );
+            }
+        });
         assert!(tensor_data_len as usize == n_outputs);
         unsafe { std::slice::from_raw_parts(tensor_data_ptr, tensor_data_len as usize) }
     }
@@ -489,38 +808,126 @@ impl<M: CodegenModule> Compiler<M> {
         if n_states != id.len() {
             panic!("Expected {} states, got {}", n_states, id.len());
         }
-        unsafe { (self.jit_functions.set_id)(id.as_mut_ptr()) };
+        self.with_data(|compiler| {
+            unsafe {
+                compiler.jit_functions.set_id.call(id.as_mut_ptr());
+            };
+        });
+    }
+
+    fn get_native_machine() -> Result<TargetMachine> {
+        Target::initialize_native(&InitializationConfig::default())
+            .map_err(|e| anyhow!("{}", e))?;
+        let opt = OptimizationLevel::Default;
+        let reloc = RelocMode::Default;
+        let model = CodeModel::Default;
+        let target_triple = TargetMachine::get_default_triple();
+        let target = Target::from_triple(&target_triple).unwrap();
+        let target_machine = target
+            .create_target_machine(
+                &target_triple,
+                TargetMachine::get_host_cpu_name().to_str().unwrap(),
+                TargetMachine::get_host_cpu_features().to_str().unwrap(),
+                opt,
+                reloc,
+                model,
+            )
+            .unwrap();
+        Ok(target_machine)
+    }
+
+    fn get_wasm_machine() -> Result<TargetMachine> {
+        Target::initialize_webassembly(&InitializationConfig::default());
+        let opt = OptimizationLevel::Default;
+        let reloc = RelocMode::Default;
+        let model = CodeModel::Default;
+        let target_triple = TargetTriple::create("wasm32-unknown-emscripten");
+        let target = Target::from_triple(&target_triple).unwrap();
+        let target_machine = target
+            .create_target_machine(&target_triple, "generic", "", opt, reloc, model)
+            .unwrap();
+        Ok(target_machine)
+    }
+
+    pub fn write_bitcode_to_path(&self, path: &Path) -> Result<()> {
+        self.with_data(|data| {
+            let result = data.codegen.module().write_bitcode_to_path(path);
+            if result {
+                Ok(())
+            } else {
+                Err(anyhow!("Error writing bitcode to path"))
+            }
+        })
+    }
+
+    pub fn write_object_file(&self, path: &Path) -> Result<()> {
+        let target_machine = LlvmCompiler::get_native_machine()?;
+        self.with_data(|data| {
+            target_machine
+                .write_to_file(data.codegen.module(), FileType::Object, path)
+                .map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
+        })
+    }
+
+    pub fn write_wasm_object_file(&self, path: &Path) -> Result<()> {
+        let target_machine = LlvmCompiler::get_wasm_machine()?;
+        self.with_data(|data| {
+            target_machine
+                .write_to_file(data.codegen.module(), FileType::Object, path)
+                .map_err(|e| anyhow::anyhow!("Error writing object file: {:?}", e))
+        })
     }
 
     pub fn number_of_states(&self) -> usize {
-        self.number_of_states
+        *self.borrow_number_of_states()
     }
     pub fn number_of_parameters(&self) -> usize {
-        self.number_of_parameters
+        *self.borrow_number_of_parameters()
     }
 
     pub fn number_of_outputs(&self) -> usize {
-        self.number_of_outputs
+        *self.borrow_number_of_outputs()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser::parse_ds_string, CraneliftModule};
+    use crate::{
+        continuous::ModelInfo,
+        parser::{parse_ds_string, parse_ms_string},
+    };
     use approx::assert_relative_eq;
 
     use super::*;
 
-    #[cfg(feature = "llvm")]
     #[test]
-    fn test_from_discrete_str_llvm() {
-        use crate::execution::llvm::codegen::LlvmModule;
+    fn test_object_file() {
+        let text = "
+        model logistic_growth(r -> NonNegative, k -> NonNegative, y(t), z(t)) { 
+            dot(y) = r * y * (1 - y / k)
+            y(0) = 1.0
+            z = 2 * y
+        }
+        ";
+        let models = parse_ms_string(text).unwrap();
+        let model_info = ModelInfo::build("logistic_growth", &models).unwrap();
+        assert_eq!(model_info.errors.len(), 0);
+        let discrete_model = DiscreteModel::from(&model_info);
+        let object =
+            LlvmCompiler::from_discrete_model(&discrete_model, "test_output/compiler_test_object_file")
+                .unwrap();
+        let path = Path::new("main.o");
+        object.write_object_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_from_discrete_str() {
         let text = "
         u { y = 1 }
         F { -y }
         out { y }
         ";
-        let compiler = Compiler::<LlvmModule>::from_discrete_str(text).unwrap();
+        let compiler = LlvmCompiler::from_discrete_str(text).unwrap();
         let mut u0 = vec![0.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
@@ -531,34 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_discrete_str_cranelift() {
-        let text = "
-        u { y = 1 }
-        F { -y }
-        out { y }
-        ";
-        let compiler = Compiler::<CraneliftModule>::from_discrete_str(text).unwrap();
-        let mut u0 = vec![0.];
-        let mut res = vec![0.];
-        let mut data = compiler.get_new_data();
-        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
-        assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
-        assert_relative_eq!(res.as_slice(), vec![-1.].as_slice());
-    }
-
-    #[test]
-    fn test_stop_cranelift() {
-        test_stop::<CraneliftModule>();
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn test_stop_llvm() {
-        test_stop::<crate::LlvmModule>();
-    }
-
-    fn test_stop<T: CodegenModule>() {
+    fn test_stop() {
         let full_text = "
         u_i {
             y = 1,
@@ -581,7 +961,9 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
+        let compiler =
+            LlvmCompiler::from_discrete_model(&discrete_model, "test_output/compiler_test_stop")
+                .unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut stop = vec![0.];
@@ -593,7 +975,7 @@ mod tests {
         assert_eq!(stop.len(), 1);
     }
 
-    fn tensor_test_common<T: CodegenModule>(text: &str, tensor_name: &str) -> Vec<Vec<f64>> {
+    fn tensor_test_common(text: &str, tmp_loc: &str, tensor_name: &str) -> Vec<Vec<f64>> {
         let full_text = format!(
             "
             {}
@@ -607,7 +989,7 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text.as_str()));
             }
         };
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
+        let compiler = LlvmCompiler::from_discrete_model(&discrete_model, tmp_loc).unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
@@ -689,15 +1071,8 @@ mod tests {
                         y,
                     }}
                 ", $text);
-
-                #[cfg(feature = "llvm")]
-                {
-                    use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name);
-                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                }
-
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name);
+                let tmp_loc = format!("test_output/compiler_tensor_test_{}", stringify!($name));
+                let results = tensor_test_common(full_text.as_str(), tmp_loc.as_str(), $tensor_name);
                 assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
             }
         )*
@@ -811,15 +1186,8 @@ mod tests {
                         y,
                     }}
                 ", $text);
-
-                #[cfg(feature = "llvm")]
-                {
-                    use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name);
-                    assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
-                }
-
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name);
+                let tmp_loc = format!("test_output/compiler_tensor_grad_test_{}", stringify!($name));
+                let results = tensor_test_common(full_text.as_str(), tmp_loc.as_str(), $tensor_name);
                 assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
             }
         )*
@@ -836,17 +1204,7 @@ mod tests {
     }
 
     #[test]
-    fn test_repeated_grad_cranelift() {
-        test_repeated_grad_common::<CraneliftModule>();
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn test_repeated_grad_llvm() {
-        test_repeated_grad_common::<crate::LlvmModule>();
-    }
-
-    fn test_repeated_grad_common<T: CodegenModule>() {
+    fn test_repeated_grad() {
         let full_text = "
             in = [p]
             p {
@@ -878,7 +1236,11 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text));
             }
         };
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
+        let compiler = LlvmCompiler::from_discrete_model(
+            &discrete_model,
+            "test_output/compiler_test_repeated_grad",
+        )
+        .unwrap();
         let mut u0 = vec![1.];
         let mut du0 = vec![1.];
         let mut res = vec![0.];
@@ -887,7 +1249,7 @@ mod tests {
         let mut ddata = compiler.get_new_data();
         let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop) = compiler.get_dims();
 
-        for _i in 0..3 {
+        for _ in 0..3 {
             let inputs = vec![2.; n_inputs];
             let dinputs = vec![1.; n_inputs];
             compiler.set_inputs_grad(
@@ -946,7 +1308,11 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model).unwrap();
+        let compiler = LlvmCompiler::from_discrete_model(
+            &discrete_model,
+            "test_output/compiler_test_additional_functions",
+        )
+        .unwrap();
         let (n_states, n_inputs, n_outputs, n_data, _n_stop) = compiler.get_dims();
         assert_eq!(n_states, 2);
         assert_eq!(n_inputs, 1);

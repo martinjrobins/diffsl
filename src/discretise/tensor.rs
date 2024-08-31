@@ -17,6 +17,7 @@ pub struct TensorBlock<'s> {
     layout: RcLayout,
     expr_layout: RcLayout,
     expr: Ast<'s>,
+    tangent_expr: Ast<'s>,
 }
 
 impl<'s> TensorBlock<'s> {
@@ -34,6 +35,7 @@ impl<'s> TensorBlock<'s> {
             indices,
             layout,
             expr_layout,
+            tangent_expr: expr.tangent(),
             expr,
         }
     }
@@ -44,6 +46,7 @@ impl<'s> TensorBlock<'s> {
             start: Index::from_vec(vec![start]),
             layout: layout.clone(),
             expr_layout: layout,
+            tangent_expr: expr.tangent(),
             expr,
             indices: Vec::new(),
         }
@@ -67,6 +70,10 @@ impl<'s> TensorBlock<'s> {
 
     pub fn expr(&self) -> &Ast<'s> {
         &self.expr
+    }
+
+    pub fn tangent_expr(&self) -> &Ast<'s> {
+        &self.tangent_expr
     }
 
     pub fn rank(&self) -> usize {

@@ -77,6 +77,9 @@ pub struct Name<'a> {
 
 impl<'a> fmt::Display for Name<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.is_tangent {
+            write!(f, "d_")?;
+        }
         write!(f, "{}", self.name)?;
         if !self.indices.is_empty() {
             write!(f, "_")?;
@@ -587,7 +590,22 @@ impl<'a> Ast<'a> {
                 }
             },
             AstKind::Number(_) => Self::new_number(0.0),
+            AstKind::NamedGradient(gradient) => {
+                let gradient_of = gradient.gradient_of.tangent();
+                let gradient_wrt = gradient.gradient_wrt.as_ref().clone();
+                Self::new_named_gradient(gradient_of, gradient_wrt)
+            }
             _ => panic!("Tangent not implemented for {:?}", self.kind),
+        }
+    }
+    
+    pub fn new_named_gradient(gradient_of: Ast<'a>, gradient_wrt: Ast<'a>) -> Self {
+        Ast {
+            kind: AstKind::NamedGradient(NamedGradient {
+                gradient_of: Box::new(gradient_of),
+                gradient_wrt: Box::new(gradient_wrt),
+            }),
+            span: None,
         }
     }
 
@@ -895,7 +913,9 @@ impl<'a> fmt::Display for Ast<'a> {
                     model.name, model.unknowns, model.statements
                 )
             }
-            AstKind::Name(name) => write!(f, "{}", name),
+            AstKind::Name(name) => {
+                write!(f, "{}", name)
+            },
             AstKind::Number(num) => write!(f, "{}", num),
             AstKind::Integer(num) => write!(f, "{}", num),
             AstKind::Unknown(unknown) => write!(

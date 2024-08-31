@@ -346,7 +346,8 @@ impl CodegenModule for CraneliftModule {
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
         if let Some(stop) = model.stop() {
-            codegen.jit_compile_tensor(stop, None, false)?;
+            let root = *codegen.variables.get("root").unwrap();
+            codegen.jit_compile_tensor(stop, Some(root), false)?;
         }
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
@@ -774,9 +775,14 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         if let Some(var) = var {
             self.tensor_ptr = Some(self.builder.use_var(var));
         } else {
+            let name = if is_tangent {
+                self.get_tangent_tensor_name(a.name())
+            } else {
+                a.name().to_owned()
+            };
             let res_ptr_var = *self
                 .variables
-                .get(a.name())
+                .get(name.as_str())
                 .unwrap_or_else(|| panic!("tensor {} not defined", a.name()));
             let res_ptr = self.builder.use_var(res_ptr_var);
             self.tensor_ptr = Some(res_ptr);
@@ -794,6 +800,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             self.builder
                 .ins()
                 .store(self.mem_flags, float_value, self.tensor_ptr.unwrap(), 0);
+            return Ok(self.tensor_ptr.unwrap());
         }
 
         for (i, blk) in a.elmts().iter().enumerate() {
@@ -1561,22 +1568,22 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         }
 
         // insert all tensors in data if it exists in args
-        if let Some(data) = codegen.variables.get("data") {
-            let tensors = model.inputs().iter();
-            let tensors = tensors.chain(model.time_indep_defns().iter());
-            let tensors = tensors.chain(model.time_dep_defns().iter());
-            let tensors = tensors.chain(model.state_dep_defns().iter());
-            let mut others = Vec::new();
-            others.push(model.out());
-            others.push(model.rhs());
-            if let Some(lhs) = model.lhs() {
-                others.push(lhs);
-            }
-            let tensors = tensors.chain(others);
+        let tensors = model.inputs().iter();
+        let tensors = tensors.chain(model.time_indep_defns().iter());
+        let tensors = tensors.chain(model.time_dep_defns().iter());
+        let tensors = tensors.chain(model.state_dep_defns().iter());
+        let mut others = Vec::new();
+        others.push(model.out());
+        others.push(model.rhs());
+        if let Some(lhs) = model.lhs() {
+            others.push(lhs);
+        }
+        let tensors = tensors.chain(others);
 
+        if let Some(data) = codegen.variables.get("data") {
             let data_ptr = codegen.builder.use_var(*data);
 
-            for tensor in tensors {
+            for tensor in tensors.clone() {
                 let data_index =
                     i64::try_from(codegen.layout.get_data_index(tensor.name()).unwrap()).unwrap();
                 codegen.insert_tensor(tensor, data_ptr, data_index, false);
@@ -1585,18 +1592,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
 
         // insert all tangent tensors in tangent_data if it exists in args
         if let Some(data) = codegen.variables.get("ddata") {
-            let tensors = model.inputs().iter();
-            let tensors = tensors.chain(model.time_indep_defns().iter());
-            let tensors = tensors.chain(model.time_dep_defns().iter());
-            let tensors = tensors.chain(model.state_dep_defns().iter());
-            let mut others = Vec::new();
-            others.push(model.out());
-            others.push(model.rhs());
-            if let Some(lhs) = model.lhs() {
-                others.push(lhs);
-            }
-            let tensors = tensors.chain(others);
-
             let data_ptr = codegen.builder.use_var(*data);
 
             for tensor in tensors {
@@ -1619,9 +1614,19 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             let data_index =
                 i64::try_from(self.layout.get_data_index(input.name()).unwrap()).unwrap();
             self.insert_tensor(input, base_data_ptr, data_index, is_tangent);
-            let data_ptr = self.variables.get(input.name()).unwrap();
+            let tensor_name = if is_tangent {
+                self.get_tangent_tensor_name(input.name())
+            } else {
+                input.name().to_owned()
+            };
+            let data_ptr = self.variables.get(tensor_name.as_str()).unwrap();
             let data_ptr = self.builder.use_var(*data_ptr);
-            let input_ptr = self.variables.get("inputs").unwrap();
+            let input_name = if is_tangent {
+                "dinputs"
+            } else {
+                "inputs"
+            };
+            let input_ptr = self.variables.get(input_name).unwrap();
             let input_ptr = self.builder.use_var(*input_ptr);
             let inputs_start_index = self
                 .builder

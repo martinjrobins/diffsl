@@ -548,7 +548,17 @@ mod tests {
     }
 
     #[test]
-    fn test_stop() {
+    fn test_stop_cranelift() {
+        test_stop::<CraneliftModule>();
+    }
+    
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_stop_llvm() {
+        test_stop::<crate::LlvmModule>();
+    }
+
+    fn test_stop<T: CodegenModule>() {
         let full_text = "
         u_i {
             y = 1,
@@ -571,7 +581,7 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut stop = vec![0.];
@@ -826,7 +836,17 @@ mod tests {
     }
 
     #[test]
-    fn test_repeated_grad() {
+    fn test_repeated_grad_cranelift() {
+        test_repeated_grad_common::<CraneliftModule>();
+    }
+    
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_repeated_grad_llvm() {
+        test_repeated_grad_common::<crate::LlvmModule>();
+    }
+
+    fn test_repeated_grad_common<T: CodegenModule>() {
         let full_text = "
             in = [p]
             p {
@@ -858,7 +878,7 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text));
             }
         };
-        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
         let mut u0 = vec![1.];
         let mut du0 = vec![1.];
         let mut res = vec![0.];
@@ -867,7 +887,7 @@ mod tests {
         let mut ddata = compiler.get_new_data();
         let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop) = compiler.get_dims();
 
-        for _ in 0..3 {
+        for _i in 0..3 {
             let inputs = vec![2.; n_inputs];
             let dinputs = vec![1.; n_inputs];
             compiler.set_inputs_grad(

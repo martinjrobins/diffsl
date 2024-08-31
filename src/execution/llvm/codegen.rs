@@ -9,7 +9,9 @@ use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{InitializationConfig, Target, TargetTriple};
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType};
+use inkwell::types::{
+    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType, PointerType,
+};
 use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
     GlobalValue, IntValue, PointerValue,
@@ -268,7 +270,6 @@ impl<'ctx> Globals<'ctx> {
             .map(|&i| int_type.const_int(i.try_into().unwrap(), false))
             .collect::<Vec<IntValue>>();
         let indices_value = int_type.const_array(indices_array_values.as_slice());
-        let _int_ptr_type = int_type.ptr_type(AddressSpace::default());
         let globals = Self {
             indices: Some(module.add_global(
                 indices_array_type,
@@ -296,8 +297,10 @@ pub struct CodeGen<'ctx> {
     fn_value_opt: Option<FunctionValue<'ctx>>,
     tensor_ptr_opt: Option<PointerValue<'ctx>>,
     real_type: FloatType<'ctx>,
+    real_ptr_type: PointerType<'ctx>,
     real_type_str: String,
     int_type: IntType<'ctx>,
+    int_ptr_type: PointerType<'ctx>,
     layout: DataLayout,
     globals: Globals<'ctx>,
     ee: ExecutionEngine<'ctx>,
@@ -318,11 +321,14 @@ impl<'ctx> CodeGen<'ctx> {
         let ee = module
             .create_jit_execution_engine(OptimizationLevel::Aggressive)
             .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
+        let real_ptr_type = context.ptr_type(AddressSpace::default());
+        let int_ptr_type = context.ptr_type(AddressSpace::default());
         Ok(Self {
             context,
             module,
             builder,
             real_type,
+            real_ptr_type,
             real_type_str: real_type_str.to_owned(),
             variables: HashMap::new(),
             functions: HashMap::new(),
@@ -330,6 +336,7 @@ impl<'ctx> CodeGen<'ctx> {
             tensor_ptr_opt: None,
             layout,
             int_type,
+            int_ptr_type,
             globals,
             ee,
         })
@@ -1643,9 +1650,11 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_set_u0<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(&[real_ptr_type.into(), real_ptr_type.into()], false);
+        let fn_type = void_type.fn_type(
+            &[self.real_ptr_type.into(), self.real_ptr_type.into()],
+            false,
+        );
         let fn_arg_names = &["u0", "data"];
         let function = self.module.add_function("set_u0", fn_type, None);
 
@@ -1693,13 +1702,12 @@ impl<'ctx> CodeGen<'ctx> {
         model: &'m DiscreteModel,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
             &[
                 self.real_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
             ],
             false,
         );
@@ -1748,14 +1756,13 @@ impl<'ctx> CodeGen<'ctx> {
         model: &'m DiscreteModel,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
             &[
                 self.real_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
             ],
             false,
         );
@@ -1802,14 +1809,13 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_rhs<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
             &[
                 self.real_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
             ],
             false,
         );
@@ -1866,14 +1872,13 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_mass<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
             &[
                 self.real_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
-                real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
             ],
             false,
         );
@@ -1942,9 +1947,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         // construct the gradient function
         let mut fn_type: Vec<BasicMetadataTypeEnum> = Vec::new();
-        let orig_fn_type_ptr = original_function
-            .get_type()
-            .ptr_type(AddressSpace::default());
+        //let orig_fn_type_ptr = original_function
+        //    .get_type()
+        //    .ptr_type(AddressSpace::default());
+        let orig_fn_type_ptr = self.context.ptr_type(AddressSpace::default());
         let mut enzyme_fn_type: Vec<BasicMetadataTypeEnum> = vec![orig_fn_type_ptr.into()];
         let mut start_param_index: Vec<u32> = Vec::new();
         let mut ptr_arg_indices: Vec<u32> = Vec::new();
@@ -2142,14 +2148,13 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
         let fn_type = self.context.void_type().fn_type(
             &[
-                int_ptr_type.into(),
-                int_ptr_type.into(),
-                int_ptr_type.into(),
-                int_ptr_type.into(),
-                int_ptr_type.into(),
+                self.int_ptr_type.into(),
+                self.int_ptr_type.into(),
+                self.int_ptr_type.into(),
+                self.int_ptr_type.into(),
+                self.int_ptr_type.into(),
             ],
             false,
         );
@@ -2215,17 +2220,12 @@ impl<'ctx> CodeGen<'ctx> {
         name: &str,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_ptr_type = self
-            .real_type
-            .ptr_type(AddressSpace::default())
-            .ptr_type(AddressSpace::default());
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
-        let int_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
+        let real_ptr_ptr_type = self.context.ptr_type(AddressSpace::default());
         let fn_type = self.context.void_type().fn_type(
             &[
-                real_ptr_type.into(),
+                self.real_ptr_type.into(),
                 real_ptr_ptr_type.into(),
-                int_ptr_type.into(),
+                self.int_ptr_type.into(),
             ],
             false,
         );
@@ -2268,9 +2268,11 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(&[real_ptr_type.into(), real_ptr_type.into()], false);
+        let fn_type = void_type.fn_type(
+            &[self.real_ptr_type.into(), self.real_ptr_type.into()],
+            false,
+        );
         let function = self.module.add_function("set_inputs", fn_type, None);
         let mut block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
@@ -2364,9 +2366,8 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_type = self.real_type.ptr_type(AddressSpace::default());
         let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(&[real_ptr_type.into()], false);
+        let fn_type = void_type.fn_type(&[self.real_ptr_type.into()], false);
         let function = self.module.add_function("set_id", fn_type, None);
         let mut block = self.context.append_basic_block(function, "entry");
 

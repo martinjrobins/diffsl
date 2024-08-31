@@ -10,7 +10,7 @@ use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{InitializationConfig, Target, TargetTriple};
 use inkwell::types::{
-    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType, PointerType,
+    AnyTypeEnum, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, IntType, PointerType,
 };
 use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
@@ -321,8 +321,8 @@ impl<'ctx> CodeGen<'ctx> {
         let ee = module
             .create_jit_execution_engine(OptimizationLevel::Aggressive)
             .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
-        let real_ptr_type = context.ptr_type(AddressSpace::default());
-        let int_ptr_type = context.ptr_type(AddressSpace::default());
+        let real_ptr_type = Self::pointer_type(context, real_type.into());
+        let int_ptr_type = Self::pointer_type(context, int_type.into());
         Ok(Self {
             context,
             module,
@@ -364,6 +364,16 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_tensor(lhs);
         }
         self.insert_tensor(model.rhs());
+    }
+
+    #[llvm_versions(4.0..=14.0)]
+    fn pointer_type(_context: &'ctx Context, ty: AnyTypeEnum<'ctx>) -> PointerType<'ctx> {
+        ty.ptr_type(AddressSpace::default())
+    }
+
+    #[llvm_versions(15.0..=latest)]
+    fn pointer_type(context: &'ctx Context, _ty: AnyTypeEnum<'ctx>) -> PointerType<'ctx> {
+        context.ptr_type(AddressSpace::default())
     }
 
     #[llvm_versions(4.0..=14.0)]
@@ -1947,10 +1957,8 @@ impl<'ctx> CodeGen<'ctx> {
 
         // construct the gradient function
         let mut fn_type: Vec<BasicMetadataTypeEnum> = Vec::new();
-        //let orig_fn_type_ptr = original_function
-        //    .get_type()
-        //    .ptr_type(AddressSpace::default());
-        let orig_fn_type_ptr = self.context.ptr_type(AddressSpace::default());
+        let orig_fn_type_ptr =
+            Self::pointer_type(self.context, original_function.get_type().into());
         let mut enzyme_fn_type: Vec<BasicMetadataTypeEnum> = vec![orig_fn_type_ptr.into()];
         let mut start_param_index: Vec<u32> = Vec::new();
         let mut ptr_arg_indices: Vec<u32> = Vec::new();
@@ -2220,7 +2228,7 @@ impl<'ctx> CodeGen<'ctx> {
         name: &str,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let real_ptr_ptr_type = self.context.ptr_type(AddressSpace::default());
+        let real_ptr_ptr_type = Self::pointer_type(self.context, self.real_ptr_type.into());
         let fn_type = self.context.void_type().fn_type(
             &[
                 self.real_ptr_type.into(),

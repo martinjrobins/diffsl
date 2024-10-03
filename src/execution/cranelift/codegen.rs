@@ -64,7 +64,7 @@ impl CraneliftModule {
 
         // Now that compilation is finished, we can clear out the context state.
         self.module.clear_context(&mut self.ctx);
-        
+
         Ok(id)
     }
 }
@@ -894,12 +894,11 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         };
 
         //let expr_index_var = self.decl_stack_slot(self.int_type, Some(zero));
-        let elmt_index_var =  if contract_sum.is_some() {
+        let elmt_index_var = if contract_sum.is_some() {
             Some(self.decl_stack_slot(self.int_type, Some(zero)))
         } else {
             None
         };
-            
 
         for i in 0..expr_rank {
             let block = self.builder.create_block();
@@ -934,8 +933,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         } else {
             elmt.expr()
         };
-        let float_value =
-            self.jit_compile_expr(name, expr, indices.as_slice(), elmt, None)?;
+        let float_value = self.jit_compile_expr(name, expr, indices.as_slice(), elmt, None)?;
 
         if contract_sum.is_some() {
             let contract_sum_value =
@@ -950,9 +948,10 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             let expr_index = if indices.is_empty() {
                 zero
             } else {
-                indices.iter().skip(1).fold(indices[0], |acc, x| {
-                    self.builder.ins().imul(acc, *x)
-                })
+                indices
+                    .iter()
+                    .skip(1)
+                    .fold(indices[0], |acc, x| self.builder.ins().imul(acc, *x))
             };
             self.jit_compile_broadcast_and_store(
                 name,
@@ -972,10 +971,10 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         for i in (0..expr_rank).rev() {
             // update and store contract sum
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
-                let elmt_index = self
-                    .builder
-                    .ins()
-                    .stack_load(self.int_type, elmt_index_var.unwrap(), 0);
+                let elmt_index =
+                    self.builder
+                        .ins()
+                        .stack_load(self.int_type, elmt_index_var.unwrap(), 0);
                 let next_elmt_index = self.builder.ins().iadd(elmt_index, one);
                 self.builder
                     .ins()

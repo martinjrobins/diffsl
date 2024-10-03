@@ -592,7 +592,7 @@ mod tests {
         assert_relative_eq!(stop[0], 0.5);
         assert_eq!(stop.len(), 1);
     }
-    
+
     #[test]
     fn test_vector_add_scalar_cranelift() {
         let n = 1;
@@ -622,8 +622,6 @@ mod tests {
     }
 
     fn tensor_test_common<T: CodegenModule>(text: &str, tensor_name: &str) -> Vec<Vec<f64>> {
-
-        
         let full_text = format!(
             "
             {}
@@ -1011,7 +1009,7 @@ mod tests {
         let out = compiler.get_out(data.as_slice());
         assert_relative_eq!(out, vec![1., 2., 4.].as_slice());
     }
-    
+
     #[test]
     fn test_inputs() {
         let full_text = "
@@ -1033,15 +1031,17 @@ mod tests {
             let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
             assert_relative_eq!(inputs, expected_value.as_slice());
         }
-        
+
         #[cfg(feature = "llvm")]
         {
-            let compiler = Compiler::<crate::LlvmModule>::from_discrete_model(&discrete_model).unwrap();
+            let compiler =
+                Compiler::<crate::LlvmModule>::from_discrete_model(&discrete_model).unwrap();
             let mut data = compiler.get_new_data();
             let inputs = vec![1.0, 2.0, 3.0];
             compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-            for (name, expected_value) in vec![("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
+            for (name, expected_value) in vec![("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])]
+            {
                 let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
                 assert_relative_eq!(inputs, expected_value.as_slice());
             }

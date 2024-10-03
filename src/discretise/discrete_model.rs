@@ -372,7 +372,15 @@ impl<'s> DiscreteModel<'s> {
                 }
             }
         }
-
+        
+        // reorder inputs to match the order defined in "in = [ ... ]"
+        ret.inputs.sort_by_key(|t| {
+            model.inputs
+                .iter()
+                .position(|&name| name == t.name())
+                .unwrap()
+        });
+        
         // set is_algebraic for every state based on equations
         if ret.state_dot.is_some() && ret.lhs.is_some() {
             let state_dot = ret.state_dot.as_ref().unwrap();

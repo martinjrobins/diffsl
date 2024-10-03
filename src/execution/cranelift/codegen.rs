@@ -52,7 +52,7 @@ impl CraneliftModule {
             .module
             .declare_function(name, Linkage::Export, &self.ctx.func.signature)?;
 
-        //println!("Declared function: {}", name);
+        //println!("Declared function: {} -------------------------------------------------------------------------------------", name);
         //println!("IR:\n{}", self.ctx.func);
 
         // Define the function to jit. This finishes compilation, although
@@ -64,7 +64,7 @@ impl CraneliftModule {
 
         // Now that compilation is finished, we can clear out the context state.
         self.module.clear_context(&mut self.ctx);
-
+        
         Ok(id)
     }
 }
@@ -263,7 +263,7 @@ impl CodegenModule for CraneliftModule {
 
         // write indices data as a global data object
         // convect the indices to bytes
-        let int_type = types::I32;
+        let int_type = ptr_type;
         let real_type = types::F64;
         let mut vec8: Vec<u8> = vec![];
         for elem in layout.indices() {
@@ -875,9 +875,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         let one = self.builder.ins().iconst(int_type, 1);
         let zero = self.builder.ins().iconst(int_type, 0);
 
-        let expr_index_var = self.decl_stack_slot(self.int_type, Some(zero));
-        let elmt_index_var = self.decl_stack_slot(self.int_type, Some(zero));
-
         // setup indices, loop through the nested loops
         let mut indices = Vec::new();
         let mut blocks = Vec::new();
@@ -895,6 +892,14 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         } else {
             (None, 0)
         };
+
+        //let expr_index_var = self.decl_stack_slot(self.int_type, Some(zero));
+        let elmt_index_var =  if contract_sum.is_some() {
+            Some(self.decl_stack_slot(self.int_type, Some(zero)))
+        } else {
+            None
+        };
+            
 
         for i in 0..expr_rank {
             let block = self.builder.create_block();
@@ -914,20 +919,15 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             preblock = block;
         }
 
-        let elmt_index = self
-            .builder
-            .ins()
-            .stack_load(self.int_type, elmt_index_var, 0);
-
         // load and increment the expression index
-        let expr_index = self
-            .builder
-            .ins()
-            .stack_load(self.int_type, expr_index_var, 0);
-        let next_expr_index = self.builder.ins().iadd(expr_index, one);
-        self.builder
-            .ins()
-            .stack_store(next_expr_index, expr_index_var, 0);
+        //let expr_index = self
+        //    .builder
+        //    .ins()
+        //    .stack_load(self.int_type, expr_index_var, 0);
+        //let next_expr_index = self.builder.ins().iadd(expr_index, one);
+        //self.builder
+        //    .ins()
+        //    .stack_store(next_expr_index, expr_index_var, 0);
 
         let expr = if is_tangent {
             elmt.tangent_expr()
@@ -935,7 +935,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             elmt.expr()
         };
         let float_value =
-            self.jit_compile_expr(name, expr, indices.as_slice(), elmt, Some(expr_index))?;
+            self.jit_compile_expr(name, expr, indices.as_slice(), elmt, None)?;
 
         if contract_sum.is_some() {
             let contract_sum_value =
@@ -947,6 +947,13 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 .ins()
                 .stack_store(new_contract_sum_value, contract_sum.unwrap(), 0);
         } else {
+            let expr_index = if indices.is_empty() {
+                zero
+            } else {
+                indices.iter().skip(1).fold(indices[0], |acc, x| {
+                    self.builder.ins().imul(acc, *x)
+                })
+            };
             self.jit_compile_broadcast_and_store(
                 name,
                 elmt,
@@ -955,20 +962,24 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 translation,
                 preblock,
             )?;
-            let next_elmt_index = self.builder.ins().iadd(elmt_index, one);
-            self.builder
-                .ins()
-                .stack_store(next_elmt_index, elmt_index_var, 0);
+            //let next_elmt_index = self.builder.ins().iadd(elmt_index, one);
+            //self.builder
+            //    .ins()
+            //    .stack_store(next_elmt_index, elmt_index_var, 0);
         }
 
         // unwind the nested loops
         for i in (0..expr_rank).rev() {
             // update and store contract sum
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
+                let elmt_index = self
+                    .builder
+                    .ins()
+                    .stack_load(self.int_type, elmt_index_var.unwrap(), 0);
                 let next_elmt_index = self.builder.ins().iadd(elmt_index, one);
                 self.builder
                     .ins()
-                    .stack_store(next_elmt_index, elmt_index_var, 0);
+                    .stack_store(next_elmt_index, elmt_index_var.unwrap(), 0);
 
                 let contract_sum_value =
                     self.builder

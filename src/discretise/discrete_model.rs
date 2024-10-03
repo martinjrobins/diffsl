@@ -342,8 +342,15 @@ impl<'s> DiscreteModel<'s> {
                 }
             }
         }
-
         
+        // reorder inputs to match the order defined in "in = [ ... ]"
+        ret.inputs.sort_by_key(|t| {
+            model
+                .inputs
+                .iter()
+                .position(|&name| name == t.name())
+                .unwrap()
+        });
 
         // set is_algebraic for every state based on equations
         for i in 0..std::cmp::min(ret.state_dot.elmts().len(), std::cmp::min(ret.lhs.elmts().len(), ret.rhs.elmts().len())) {

@@ -1556,4 +1556,29 @@ mod tests {
         let out = compiler.get_out(data.as_slice());
         assert_relative_eq!(out, vec![1., 2., 4.].as_slice());
     }
+    
+    #[test]
+    fn test_inputs() {
+        let full_text = "
+            in = [c, a, b]
+            a { 1 } b { 2 } c { 3 }
+            u { y = 0 }
+            dudt { dydt = 0 }
+            F { dydt }
+            G { y }
+            out { y }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("test_inputs", &model).unwrap();
+
+        let compiler = Compiler::from_discrete_model(&discrete_model, "test_output/compiler_test_inputs").unwrap();
+        let mut data = compiler.get_new_data();
+        let inputs = vec![1.0, 2.0, 3.0];
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice()).unwrap();
+
+        for (name, expected_value) in vec![("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
+            let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
+            assert_relative_eq!(inputs, expected_value.as_slice());
+        }
+    }
 }

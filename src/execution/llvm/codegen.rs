@@ -1,5 +1,4 @@
 use aliasable::boxed::AliasableBox;
-use std::{path::Path, process::Command};
 use anyhow::{anyhow, Result};
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
@@ -23,13 +22,13 @@ use llvm_sys::prelude::LLVMValueRef;
 use std::collections::HashMap;
 use std::iter::zip;
 use std::pin::Pin;
+use std::{path::Path, process::Command};
 use target_lexicon::Triple;
 
 type RealType = f64;
 
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
-use crate::utils::{find_executable, find_runtime_path};
 use crate::enzyme::{
     CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Pointer,
     CDerivativeMode_DEM_ForwardMode, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis,
@@ -40,6 +39,7 @@ use crate::enzyme::{
 };
 use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
+use crate::utils::{find_executable, find_runtime_path};
 
 struct ImmovableLlvmModule {
     // actually has lifetime of `context`
@@ -60,7 +60,9 @@ impl LlvmModule {
         let bitcodefilename = format!("{}.bc", out);
 
         // generate the bitcode file
-        self.codegen().module().write_bitcode_to_path(Path::new(bitcodefilename.as_str()));
+        self.codegen()
+            .module()
+            .write_bitcode_to_path(Path::new(bitcodefilename.as_str()));
 
         let mut command = Command::new(clang_name);
         command
@@ -2627,6 +2629,9 @@ mod tests {
         out { y }
         ";
         let compiler = Compiler::<LlvmModule>::from_discrete_str(text).unwrap();
-        compiler.module().compile(true, true, "test_output/test_compile").unwrap();
+        compiler
+            .module()
+            .compile(true, true, "test_output/test_compile")
+            .unwrap();
     }
 }

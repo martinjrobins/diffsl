@@ -1,10 +1,11 @@
- use crate::{
+
+use crate::{
     discretise::DiscreteModel,
     execution::interface::{
         CalcOutFunc, GetDimsFunc, GetOutFunc, MassFunc, RhsFunc, SetIdFunc, SetInputsFunc,
         StopFunc, U0Func,
     },
-    parser::parse_ds_string
+    parser::parse_ds_string,
 };
 
 use super::{
@@ -401,7 +402,7 @@ impl<M: CodegenModule> Compiler<M> {
         let mut n_outputs = 0u32;
         let mut n_data = 0u32;
         let mut n_stop = 0u32;
-        let mut has_mass= 0u32;
+        let mut has_mass = 0u32;
         unsafe {
             (self.jit_functions.get_dims)(
                 &mut n_states,
@@ -508,9 +509,6 @@ impl<M: CodegenModule> Compiler<M> {
     pub fn module(&self) -> &M {
         &self.module
     }
-
-
-    
 }
 
 #[cfg(test)]
@@ -1062,8 +1060,7 @@ mod tests {
             let inputs = vec![1.0, 2.0, 3.0];
             compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-            for (name, expected_value) in [("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])]
-            {
+            for (name, expected_value) in [("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
                 let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
                 assert_relative_eq!(inputs, expected_value.as_slice());
             }

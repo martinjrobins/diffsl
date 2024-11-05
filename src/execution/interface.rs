@@ -49,6 +49,7 @@ pub type GetDimsFunc = unsafe extern "C" fn(
     outputs: *mut u32,
     data: *mut u32,
     stop: *mut u32,
+    has_mass: *mut u32,
 );
 pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const RealType, data: *mut RealType);
 pub type SetInputsGradientFunc = unsafe extern "C" fn(

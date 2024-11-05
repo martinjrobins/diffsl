@@ -49,7 +49,7 @@ impl<M: CodegenModule> Compiler<M> {
     pub fn from_discrete_str(code: &str) -> Result<Self> {
         let uid = Id::<u32>::new();
         let name = format!("diffsl_{}", uid);
-        let model = parse_ds_string(code).unwrap();
+        let model = parse_ds_string(code).map_err(|e| anyhow!(e.to_string()))?;
         let model = DiscreteModel::build(name.as_str(), &model).map_err(|e| anyhow!(e.as_error_message(code)))?;
         Self::from_discrete_model(&model)
     }

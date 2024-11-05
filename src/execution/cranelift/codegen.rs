@@ -424,8 +424,9 @@ impl CodegenModule for CraneliftModule {
             self.int_ptr_type,
             self.int_ptr_type,
             self.int_ptr_type,
+            self.int_ptr_type,
         ];
-        let arg_names = &["states", "inputs", "outputs", "data", "stop"];
+        let arg_names = &["states", "inputs", "outputs", "data", "stop", "has_mass"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
         let number_of_states = i64::try_from(model.state().nnz()).unwrap();
@@ -437,6 +438,10 @@ impl CodegenModule for CraneliftModule {
         } else {
             0
         };
+        let has_mass = match model.lhs().is_some() {
+            true => 1,
+            false => 0,
+        };
         let data_len = i64::try_from(codegen.layout.data().len()).unwrap();
 
         for (val, name) in [
@@ -445,6 +450,7 @@ impl CodegenModule for CraneliftModule {
             (number_of_outputs, "outputs"),
             (data_len, "data"),
             (number_of_stop, "stop"),
+            (has_mass, "has_mass"),
         ] {
             let val = codegen.builder.ins().iconst(codegen.int_type, val);
             let ptr = codegen.variables.get(name).unwrap();

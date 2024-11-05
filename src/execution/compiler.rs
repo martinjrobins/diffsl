@@ -199,7 +199,7 @@ impl<M: CodegenModule> Compiler<M> {
     }
 
     pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) {
-        let (n_states, _, _, n_data, n_stop) = self.get_dims();
+        let (n_states, _, _, n_data, n_stop, _) = self.get_dims();
         if yy.len() != n_states {
             panic!("Expected {} states, got {}", n_states, yy.len());
         }
@@ -394,13 +394,14 @@ impl<M: CodegenModule> Compiler<M> {
     ///
     /// # Returns
     ///
-    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data, n_stop)`
-    pub fn get_dims(&self) -> (usize, usize, usize, usize, usize) {
+    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data, n_stop, has_mass)`
+    pub fn get_dims(&self) -> (usize, usize, usize, usize, usize, bool) {
         let mut n_states = 0u32;
         let mut n_inputs = 0u32;
         let mut n_outputs = 0u32;
         let mut n_data = 0u32;
         let mut n_stop = 0u32;
+        let mut has_mass = 0u32;
         unsafe {
             (self.jit_functions.get_dims)(
                 &mut n_states,
@@ -408,6 +409,7 @@ impl<M: CodegenModule> Compiler<M> {
                 &mut n_outputs,
                 &mut n_data,
                 &mut n_stop,
+                &mut has_mass,
             )
         };
         (
@@ -416,11 +418,12 @@ impl<M: CodegenModule> Compiler<M> {
             n_outputs as usize,
             n_data as usize,
             n_stop as usize,
+            has_mass != 0,
         )
     }
 
     pub fn set_inputs(&self, inputs: &[f64], data: &mut [f64]) {
-        let (_, n_inputs, _, _, _) = self.get_dims();
+        let (_, n_inputs, _, _, _, _) = self.get_dims();
         if n_inputs != inputs.len() {
             panic!("Expected {} inputs, got {}", n_inputs, inputs.len());
         }
@@ -437,7 +440,7 @@ impl<M: CodegenModule> Compiler<M> {
         data: &mut [f64],
         ddata: &mut [f64],
     ) {
-        let (_, n_inputs, _, _, _) = self.get_dims();
+        let (_, n_inputs, _, _, _, _) = self.get_dims();
         if n_inputs != inputs.len() {
             panic!("Expected {} inputs, got {}", n_inputs, inputs.len());
         }
@@ -472,7 +475,7 @@ impl<M: CodegenModule> Compiler<M> {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        let (_, _, n_outputs, _, _) = self.get_dims();
+        let (_, _, n_outputs, _, _, _) = self.get_dims();
         let mut tensor_data_ptr: *mut f64 = std::ptr::null_mut();
         let mut tensor_data_len = 0u32;
         let tensor_data_ptr_ptr: *mut *mut f64 = &mut tensor_data_ptr;
@@ -485,7 +488,7 @@ impl<M: CodegenModule> Compiler<M> {
     }
 
     pub fn set_id(&self, id: &mut [f64]) {
-        let (n_states, _, _, _, _) = self.get_dims();
+        let (n_states, _, _, _, _, _) = self.get_dims();
         if n_states != id.len() {
             panic!("Expected {} states, got {}", n_states, id.len());
         }
@@ -501,6 +504,9 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn number_of_outputs(&self) -> usize {
         self.number_of_outputs
+    }
+    pub fn module(&self) -> &M {
+        &self.module
     }
 }
 
@@ -521,6 +527,12 @@ mod tests {
         out { y }
         ";
         let compiler = Compiler::<LlvmModule>::from_discrete_str(text).unwrap();
+        let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
+        assert_eq!(n_states, 1);
+        assert_eq!(n_inputs, 0);
+        assert_eq!(n_outputs, 1);
+        assert_eq!(n_stop, 0);
+        assert!(!has_mass);
         let mut u0 = vec![0.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
@@ -538,6 +550,13 @@ mod tests {
         out { y }
         ";
         let compiler = Compiler::<CraneliftModule>::from_discrete_str(text).unwrap();
+        let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
+        assert_eq!(n_states, 1);
+        assert_eq!(n_inputs, 0);
+        assert_eq!(n_outputs, 1);
+        assert_eq!(n_stop, 0);
+        assert!(!has_mass);
+
         let mut u0 = vec![0.];
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
@@ -640,7 +659,7 @@ mod tests {
         let mut res = vec![0.];
         let mut data = compiler.get_new_data();
         let mut grad_data = Vec::new();
-        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop) = compiler.get_dims();
+        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
         for _ in 0..n_inputs {
             grad_data.push(compiler.get_new_data());
         }
@@ -913,7 +932,7 @@ mod tests {
         let mut dres = vec![0.];
         let mut data = compiler.get_new_data();
         let mut ddata = compiler.get_new_data();
-        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop) = compiler.get_dims();
+        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
 
         for _i in 0..3 {
             let inputs = vec![2.; n_inputs];
@@ -975,7 +994,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model).unwrap();
-        let (n_states, n_inputs, n_outputs, n_data, _n_stop) = compiler.get_dims();
+        let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass) = compiler.get_dims();
         assert_eq!(n_states, 2);
         assert_eq!(n_inputs, 1);
         assert_eq!(n_outputs, 3);
@@ -1027,7 +1046,7 @@ mod tests {
         let inputs = vec![1.0, 2.0, 3.0];
         compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-        for (name, expected_value) in vec![("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
+        for (name, expected_value) in [("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
             let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
             assert_relative_eq!(inputs, expected_value.as_slice());
         }
@@ -1040,8 +1059,7 @@ mod tests {
             let inputs = vec![1.0, 2.0, 3.0];
             compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-            for (name, expected_value) in vec![("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])]
-            {
+            for (name, expected_value) in [("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
                 let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
                 assert_relative_eq!(inputs, expected_value.as_slice());
             }

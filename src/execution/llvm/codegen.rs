@@ -112,7 +112,7 @@ impl LlvmModule {
                 "libargparse.a",
             ];
             if standalone {
-                linked_files.push("libdiffeq_runtime_wasm.a");
+                linked_files.push("libdiffeq_runtime.a");
             }
             let linked_files = linked_files;
             let runtime_path = find_runtime_path(&linked_files)?;

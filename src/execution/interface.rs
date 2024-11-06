@@ -27,12 +27,12 @@ pub type MassFunc = unsafe extern "C" fn(
     data: *mut RealType,
     mv: *mut RealType,
 );
-pub type U0Func = unsafe extern "C" fn(data: *mut RealType, u: *mut RealType);
+pub type U0Func = unsafe extern "C" fn(u: *mut RealType, data: *mut RealType);
 pub type U0GradientFunc = unsafe extern "C" fn(
-    data: *mut RealType,
-    ddata: *mut RealType,
     u: *mut RealType,
     du: *mut RealType,
+    data: *mut RealType,
+    ddata: *mut RealType,
 );
 pub type CalcOutFunc =
     unsafe extern "C" fn(time: RealType, u: *const RealType, data: *mut RealType);

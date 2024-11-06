@@ -271,8 +271,8 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "F" => {
-                            span_f = Some(span);
                             if let Some(built) = Self::build_array(tensor, &mut env) {
+                                span_f = Some(span);
                                 ret.rhs = built;
                             }
                             // check that F is not dstatedt dependent and only depends on u
@@ -286,8 +286,8 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "M" => {
-                            span_m = Some(span);
                             if let Some(built) = Self::build_array(tensor, &mut env) {
+                                span_m = Some(span);
                                 ret.lhs = Some(built);
                             }
                             // check that M is not state dependent and only depends on dudt

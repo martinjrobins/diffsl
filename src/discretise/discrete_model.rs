@@ -436,11 +436,17 @@ impl<'s> DiscreteModel<'s> {
                 span_all,
             ));
         }
-        if !read_out {
-            env.errs_mut().push(ValidationError::new(
-                "missing 'out' array".to_string(),
-                span_all,
-            ));
+        // add default out if not defined
+        if !read_out && read_state {
+            let out_tensor = ast::Tensor::new(
+                "out",
+                ret.state.indices().to_vec(),
+                vec![Ast::new_tensor_elmt(
+                    Ast::new_name("u", ret.state.indices().to_vec(), false),
+                    None,
+                )],
+            );
+            ret.out = Self::build_array(&out_tensor, &mut env).unwrap();
         }
         if let Some(span) = span_f {
             Self::check_match(&ret.rhs, &ret.state, span, &mut env);
@@ -1024,7 +1030,7 @@ mod tests {
                 z_i,
             }
         " [],
-        error_missing_specials: "" ["missing 'u' array", "missing 'F' array", "missing 'out' array",],
+        error_missing_specials: "" ["missing 'u' array", "missing 'F' array",],
         error_state_lhs_rhs_same: "
             u_i {
                 y = 1,
@@ -1204,5 +1210,21 @@ mod tests {
         );
         assert_eq!(model.stop().unwrap().name(), "stop");
         assert_eq!(model.stop().unwrap().elmts().len(), 1);
+    }
+
+    #[test]
+    fn test_default_out() {
+        let text = "
+        u_i {
+            y = 1,
+        }
+        F_i {
+            y * (1 - y),
+        }
+        ";
+        let model = parse_ds_string(text).unwrap();
+        let model = DiscreteModel::build("$name", &model).unwrap();
+        assert_eq!(model.out().elmts().len(), 1);
+        assert_eq!(model.out().elmts()[0].expr().to_string(), "u_i");
     }
 }

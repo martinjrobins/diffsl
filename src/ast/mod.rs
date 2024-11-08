@@ -609,6 +609,16 @@ impl<'a> Ast<'a> {
         }
     }
 
+    pub fn new_tensor_elmt(expr: Ast<'a>, indices: Option<Ast<'a>>) -> Self {
+        Ast {
+            kind: AstKind::TensorElmt(TensorElmt {
+                expr: Box::new(expr),
+                indices: indices.map(Box::new),
+            }),
+            span: None,
+        }
+    }
+
     pub fn new_name(name: &'a str, indices: Vec<char>, is_tangent: bool) -> Self {
         Ast {
             kind: AstKind::Name(Name {

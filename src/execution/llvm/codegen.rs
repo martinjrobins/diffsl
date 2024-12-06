@@ -1887,7 +1887,15 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_data(model);
         self.insert_indices();
 
-        // TODO: could split state dep defns into before and after F and G
+        // calculate time dependant definitions
+        for tensor in model.time_dep_defns() {
+            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+        }
+
+        // TODO: could split state dep defns into before and after F
+        for a in model.state_dep_defns() {
+            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+        }
 
         self.jit_compile_tensor(model.out(), Some(*self.get_var(model.out())))?;
         self.builder.build_return(None)?;

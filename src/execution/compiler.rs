@@ -623,15 +623,13 @@ mod tests {
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
         let mut u0 = vec![1.];
-        let mut res = vec![0.];
         let mut data = compiler.get_new_data();
+        // need this to set the constants
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         compiler.calc_out(0., u0.as_slice(), data.as_mut_slice());
         let out = compiler.get_out(data.as_slice());
         assert_relative_eq!(out[0], 2.);
         u0[0] = 2.;
-        compiler.calc_out(0., u0.as_slice(), data.as_mut_slice());
         compiler.calc_out(0., u0.as_slice(), data.as_mut_slice());
         let out = compiler.get_out(data.as_slice());
         assert_relative_eq!(out[0], 4.);

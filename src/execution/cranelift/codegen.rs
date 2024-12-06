@@ -330,6 +330,16 @@ impl CodegenModule for CraneliftModule {
         let arg_names = &["t", "u", "data"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
+        // calculate time dependant definitions
+        for tensor in model.time_dep_defns() {
+            codegen.jit_compile_tensor(tensor, None, false)?;
+        }
+
+        // TODO: could split state dep defns into before and after F
+        for a in model.state_dep_defns() {
+            codegen.jit_compile_tensor(a, None, false)?;
+        }
+
         codegen.jit_compile_tensor(model.out(), None, false)?;
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();

@@ -22,9 +22,6 @@ pub struct CraneliftModule {
     /// context per thread, though this isn't in the simple demo here.
     ctx: codegen::Context,
 
-    /// The data description, which is to data objects what `ctx` is to functions.
-    //data_description: DataDescription,
-
     /// The module, with the jit backend, which manages the JIT'd
     /// functions.
     module: JITModule,

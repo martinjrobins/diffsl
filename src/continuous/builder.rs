@@ -59,7 +59,7 @@ pub struct Variable<'s> {
     pub init_conditions: Vec<BoundaryCondition<'s>>,
 }
 
-impl<'a> fmt::Display for Variable<'a> {
+impl fmt::Display for Variable<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let deps_disp: Vec<_> = self
             .dependents

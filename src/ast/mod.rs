@@ -10,7 +10,7 @@ pub struct DsModel<'a> {
     pub tensors: Vec<Box<Ast<'a>>>,
 }
 
-impl<'a> fmt::Display for DsModel<'a> {
+impl fmt::Display for DsModel<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.inputs.len() > 1 {
             write!(f, "in = [")?;
@@ -56,7 +56,7 @@ pub struct Equation<'a> {
     pub rhs: Box<Ast<'a>>,
 }
 
-impl<'a> fmt::Display for Equation<'a> {
+impl fmt::Display for Equation<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} = {}", self.lhs, self.rhs,)
     }
@@ -75,7 +75,7 @@ pub struct Name<'a> {
     pub is_tangent: bool,
 }
 
-impl<'a> fmt::Display for Name<'a> {
+impl fmt::Display for Name<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.is_tangent {
             write!(f, "d_")?;
@@ -109,7 +109,7 @@ pub struct Domain<'a> {
     pub dim: usize,
 }
 
-impl<'a> fmt::Display for Domain<'a> {
+impl fmt::Display for Domain<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.range).and_then(|_| {
             if self.dim == 1 {
@@ -189,7 +189,7 @@ impl<'a> Tensor<'a> {
     }
 }
 
-impl<'a> fmt::Display for Tensor<'a> {
+impl fmt::Display for Tensor<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.name)?;
         if !self.indices.is_empty() {
@@ -213,7 +213,7 @@ pub struct Indice<'a> {
     pub sep: Option<&'a str>,
 }
 
-impl<'a> fmt::Display for Indice<'a> {
+impl fmt::Display for Indice<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.first)?;
         if let Some(ref last) = self.last {
@@ -230,7 +230,7 @@ pub struct Vector<'a> {
     pub data: Vec<Box<Ast<'a>>>,
 }
 
-impl<'a> fmt::Display for Vector<'a> {
+impl fmt::Display for Vector<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(")?;
         for (i, elmt) in self.data.iter().enumerate() {
@@ -279,7 +279,7 @@ pub struct NamedGradient<'a> {
     pub gradient_wrt: Box<Ast<'a>>,
 }
 
-impl<'a> fmt::Display for NamedGradient<'a> {
+impl fmt::Display for NamedGradient<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "d{}d{}", self.gradient_of, self.gradient_wrt)
     }
@@ -913,7 +913,7 @@ impl<'a> Ast<'a> {
     }
 }
 
-impl<'a> fmt::Display for Ast<'a> {
+impl fmt::Display for Ast<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self.kind {
             AstKind::Model(model) => {

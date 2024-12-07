@@ -108,7 +108,7 @@ impl<'s> TensorBlock<'s> {
     }
 }
 
-impl<'s> fmt::Display for TensorBlock<'s> {
+impl fmt::Display for TensorBlock<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(")?;
         for i in 0..self.rank() {
@@ -212,7 +212,7 @@ impl<'s> Tensor<'s> {
     }
 }
 
-impl<'s> fmt::Display for Tensor<'s> {
+impl fmt::Display for Tensor<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if !self.indices.is_empty() {
             write!(f, "{}_", self.name)?;

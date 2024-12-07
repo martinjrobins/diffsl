@@ -1892,7 +1892,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
         }
 
-        // TODO: could split state dep defns into before and after F
+        // calculate state dependant definitions
         for a in model.state_dep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
         }
@@ -1951,6 +1951,16 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_indices();
 
         if let Some(stop) = model.stop() {
+            // calculate time dependant definitions
+            for tensor in model.time_dep_defns() {
+                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+            }
+
+            // calculate state dependant definitions
+            for a in model.state_dep_defns() {
+                self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+            }
+
             let res_ptr = self.get_param("root");
             self.jit_compile_tensor(stop, Some(*res_ptr))?;
         }

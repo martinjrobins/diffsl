@@ -22,9 +22,6 @@ pub struct CraneliftModule {
     /// context per thread, though this isn't in the simple demo here.
     ctx: codegen::Context,
 
-    /// The data description, which is to data objects what `ctx` is to functions.
-    //data_description: DataDescription,
-
     /// The module, with the jit backend, which manages the JIT'd
     /// functions.
     module: JITModule,
@@ -329,6 +326,16 @@ impl CodegenModule for CraneliftModule {
         let arg_types = &[self.real_type, self.real_ptr_type, self.real_ptr_type];
         let arg_names = &["t", "u", "data"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        // calculate time dependant definitions
+        for tensor in model.time_dep_defns() {
+            codegen.jit_compile_tensor(tensor, None, false)?;
+        }
+
+        // TODO: could split state dep defns into before and after F
+        for a in model.state_dep_defns() {
+            codegen.jit_compile_tensor(a, None, false)?;
+        }
 
         codegen.jit_compile_tensor(model.out(), None, false)?;
         codegen.builder.ins().return_(&[]);

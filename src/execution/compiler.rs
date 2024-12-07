@@ -612,6 +612,40 @@ mod tests {
         assert_eq!(stop.len(), 1);
     }
 
+    fn test_out_depends_on_internal_tensor<T: CodegenModule>() {
+        let full_text = "
+        u_i { y = 1 }
+        twoy_i { 2 * y }
+        F_i { y * (1 - y), }
+        out_i { twoy_i }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
+        let mut u0 = vec![1.];
+        let mut data = compiler.get_new_data();
+        // need this to set the constants
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        compiler.calc_out(0., u0.as_slice(), data.as_mut_slice());
+        let out = compiler.get_out(data.as_slice());
+        assert_relative_eq!(out[0], 2.);
+        u0[0] = 2.;
+        compiler.calc_out(0., u0.as_slice(), data.as_mut_slice());
+        let out = compiler.get_out(data.as_slice());
+        assert_relative_eq!(out[0], 4.);
+    }
+
+    #[test]
+    fn test_out_depends_on_internal_tensor_cranelift() {
+        test_out_depends_on_internal_tensor::<CraneliftModule>();
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_out_depends_on_internal_tensor_llvm() {
+        test_out_depends_on_internal_tensor::<crate::LlvmModule>();
+    }
+
     #[test]
     fn test_vector_add_scalar_cranelift() {
         let n = 1;

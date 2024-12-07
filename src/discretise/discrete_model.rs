@@ -42,7 +42,7 @@ pub struct DiscreteModel<'s> {
     stop: Option<Tensor<'s>>,
 }
 
-impl<'s> fmt::Display for DiscreteModel<'s> {
+impl fmt::Display for DiscreteModel<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if !self.inputs.is_empty() {
             write!(f, "in = [")?;

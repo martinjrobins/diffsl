@@ -498,7 +498,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_tensor(model.rhs());
     }
 
-    #[llvm_versions(4.0..=14.0)]
+    #[llvm_versions(13.0..=14.0)]
     fn pointer_type(_context: &'ctx Context, ty: BasicTypeEnum<'ctx>) -> PointerType<'ctx> {
         ty.ptr_type(AddressSpace::default())
     }
@@ -508,7 +508,7 @@ impl<'ctx> CodeGen<'ctx> {
         context.ptr_type(AddressSpace::default())
     }
 
-    #[llvm_versions(4.0..=14.0)]
+    #[llvm_versions(13.0..=14.0)]
     fn fn_pointer_type(_context: &'ctx Context, ty: FunctionType<'ctx>) -> PointerType<'ctx> {
         ty.ptr_type(AddressSpace::default())
     }
@@ -518,7 +518,7 @@ impl<'ctx> CodeGen<'ctx> {
         context.ptr_type(AddressSpace::default())
     }
 
-    #[llvm_versions(4.0..=14.0)]
+    #[llvm_versions(13.0..=14.0)]
     fn insert_indices(&mut self) {
         if let Some(indices) = self.globals.indices.as_ref() {
             let zero = self.context.i32_type().const_int(0, false);
@@ -549,7 +549,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.variables.insert(name.to_owned(), value);
     }
 
-    #[llvm_versions(4.0..=14.0)]
+    #[llvm_versions(13.0..=14.0)]
     fn build_gep<T: BasicType<'ctx>>(
         &self,
         _ty: T,
@@ -579,7 +579,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    #[llvm_versions(4.0..=14.0)]
+    #[llvm_versions(13.0..=14.0)]
     fn build_load<T: BasicType<'ctx>>(
         &self,
         _ty: T,
@@ -599,7 +599,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_load(ty, ptr, name).map_err(|e| e.into())
     }
 
-    #[llvm_versions(4.0..=14.0)]
+    #[llvm_versions(13.0..=14.0)]
     fn get_ptr_to_index<T: BasicType<'ctx>>(
         builder: &Builder<'ctx>,
         _ty: T,

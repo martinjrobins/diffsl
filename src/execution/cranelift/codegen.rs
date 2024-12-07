@@ -332,7 +332,7 @@ impl CodegenModule for CraneliftModule {
             codegen.jit_compile_tensor(tensor, None, false)?;
         }
 
-        // TODO: could split state dep defns into before and after F
+        // calculate state dependant definitions
         for a in model.state_dep_defns() {
             codegen.jit_compile_tensor(a, None, false)?;
         }
@@ -355,6 +355,16 @@ impl CodegenModule for CraneliftModule {
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
         if let Some(stop) = model.stop() {
+            // calculate time dependant definitions
+            for tensor in model.time_dep_defns() {
+                codegen.jit_compile_tensor(tensor, None, false)?;
+            }
+
+            // calculate state dependant definitions
+            for a in model.state_dep_defns() {
+                codegen.jit_compile_tensor(a, None, false)?;
+            }
+
             let root = *codegen.variables.get("root").unwrap();
             codegen.jit_compile_tensor(stop, Some(root), false)?;
         }

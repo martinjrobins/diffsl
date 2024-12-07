@@ -618,6 +618,7 @@ mod tests {
         twoy_i { 2 * y }
         F_i { y * (1 - y), }
         out_i { twoy_i }
+        stop_i { twoy_i - 0.5 }
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
@@ -633,6 +634,12 @@ mod tests {
         compiler.calc_out(0., u0.as_slice(), data.as_mut_slice());
         let out = compiler.get_out(data.as_slice());
         assert_relative_eq!(out[0], 4.);
+        let mut stop = vec![0.];
+        compiler.calc_stop(0., u0.as_slice(), data.as_mut_slice(), stop.as_mut_slice());
+        assert_relative_eq!(stop[0], 3.5);
+        u0[0] = 0.5;
+        compiler.calc_stop(0., u0.as_slice(), data.as_mut_slice(), stop.as_mut_slice());
+        assert_relative_eq!(stop[0], 0.5);
     }
 
     #[test]

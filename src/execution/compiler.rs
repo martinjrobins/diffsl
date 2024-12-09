@@ -796,6 +796,7 @@ mod tests {
         heaviside_function0: "r { heaviside(-0.1) }" expect "r" vec![0.0],
         heaviside_function1: "r { heaviside(0.0) }" expect "r" vec![1.0],
         exp_function: "r { exp(2) }" expect "r" vec![f64::exp(2.0)],
+        abs_function: "r { abs(-2) }" expect "r" vec![f64::abs(-2.0)],
         pow_function: "r { pow(4.3245, 0.5) }" expect "r" vec![f64::powf(4.3245, 0.5)],
         arcsinh_function: "r { arcsinh(0.5) }" expect "r" vec![f64::asinh(0.5)],
         arccosh_function: "r { arccosh(2) }" expect "r" vec![f64::acosh(2.0)],

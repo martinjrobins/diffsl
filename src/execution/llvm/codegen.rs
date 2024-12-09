@@ -723,6 +723,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let intrinsic_name = match name {
                             "min" => "minnum",
                             "max" => "maxnum",
+                            "abs" => "fabs",
                             _ => name,
                         };
                         let llvm_name = format!("llvm.{}.{}", intrinsic_name, self.real_type_str);

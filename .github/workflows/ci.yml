@@ -33,6 +33,7 @@ jobs:
             - "15"
             - "16"
             - "17"
+            - "18"
           toolchain:
             - stable
           os:
@@ -74,7 +75,7 @@ jobs:
       uses: KyleMayes/install-llvm-action@v2
       if : matrix.os == 'ubuntu-latest'
       with:
-        version: ${{ matrix.llvm }}.0
+        version: ${{ matrix.llvm }}
     - name: Install LLVM and Clang (macOS)
       if : matrix.os == 'macos-13' || matrix.os == 'macos-latest'
       run: |

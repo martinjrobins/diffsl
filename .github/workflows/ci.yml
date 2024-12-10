@@ -50,9 +50,6 @@ jobs:
             - toolchain: nightly
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
-            - toolchain: stable
-              os: macos-13
-              llvm: ["14.0", "14-0"]
 
 
     steps:

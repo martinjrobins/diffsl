@@ -38,7 +38,6 @@ jobs:
             - stable
           os:
             - ubuntu-latest
-            - macos-latest
           include:
             - toolchain: stable
               os: windows-latest
@@ -46,6 +45,9 @@ jobs:
             - toolchain: stable
               os: macos-13
               llvm: "16"
+            - toolchain: stable
+              os: macos-latest
+              llvm: "17"
             - toolchain: beta
               os: ubuntu-latest
               llvm: "16"
@@ -73,7 +75,7 @@ jobs:
       run: rustc -Vv
     - name: Install LLVM and Clang (Ubuntu)
       uses: KyleMayes/install-llvm-action@v2
-      if : matrix.os == 'ubuntu-latest'
+      if : matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
       with:
         version: ${{ matrix.llvm }}
     - name: Install LLVM and Clang (macOS)
@@ -82,12 +84,6 @@ jobs:
         brew install llvm@${{ matrix.llvm }}
         echo "LLVM_SYS_${{ matrix.llvm }}0_PREFIX=/usr/local/opt/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
         echo "LLVM_DIR=/usr/local/opt/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
-    - name: Install LLVM and Clang (macOS M1)
-      if : matrix.os == 'macos-latest'
-      run: |
-        brew install llvm@${{ matrix.llvm }}
-        echo "LLVM_SYS_${{ matrix.llvm }}0_PREFIX=/opt/homebrew/Cellar/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
-        echo "LLVM_DIR=/opt/homebrew/Cellar/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
     - name: Run tests (LLVM)
       if : matrix.llvm != ''
       run: cargo test --verbose --features llvm${{ matrix.llvm }}-0

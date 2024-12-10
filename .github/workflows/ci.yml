@@ -33,7 +33,6 @@ jobs:
             - "15"
             - "16"
             - "17"
-            - "18.1"
           toolchain:
             - stable
           os:

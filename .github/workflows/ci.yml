@@ -24,7 +24,7 @@ jobs:
       - run: cargo fmt --all -- --check
         
   unit-tests:
-    name: Tests - ${{ matrix.os }} - ${{ matrix.toolchain }} - ${{ matrix.llvm }}
+    name: Tests - ${{ matrix.os }} - ${{ matrix.toolchain }} - ${{ matrix.llvm[0] }}
     runs-on: ${{ matrix.os }}
     strategy:
         matrix:

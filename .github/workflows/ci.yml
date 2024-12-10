@@ -33,20 +33,28 @@ jobs:
             - "15"
             - "16"
             - "17"
+            - "18"
           toolchain:
             - stable
           os:
             - ubuntu-latest
+            - macos-latest
           include:
-            - toolchain: beta
-              os: ubuntu-latest
-              llvm: "14"
-            - toolchain: nightly
-              os: ubuntu-latest
-              llvm: "14"
+            - toolchain: stable
+              os: windows-latest
+              llvm: ""
             - toolchain: stable
               os: macos-13
-              llvm: "14"
+              llvm: "16"
+            - toolchain: beta
+              os: ubuntu-latest
+              llvm: "16"
+            - toolchain: nightly
+              os: ubuntu-latest
+              llvm: "16"
+            - toolchain: stable
+              os: macos-13
+              llvm: "16"
 
 
     steps:
@@ -69,17 +77,21 @@ jobs:
       with:
         version: ${{ matrix.llvm }}.0
     - name: Install LLVM and Clang (macOS)
-      if : matrix.os == 'macos-13'
+      if : matrix.os == 'macos-13' || matrix.os == 'macos-latest'
       run: |
         brew install llvm@${{ matrix.llvm }}
         echo "LLVM_SYS_${{ matrix.llvm }}0_PREFIX=/usr/local/opt/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
         echo "LLVM_DIR=/usr/local/opt/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
-    - name: Run tests
+    - name: Run tests (LLVM)
+      if : matrix.llvm != ''
       run: cargo test --verbose --features llvm${{ matrix.llvm }}-0
-    - name: Run Clippy
-      if: matrix.toolchain == 'stable'
+    - name: Run tests
+      if : matrix.llvm == ''
+      run: cargo test --verbose
+    - name: Run Clippy (LLVM)
+      if: matrix.toolchain == 'nightly'
       run: cargo clippy --verbose --features llvm${{ matrix.llvm }}-0
-    - name: Run Docs
+    - name: Run Docs (LLVM)
       if: matrix.toolchain == 'nightly'
       run: cargo rustdoc --features llvm${{ matrix.llvm }}-0
   book:

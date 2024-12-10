@@ -77,11 +77,17 @@ jobs:
       with:
         version: ${{ matrix.llvm }}
     - name: Install LLVM and Clang (macOS)
-      if : matrix.os == 'macos-13' || matrix.os == 'macos-latest'
+      if : matrix.os == 'macos-13'
       run: |
         brew install llvm@${{ matrix.llvm }}
         echo "LLVM_SYS_${{ matrix.llvm }}0_PREFIX=/usr/local/opt/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
         echo "LLVM_DIR=/usr/local/opt/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
+    - name: Install LLVM and Clang (macOS M1)
+      if : matrix.os == 'macos-latest'
+      run: |
+        brew install llvm@${{ matrix.llvm }}
+        echo "LLVM_SYS_${{ matrix.llvm }}0_PREFIX=/opt/homebrew/Cellar/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
+        echo "LLVM_DIR=/opt/homebrew/Cellar/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
     - name: Run tests (LLVM)
       if : matrix.llvm != ''
       run: cargo test --verbose --features llvm${{ matrix.llvm }}-0

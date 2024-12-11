@@ -26,7 +26,6 @@ mod enzyme {
             .clang_arg("-x")
             .clang_arg("c++");
 
-        
         // add include dirs
         for dir in inc_dirs {
             builder = builder.clang_arg(format!("-I{}", dir))

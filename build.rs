@@ -30,6 +30,11 @@ mod enzyme {
         for dir in inc_dirs {
             builder = builder.clang_arg(format!("-I{}", dir))
         }
+        if cfg!(target_os = "macos") {
+            let xcode_inc_dir = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include";
+            builder = builder.clang_arg(format!("-I{}", xcode_inc_dir));
+        }
+
         builder.generate()
     }
 

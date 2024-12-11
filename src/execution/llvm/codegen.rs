@@ -17,7 +17,6 @@ use inkwell::values::{
     GlobalValue, IntValue, PointerValue,
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
-use inkwell_internals::llvm_versions;
 use llvm_sys::prelude::LLVMValueRef;
 use std::collections::HashMap;
 use std::iter::zip;
@@ -498,40 +497,14 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_tensor(model.rhs());
     }
 
-    #[llvm_versions(13.0..=14.0)]
-    fn pointer_type(_context: &'ctx Context, ty: BasicTypeEnum<'ctx>) -> PointerType<'ctx> {
-        ty.ptr_type(AddressSpace::default())
-    }
-
-    #[llvm_versions(15.0..=latest)]
     fn pointer_type(context: &'ctx Context, _ty: BasicTypeEnum<'ctx>) -> PointerType<'ctx> {
         context.ptr_type(AddressSpace::default())
     }
 
-    #[llvm_versions(13.0..=14.0)]
-    fn fn_pointer_type(_context: &'ctx Context, ty: FunctionType<'ctx>) -> PointerType<'ctx> {
-        ty.ptr_type(AddressSpace::default())
-    }
-
-    #[llvm_versions(15.0..=latest)]
     fn fn_pointer_type(context: &'ctx Context, _ty: FunctionType<'ctx>) -> PointerType<'ctx> {
         context.ptr_type(AddressSpace::default())
     }
 
-    #[llvm_versions(13.0..=14.0)]
-    fn insert_indices(&mut self) {
-        if let Some(indices) = self.globals.indices.as_ref() {
-            let zero = self.context.i32_type().const_int(0, false);
-            let ptr = unsafe {
-                indices
-                    .as_pointer_value()
-                    .const_in_bounds_gep(&[zero, zero])
-            };
-            self.variables.insert("indices".to_owned(), ptr);
-        }
-    }
-
-    #[llvm_versions(15.0..=latest)]
     fn insert_indices(&mut self) {
         if let Some(indices) = self.globals.indices.as_ref() {
             let i32_type = self.context.i32_type();
@@ -549,22 +522,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.variables.insert(name.to_owned(), value);
     }
 
-    #[llvm_versions(13.0..=14.0)]
-    fn build_gep<T: BasicType<'ctx>>(
-        &self,
-        _ty: T,
-        ptr: PointerValue<'ctx>,
-        ordered_indexes: &[IntValue<'ctx>],
-        name: &str,
-    ) -> Result<PointerValue<'ctx>> {
-        unsafe {
-            self.builder
-                .build_gep(ptr, ordered_indexes, name)
-                .map_err(|e| e.into())
-        }
-    }
-
-    #[llvm_versions(15.0..=latest)]
     fn build_gep<T: BasicType<'ctx>>(
         &self,
         ty: T,
@@ -579,17 +536,6 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    #[llvm_versions(13.0..=14.0)]
-    fn build_load<T: BasicType<'ctx>>(
-        &self,
-        _ty: T,
-        ptr: PointerValue<'ctx>,
-        name: &str,
-    ) -> Result<BasicValueEnum<'ctx>> {
-        self.builder.build_load(ptr, name).map_err(|e| e.into())
-    }
-
-    #[llvm_versions(15.0..=latest)]
     fn build_load<T: BasicType<'ctx>>(
         &self,
         ty: T,
@@ -599,18 +545,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_load(ty, ptr, name).map_err(|e| e.into())
     }
 
-    #[llvm_versions(13.0..=14.0)]
-    fn get_ptr_to_index<T: BasicType<'ctx>>(
-        builder: &Builder<'ctx>,
-        _ty: T,
-        ptr: &PointerValue<'ctx>,
-        index: IntValue<'ctx>,
-        name: &str,
-    ) -> PointerValue<'ctx> {
-        unsafe { builder.build_in_bounds_gep(*ptr, &[index], name).unwrap() }
-    }
-
-    #[llvm_versions(15.0..=latest)]
     fn get_ptr_to_index<T: BasicType<'ctx>>(
         builder: &Builder<'ctx>,
         ty: T,
@@ -2278,6 +2212,7 @@ impl<'ctx> CodeGen<'ctx> {
                 ret_primary_ret as u8,
                 CDerivativeMode_DEM_ForwardMode, // return value, dret_used, top_level which was 1
                 1,                               // free memory
+                0,                               // runtime activity
                 1,                               // vector mode width
                 std::ptr::null_mut(),
                 fn_type_info, // additional_arg, type info (return + args)

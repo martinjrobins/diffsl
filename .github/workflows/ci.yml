@@ -24,29 +24,32 @@ jobs:
       - run: cargo fmt --all -- --check
         
   unit-tests:
-    name: Tests - ${{ matrix.os }} - ${{ matrix.toolchain }} - ${{ matrix.llvm }}
+    name: Tests - ${{ matrix.os }} - ${{ matrix.toolchain }} - ${{ matrix.llvm[0] }}
     runs-on: ${{ matrix.os }}
     strategy:
         matrix:
           llvm:
-            - "14"
-            - "15"
-            - "16"
-            - "17"
+            - ["15.0", "15-0"]
+            - ["16.0", "16-0"]
+            - ["17.0", "17-0"]
+            #- ["18.0", "18-0"] (next version of inkwell should support 18.1, then can be added here)
           toolchain:
             - stable
           os:
             - ubuntu-latest
           include:
+            - toolchain: stable
+              os: windows-latest
+              llvm: ""
+            - toolchain: stable
+              os: macos-latest
+              llvm: ["16.0", "16-0"]
             - toolchain: beta
               os: ubuntu-latest
-              llvm: "14"
+              llvm: ["16.0", "16-0"]
             - toolchain: nightly
               os: ubuntu-latest
-              llvm: "14"
-            - toolchain: stable
-              os: macos-13
-              llvm: "14"
+              llvm: ["16.0", "16-0"]
 
 
     steps:
@@ -63,25 +66,23 @@ jobs:
       run: rustup default ${{ matrix.toolchain }} && rustup update ${{ matrix.toolchain }} --no-self-update && rustup component add clippy rust-docs
     - name: Rust version
       run: rustc -Vv
-    - name: Install LLVM and Clang (Ubuntu)
+    - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@v2
-      if : matrix.os == 'ubuntu-latest'
+      if : matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'macos-13'
       with:
-        version: ${{ matrix.llvm }}.0
-    - name: Install LLVM and Clang (macOS)
-      if : matrix.os == 'macos-13'
-      run: |
-        brew install llvm@${{ matrix.llvm }}
-        echo "LLVM_SYS_${{ matrix.llvm }}0_PREFIX=/usr/local/opt/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
-        echo "LLVM_DIR=/usr/local/opt/llvm@${{ matrix.llvm }}" >> $GITHUB_ENV
+        version: ${{ matrix.llvm[0] }}
+    - name: Run tests (LLVM)
+      if : matrix.llvm != ''
+      run: cargo test --verbose --features llvm${{ matrix.llvm[1] }}
     - name: Run tests
-      run: cargo test --verbose --features llvm${{ matrix.llvm }}-0
-    - name: Run Clippy
-      if: matrix.toolchain == 'stable'
-      run: cargo clippy --verbose --features llvm${{ matrix.llvm }}-0
-    - name: Run Docs
+      if : matrix.llvm == ''
+      run: cargo test --verbose
+    - name: Run Clippy (LLVM)
       if: matrix.toolchain == 'nightly'
-      run: cargo rustdoc --features llvm${{ matrix.llvm }}-0
+      run: cargo clippy --verbose --features llvm${{ matrix.llvm[1] }}
+    - name: Run Docs (LLVM)
+      if: matrix.toolchain == 'nightly'
+      run: cargo rustdoc --features llvm${{ matrix.llvm[1] }}
   book:
     runs-on: ubuntu-latest
     steps:

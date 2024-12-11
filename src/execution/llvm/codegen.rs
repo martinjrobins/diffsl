@@ -2278,6 +2278,7 @@ impl<'ctx> CodeGen<'ctx> {
                 ret_primary_ret as u8,
                 CDerivativeMode_DEM_ForwardMode, // return value, dret_used, top_level which was 1
                 1,                               // free memory
+                0,                               // runtime activity
                 1,                               // vector mode width
                 std::ptr::null_mut(),
                 fn_type_info, // additional_arg, type info (return + args)

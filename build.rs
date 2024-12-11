@@ -26,6 +26,10 @@ mod enzyme {
             .clang_arg("-x")
             .clang_arg("c++");
 
+        //if mac:
+        //    macos_sdk_dir = env::var("MACOS_SDK_DIR").expect("MACOS_SDK_DIR not set");
+        //    builder = builder.clang_arg(format!("-isysroot {}", macos_sdk_dir));
+
         // add include dirs
         for dir in inc_dirs {
             builder = builder.clang_arg(format!("-I{}", dir))

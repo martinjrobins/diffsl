@@ -11,10 +11,10 @@ repository = "https://github.com/martinjrobins/diffsl"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-llvm15-0 = ["inkwell-150", "llvm-sys-150", "inkwell_internals", "llvm", "enzyme"]
-llvm16-0 = ["inkwell-160", "llvm-sys-160", "inkwell_internals", "llvm", "enzyme"]
-llvm17-0 = ["inkwell-170", "llvm-sys-170", "inkwell_internals", "llvm", "enzyme"]
-llvm18-0 = ["inkwell-180", "llvm-sys-180", "inkwell_internals", "llvm", "enzyme"]
+llvm15-0 = ["inkwell-150", "llvm-sys-150", "llvm", "enzyme"]
+llvm16-0 = ["inkwell-160", "llvm-sys-160", "llvm", "enzyme"]
+llvm17-0 = ["inkwell-170", "llvm-sys-170", "llvm", "enzyme"]
+llvm18-0 = ["inkwell-180", "llvm-sys-180", "llvm", "enzyme"]
 enzyme = ["bindgen", "cmake"]
 llvm = []
 test_compile = []

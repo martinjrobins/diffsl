@@ -71,9 +71,6 @@ jobs:
       if : matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'macos-13'
       with:
         version: ${{ matrix.llvm[0] }}
-    - name: Setup tmate session
-      if : matrix.os == 'macos-latest'
-      uses: mxschmitt/action-tmate@v3
     - name: Run tests (LLVM)
       if : matrix.llvm != ''
       run: cargo test --verbose --features llvm${{ matrix.llvm[1] }}

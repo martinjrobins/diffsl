@@ -5,10 +5,10 @@ use crate::discretise::DiscreteModel;
 
 use super::DataLayout;
 
-pub trait CodegenModule: Sized {
+pub trait CodegenModule: Sized + Sync {
     type FuncId;
 
-    fn new(triple: Triple, model: &DiscreteModel) -> Result<Self>;
+    fn new(triple: Triple, model: &DiscreteModel, threaded: bool) -> Result<Self>;
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_calc_stop(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;

@@ -1,3 +1,5 @@
+use rayon::prelude::*;
+
 use crate::{
     discretise::DiscreteModel,
     execution::interface::{
@@ -14,6 +16,24 @@ use super::{
 use anyhow::{anyhow, Result};
 use target_lexicon::Triple;
 use uid::Id;
+
+struct SendWrapper<T>(T);
+unsafe impl<T> Send for SendWrapper<T> {}
+
+macro_rules! impl_from {
+    ($ty:ty) => {
+        impl From<SendWrapper<$ty>> for $ty {
+            fn from(wrapper: SendWrapper<$ty>) -> $ty {
+                wrapper.0
+            }
+        }
+    }
+}
+
+impl_from!(*mut f64);
+impl_from!(*const f64);
+
+
 
 struct JitFunctions {
     set_u0: U0Func,
@@ -43,26 +63,41 @@ pub struct Compiler<M: CodegenModule> {
     number_of_parameters: usize,
     number_of_outputs: usize,
     has_mass: bool,
+    is_threaded: bool,
+    thread_dim: u32,
 }
 
+#[derive(Default)]
+pub enum CompilerMode {
+    MultiThreaded,
+    #[default]
+    SingleThreaded,
+}
+
+
 impl<M: CodegenModule> Compiler<M> {
-    pub fn from_discrete_str(code: &str) -> Result<Self> {
+    pub fn from_discrete_str(code: &str, mode: CompilerMode) -> Result<Self> {
         let uid = Id::<u32>::new();
         let name = format!("diffsl_{}", uid);
         let model = parse_ds_string(code).map_err(|e| anyhow!(e.to_string()))?;
         let model = DiscreteModel::build(name.as_str(), &model)
             .map_err(|e| anyhow!(e.as_error_message(code)))?;
-        Self::from_discrete_model(&model)
+        Self::from_discrete_model(&model, mode)
     }
-
-    pub fn from_discrete_model(model: &DiscreteModel) -> Result<Self> {
+    
+    pub fn from_discrete_model(model: &DiscreteModel, mode: CompilerMode) -> Result<Self> {
+        let threaded = matches!(mode, CompilerMode::MultiThreaded);
+        // if rayon feature is not enabled and threaded is true, return an error
+        if threaded && !cfg!(feature = "rayon") {
+            return Err(anyhow!("the 'rayon' feature must be enabled to use threaded execution"));
+        }
         let number_of_states = *model.state().shape().first().unwrap_or(&1);
         let input_names = model
             .inputs()
             .iter()
             .map(|input| input.name().to_owned())
             .collect::<Vec<_>>();
-        let mut module = M::new(Triple::host(), model)?;
+        let mut module = M::new(Triple::host(), model, threaded)?;
         let number_of_parameters = input_names.iter().fold(0, |acc, name| {
             acc + module.layout().get_data_length(name).unwrap()
         });
@@ -114,6 +149,17 @@ impl<M: CodegenModule> Compiler<M> {
             std::mem::transmute::<*const u8, SetInputsGradientFunc>(module.jit(set_inputs_grad)?)
         };
 
+        // number of threads to use
+        // prefer the number of threads specified by the user (RAYON_NUM_THREADS)
+        // if not specified, use the number of available threads
+        // don't use more threads than the number of states
+        let num_cpus = std::thread::available_parallelism()?.get();
+        let thread_dim = std::env::var("RAYON_NUM_THREADS")
+            .unwrap_or_else(|_| num_cpus.to_string())
+            .parse::<u32>()
+            .unwrap();
+        let thread_dim = thread_dim.min(number_of_states as u32);
+
         Ok(Self {
             module,
             jit_functions: JitFunctions {
@@ -137,6 +183,8 @@ impl<M: CodegenModule> Compiler<M> {
             number_of_parameters,
             number_of_outputs,
             has_mass,
+            is_threaded: threaded,
+            thread_dim,
         })
     }
 
@@ -154,7 +202,14 @@ impl<M: CodegenModule> Compiler<M> {
                 yy.len()
             );
         }
-        unsafe { (self.jit_functions.set_u0)(yy.as_mut_ptr(), data.as_mut_ptr()) };
+        if self.is_threaded {
+            #[cfg(feature = "rayon")]
+            (0..self.thread_dim).into_par_iter().for_each(|i| {
+                unsafe { (self.jit_functions.set_u0)(yy.as_ptr() as *mut f64, data.as_ptr() as *mut f64, i, self.thread_dim); }
+            });
+        } else {
+            unsafe { (self.jit_functions.set_u0)(yy.as_mut_ptr(), data.as_mut_ptr(), 1, 1); }
+        }
     }
 
     pub fn set_u0_grad(
@@ -188,14 +243,31 @@ impl<M: CodegenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        unsafe {
-            (self.jit_grad_functions.set_u0_grad)(
-                yy.as_mut_ptr(),
-                dyy.as_mut_ptr(),
-                data.as_mut_ptr(),
-                ddata.as_mut_ptr(),
-            )
-        };
+        if self.is_threaded {
+            #[cfg(feature = "rayon")]
+            (0..self.thread_dim).into_par_iter().for_each(|i| {
+                unsafe {
+                    (self.jit_grad_functions.set_u0_grad)(
+                        yy.as_ptr() as *mut f64,
+                        dyy.as_ptr() as *mut f64,
+                        data.as_ptr() as *mut f64,
+                        ddata.as_ptr() as *mut f64,
+                        i,
+                        self.thread_dim,
+                    )
+                };
+            });
+        } else {
+            unsafe {
+                (self.jit_grad_functions.set_u0_grad)(
+                    yy.as_mut_ptr(),
+                    dyy.as_mut_ptr(),
+                    data.as_mut_ptr(),
+                    ddata.as_mut_ptr(),
+                    1, 1,
+                )
+            };
+        }
     }
 
     pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) {
@@ -209,9 +281,25 @@ impl<M: CodegenModule> Compiler<M> {
         if stop.len() != n_stop {
             panic!("Expected {} stop, got {}", n_stop, stop.len());
         }
-        unsafe {
-            (self.jit_functions.calc_stop)(t, yy.as_ptr(), data.as_mut_ptr(), stop.as_mut_ptr())
-        };
+        if self.is_threaded {
+            #[cfg(feature = "rayon")]
+            (0..self.thread_dim).into_par_iter().for_each(|i| {
+                unsafe {
+                    (self.jit_functions.calc_stop)(
+                        t,
+                        yy.as_ptr(),
+                        data.as_ptr() as *mut f64,
+                        stop.as_ptr() as *mut f64,
+                        i,
+                        self.thread_dim,
+                    )
+                }
+            });
+        } else {
+            unsafe {
+                (self.jit_functions.calc_stop)(t, yy.as_ptr(), data.as_mut_ptr(), stop.as_mut_ptr(), 1, 1)
+            };
+        }
     }
 
     pub fn rhs(&self, t: f64, yy: &[f64], data: &mut [f64], rr: &mut [f64]) {
@@ -232,7 +320,24 @@ impl<M: CodegenModule> Compiler<M> {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        unsafe { (self.jit_functions.rhs)(t, yy.as_ptr(), data.as_mut_ptr(), rr.as_mut_ptr()) };
+        if self.is_threaded {
+            #[cfg(feature = "rayon")]
+            (0..self.thread_dim).into_par_iter().for_each(|i| {
+                unsafe {
+                    (self.jit_functions.rhs)(
+                        t,
+                        yy.as_ptr(),
+                        data.as_ptr() as *mut f64,
+                        rr.as_ptr() as *mut f64,
+                        i,
+                        self.thread_dim,
+                    )
+                }
+            });
+
+        } else {
+            unsafe { (self.jit_functions.rhs)(t, yy.as_ptr(), data.as_mut_ptr(), rr.as_mut_ptr(), 1, 1) };
+        }
     }
 
     pub fn has_mass(&self) -> bool {
@@ -260,7 +365,23 @@ impl<M: CodegenModule> Compiler<M> {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        unsafe { (self.jit_functions.mass)(t, yp.as_ptr(), data.as_mut_ptr(), rr.as_mut_ptr()) };
+        if self.is_threaded {
+            #[cfg(feature = "rayon")]
+            (0..self.thread_dim).into_par_iter().for_each(|i| {
+                unsafe {
+                    (self.jit_functions.mass)(
+                        t,
+                        yp.as_ptr(),
+                        data.as_ptr() as *mut f64,
+                        rr.as_ptr() as *mut f64,
+                        i,
+                        self.thread_dim,
+                    )
+                }
+            });
+        } else {
+            unsafe { (self.jit_functions.mass)(t, yp.as_ptr(), data.as_mut_ptr(), rr.as_mut_ptr(), 1, 1) };
+        }
     }
 
     pub fn data_len(&self) -> usize {
@@ -320,17 +441,38 @@ impl<M: CodegenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        unsafe {
-            (self.jit_grad_functions.rhs_grad)(
-                t,
-                yy.as_ptr(),
-                dyy.as_ptr(),
-                data.as_mut_ptr(),
-                ddata.as_mut_ptr(),
-                rr.as_mut_ptr(),
-                drr.as_mut_ptr(),
-            )
-        };
+        if self.is_threaded {
+            #[cfg(feature = "rayon")]
+            (0..self.thread_dim).into_par_iter().for_each(|i| {
+                unsafe {
+                    (self.jit_grad_functions.rhs_grad)(
+                        t,
+                        yy.as_ptr(),
+                        dyy.as_ptr(),
+                        data.as_ptr() as *mut f64,
+                        ddata.as_ptr() as *mut f64,
+                        rr.as_ptr() as *mut f64,
+                        drr.as_ptr() as *mut f64,
+                        i,
+                        self.thread_dim,
+                    )
+                }
+            });
+
+        } else {
+            unsafe {
+                (self.jit_grad_functions.rhs_grad)(
+                    t,
+                    yy.as_ptr(),
+                    dyy.as_ptr(),
+                    data.as_mut_ptr(),
+                    ddata.as_mut_ptr(),
+                    rr.as_mut_ptr(),
+                    drr.as_mut_ptr(),
+                    1, 1,
+                )
+            };
+        }
     }
 
     pub fn calc_out(&self, t: f64, yy: &[f64], data: &mut [f64]) {
@@ -344,7 +486,22 @@ impl<M: CodegenModule> Compiler<M> {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        unsafe { (self.jit_functions.calc_out)(t, yy.as_ptr(), data.as_mut_ptr()) };
+        if self.is_threaded {
+            #[cfg(feature = "rayon")]
+            (0..self.thread_dim).into_par_iter().for_each(|i| {
+                unsafe {
+                    (self.jit_functions.calc_out)(
+                        t,
+                        yy.as_ptr(),
+                        data.as_ptr() as *mut f64,
+                        i,
+                        self.thread_dim,
+                    )
+                }
+            });
+        } else {
+            unsafe { (self.jit_functions.calc_out)(t, yy.as_ptr(), data.as_mut_ptr(), 1, 1) };
+        }
     }
 
     pub fn calc_out_grad(
@@ -379,15 +536,33 @@ impl<M: CodegenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        unsafe {
-            (self.jit_grad_functions.calc_out_grad)(
-                t,
-                yy.as_ptr(),
-                dyy.as_ptr(),
-                data.as_mut_ptr(),
-                ddata.as_mut_ptr(),
-            )
-        };
+        if self.is_threaded {
+            #[cfg(feature = "rayon")]
+            (0..self.thread_dim).into_par_iter().for_each(|i| {
+                unsafe {
+                    (self.jit_grad_functions.calc_out_grad)(
+                        t,
+                        yy.as_ptr(),
+                        dyy.as_ptr(),
+                        data.as_ptr() as *mut f64,
+                        ddata.as_ptr() as *mut f64,
+                        i,
+                        self.thread_dim,
+                    )
+                }
+            });
+        } else {
+            unsafe {
+                (self.jit_grad_functions.calc_out_grad)(
+                    t,
+                    yy.as_ptr(),
+                    dyy.as_ptr(),
+                    data.as_mut_ptr(),
+                    ddata.as_mut_ptr(),
+                    1, 1,
+                )
+            };
+        }
     }
 
     /// Get various dimensions of the model
@@ -526,7 +701,7 @@ mod tests {
         F { -y }
         out { y }
         ";
-        let compiler = Compiler::<LlvmModule>::from_discrete_str(text).unwrap();
+        let compiler = Compiler::<LlvmModule>::from_discrete_str(text, Default::default()).unwrap();
         let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
         assert_eq!(n_states, 1);
         assert_eq!(n_inputs, 0);
@@ -549,7 +724,7 @@ mod tests {
         F { -y }
         out { y }
         ";
-        let compiler = Compiler::<CraneliftModule>::from_discrete_str(text).unwrap();
+        let compiler = Compiler::<CraneliftModule>::from_discrete_str(text, Default::default()).unwrap();
         let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
         assert_eq!(n_states, 1);
         assert_eq!(n_inputs, 0);
@@ -600,7 +775,7 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut stop = vec![0.];
@@ -622,7 +797,7 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut data = compiler.get_new_data();
         // need this to set the constants
@@ -678,10 +853,10 @@ mod tests {
         let name = "$name";
         let discrete_model = DiscreteModel::build(name, &model).unwrap();
         env_logger::builder().is_test(true).try_init().unwrap();
-        let _compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model).unwrap();
+        let _compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default()).unwrap();
     }
 
-    fn tensor_test_common<T: CodegenModule>(text: &str, tensor_name: &str) -> Vec<Vec<f64>> {
+    fn tensor_test_common<T: CodegenModule>(text: &str, tensor_name: &str, mode: CompilerMode) -> Vec<Vec<f64>> {
         let full_text = format!(
             "
             {}
@@ -695,12 +870,12 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text.as_str()));
             }
         };
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
-        let mut u0 = vec![1.];
-        let mut res = vec![0.];
+        let compiler = Compiler::<T>::from_discrete_model(&discrete_model, mode).unwrap();
+        let (n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+        let mut u0 = vec![1.; n_states];
+        let mut res = vec![0.; n_states];
         let mut data = compiler.get_new_data();
         let mut grad_data = Vec::new();
-        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
         for _ in 0..n_inputs {
             grad_data.push(compiler.get_new_data());
         }
@@ -778,14 +953,27 @@ mod tests {
                     }}
                 ", $text);
 
+                #[cfg(feature = "rayon")]
+                {
+                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+
+                    #[cfg(feature = "llvm")]
+                    {
+                        use crate::execution::llvm::codegen::LlvmModule;
+                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    }
+                }
+
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name);
+                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
 
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name);
+                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                 assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
             }
         )*
@@ -901,14 +1089,27 @@ mod tests {
                     }}
                 ", $text);
 
-                #[cfg(feature = "llvm")]
+                #[cfg(feature = "rayon")]
                 {
-                    use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name);
+                    #[cfg(feature = "llvm")]
+                    {
+                        use crate::execution::llvm::codegen::LlvmModule;
+                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                        assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                    }
+
+                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
                     assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
                 }
 
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name);
+                #[cfg(feature = "llvm")]
+                {
+                    use crate::execution::llvm::codegen::LlvmModule;
+                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                }
+
+                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                 assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
             }
         )*
@@ -922,6 +1123,51 @@ mod tests {
         input_vec_grad: "r_i { 2 * p * p, 3 * p }" expect "r" vec![4., 3.],
         state_grad: "r { 2 * y }" expect "r" vec![2.],
         input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.],
+    }
+
+    macro_rules! tensor_test_big_state {
+        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let full_text = format!("
+                    u_i {{
+                        (0:50):   x = 1,
+                        (50:100): y = 1,
+                    }}
+                    {}
+                    F_i {{ x_i, y_i, }}
+                ", $text);
+
+                #[cfg(feature = "rayon")]
+                {
+                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+
+                    #[cfg(feature = "llvm")]
+                    {
+                        use crate::execution::llvm::codegen::LlvmModule;
+                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    }
+                }
+
+                #[cfg(feature = "llvm")]
+                {
+                    use crate::execution::llvm::codegen::LlvmModule;
+                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                }
+
+                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+            }
+        )*
+        }
+    }
+
+    tensor_test_big_state! {
+        big_state: "r_i { x_i + y_i }" expect "r" vec![2.; 50],
     }
 
     #[test]
@@ -967,7 +1213,7 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text));
             }
         };
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut du0 = vec![1.];
         let mut res = vec![0.];
@@ -1035,7 +1281,7 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass) = compiler.get_dims();
         assert_eq!(n_states, 2);
         assert_eq!(n_inputs, 1);
@@ -1083,7 +1329,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("test_inputs", &model).unwrap();
 
-        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model).unwrap();
+        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut data = compiler.get_new_data();
         let inputs = vec![1.0, 2.0, 3.0];
         compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
@@ -1096,7 +1342,7 @@ mod tests {
         #[cfg(feature = "llvm")]
         {
             let compiler =
-                Compiler::<crate::LlvmModule>::from_discrete_model(&discrete_model).unwrap();
+                Compiler::<crate::LlvmModule>::from_discrete_model(&discrete_model, Default::default()).unwrap();
             let mut data = compiler.get_new_data();
             let inputs = vec![1.0, 2.0, 3.0];
             compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());

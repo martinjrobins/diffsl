@@ -52,6 +52,8 @@ struct ImmovableLlvmModule {
 
 pub struct LlvmModule(Pin<Box<ImmovableLlvmModule>>);
 
+unsafe impl Sync for LlvmModule {}
+
 impl LlvmModule {
     pub fn compile(&self, standalone: bool, wasm: bool, out: &str) -> Result<()> {
         let clang_name = find_executable(&["clang", "clang-14"])?;
@@ -213,7 +215,7 @@ impl LlvmModule {
 
 impl CodegenModule for LlvmModule {
     type FuncId = FunctionValue<'static>;
-    fn new(triple: Triple, model: &DiscreteModel) -> Result<Self> {
+    fn new(triple: Triple, model: &DiscreteModel, threaded: bool) -> Result<Self> {
         let context = AliasableBox::from_unique(Box::new(Context::create()));
         let mut pinned = Self(Box::pin(ImmovableLlvmModule {
             codegen: None,
@@ -230,6 +232,7 @@ impl CodegenModule for LlvmModule {
             context_ref.f64_type(),
             context_ref.i32_type(),
             real_type_str,
+            threaded,
         )?;
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
         unsafe { pinned.0.as_mut().get_unchecked_mut().codegen = Some(codegen) };
@@ -435,6 +438,7 @@ pub struct CodeGen<'ctx> {
     layout: DataLayout,
     globals: Globals<'ctx>,
     ee: ExecutionEngine<'ctx>,
+    threaded: bool,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -444,6 +448,7 @@ impl<'ctx> CodeGen<'ctx> {
         real_type: FloatType<'ctx>,
         int_type: IntType<'ctx>,
         real_type_str: &str,
+        threaded: bool,
     ) -> Result<Self> {
         let builder = context.create_builder();
         let layout = DataLayout::new(model);
@@ -470,6 +475,7 @@ impl<'ctx> CodeGen<'ctx> {
             int_ptr_type,
             globals,
             ee,
+            threaded,
         })
     }
 
@@ -2582,7 +2588,7 @@ mod tests {
         F { -y }
         out { y }
         ";
-        let compiler = Compiler::<LlvmModule>::from_discrete_str(text).unwrap();
+        let compiler = Compiler::<LlvmModule>::from_discrete_str(text, Default::default()).unwrap();
         compiler
             .module()
             .compile(true, true, "test_output/test_compile")

@@ -1780,8 +1780,9 @@ impl<'ctx> CodeGen<'ctx> {
                 let translate_store_index =
                     int_type.const_int(translate_store_index.try_into().unwrap(), false);
                 let rank_const = int_type.const_int(rank.try_into().unwrap(), false);
-                let elmt_index_strided =
-                    self.builder.build_int_mul(store_index, rank_const, name)?;
+                //let elmt_index_strided =
+                //    self.builder.build_int_mul(store_index, rank_const, name)?;
+                let elmt_index_strided = store_index;
                 let curr_index =
                     self.builder
                         .build_int_add(elmt_index_strided, translate_store_index, name)?;

@@ -1777,7 +1777,8 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     .builder
                     .ins()
                     .iconst(int_type, i64::try_from(rank).unwrap());
-                let elmt_index_strided = self.builder.ins().imul(store_index, rank_const);
+                //let elmt_index_strided = self.builder.ins().imul(store_index, rank_const);
+                let elmt_index_strided = store_index;
                 let curr_index = self
                     .builder
                     .ins()

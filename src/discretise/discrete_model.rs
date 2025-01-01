@@ -730,9 +730,7 @@ impl<'s> DiscreteModel<'s> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        continuous::ModelInfo,
-        discretise::DiscreteModel,
-        parser::{parse_ds_string, parse_ms_string},
+        continuous::ModelInfo, discretise::DiscreteModel, execution::Translation, parser::{parse_ds_string, parse_ms_string}
     };
 
     #[test]
@@ -1260,7 +1258,20 @@ mod tests {
             assert_eq!(layout.indices().map(|i| i.to_string()).collect::<Vec<_>>(), vec!["[0, 0]", "[1, 0]", "[1, 1]", "[2, 1]", "[2, 2]"]);
             assert_eq!(layout.to_data_layout(), vec![0, 0, 1, 0, 1, 1, 2, 1, 2, 2]);
         }
-        assert_eq!(r.elmts()[0].layout().to_data_layout(), vec![0, 0, 1, 1, 2, 2]);
-        assert_eq!(r.elmts()[1].layout().to_data_layout(), vec![1, 0, 2, 1]);
+        let translation = Translation::new(
+            r.elmts()[0].expr_layout(),
+            r.elmts()[0].layout(),
+            r.elmts()[0].start(),
+            r.layout_ptr(),
+        );
+        assert_eq!(translation.to_data_layout(), vec![0, 2, 4]);
+        let translation = Translation::new(
+            r.elmts()[1].expr_layout(),
+            r.elmts()[1].layout(),
+            r.elmts()[1].start(),
+            r.layout_ptr(),
+        );
+        assert_eq!(translation.to_data_layout(), vec![1, 3]);
+
     }
 }

@@ -1175,7 +1175,7 @@ mod tests {
         big_state_multi: "r_i { x_i + y_i } b_i { x_i, r_i - y_i }" expect "b" vec![1.; 100],
         big_state_multi_w_scalar: "r { 1.0 + 1.0 } b_i { x_i, r - y_i }" expect "b" vec![1.; 100],
         big_state_diag: "b_ij { (0..100, 0..100): 3.0 } r_i { b_ij * u_j }" expect "r" vec![3.; 100],
-        big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 2.0, (99, 0): 1.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100],
+        big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100],
     }
 
     #[test]

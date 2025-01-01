@@ -1227,4 +1227,40 @@ mod tests {
         assert_eq!(model.out().elmts().len(), 1);
         assert_eq!(model.out().elmts()[0].expr().to_string(), "u_i");
     }
+    
+    #[test]
+    fn test_sparse_layout() {
+        let text = "
+        u_i {
+            y = 1,
+        }
+        r_ij {
+            (0..3, 0..3): 1,
+            (1..3, 0..2): 3,
+        }
+        b_ij {
+            (0, 0): 1,
+            (1, 0): 3,
+            (1, 1): 1,
+            (2, 1): 3,
+            (2, 2): 1,
+        }
+        F_i {
+            y,
+        }
+        ";
+        let model = parse_ds_string(text).unwrap();
+        let model = DiscreteModel::build("$name", &model).unwrap();
+        let r = model.time_indep_defns().iter().find(|t| t.name() == "r").unwrap();
+        let b = model.time_indep_defns().iter().find(|t| t.name() == "b").unwrap();
+        for tensor in [r, b] {
+            let layout = tensor.layout();
+            assert_eq!(layout.shape()[0], 3);
+            assert_eq!(layout.shape()[1], 3);
+            assert_eq!(layout.indices().map(|i| i.to_string()).collect::<Vec<_>>(), vec!["[0, 0]", "[1, 0]", "[1, 1]", "[2, 1]", "[2, 2]"]);
+            assert_eq!(layout.to_data_layout(), vec![0, 0, 1, 0, 1, 1, 2, 1, 2, 2]);
+        }
+        assert_eq!(r.elmts()[0].layout().to_data_layout(), vec![0, 0, 1, 1, 2, 2]);
+        assert_eq!(r.elmts()[1].layout().to_data_layout(), vec![1, 0, 2, 1]);
+    }
 }

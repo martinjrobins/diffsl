@@ -1,5 +1,4 @@
 use rayon::prelude::*;
-
 use crate::{
     discretise::DiscreteModel,
     execution::interface::{
@@ -91,7 +90,20 @@ impl<M: CodegenModule> Compiler<M> {
         if threaded && !cfg!(feature = "rayon") {
             return Err(anyhow!("the 'rayon' feature must be enabled to use threaded execution"));
         }
+        
+        // number of threads to use
+        // prefer the number of threads specified by the user (RAYON_NUM_THREADS)
+        // if not specified, use the number of available threads
+        // don't use more threads than the number of states
+        let num_cpus = std::thread::available_parallelism()?.get();
+        let thread_dim = std::env::var("RAYON_NUM_THREADS")
+            .unwrap_or_else(|_| num_cpus.to_string())
+            .parse::<u32>()
+            .unwrap();
         let number_of_states = *model.state().shape().first().unwrap_or(&1);
+        let thread_dim = thread_dim.min(number_of_states as u32);
+        let threaded = threaded && thread_dim > 1;
+        
         let input_names = model
             .inputs()
             .iter()
@@ -149,16 +161,7 @@ impl<M: CodegenModule> Compiler<M> {
             std::mem::transmute::<*const u8, SetInputsGradientFunc>(module.jit(set_inputs_grad)?)
         };
 
-        // number of threads to use
-        // prefer the number of threads specified by the user (RAYON_NUM_THREADS)
-        // if not specified, use the number of available threads
-        // don't use more threads than the number of states
-        let num_cpus = std::thread::available_parallelism()?.get();
-        let thread_dim = std::env::var("RAYON_NUM_THREADS")
-            .unwrap_or_else(|_| num_cpus.to_string())
-            .parse::<u32>()
-            .unwrap();
-        let thread_dim = thread_dim.min(number_of_states as u32);
+        
 
         Ok(Self {
             module,
@@ -952,6 +955,16 @@ mod tests {
                         y,
                     }}
                 ", $text);
+                
+                #[cfg(feature = "llvm")]
+                {
+                    use crate::execution::llvm::codegen::LlvmModule;
+                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                }
+
+                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
 
                 #[cfg(feature = "rayon")]
                 {
@@ -965,16 +978,6 @@ mod tests {
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     }
                 }
-
-                #[cfg(feature = "llvm")]
-                {
-                    use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                }
-
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
             }
         )*
         }
@@ -1059,6 +1062,7 @@ mod tests {
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![1., 6.],
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![5., 11.],
         sparse_matrix_vect_multiply_zero_row: "A_ij { (0, 1): 2 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![4.],
+        bidiagonal: "A_ij { (0..3, 0..3): 1, (1..3, 0..2): 2 }" expect "A" vec![1., 2., 1., 2., 1.],
     }
 
     macro_rules! tensor_grad_test {
@@ -1138,6 +1142,16 @@ mod tests {
                     {}
                     F_i {{ x_i, y_i, }}
                 ", $text);
+                
+                #[cfg(feature = "llvm")]
+                {
+                    use crate::execution::llvm::codegen::LlvmModule;
+                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                }
+
+                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
 
                 #[cfg(feature = "rayon")]
                 {
@@ -1151,23 +1165,17 @@ mod tests {
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     }
                 }
-
-                #[cfg(feature = "llvm")]
-                {
-                    use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                }
-
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
             }
         )*
         }
     }
 
     tensor_test_big_state! {
-        big_state: "r_i { x_i + y_i }" expect "r" vec![2.; 50],
+        big_state_expr: "r_i { x_i + y_i }" expect "r" vec![2.; 50],
+        big_state_multi: "r_i { x_i + y_i } b_i { x_i, r_i - y_i }" expect "b" vec![1.; 100],
+        big_state_multi_w_scalar: "r { 1.0 + 1.0 } b_i { x_i, r - y_i }" expect "b" vec![1.; 100],
+        big_state_diag: "b_ij { (0..100, 0..100): 3.0 } r_i { b_ij * u_j }" expect "r" vec![3.; 100],
+        big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 2.0, (99, 0): 1.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100],
     }
 
     #[test]

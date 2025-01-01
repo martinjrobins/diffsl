@@ -811,7 +811,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         }
         let thread_dim = self.variables.get("threadDim").unwrap();
         let thread_dim = self.builder.use_var(*thread_dim);
-        let nbarrier = self.builder.ins().iconst(self.int_type, nbarrier);
+        let nbarrier = self.builder.ins().iconst(self.int_type, nbarrier + 1);
         let thread_dim_mul_nbarrier = self.builder.ins().imul(thread_dim, nbarrier);
         let barrier = self.get_function("barrier", false).unwrap();
         self.builder.ins().call(barrier, &[thread_dim_mul_nbarrier]);
@@ -1158,30 +1158,39 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             .mapv(|n| i64::try_from(n).unwrap());
         let one = self.builder.ins().iconst(int_type, 1);
         let zero = self.builder.ins().iconst(int_type, 0);
+        let mut expr_strides = vec![1i64; expr_rank];
+        if expr_rank > 0 {
+            for i in (0..expr_rank-1).rev() {
+                expr_strides[i] = expr_strides[i + 1] * expr_shape[i + 1];
+            }
+        }
+        let expr_strides = expr_strides.iter().map(|&s| self.builder.ins().iconst(int_type, s)).collect::<Vec<_>>();
+
 
         // setup indices, loop through the nested loops
         let mut indices = Vec::new();
         let mut blocks = Vec::new();
 
         // allocate the contract sum if needed
-        let (contract_sum, contract_by) = if let TranslationFrom::DenseContraction {
+        let (contract_sum, contract_by, contract_strides) = if let TranslationFrom::DenseContraction {
             contract_by,
             contract_len: _,
         } = translation.source
         {
+            let contract_rank = expr_rank - contract_by;
+            let mut contract_strides = vec![1i64; contract_rank];
+            for i in (0..contract_rank-1).rev() {
+                contract_strides[i] = contract_strides[i + 1] * expr_shape[i + 1];
+            }
+            let contract_strides = contract_strides.iter().map(|&s| self.builder.ins().iconst(int_type, s)).collect::<Vec<_>>();
+
             (
                 Some(self.decl_stack_slot(self.real_type, None)),
                 contract_by,
+                Some(contract_strides),
             )
         } else {
-            (None, 0)
-        };
-
-        //let expr_index_var = self.decl_stack_slot(self.int_type, Some(zero));
-        let elmt_index_var = if contract_sum.is_some() {
-            Some(self.decl_stack_slot(self.int_type, Some(zero)))
-        } else {
-            None
+            (None, 0, None)
         };
 
         // we will thread the output loop, except if we are contracting to a scalar
@@ -1243,14 +1252,12 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 .ins()
                 .stack_store(new_contract_sum_value, contract_sum.unwrap(), 0);
         } else {
-            let expr_index = if indices.is_empty() {
-                zero
-            } else {
-                indices
-                    .iter()
-                    .skip(1)
-                    .fold(indices[0], |acc, x| self.builder.ins().imul(acc, *x))
-            };
+            let expr_index = indices.iter().zip(expr_strides.iter()).fold(zero,
+                |acc, (i, s)| {
+                    let tmp = self.builder.ins().imul(*i, *s);
+                    self.builder.ins().iadd(acc, tmp)
+                }
+            );
             self.jit_compile_broadcast_and_store(
                 name,
                 elmt,
@@ -1259,25 +1266,19 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 translation,
                 self.builder.current_block().unwrap(),
             )?;
-            //let next_elmt_index = self.builder.ins().iadd(elmt_index, one);
-            //self.builder
-            //    .ins()
-            //    .stack_store(next_elmt_index, elmt_index_var, 0);
         }
 
         // unwind the nested loops
         for i in (0..expr_rank).rev() {
             // update and store contract sum
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
-                let elmt_index =
-                    self.builder
-                        .ins()
-                        .stack_load(self.int_type, elmt_index_var.unwrap(), 0);
-                let next_elmt_index = self.builder.ins().iadd(elmt_index, one);
-                self.builder
-                    .ins()
-                    .stack_store(next_elmt_index, elmt_index_var.unwrap(), 0);
-
+                let contract_strides = contract_strides.as_ref().unwrap();
+                let elmt_index = indices.iter().take(contract_strides.len()).zip(contract_strides.iter()).fold(zero,
+                    |acc, (i, s)| {
+                        let tmp = self.builder.ins().imul(*i, *s);
+                        self.builder.ins().iadd(acc, tmp)
+                    }
+                );
                 let contract_sum_value =
                     self.builder
                         .ins()

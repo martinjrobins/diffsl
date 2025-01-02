@@ -113,7 +113,7 @@ impl<M: CodegenModule> Compiler<M> {
             }
             _ => 1,
         };
-        
+
         let threaded = threaded && thread_dim > 1;
         let (thread_pool, thread_lock) = if threaded {
             (

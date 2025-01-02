@@ -239,7 +239,8 @@ impl<M: CodegenModule> Compiler<M> {
             thread_pool.broadcast(|ctx| {
                 let idx = ctx.index() as u32;
                 let dim = dim as u32;
-                // make sure all threads are ready before executing the function
+                // internal barriers in f use active spin-locks, so all threads
+                // must be available so the spin-locks can be released
                 barrier.wait();
                 f(idx, dim);
             });

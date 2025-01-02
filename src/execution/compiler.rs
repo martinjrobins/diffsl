@@ -71,7 +71,7 @@ pub struct Compiler<M: CodegenModule> {
 
 #[derive(Default)]
 pub enum CompilerMode {
-    MultiThreaded,
+    MultiThreaded(Option<usize>),
     #[default]
     SingleThreaded,
 }
@@ -87,7 +87,7 @@ impl<M: CodegenModule> Compiler<M> {
     }
 
     pub fn from_discrete_model(model: &DiscreteModel, mode: CompilerMode) -> Result<Self> {
-        let threaded = matches!(mode, CompilerMode::MultiThreaded);
+        let threaded = matches!(mode, CompilerMode::MultiThreaded(_));
         // if rayon feature is not enabled and threaded is true, return an error
         if threaded && !cfg!(feature = "rayon") {
             return Err(anyhow!(
@@ -99,14 +99,21 @@ impl<M: CodegenModule> Compiler<M> {
         // prefer the number of threads specified by the user (RAYON_NUM_THREADS)
         // if not specified, use the number of available threads
         // don't use more threads than the number of states
-        let num_cpus = std::thread::available_parallelism()?.get();
-        let thread_dim = std::env::var("RAYON_NUM_THREADS")
-            .unwrap_or_else(|_| num_cpus.to_string())
-            .parse::<usize>()
-            .unwrap();
         let number_of_states = model.state().shape().first().unwrap_or(&1).to_owned();
-        let max_threads = (number_of_states / 10).max(1);
-        let thread_dim = thread_dim.min(max_threads);
+        let thread_dim = match mode {
+            CompilerMode::MultiThreaded(Some(n)) => n,
+            CompilerMode::MultiThreaded(None) => {
+                let num_cpus = std::thread::available_parallelism()?.get();
+                let thread_dim = std::env::var("RAYON_NUM_THREADS")
+                    .unwrap_or_else(|_| num_cpus.to_string())
+                    .parse::<usize>()
+                    .unwrap();
+                let max_threads = (number_of_states / 10).max(1);
+                thread_dim.min(max_threads)
+            }
+            _ => 1,
+        };
+        
         let threaded = threaded && thread_dim > 1;
         let (thread_pool, thread_lock) = if threaded {
             (
@@ -929,13 +936,13 @@ mod tests {
 
                 #[cfg(feature = "rayon")]
                 {
-                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
 
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     }
                 }
@@ -1059,11 +1066,11 @@ mod tests {
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
                     }
 
-                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
                 }
 
@@ -1116,13 +1123,13 @@ mod tests {
 
                 #[cfg(feature = "rayon")]
                 {
-                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
 
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded);
+                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     }
                 }

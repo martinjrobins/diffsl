@@ -102,10 +102,11 @@ impl<M: CodegenModule> Compiler<M> {
         let num_cpus = std::thread::available_parallelism()?.get();
         let thread_dim = std::env::var("RAYON_NUM_THREADS")
             .unwrap_or_else(|_| num_cpus.to_string())
-            .parse::<u32>()
+            .parse::<usize>()
             .unwrap();
-        let number_of_states = *model.state().shape().first().unwrap_or(&1);
-        let thread_dim = thread_dim.min(number_of_states as u32);
+        let number_of_states = model.state().shape().first().unwrap_or(&1).to_owned();
+        let max_threads = (number_of_states / 10).max(1);
+        let thread_dim = thread_dim.min(max_threads);
         let threaded = threaded && thread_dim > 1;
         let (thread_pool, thread_lock) = if threaded {
             (

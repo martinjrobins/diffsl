@@ -117,11 +117,7 @@ impl<M: CodegenModule> Compiler<M> {
         let threaded = threaded && thread_dim > 1;
         let (thread_pool, thread_lock) = if threaded {
             (
-                Some(
-                    ThreadPoolBuilder::new()
-                        .num_threads(thread_dim as usize)
-                        .build()?,
-                ),
+                Some(ThreadPoolBuilder::new().num_threads(thread_dim).build()?),
                 Some(std::sync::Mutex::new(())),
             )
         } else {

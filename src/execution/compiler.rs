@@ -1,3 +1,5 @@
+use std::sync::{Arc, Barrier};
+
 use crate::{
     discretise::DiscreteModel,
     execution::interface::{
@@ -229,12 +231,16 @@ impl<M: CodegenModule> Compiler<M> {
     {
         if let (Some(thread_pool), Some(thread_lock)) = (&self.thread_pool, &self.thread_lock) {
             let _lock = thread_lock.lock().unwrap();
+            let dim = thread_pool.current_num_threads();
+            let barrier = Arc::new(Barrier::new(dim));
             unsafe {
                 (self.jit_functions.barrier_init.unwrap())();
             }
             thread_pool.broadcast(|ctx| {
                 let idx = ctx.index() as u32;
-                let dim = ctx.num_threads() as u32;
+                let dim = dim as u32;
+                // make sure all threads are ready before executing the function
+                barrier.wait();
                 f(idx, dim);
             });
         } else {

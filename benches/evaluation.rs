@@ -1,5 +1,6 @@
 use diffsl::{
-    discretise::DiscreteModel, execution::module::CodegenModule, parser::parse_ds_string, Compiler, CraneliftModule
+    discretise::DiscreteModel, execution::module::CodegenModule, parser::parse_ds_string, Compiler,
+    CraneliftModule,
 };
 use divan::Bencher;
 use ndarray::Array1;

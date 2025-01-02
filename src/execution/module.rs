@@ -41,6 +41,7 @@ pub trait CodegenModule: Sized + Sync {
     ) -> Result<Self::FuncId>;
 
     fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8>;
+    fn jit_barrier_init(&mut self) -> Result<*const u8>;
 
     fn pre_autodiff_optimisation(&mut self) -> Result<()>;
     fn post_autodiff_optimisation(&mut self) -> Result<()>;

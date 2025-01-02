@@ -1,4 +1,3 @@
-use rayon::prelude::*;
 use crate::{
     discretise::DiscreteModel,
     execution::interface::{
@@ -9,10 +8,15 @@ use crate::{
 };
 
 use super::{
-    interface::{CalcOutGradientFunc, RhsGradientFunc, SetInputsGradientFunc, U0GradientFunc},
+    interface::{
+        BarrierInitFunc, CalcOutGradientFunc, RhsGradientFunc, SetInputsGradientFunc,
+        U0GradientFunc,
+    },
     module::CodegenModule,
 };
 use anyhow::{anyhow, Result};
+#[cfg(feature = "rayon")]
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use target_lexicon::Triple;
 use uid::Id;
 
@@ -26,13 +30,11 @@ macro_rules! impl_from {
                 wrapper.0
             }
         }
-    }
+    };
 }
 
 impl_from!(*mut f64);
 impl_from!(*const f64);
-
-
 
 struct JitFunctions {
     set_u0: U0Func,
@@ -44,6 +46,7 @@ struct JitFunctions {
     get_dims: GetDimsFunc,
     set_inputs: SetInputsFunc,
     get_out: GetOutFunc,
+    barrier_init: Option<BarrierInitFunc>,
 }
 
 struct JitGradFunctions {
@@ -62,8 +65,8 @@ pub struct Compiler<M: CodegenModule> {
     number_of_parameters: usize,
     number_of_outputs: usize,
     has_mass: bool,
-    is_threaded: bool,
-    thread_dim: u32,
+    thread_pool: Option<ThreadPool>,
+    thread_lock: Option<std::sync::Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -72,7 +75,6 @@ pub enum CompilerMode {
     #[default]
     SingleThreaded,
 }
-
 
 impl<M: CodegenModule> Compiler<M> {
     pub fn from_discrete_str(code: &str, mode: CompilerMode) -> Result<Self> {
@@ -83,14 +85,16 @@ impl<M: CodegenModule> Compiler<M> {
             .map_err(|e| anyhow!(e.as_error_message(code)))?;
         Self::from_discrete_model(&model, mode)
     }
-    
+
     pub fn from_discrete_model(model: &DiscreteModel, mode: CompilerMode) -> Result<Self> {
         let threaded = matches!(mode, CompilerMode::MultiThreaded);
         // if rayon feature is not enabled and threaded is true, return an error
         if threaded && !cfg!(feature = "rayon") {
-            return Err(anyhow!("the 'rayon' feature must be enabled to use threaded execution"));
+            return Err(anyhow!(
+                "the 'rayon' feature must be enabled to use threaded execution"
+            ));
         }
-        
+
         // number of threads to use
         // prefer the number of threads specified by the user (RAYON_NUM_THREADS)
         // if not specified, use the number of available threads
@@ -103,7 +107,19 @@ impl<M: CodegenModule> Compiler<M> {
         let number_of_states = *model.state().shape().first().unwrap_or(&1);
         let thread_dim = thread_dim.min(number_of_states as u32);
         let threaded = threaded && thread_dim > 1;
-        
+        let (thread_pool, thread_lock) = if threaded {
+            (
+                Some(
+                    ThreadPoolBuilder::new()
+                        .num_threads(thread_dim as usize)
+                        .build()?,
+                ),
+                Some(std::sync::Mutex::new(())),
+            )
+        } else {
+            (None, None)
+        };
+
         let input_names = model
             .inputs()
             .iter()
@@ -135,6 +151,13 @@ impl<M: CodegenModule> Compiler<M> {
 
         module.post_autodiff_optimisation()?;
 
+        let barrier_init = if threaded {
+            Some(unsafe {
+                std::mem::transmute::<*const u8, BarrierInitFunc>(module.jit_barrier_init()?)
+            })
+        } else {
+            None
+        };
         let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(module.jit(set_u0)?) };
         let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(module.jit(rhs)?) };
         let mass = unsafe { std::mem::transmute::<*const u8, MassFunc>(module.jit(mass)?) };
@@ -161,8 +184,6 @@ impl<M: CodegenModule> Compiler<M> {
             std::mem::transmute::<*const u8, SetInputsGradientFunc>(module.jit(set_inputs_grad)?)
         };
 
-        
-
         Ok(Self {
             module,
             jit_functions: JitFunctions {
@@ -175,6 +196,7 @@ impl<M: CodegenModule> Compiler<M> {
                 get_dims,
                 set_inputs,
                 get_out,
+                barrier_init,
             },
             jit_grad_functions: JitGradFunctions {
                 set_u0_grad,
@@ -186,8 +208,8 @@ impl<M: CodegenModule> Compiler<M> {
             number_of_parameters,
             number_of_outputs,
             has_mass,
-            is_threaded: threaded,
-            thread_dim,
+            thread_pool,
+            thread_lock,
         })
     }
 
@@ -195,6 +217,25 @@ impl<M: CodegenModule> Compiler<M> {
         let index = self.module.layout().get_data_index(name)?;
         let nnz = self.module.layout().get_data_length(name)?;
         Some(&data[index..index + nnz])
+    }
+
+    fn with_threading<F>(&self, f: F)
+    where
+        F: Fn(u32, u32) + Sync + Send,
+    {
+        if let (Some(thread_pool), Some(thread_lock)) = (&self.thread_pool, &self.thread_lock) {
+            let _lock = thread_lock.lock().unwrap();
+            unsafe {
+                (self.jit_functions.barrier_init.unwrap())();
+            }
+            thread_pool.broadcast(|ctx| {
+                let idx = ctx.index() as u32;
+                let dim = ctx.num_threads() as u32;
+                f(idx, dim);
+            });
+        } else {
+            f(0, 1);
+        }
     }
 
     pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) {
@@ -205,14 +246,9 @@ impl<M: CodegenModule> Compiler<M> {
                 yy.len()
             );
         }
-        if self.is_threaded {
-            #[cfg(feature = "rayon")]
-            (0..self.thread_dim).into_par_iter().for_each(|i| {
-                unsafe { (self.jit_functions.set_u0)(yy.as_ptr() as *mut f64, data.as_ptr() as *mut f64, i, self.thread_dim); }
-            });
-        } else {
-            unsafe { (self.jit_functions.set_u0)(yy.as_mut_ptr(), data.as_mut_ptr(), 1, 1); }
-        }
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_functions.set_u0)(yy.as_ptr() as *mut f64, data.as_ptr() as *mut f64, i, dim);
+        });
     }
 
     pub fn set_u0_grad(
@@ -246,31 +282,18 @@ impl<M: CodegenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        if self.is_threaded {
-            #[cfg(feature = "rayon")]
-            (0..self.thread_dim).into_par_iter().for_each(|i| {
-                unsafe {
-                    (self.jit_grad_functions.set_u0_grad)(
-                        yy.as_ptr() as *mut f64,
-                        dyy.as_ptr() as *mut f64,
-                        data.as_ptr() as *mut f64,
-                        ddata.as_ptr() as *mut f64,
-                        i,
-                        self.thread_dim,
-                    )
-                };
-            });
-        } else {
+        self.with_threading(|i, dim| {
             unsafe {
                 (self.jit_grad_functions.set_u0_grad)(
-                    yy.as_mut_ptr(),
-                    dyy.as_mut_ptr(),
-                    data.as_mut_ptr(),
-                    ddata.as_mut_ptr(),
-                    1, 1,
+                    yy.as_ptr() as *mut f64,
+                    dyy.as_ptr() as *mut f64,
+                    data.as_ptr() as *mut f64,
+                    ddata.as_ptr() as *mut f64,
+                    i,
+                    dim,
                 )
             };
-        }
+        })
     }
 
     pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) {
@@ -284,25 +307,16 @@ impl<M: CodegenModule> Compiler<M> {
         if stop.len() != n_stop {
             panic!("Expected {} stop, got {}", n_stop, stop.len());
         }
-        if self.is_threaded {
-            #[cfg(feature = "rayon")]
-            (0..self.thread_dim).into_par_iter().for_each(|i| {
-                unsafe {
-                    (self.jit_functions.calc_stop)(
-                        t,
-                        yy.as_ptr(),
-                        data.as_ptr() as *mut f64,
-                        stop.as_ptr() as *mut f64,
-                        i,
-                        self.thread_dim,
-                    )
-                }
-            });
-        } else {
-            unsafe {
-                (self.jit_functions.calc_stop)(t, yy.as_ptr(), data.as_mut_ptr(), stop.as_mut_ptr(), 1, 1)
-            };
-        }
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_functions.calc_stop)(
+                t,
+                yy.as_ptr(),
+                data.as_ptr() as *mut f64,
+                stop.as_ptr() as *mut f64,
+                i,
+                dim,
+            )
+        });
     }
 
     pub fn rhs(&self, t: f64, yy: &[f64], data: &mut [f64], rr: &mut [f64]) {
@@ -323,24 +337,16 @@ impl<M: CodegenModule> Compiler<M> {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        if self.is_threaded {
-            #[cfg(feature = "rayon")]
-            (0..self.thread_dim).into_par_iter().for_each(|i| {
-                unsafe {
-                    (self.jit_functions.rhs)(
-                        t,
-                        yy.as_ptr(),
-                        data.as_ptr() as *mut f64,
-                        rr.as_ptr() as *mut f64,
-                        i,
-                        self.thread_dim,
-                    )
-                }
-            });
-
-        } else {
-            unsafe { (self.jit_functions.rhs)(t, yy.as_ptr(), data.as_mut_ptr(), rr.as_mut_ptr(), 1, 1) };
-        }
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_functions.rhs)(
+                t,
+                yy.as_ptr(),
+                data.as_ptr() as *mut f64,
+                rr.as_ptr() as *mut f64,
+                i,
+                dim,
+            )
+        });
     }
 
     pub fn has_mass(&self) -> bool {
@@ -368,23 +374,16 @@ impl<M: CodegenModule> Compiler<M> {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        if self.is_threaded {
-            #[cfg(feature = "rayon")]
-            (0..self.thread_dim).into_par_iter().for_each(|i| {
-                unsafe {
-                    (self.jit_functions.mass)(
-                        t,
-                        yp.as_ptr(),
-                        data.as_ptr() as *mut f64,
-                        rr.as_ptr() as *mut f64,
-                        i,
-                        self.thread_dim,
-                    )
-                }
-            });
-        } else {
-            unsafe { (self.jit_functions.mass)(t, yp.as_ptr(), data.as_mut_ptr(), rr.as_mut_ptr(), 1, 1) };
-        }
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_functions.mass)(
+                t,
+                yp.as_ptr(),
+                data.as_ptr() as *mut f64,
+                rr.as_ptr() as *mut f64,
+                i,
+                dim,
+            )
+        });
     }
 
     pub fn data_len(&self) -> usize {
@@ -444,38 +443,19 @@ impl<M: CodegenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        if self.is_threaded {
-            #[cfg(feature = "rayon")]
-            (0..self.thread_dim).into_par_iter().for_each(|i| {
-                unsafe {
-                    (self.jit_grad_functions.rhs_grad)(
-                        t,
-                        yy.as_ptr(),
-                        dyy.as_ptr(),
-                        data.as_ptr() as *mut f64,
-                        ddata.as_ptr() as *mut f64,
-                        rr.as_ptr() as *mut f64,
-                        drr.as_ptr() as *mut f64,
-                        i,
-                        self.thread_dim,
-                    )
-                }
-            });
-
-        } else {
-            unsafe {
-                (self.jit_grad_functions.rhs_grad)(
-                    t,
-                    yy.as_ptr(),
-                    dyy.as_ptr(),
-                    data.as_mut_ptr(),
-                    ddata.as_mut_ptr(),
-                    rr.as_mut_ptr(),
-                    drr.as_mut_ptr(),
-                    1, 1,
-                )
-            };
-        }
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_grad_functions.rhs_grad)(
+                t,
+                yy.as_ptr(),
+                dyy.as_ptr(),
+                data.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut f64,
+                rr.as_ptr() as *mut f64,
+                drr.as_ptr() as *mut f64,
+                i,
+                dim,
+            )
+        });
     }
 
     pub fn calc_out(&self, t: f64, yy: &[f64], data: &mut [f64]) {
@@ -489,22 +469,9 @@ impl<M: CodegenModule> Compiler<M> {
         if data.len() != self.data_len() {
             panic!("Expected {} data, got {}", self.data_len(), data.len());
         }
-        if self.is_threaded {
-            #[cfg(feature = "rayon")]
-            (0..self.thread_dim).into_par_iter().for_each(|i| {
-                unsafe {
-                    (self.jit_functions.calc_out)(
-                        t,
-                        yy.as_ptr(),
-                        data.as_ptr() as *mut f64,
-                        i,
-                        self.thread_dim,
-                    )
-                }
-            });
-        } else {
-            unsafe { (self.jit_functions.calc_out)(t, yy.as_ptr(), data.as_mut_ptr(), 1, 1) };
-        }
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_functions.calc_out)(t, yy.as_ptr(), data.as_ptr() as *mut f64, i, dim)
+        });
     }
 
     pub fn calc_out_grad(
@@ -539,33 +506,17 @@ impl<M: CodegenModule> Compiler<M> {
                 ddata.len()
             );
         }
-        if self.is_threaded {
-            #[cfg(feature = "rayon")]
-            (0..self.thread_dim).into_par_iter().for_each(|i| {
-                unsafe {
-                    (self.jit_grad_functions.calc_out_grad)(
-                        t,
-                        yy.as_ptr(),
-                        dyy.as_ptr(),
-                        data.as_ptr() as *mut f64,
-                        ddata.as_ptr() as *mut f64,
-                        i,
-                        self.thread_dim,
-                    )
-                }
-            });
-        } else {
-            unsafe {
-                (self.jit_grad_functions.calc_out_grad)(
-                    t,
-                    yy.as_ptr(),
-                    dyy.as_ptr(),
-                    data.as_mut_ptr(),
-                    ddata.as_mut_ptr(),
-                    1, 1,
-                )
-            };
-        }
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_grad_functions.calc_out_grad)(
+                t,
+                yy.as_ptr(),
+                dyy.as_ptr(),
+                data.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut f64,
+                i,
+                dim,
+            )
+        });
     }
 
     /// Get various dimensions of the model
@@ -727,7 +678,8 @@ mod tests {
         F { -y }
         out { y }
         ";
-        let compiler = Compiler::<CraneliftModule>::from_discrete_str(text, Default::default()).unwrap();
+        let compiler =
+            Compiler::<CraneliftModule>::from_discrete_str(text, Default::default()).unwrap();
         let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
         assert_eq!(n_states, 1);
         assert_eq!(n_inputs, 0);
@@ -778,7 +730,8 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler =
+            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut stop = vec![0.];
@@ -800,7 +753,8 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler =
+            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut data = compiler.get_new_data();
         // need this to set the constants
@@ -856,10 +810,16 @@ mod tests {
         let name = "$name";
         let discrete_model = DiscreteModel::build(name, &model).unwrap();
         env_logger::builder().is_test(true).try_init().unwrap();
-        let _compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let _compiler =
+            Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default())
+                .unwrap();
     }
 
-    fn tensor_test_common<T: CodegenModule>(text: &str, tensor_name: &str, mode: CompilerMode) -> Vec<Vec<f64>> {
+    fn tensor_test_common<T: CodegenModule>(
+        text: &str,
+        tensor_name: &str,
+        mode: CompilerMode,
+    ) -> Vec<Vec<f64>> {
         let full_text = format!(
             "
             {}
@@ -955,7 +915,7 @@ mod tests {
                         y,
                     }}
                 ", $text);
-                
+
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
@@ -1142,7 +1102,7 @@ mod tests {
                     {}
                     F_i {{ x_i, y_i, }}
                 ", $text);
-                
+
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
@@ -1221,7 +1181,8 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text));
             }
         };
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler =
+            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut du0 = vec![1.];
         let mut res = vec![0.];
@@ -1289,7 +1250,9 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler =
+            Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default())
+                .unwrap();
         let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass) = compiler.get_dims();
         assert_eq!(n_states, 2);
         assert_eq!(n_inputs, 1);
@@ -1337,7 +1300,9 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("test_inputs", &model).unwrap();
 
-        let compiler = Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler =
+            Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default())
+                .unwrap();
         let mut data = compiler.get_new_data();
         let inputs = vec![1.0, 2.0, 3.0];
         compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
@@ -1349,8 +1314,11 @@ mod tests {
 
         #[cfg(feature = "llvm")]
         {
-            let compiler =
-                Compiler::<crate::LlvmModule>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            let compiler = Compiler::<crate::LlvmModule>::from_discrete_model(
+                &discrete_model,
+                Default::default(),
+            )
+            .unwrap();
             let mut data = compiler.get_new_data();
             let inputs = vec![1.0, 2.0, 3.0];
             compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());

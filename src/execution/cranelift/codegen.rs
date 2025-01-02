@@ -67,6 +67,52 @@ impl CraneliftModule {
         Ok(id)
     }
 
+    fn compile_barrier_init(&mut self) -> Result<FuncId> {
+        let module = self;
+        module.ctx.func.signature.params.clear();
+        module.ctx.func.signature.returns.clear();
+
+        // Create the builder to build a function.
+        let mut builder = FunctionBuilder::new(&mut module.ctx.func, &mut module.builder_context);
+
+        let thread_counter = module
+            .module
+            .declare_data_in_func(module.thread_counter.unwrap(), builder.func);
+
+        let entry_block = builder.create_block();
+
+        // Tell the builder to emit code in this block.
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+
+        // load the total thread count
+        let thread_counter = builder
+            .ins()
+            .global_value(module.int_ptr_type, thread_counter);
+
+        // zero the barrier counter
+        let zero = builder.ins().iconst(module.int_type, 0);
+        builder
+            .ins()
+            .store(MemFlags::new(), zero, thread_counter, 0);
+
+        builder.ins().return_(&[]);
+        builder.finalize();
+
+        let name = "barrier_init";
+        let id =
+            module
+                .module
+                .declare_function(name, Linkage::Export, &module.ctx.func.signature)?;
+        //println!("Declared function: {} -------------------------------------------------------------------------------------", name);
+        //println!("IR:\n{}", module.ctx.func);
+
+        module.module.define_function(id, &mut module.ctx)?;
+        module.module.clear_context(&mut module.ctx);
+
+        Ok(id)
+    }
+
     fn compile_barrier(&mut self) -> Result<FuncId> {
         let module = self;
         module.ctx.func.signature.params.clear();
@@ -97,7 +143,9 @@ impl CraneliftModule {
         builder.seal_block(entry_block);
 
         // load the total thread count
-        let thread_counter = builder.ins().symbol_value(module.int_ptr_type, thread_counter);
+        let thread_counter = builder
+            .ins()
+            .global_value(module.int_ptr_type, thread_counter);
 
         // Atomically increment the barrier counter
         let one = builder.ins().iconst(module.int_type, 1);
@@ -118,9 +166,11 @@ impl CraneliftModule {
                 .ins()
                 .atomic_load(module.int_type, MemFlags::new(), thread_counter);
 
-        let all_threads_done = builder
-            .ins()
-            .icmp(IntCC::UnsignedGreaterThanOrEqual, current_value, thread_count);
+        let all_threads_done = builder.ins().icmp(
+            IntCC::UnsignedGreaterThanOrEqual,
+            current_value,
+            thread_count,
+        );
 
         builder.ins().brif(
             all_threads_done,
@@ -322,6 +372,15 @@ impl CodegenModule for CraneliftModule {
         Ok(code)
     }
 
+    fn jit_barrier_init(&mut self) -> Result<*const u8> {
+        let id = match self.module.get_name("barrier_init") {
+            Some(FuncOrDataId::Func(id)) => id,
+            Some(FuncOrDataId::Data(_)) => return Err(anyhow!("barrier_init is not a function")),
+            None => return Err(anyhow!("barrier_init not found")),
+        };
+        Ok(self.module.get_finalized_function(id))
+    }
+
     fn layout(&self) -> &DataLayout {
         &self.layout
     }
@@ -431,6 +490,7 @@ impl CodegenModule for CraneliftModule {
             thread_counter,
         };
         if threaded {
+            ret.compile_barrier_init()?;
             ret.compile_barrier()?;
         }
         Ok(ret)
@@ -980,7 +1040,8 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                         // not one of the supported external functions, so must be internal
                         match self.module.get_name(name.as_str()) {
                             Some(FuncOrDataId::Func(func_id)) => {
-                                let function = self.module.declare_func_in_func(func_id, self.builder.func);
+                                let function =
+                                    self.module.declare_func_in_func(func_id, self.builder.func);
                                 self.functions.insert(name, function);
                                 Some(function)
                             }
@@ -1056,8 +1117,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             }
         }
 
-        
-
         Ok(self.tensor_ptr.unwrap())
     }
 
@@ -1113,7 +1172,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         // start index is i * size / thread_dim
         let i_times_size = self.builder.ins().imul(thread_id, size);
         let start = self.builder.ins().udiv(i_times_size, thread_dim);
-        
+
         // if start index is equal or greater than size then we are done and can exit
         let done = self
             .builder
@@ -1132,12 +1191,8 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         let i_plus_one_times_size = self.builder.ins().imul(i_plus_one, size);
         let end = self.builder.ins().udiv(i_plus_one_times_size, thread_dim);
         let end_less_than_size = self.builder.ins().icmp(IntCC::UnsignedLessThan, end, size);
-        let end = self.builder.ins().select(
-            end_less_than_size,
-            end,
-            size,
-        );
-       
+        let end = self.builder.ins().select(end_less_than_size, end, size);
+
         (start, end, exit_block)
     }
 
@@ -1160,38 +1215,44 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         let zero = self.builder.ins().iconst(int_type, 0);
         let mut expr_strides = vec![1i64; expr_rank];
         if expr_rank > 0 {
-            for i in (0..expr_rank-1).rev() {
+            for i in (0..expr_rank - 1).rev() {
                 expr_strides[i] = expr_strides[i + 1] * expr_shape[i + 1];
             }
         }
-        let expr_strides = expr_strides.iter().map(|&s| self.builder.ins().iconst(int_type, s)).collect::<Vec<_>>();
-
+        let expr_strides = expr_strides
+            .iter()
+            .map(|&s| self.builder.ins().iconst(int_type, s))
+            .collect::<Vec<_>>();
 
         // setup indices, loop through the nested loops
         let mut indices = Vec::new();
         let mut blocks = Vec::new();
 
         // allocate the contract sum if needed
-        let (contract_sum, contract_by, contract_strides) = if let TranslationFrom::DenseContraction {
-            contract_by,
-            contract_len: _,
-        } = translation.source
-        {
-            let contract_rank = expr_rank - contract_by;
-            let mut contract_strides = vec![1i64; contract_rank];
-            for i in (0..contract_rank-1).rev() {
-                contract_strides[i] = contract_strides[i + 1] * expr_shape[i + 1];
-            }
-            let contract_strides = contract_strides.iter().map(|&s| self.builder.ins().iconst(int_type, s)).collect::<Vec<_>>();
-
-            (
-                Some(self.decl_stack_slot(self.real_type, None)),
+        let (contract_sum, contract_by, contract_strides) =
+            if let TranslationFrom::DenseContraction {
                 contract_by,
-                Some(contract_strides),
-            )
-        } else {
-            (None, 0, None)
-        };
+                contract_len: _,
+            } = translation.source
+            {
+                let contract_rank = expr_rank - contract_by;
+                let mut contract_strides = vec![1i64; contract_rank];
+                for i in (0..contract_rank - 1).rev() {
+                    contract_strides[i] = contract_strides[i + 1] * expr_shape[i + 1];
+                }
+                let contract_strides = contract_strides
+                    .iter()
+                    .map(|&s| self.builder.ins().iconst(int_type, s))
+                    .collect::<Vec<_>>();
+
+                (
+                    Some(self.decl_stack_slot(self.real_type, None)),
+                    contract_by,
+                    Some(contract_strides),
+                )
+            } else {
+                (None, 0, None)
+            };
 
         // we will thread the output loop, except if we are contracting to a scalar
         let threading = self.threaded && expr_rank - contract_by > 0;
@@ -1252,12 +1313,13 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 .ins()
                 .stack_store(new_contract_sum_value, contract_sum.unwrap(), 0);
         } else {
-            let expr_index = indices.iter().zip(expr_strides.iter()).fold(zero,
-                |acc, (i, s)| {
+            let expr_index = indices
+                .iter()
+                .zip(expr_strides.iter())
+                .fold(zero, |acc, (i, s)| {
                     let tmp = self.builder.ins().imul(*i, *s);
                     self.builder.ins().iadd(acc, tmp)
-                }
-            );
+                });
             self.jit_compile_broadcast_and_store(
                 name,
                 elmt,
@@ -1273,12 +1335,14 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             // update and store contract sum
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
                 let contract_strides = contract_strides.as_ref().unwrap();
-                let elmt_index = indices.iter().take(contract_strides.len()).zip(contract_strides.iter()).fold(zero,
-                    |acc, (i, s)| {
+                let elmt_index = indices
+                    .iter()
+                    .take(contract_strides.len())
+                    .zip(contract_strides.iter())
+                    .fold(zero, |acc, (i, s)| {
                         let tmp = self.builder.ins().imul(*i, *s);
                         self.builder.ins().iadd(acc, tmp)
-                    }
-                );
+                    });
                 let contract_sum_value =
                     self.builder
                         .ins()
@@ -1752,7 +1816,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         translation: &Translation,
     ) -> Result<()> {
         let int_type = self.int_type;
-        let rank = elmt.layout().rank();
         let res_index = match &translation.target {
             TranslationTo::Contiguous { start, end: _ } => {
                 let start_const = self
@@ -1773,11 +1836,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                     .builder
                     .ins()
                     .iconst(int_type, i64::try_from(translate_store_index).unwrap());
-                let rank_const = self
-                    .builder
-                    .ins()
-                    .iconst(int_type, i64::try_from(rank).unwrap());
-                //let elmt_index_strided = self.builder.ins().imul(store_index, rank_const);
                 let elmt_index_strided = store_index;
                 let curr_index = self
                     .builder

@@ -730,7 +730,10 @@ impl<'s> DiscreteModel<'s> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        continuous::ModelInfo, discretise::DiscreteModel, execution::Translation, parser::{parse_ds_string, parse_ms_string}
+        continuous::ModelInfo,
+        discretise::DiscreteModel,
+        execution::Translation,
+        parser::{parse_ds_string, parse_ms_string},
     };
 
     #[test]
@@ -1225,7 +1228,7 @@ mod tests {
         assert_eq!(model.out().elmts().len(), 1);
         assert_eq!(model.out().elmts()[0].expr().to_string(), "u_i");
     }
-    
+
     #[test]
     fn test_sparse_layout() {
         let text = "
@@ -1249,13 +1252,24 @@ mod tests {
         ";
         let model = parse_ds_string(text).unwrap();
         let model = DiscreteModel::build("$name", &model).unwrap();
-        let r = model.time_indep_defns().iter().find(|t| t.name() == "r").unwrap();
-        let b = model.time_indep_defns().iter().find(|t| t.name() == "b").unwrap();
+        let r = model
+            .time_indep_defns()
+            .iter()
+            .find(|t| t.name() == "r")
+            .unwrap();
+        let b = model
+            .time_indep_defns()
+            .iter()
+            .find(|t| t.name() == "b")
+            .unwrap();
         for tensor in [r, b] {
             let layout = tensor.layout();
             assert_eq!(layout.shape()[0], 3);
             assert_eq!(layout.shape()[1], 3);
-            assert_eq!(layout.indices().map(|i| i.to_string()).collect::<Vec<_>>(), vec!["[0, 0]", "[1, 0]", "[1, 1]", "[2, 1]", "[2, 2]"]);
+            assert_eq!(
+                layout.indices().map(|i| i.to_string()).collect::<Vec<_>>(),
+                vec!["[0, 0]", "[1, 0]", "[1, 1]", "[2, 1]", "[2, 2]"]
+            );
             assert_eq!(layout.to_data_layout(), vec![0, 0, 1, 0, 1, 1, 2, 1, 2, 2]);
         }
         let translation = Translation::new(
@@ -1272,6 +1286,5 @@ mod tests {
             r.layout_ptr(),
         );
         assert_eq!(translation.to_data_layout(), vec![1, 3]);
-
     }
 }

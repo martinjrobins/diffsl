@@ -1,6 +1,8 @@
 type RealType = f64;
 type UIntType = u32;
 
+pub type BarrierInitFunc = unsafe extern "C" fn();
+
 pub type StopFunc = unsafe extern "C" fn(
     time: RealType,
     u: *const RealType,
@@ -74,10 +76,7 @@ pub type GetDimsFunc = unsafe extern "C" fn(
     stop: *mut UIntType,
     has_mass: *mut UIntType,
 );
-pub type SetInputsFunc = unsafe extern "C" fn(
-    inputs: *const RealType,
-    data: *mut RealType,
-);
+pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const RealType, data: *mut RealType);
 pub type SetInputsGradientFunc = unsafe extern "C" fn(
     inputs: *const RealType,
     dinputs: *const RealType,

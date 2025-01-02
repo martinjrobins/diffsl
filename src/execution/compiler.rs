@@ -101,7 +101,7 @@ impl<M: CodegenModule> Compiler<M> {
         // don't use more threads than the number of states
         let number_of_states = model.state().shape().first().unwrap_or(&1).to_owned();
         let thread_dim = match mode {
-            CompilerMode::MultiThreaded(Some(n)) => n,
+            CompilerMode::MultiThreaded(Some(n)) => n.min(number_of_states),
             CompilerMode::MultiThreaded(None) => {
                 let num_cpus = std::thread::available_parallelism()?.get();
                 let thread_dim = std::env::var("RAYON_NUM_THREADS")

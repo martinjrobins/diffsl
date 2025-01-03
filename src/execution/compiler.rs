@@ -232,7 +232,6 @@ impl<M: CodegenModule> Compiler<M> {
         if let (Some(thread_pool), Some(thread_lock)) = (&self.thread_pool, &self.thread_lock) {
             let _lock = thread_lock.lock().unwrap();
             let dim = thread_pool.current_num_threads();
-            let barrier = Arc::new(Barrier::new(dim));
             unsafe {
                 (self.jit_functions.barrier_init.unwrap())();
             }
@@ -241,7 +240,6 @@ impl<M: CodegenModule> Compiler<M> {
                 let dim = dim as u32;
                 // internal barriers in f use active spin-locks, so all threads
                 // must be available so the spin-locks can be released
-                barrier.wait();
                 f(idx, dim);
             });
         } else {

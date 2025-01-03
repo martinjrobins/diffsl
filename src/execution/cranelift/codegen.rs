@@ -438,8 +438,8 @@ impl CodegenModule for CraneliftModule {
 
         // write indices data as a global data object
         // convect the indices to bytes
-        let int_type = ptr_type;
-        //let int_type = types::I32;
+        //let int_type = ptr_type;
+        let int_type = types::I32;
         let real_type = types::F64;
         let mut vec8: Vec<u8> = vec![];
         for elem in layout.indices() {

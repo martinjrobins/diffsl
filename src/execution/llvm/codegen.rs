@@ -16,7 +16,9 @@ use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
     GlobalValue, IntValue, PointerValue,
 };
-use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
+use inkwell::{
+    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntPredicate, OptimizationLevel,
+};
 use llvm_sys::prelude::LLVMValueRef;
 use std::collections::HashMap;
 use std::iter::zip;
@@ -29,12 +31,12 @@ type RealType = f64;
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
 use crate::enzyme::{
-    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Pointer,
-    CDerivativeMode_DEM_ForwardMode, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis,
-    EnzymeCreateForwardDiff, EnzymeFreeTypeTree, EnzymeLogicRef, EnzymeMergeTypeTree,
-    EnzymeNewTypeTreeCT, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq, FreeEnzymeLogic,
-    FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue, CDIFFE_TYPE_DFT_CONSTANT,
-    CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED,
+    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Integer,
+    CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode, CFnTypeInfo, CreateEnzymeLogic,
+    CreateTypeAnalysis, EnzymeCreateForwardDiff, EnzymeFreeTypeTree, EnzymeLogicRef,
+    EnzymeMergeTypeTree, EnzymeNewTypeTreeCT, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq,
+    FreeEnzymeLogic, FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue,
+    CDIFFE_TYPE_DFT_CONSTANT, CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED,
 };
 use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
@@ -51,6 +53,8 @@ struct ImmovableLlvmModule {
 }
 
 pub struct LlvmModule(Pin<Box<ImmovableLlvmModule>>);
+
+unsafe impl Sync for LlvmModule {}
 
 impl LlvmModule {
     pub fn compile(&self, standalone: bool, wasm: bool, out: &str) -> Result<()> {
@@ -213,7 +217,7 @@ impl LlvmModule {
 
 impl CodegenModule for LlvmModule {
     type FuncId = FunctionValue<'static>;
-    fn new(triple: Triple, model: &DiscreteModel) -> Result<Self> {
+    fn new(triple: Triple, model: &DiscreteModel, threaded: bool) -> Result<Self> {
         let context = AliasableBox::from_unique(Box::new(Context::create()));
         let mut pinned = Self(Box::pin(ImmovableLlvmModule {
             codegen: None,
@@ -230,6 +234,7 @@ impl CodegenModule for LlvmModule {
             context_ref.f64_type(),
             context_ref.i32_type(),
             real_type_str,
+            threaded,
         )?;
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
         unsafe { pinned.0.as_mut().get_unchecked_mut().codegen = Some(codegen) };
@@ -238,6 +243,15 @@ impl CodegenModule for LlvmModule {
 
     fn layout(&self) -> &DataLayout {
         &self.codegen().layout
+    }
+
+    fn jit_barrier_init(&mut self) -> Result<*const u8> {
+        let name = "barrier_init";
+        let maybe_fn = self.codegen_mut().ee.get_function_address(name);
+        match maybe_fn {
+            Ok(f) => Ok(f as *const u8),
+            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
+        }
     }
 
     fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8> {
@@ -262,7 +276,8 @@ impl CodegenModule for LlvmModule {
     }
 
     fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_rhs(model)
+        let ret = self.codegen_mut().compile_rhs(model);
+        ret
     }
 
     fn compile_mass(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
@@ -292,7 +307,12 @@ impl CodegenModule for LlvmModule {
     ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
-            &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+            &[
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
         )
     }
 
@@ -308,6 +328,8 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Dup,
                 CompileGradientArgType::Dup,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
         )
     }
@@ -323,6 +345,8 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Dup,
                 CompileGradientArgType::Dup,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
         )
     }
@@ -381,6 +405,7 @@ impl CodegenModule for LlvmModule {
 
 struct Globals<'ctx> {
     indices: Option<GlobalValue<'ctx>>,
+    thread_counter: Option<GlobalValue<'ctx>>,
 }
 
 impl<'ctx> Globals<'ctx> {
@@ -388,11 +413,33 @@ impl<'ctx> Globals<'ctx> {
         layout: &DataLayout,
         context: &'ctx inkwell::context::Context,
         module: &Module<'ctx>,
+        threaded: bool,
     ) -> Self {
-        if layout.indices().is_empty() {
-            return Self { indices: None };
-        }
         let int_type = context.i32_type();
+        let thread_counter = if threaded {
+            let tc = module.add_global(
+                int_type,
+                Some(AddressSpace::default()),
+                "enzyme_const_thread_counter",
+            );
+            // todo: for some reason this doesn't make enzyme think it's inactive
+            // but using enzyme_const in the name does
+            // todo: also, adding this metadata causes the print of the module to segfault,
+            // so maybe a bug in inkwell
+            //let md_string = context.metadata_string("enzyme_inactive");
+            //tc.set_metadata(md_string, 0);
+            let tc_value = int_type.const_zero();
+            tc.set_initializer(&tc_value.as_basic_value_enum());
+            Some(tc)
+        } else {
+            None
+        };
+        if layout.indices().is_empty() {
+            return Self {
+                indices: None,
+                thread_counter,
+            };
+        }
         let indices_array_type =
             int_type.array_type(u32::try_from(layout.indices().len()).unwrap());
         let indices_array_values = layout
@@ -407,6 +454,7 @@ impl<'ctx> Globals<'ctx> {
                 Some(AddressSpace::default()),
                 "indices",
             )),
+            thread_counter,
         };
         globals.indices.unwrap().set_initializer(&indices_value);
         globals
@@ -435,6 +483,7 @@ pub struct CodeGen<'ctx> {
     layout: DataLayout,
     globals: Globals<'ctx>,
     ee: ExecutionEngine<'ctx>,
+    threaded: bool,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -444,17 +493,18 @@ impl<'ctx> CodeGen<'ctx> {
         real_type: FloatType<'ctx>,
         int_type: IntType<'ctx>,
         real_type_str: &str,
+        threaded: bool,
     ) -> Result<Self> {
         let builder = context.create_builder();
         let layout = DataLayout::new(model);
         let module = context.create_module(model.name());
-        let globals = Globals::new(&layout, context, &module);
+        let globals = Globals::new(&layout, context, &module, threaded);
         let ee = module
             .create_jit_execution_engine(OptimizationLevel::Aggressive)
             .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
         let real_ptr_type = Self::pointer_type(context, real_type.into());
         let int_ptr_type = Self::pointer_type(context, int_type.into());
-        Ok(Self {
+        let mut ret = Self {
             context,
             module,
             builder,
@@ -470,7 +520,212 @@ impl<'ctx> CodeGen<'ctx> {
             int_ptr_type,
             globals,
             ee,
-        })
+            threaded,
+        };
+        if threaded {
+            ret.compile_barrier_init()?;
+            ret.compile_barrier()?;
+        }
+        Ok(ret)
+    }
+
+    fn compile_barrier_init(&mut self) -> Result<FunctionValue<'ctx>> {
+        self.clear();
+        let void_type = self.context.void_type();
+        let fn_type = void_type.fn_type(&[], false);
+        let function = self.module.add_function("barrier_init", fn_type, None);
+
+        let entry_block = self.context.append_basic_block(function, "entry");
+
+        self.fn_value_opt = Some(function);
+        self.builder.position_at_end(entry_block);
+
+        let thread_counter = self.globals.thread_counter.unwrap().as_pointer_value();
+        self.builder
+            .build_store(thread_counter, self.int_type.const_zero())?;
+
+        self.builder.build_return(None)?;
+
+        if function.verify(true) {
+            self.functions.insert("barrier_init".to_owned(), function);
+            Ok(function)
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+    fn compile_barrier(&mut self) -> Result<FunctionValue<'ctx>> {
+        self.clear();
+        let void_type = self.context.void_type();
+        let fn_type = void_type.fn_type(&[self.int_type.into()], false);
+        let function = self.module.add_function("barrier", fn_type, None);
+
+        let entry_block = self.context.append_basic_block(function, "entry");
+        let wait_loop_block = self.context.append_basic_block(function, "wait_loop");
+        let barrier_done_block = self.context.append_basic_block(function, "barrier_done");
+
+        self.fn_value_opt = Some(function);
+        self.builder.position_at_end(entry_block);
+
+        let thread_counter = self.globals.thread_counter.unwrap().as_pointer_value();
+        let thread_count = function.get_nth_param(0).unwrap().into_int_value();
+
+        // Atomically increment the barrier counter
+        let i32_type = self.context.i32_type();
+        let one = i32_type.const_int(1, false);
+        self.builder.build_atomicrmw(
+            AtomicRMWBinOp::Add,
+            thread_counter,
+            one,
+            AtomicOrdering::Monotonic,
+        )?;
+
+        // wait_loop:
+        self.builder.build_unconditional_branch(wait_loop_block)?;
+        self.builder.position_at_end(wait_loop_block);
+
+        let current_value = self
+            .builder
+            .build_load(i32_type, thread_counter, "current_value")?
+            .into_int_value();
+        current_value
+            .as_instruction_value()
+            .unwrap()
+            .set_atomic_ordering(AtomicOrdering::Monotonic)
+            .map_err(|e| anyhow!("Error setting atomic ordering: {:?}", e))?;
+
+        let all_threads_done = self.builder.build_int_compare(
+            IntPredicate::UGE,
+            current_value,
+            thread_count,
+            "all_threads_done",
+        )?;
+
+        self.builder.build_conditional_branch(
+            all_threads_done,
+            barrier_done_block,
+            wait_loop_block,
+        )?;
+        self.builder.position_at_end(barrier_done_block);
+
+        self.builder.build_return(None)?;
+
+        if function.verify(true) {
+            self.functions.insert("barrier".to_owned(), function);
+            Ok(function)
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+    fn jit_compile_call_barrier(&mut self, nbarrier: u64) {
+        if !self.threaded {
+            return;
+        }
+        let thread_dim = self.get_param("thread_dim");
+        let thread_dim = self
+            .builder
+            .build_load(self.int_type, *thread_dim, "thread_dim")
+            .unwrap()
+            .into_int_value();
+        let nbarrier = self.int_type.const_int(nbarrier + 1, false);
+        let thread_dim_mul_nbarrier = self
+            .builder
+            .build_int_mul(thread_dim, nbarrier, "thread_dim_mul_nbarrier")
+            .unwrap();
+        let barrier = self.get_function("barrier").unwrap();
+        self.builder
+            .build_call(
+                barrier,
+                &[BasicMetadataValueEnum::IntValue(thread_dim_mul_nbarrier)],
+                "barrier",
+            )
+            .unwrap();
+    }
+
+    fn jit_threading_limits(
+        &mut self,
+        size: IntValue<'ctx>,
+    ) -> Result<(
+        IntValue<'ctx>,
+        IntValue<'ctx>,
+        BasicBlock<'ctx>,
+        BasicBlock<'ctx>,
+    )> {
+        let one = self.int_type.const_int(1, false);
+        let thread_id = self.get_param("thread_id");
+        let thread_id = self
+            .builder
+            .build_load(self.int_type, *thread_id, "thread_id")
+            .unwrap()
+            .into_int_value();
+        let thread_dim = self.get_param("thread_dim");
+        let thread_dim = self
+            .builder
+            .build_load(self.int_type, *thread_dim, "thread_dim")
+            .unwrap()
+            .into_int_value();
+
+        // start index is i * size / thread_dim
+        let i_times_size = self
+            .builder
+            .build_int_mul(thread_id, size, "i_times_size")?;
+        let start = self
+            .builder
+            .build_int_unsigned_div(i_times_size, thread_dim, "start")?;
+
+        // if start index is equal or greater than size then we are done and can exit
+        let test_done = self.builder.get_insert_block().unwrap();
+        let next_block = self
+            .context
+            .append_basic_block(self.fn_value_opt.unwrap(), "threading_block");
+        self.builder.position_at_end(next_block);
+
+        // the ending index for thread i is min((i+1) * size / thread_dim, size)
+        let i_plus_one = self.builder.build_int_add(thread_id, one, "i_plus_one")?;
+        let i_plus_one_times_size =
+            self.builder
+                .build_int_mul(i_plus_one, size, "i_plus_one_times_size")?;
+        let end = self
+            .builder
+            .build_int_unsigned_div(i_plus_one_times_size, thread_dim, "end")?;
+        let end_less_than_size =
+            self.builder
+                .build_int_compare(IntPredicate::ULT, end, size, "end_less_than_size")?;
+        let end = self
+            .builder
+            .build_select(end_less_than_size, end, size, "end")?
+            .into_int_value();
+
+        Ok((start, end, test_done, next_block))
+    }
+
+    fn jit_end_threading(
+        &mut self,
+        start: IntValue<'ctx>,
+        size: IntValue<'ctx>,
+        test_done: BasicBlock<'ctx>,
+        next: BasicBlock<'ctx>,
+    ) -> Result<()> {
+        let exit = self
+            .context
+            .append_basic_block(self.fn_value_opt.unwrap(), "exit");
+        self.builder.build_unconditional_branch(exit)?;
+        self.builder.position_at_end(test_done);
+        let done = self
+            .builder
+            .build_int_compare(IntPredicate::UGE, start, size, "done")?;
+        self.builder.build_conditional_branch(done, exit, next)?;
+        self.builder.position_at_end(exit);
+        Ok(())
     }
 
     pub fn write_bitcode_to_path(&self, path: &std::path::Path) {
@@ -943,8 +1198,46 @@ impl<'ctx> CodeGen<'ctx> {
         };
         let name = a.name();
         let elmt = a.elmts().first().unwrap();
+
+        // if threaded then only the first thread will evaluate the scalar
+        let curr_block = self.builder.get_insert_block().unwrap();
+        let mut next_block_opt = None;
+        if self.threaded {
+            let next_block = self.context.append_basic_block(self.fn_value(), "next");
+            self.builder.position_at_end(next_block);
+            next_block_opt = Some(next_block);
+        }
+
         let float_value = self.jit_compile_expr(name, elmt.expr(), &[], elmt, None)?;
         self.builder.build_store(res_ptr, float_value)?;
+
+        // complete the threading block
+        if self.threaded {
+            let exit_block = self.context.append_basic_block(self.fn_value(), "exit");
+            self.builder.build_unconditional_branch(exit_block)?;
+            self.builder.position_at_end(curr_block);
+
+            let thread_id = self.get_param("thread_id");
+            let thread_id = self
+                .builder
+                .build_load(self.int_type, *thread_id, "thread_id")
+                .unwrap()
+                .into_int_value();
+            let is_first_thread = self.builder.build_int_compare(
+                IntPredicate::EQ,
+                thread_id,
+                self.int_type.const_zero(),
+                "is_first_thread",
+            )?;
+            self.builder.build_conditional_branch(
+                is_first_thread,
+                next_block_opt.unwrap(),
+                exit_block,
+            )?;
+
+            self.builder.position_at_end(exit_block);
+        }
+
         Ok(res_ptr)
     }
 
@@ -1020,29 +1313,56 @@ impl<'ctx> CodeGen<'ctx> {
             .shape()
             .mapv(|n| int_type.const_int(n.try_into().unwrap(), false));
         let one = int_type.const_int(1, false);
-        let zero = int_type.const_int(0, false);
 
-        let expr_index_ptr = self.builder.build_alloca(int_type, "expr_index")?;
-        let elmt_index_ptr = self.builder.build_alloca(int_type, "elmt_index")?;
-        self.builder.build_store(expr_index_ptr, zero)?;
-        self.builder.build_store(elmt_index_ptr, zero)?;
+        let mut expr_strides = vec![1; expr_rank];
+        if expr_rank > 0 {
+            for i in (0..expr_rank - 1).rev() {
+                expr_strides[i] = expr_strides[i + 1] * elmt.expr_layout().shape()[i + 1];
+            }
+        }
+        let expr_strides = expr_strides
+            .iter()
+            .map(|&s| int_type.const_int(s.try_into().unwrap(), false))
+            .collect::<Vec<IntValue>>();
 
         // setup indices, loop through the nested loops
         let mut indices = Vec::new();
         let mut blocks = Vec::new();
 
         // allocate the contract sum if needed
-        let (contract_sum, contract_by) = if let TranslationFrom::DenseContraction {
-            contract_by,
-            contract_len: _,
-        } = translation.source
-        {
-            (
-                Some(self.builder.build_alloca(self.real_type, "contract_sum")?),
+        let (contract_sum, contract_by, contract_strides) =
+            if let TranslationFrom::DenseContraction {
                 contract_by,
-            )
+                contract_len: _,
+            } = translation.source
+            {
+                let contract_rank = expr_rank - contract_by;
+                let mut contract_strides = vec![1; contract_rank];
+                for i in (0..contract_rank - 1).rev() {
+                    contract_strides[i] =
+                        contract_strides[i + 1] * elmt.expr_layout().shape()[i + 1];
+                }
+                let contract_strides = contract_strides
+                    .iter()
+                    .map(|&s| int_type.const_int(s.try_into().unwrap(), false))
+                    .collect::<Vec<IntValue>>();
+                (
+                    Some(self.builder.build_alloca(self.real_type, "contract_sum")?),
+                    contract_by,
+                    Some(contract_strides),
+                )
+            } else {
+                (None, 0, None)
+            };
+
+        // we will thread the output loop, except if we are contracting to a scalar
+        let threading = self.threaded && expr_rank - contract_by > 0;
+        let (thread_start, thread_end, test_done, next) = if threading {
+            let (start, end, test_done, next) = self.jit_threading_limits(expr_shape[0])?;
+            preblock = next;
+            (Some(start), Some(end), Some(test_done), Some(next))
         } else {
-            (None, 0)
+            (None, None, None, None)
         };
 
         for i in 0..expr_rank {
@@ -1050,7 +1370,12 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder.build_unconditional_branch(block)?;
             self.builder.position_at_end(block);
 
-            let start_index = int_type.const_int(0, false);
+            let start_index = if i == 0 && threading {
+                thread_start.unwrap()
+            } else {
+                self.int_type.const_zero()
+            };
+
             let curr_index = self
                 .builder
                 .build_phi(int_type, format!["i{}", i].as_str())?;
@@ -1071,24 +1396,8 @@ impl<'ctx> CodeGen<'ctx> {
             .map(|i| i.as_basic_value().into_int_value())
             .collect();
 
-        // load and increment the expression index
-        let expr_index = self
-            .build_load(self.int_type, expr_index_ptr, "expr_index")?
-            .into_int_value();
-        let elmt_index = self
-            .build_load(self.int_type, elmt_index_ptr, "elmt_index")?
-            .into_int_value();
-        let next_expr_index = self
-            .builder
-            .build_int_add(expr_index, one, "next_expr_index")?;
-        self.builder.build_store(expr_index_ptr, next_expr_index)?;
-        let float_value = self.jit_compile_expr(
-            name,
-            elmt.expr(),
-            indices_int.as_slice(),
-            elmt,
-            Some(expr_index),
-        )?;
+        let float_value =
+            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, None)?;
 
         if contract_sum.is_some() {
             let contract_sum_value = self
@@ -1102,6 +1411,13 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder
                 .build_store(contract_sum.unwrap(), new_contract_sum_value)?;
         } else {
+            let expr_index = indices_int.iter().zip(expr_strides.iter()).fold(
+                self.int_type.const_zero(),
+                |acc, (i, s)| {
+                    let tmp = self.builder.build_int_mul(*i, *s, "expr_index").unwrap();
+                    self.builder.build_int_add(acc, tmp, "acc").unwrap()
+                },
+            );
             preblock = self.jit_compile_broadcast_and_store(
                 name,
                 elmt,
@@ -1110,10 +1426,6 @@ impl<'ctx> CodeGen<'ctx> {
                 translation,
                 preblock,
             )?;
-            let next_elmt_index = self
-                .builder
-                .build_int_add(elmt_index, one, "next_elmt_index")?;
-            self.builder.build_store(elmt_index_ptr, next_elmt_index)?;
         }
 
         // unwind the nested loops
@@ -1126,25 +1438,42 @@ impl<'ctx> CodeGen<'ctx> {
                 let contract_sum_value = self
                     .build_load(self.real_type, contract_sum.unwrap(), "contract_sum")?
                     .into_float_value();
-                let next_elmt_index =
-                    self.builder
-                        .build_int_add(elmt_index, one, "next_elmt_index")?;
-                self.builder.build_store(elmt_index_ptr, next_elmt_index)?;
+                let contract_strides = contract_strides.as_ref().unwrap();
+                let elmt_index = indices_int
+                    .iter()
+                    .take(contract_strides.len())
+                    .zip(contract_strides.iter())
+                    .fold(self.int_type.const_zero(), |acc, (i, s)| {
+                        let tmp = self.builder.build_int_mul(*i, *s, "elmt_index").unwrap();
+                        self.builder.build_int_add(acc, tmp, "acc").unwrap()
+                    });
                 self.jit_compile_store(name, elmt, elmt_index, contract_sum_value, translation)?;
             }
 
+            let end_index = if i == 0 && threading {
+                thread_end.unwrap()
+            } else {
+                expr_shape[i]
+            };
+
             // loop condition
-            let loop_while = self.builder.build_int_compare(
-                IntPredicate::ULT,
-                next_index,
-                expr_shape[i],
-                name,
-            )?;
+            let loop_while =
+                self.builder
+                    .build_int_compare(IntPredicate::ULT, next_index, end_index, name)?;
             let block = self.context.append_basic_block(self.fn_value(), name);
             self.builder
                 .build_conditional_branch(loop_while, blocks[i], block)?;
             self.builder.position_at_end(block);
             preblock = block;
+        }
+
+        if threading {
+            self.jit_end_threading(
+                thread_start.unwrap(),
+                expr_shape[0],
+                test_done.unwrap(),
+                next.unwrap(),
+            )?;
         }
         Ok(())
     }
@@ -1163,13 +1492,23 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let int_type = self.int_type;
 
-        let preblock = self.builder.get_insert_block().unwrap();
+        let mut preblock = self.builder.get_insert_block().unwrap();
         let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
         let translation_index = self
             .layout
             .get_translation_index(elmt.expr_layout(), elmt.layout())
             .unwrap();
         let translation_index = translation_index + translation.get_from_index_in_data_layout();
+
+        let final_contract_index =
+            int_type.const_int(elmt.layout().nnz().try_into().unwrap(), false);
+        let (thread_start, thread_end, test_done, next) = if self.threaded {
+            let (start, end, test_done, next) = self.jit_threading_limits(final_contract_index)?;
+            preblock = next;
+            (Some(start), Some(end), Some(test_done), Some(next))
+        } else {
+            (None, None, None, None)
+        };
 
         let contract_sum_ptr = self.builder.build_alloca(self.real_type, "contract_sum")?;
 
@@ -1179,9 +1518,12 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.position_at_end(block);
 
         let contract_index = self.builder.build_phi(int_type, "i")?;
-        let final_contract_index =
-            int_type.const_int(elmt.layout().nnz().try_into().unwrap(), false);
-        contract_index.add_incoming(&[(&int_type.const_int(0, false), preblock)]);
+        let contract_start = if self.threaded {
+            thread_start.unwrap()
+        } else {
+            int_type.const_zero()
+        };
+        contract_index.add_incoming(&[(&contract_start, preblock)]);
 
         let start_index = self.builder.build_int_add(
             int_type.const_int(translation_index.try_into().unwrap(), false),
@@ -1312,13 +1654,22 @@ impl<'ctx> CodeGen<'ctx> {
         let loop_while = self.builder.build_int_compare(
             IntPredicate::ULT,
             next_contract_index,
-            final_contract_index,
+            thread_end.unwrap_or(final_contract_index),
             name,
         )?;
         let post_block = self.context.append_basic_block(self.fn_value(), name);
         self.builder
             .build_conditional_branch(loop_while, block, post_block)?;
         self.builder.position_at_end(post_block);
+
+        if self.threaded {
+            self.jit_end_threading(
+                thread_start.unwrap(),
+                final_contract_index,
+                test_done.unwrap(),
+                next.unwrap(),
+            )?;
+        }
 
         Ok(())
     }
@@ -1333,7 +1684,7 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Result<()> {
         let int_type = self.int_type;
 
-        let preblock = self.builder.get_insert_block().unwrap();
+        let mut preblock = self.builder.get_insert_block().unwrap();
         let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
         // loop through the non-zero elements
         let mut block = self.context.append_basic_block(self.fn_value(), name);
@@ -1342,8 +1693,17 @@ impl<'ctx> CodeGen<'ctx> {
 
         let start_index = int_type.const_int(0, false);
         let end_index = int_type.const_int(elmt.expr_layout().nnz().try_into().unwrap(), false);
+
+        let (thread_start, thread_end, test_done, next) = if self.threaded {
+            let (start, end, test_done, next) = self.jit_threading_limits(end_index)?;
+            preblock = next;
+            (Some(start), Some(end), Some(test_done), Some(next))
+        } else {
+            (None, None, None, None)
+        };
+
         let curr_index = self.builder.build_phi(int_type, "i")?;
-        curr_index.add_incoming(&[(&start_index, preblock)]);
+        curr_index.add_incoming(&[(&thread_start.unwrap_or(start_index), preblock)]);
 
         // loop body - load index from layout
         let elmt_index = curr_index.as_basic_value().into_int_value();
@@ -1396,13 +1756,25 @@ impl<'ctx> CodeGen<'ctx> {
         curr_index.add_incoming(&[(&next_index, block)]);
 
         // loop condition
-        let loop_while =
-            self.builder
-                .build_int_compare(IntPredicate::ULT, next_index, end_index, name)?;
+        let loop_while = self.builder.build_int_compare(
+            IntPredicate::ULT,
+            next_index,
+            thread_end.unwrap_or(end_index),
+            name,
+        )?;
         let post_block = self.context.append_basic_block(self.fn_value(), name);
         self.builder
             .build_conditional_branch(loop_while, block, post_block)?;
         self.builder.position_at_end(post_block);
+
+        if self.threaded {
+            self.jit_end_threading(
+                thread_start.unwrap(),
+                end_index,
+                test_done.unwrap(),
+                next.unwrap(),
+            )?;
+        }
 
         Ok(())
     }
@@ -1545,7 +1917,6 @@ impl<'ctx> CodeGen<'ctx> {
         translation: &Translation,
     ) -> Result<()> {
         let int_type = self.int_type;
-        let rank = elmt.layout().rank();
         let res_index = match &translation.target {
             TranslationTo::Contiguous { start, end: _ } => {
                 let start_const = int_type.const_int((*start).try_into().unwrap(), false);
@@ -1561,9 +1932,7 @@ impl<'ctx> CodeGen<'ctx> {
                     translate_index + translation.get_to_index_in_data_layout();
                 let translate_store_index =
                     int_type.const_int(translate_store_index.try_into().unwrap(), false);
-                let rank_const = int_type.const_int(rank.try_into().unwrap(), false);
-                let elmt_index_strided =
-                    self.builder.build_int_mul(store_index, rank_const, name)?;
+                let elmt_index_strided = store_index;
                 let curr_index =
                     self.builder
                         .build_int_add(elmt_index_strided, translate_store_index, name)?;
@@ -1715,7 +2084,7 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn clear(&mut self) {
         self.variables.clear();
-        self.functions.clear();
+        //self.functions.clear();
         self.fn_value_opt = None;
         self.tensor_ptr_opt = None;
     }
@@ -1731,6 +2100,14 @@ impl<'ctx> CodeGen<'ctx> {
                 self.builder.build_store(alloca, v).unwrap();
                 alloca
             }
+            BasicValueEnum::IntValue(v) => {
+                let alloca = self
+                    .create_entry_block_builder()
+                    .build_alloca(arg.get_type(), name)
+                    .unwrap();
+                self.builder.build_store(alloca, v).unwrap();
+                alloca
+            }
             _ => unreachable!(),
         }
     }
@@ -1739,10 +2116,15 @@ impl<'ctx> CodeGen<'ctx> {
         self.clear();
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
-            &[self.real_ptr_type.into(), self.real_ptr_type.into()],
+            &[
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.int_type.into(),
+                self.int_type.into(),
+            ],
             false,
         );
-        let fn_arg_names = &["u0", "data"];
+        let fn_arg_names = &["u0", "data", "thread_id", "thread_dim"];
         let function = self.module.add_function("set_u0", fn_type, None);
 
         // add noalias
@@ -1765,8 +2147,12 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_data(model);
         self.insert_indices();
 
+        let mut nbarriers = 0;
+        #[allow(clippy::explicit_counter_loop)]
         for a in model.time_indep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+            self.jit_compile_call_barrier(nbarriers);
+            nbarriers += 1;
         }
 
         self.jit_compile_tensor(model.state(), Some(*self.get_param("u0")))?;
@@ -1795,10 +2181,12 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
+                self.int_type.into(),
             ],
             false,
         );
-        let fn_arg_names = &["t", "u", "data"];
+        let fn_arg_names = &["t", "u", "data", "thread_id", "thread_dim"];
         let function = self.module.add_function("calc_out", fn_type, None);
 
         // add noalias
@@ -1828,8 +2216,12 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         // calculate state dependant definitions
+        let mut nbarriers = 0;
+        #[allow(clippy::explicit_counter_loop)]
         for a in model.state_dep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+            self.jit_compile_call_barrier(nbarriers);
+            nbarriers += 1;
         }
 
         self.jit_compile_tensor(model.out(), Some(*self.get_var(model.out())))?;
@@ -1858,10 +2250,12 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
+                self.int_type.into(),
             ],
             false,
         );
-        let fn_arg_names = &["t", "u", "data", "root"];
+        let fn_arg_names = &["t", "u", "data", "root", "thread_id", "thread_dim"];
         let function = self.module.add_function("calc_stop", fn_type, None);
 
         // add noalias
@@ -1887,13 +2281,18 @@ impl<'ctx> CodeGen<'ctx> {
 
         if let Some(stop) = model.stop() {
             // calculate time dependant definitions
+            let mut nbarriers = 0;
             for tensor in model.time_dep_defns() {
                 self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                self.jit_compile_call_barrier(nbarriers);
+                nbarriers += 1;
             }
 
             // calculate state dependant definitions
             for a in model.state_dep_defns() {
                 self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+                self.jit_compile_call_barrier(nbarriers);
+                nbarriers += 1;
             }
 
             let res_ptr = self.get_param("root");
@@ -1921,10 +2320,12 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
+                self.int_type.into(),
             ],
             false,
         );
-        let fn_arg_names = &["t", "u", "data", "rr"];
+        let fn_arg_names = &["t", "u", "data", "rr", "thread_id", "thread_dim"];
         let function = self.module.add_function("rhs", fn_type, None);
 
         // add noalias
@@ -1949,13 +2350,18 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_indices();
 
         // calculate time dependant definitions
+        let mut nbarriers = 0;
         for tensor in model.time_dep_defns() {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+            self.jit_compile_call_barrier(nbarriers);
+            nbarriers += 1;
         }
 
         // TODO: could split state dep defns into before and after F
         for a in model.state_dep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+            self.jit_compile_call_barrier(nbarriers);
+            nbarriers += 1;
         }
 
         // F
@@ -1984,10 +2390,12 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
+                self.int_type.into(),
             ],
             false,
         );
-        let fn_arg_names = &["t", "dudt", "data", "rr"];
+        let fn_arg_names = &["t", "dudt", "data", "rr", "thread_id", "thread_dim"];
         let function = self.module.add_function("mass", fn_type, None);
 
         // add noalias
@@ -2017,12 +2425,17 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_indices();
 
             // calculate time dependant definitions
+            let mut nbarriers = 0;
             for tensor in model.time_dep_defns() {
                 self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                self.jit_compile_call_barrier(nbarriers);
+                nbarriers += 1;
             }
 
             for a in model.dstate_dep_defns() {
                 self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+                self.jit_compile_call_barrier(nbarriers);
+                nbarriers += 1;
             }
 
             // mass
@@ -2113,6 +2526,7 @@ impl<'ctx> CodeGen<'ctx> {
                         panic!("unsupported type")
                     }
                 }
+                BasicTypeEnum::IntType(_) => CConcreteType_DT_Integer,
                 _ => panic!("unsupported type"),
             };
             let new_tree = unsafe {
@@ -2582,7 +2996,7 @@ mod tests {
         F { -y }
         out { y }
         ";
-        let compiler = Compiler::<LlvmModule>::from_discrete_str(text).unwrap();
+        let compiler = Compiler::<LlvmModule>::from_discrete_str(text, Default::default()).unwrap();
         compiler
             .module()
             .compile(true, true, "test_output/test_compile")

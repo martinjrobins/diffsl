@@ -78,7 +78,7 @@ If you are writing your own ode solver and want to make use of the DiffSL compil
 
 ## Dependencies
 
-You will need to install the [LLVM project](https://llvm.org/). The easiest way to
+To use the llvm backend (optional) You will need to install the [LLVM project](https://llvm.org/). The easiest way to
 install this is to use the package manager for your operating system. For
 example, on Ubuntu you can install these with the following command:
 
@@ -88,12 +88,12 @@ sudo apt-get install llvm
 
 ## Installation
 
-You can install DiffSL using cargo. You will need to indicate the llvm version you have installed using a feature flag. For example, for llvm 14:
+You can install DiffSL using cargo. By default the cranelift backend will be used. To use the llvm backend (which generates more optimised code), you will need to indicate the llvm version you have installed using a feature flag. For example, for llvm 16:
 
 ```bash
-cargo add diffsl --features llvm14-0
+cargo add diffsl --features llvm16-0
 ```
 
-Other versions of llvm are also supported given by the features `llvm13-0`, `llvm14-0`, `llvm15-0`, `llvm16-0`, `llvm17-0`.
+Other versions of llvm are also supported given by the features `llvm15-0`, `llvm16-0`, `llvm17-0`, `llvm18-0`.
 
 

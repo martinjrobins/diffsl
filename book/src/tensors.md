@@ -47,7 +47,7 @@ This is useful when defining higher dimensional tensors, such as matrices. For e
 
 ```
 A_ij {
- (0:2, 0:3) = 1.0,
+ (0:2, 0:3): 1.0,
 }
 ```
 
@@ -59,8 +59,8 @@ Here is another example of a 4x2 matrix \\( B \\) with rows 0 to 2 set to `1.0` 
 
 ```
 A_ij {
- (0:2, 0:3) = 1.0,
- (3:4, 0:3) = 2.0,
+ (0:2, 0:3): 1.0,
+ (3:4, 0:3): 2.0,
 }
 ```
 
@@ -68,9 +68,9 @@ For specifying a single index, you can simply write the index number without the
 
 ```
 I_ij {
- (0, 0) = 1.0,
- (1, 1) = 1.0,
- (2, 2) = 1.0,
+ (0, 0): 1.0,
+ (1, 1): 1.0,
+ (2, 2): 1.0,
 }
 ```
 
@@ -83,7 +83,7 @@ Finally, you can also use the `..` operator to specify a *diagonal* range of ind
 
 ```
 D_ij {
- (0..2, 0..2) = 1.0,
+ (0..2, 0..2): 1.0,
 }
 ```
 
@@ -93,9 +93,9 @@ We can automatically define a sparse matrix \\( B \\) by simply specifying the n
 
 ```
 B_ij {
- (0, 0) = 1.0,
- (0, 1) = 2.0,
- (1, 1) = 3.0,
+ (0, 0): 1.0,
+ (0, 1): 2.0,
+ (1, 1): 3.0,
 }
 ```
 
@@ -104,10 +104,10 @@ We can force the compiler to use a dense representation by specifying the zeros 
 
 ```
 B_ij {
- (0, 0) = 1.0,
- (0, 1) = 2.0,
- (1, 0) = 0.0,
- (1, 1) = 3.0,
+ (0, 0): 1.0,
+ (0, 1): 2.0,
+ (1, 0): 0.0,
+ (1, 1): 3.0,
 }
 ```
 
@@ -115,9 +115,9 @@ As well as specifying a sparse matrix, we can also define a diagonal matrix by s
 
 ```
 D_ij {
- (0, 0) = 1.0,
- (1, 1) = 2.0,
- (2, 2) = 3.0,
+ (0, 0): 1.0,
+ (1, 1): 2.0,
+ (2, 2): 3.0,
 }
 ```
 

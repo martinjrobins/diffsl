@@ -31,12 +31,7 @@ type RealType = f64;
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
 use crate::enzyme::{
-    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Integer,
-    CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode, CFnTypeInfo, CreateEnzymeLogic,
-    CreateTypeAnalysis, EnzymeCreateForwardDiff, EnzymeFreeTypeTree, EnzymeLogicRef,
-    EnzymeMergeTypeTree, EnzymeNewTypeTreeCT, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq,
-    FreeEnzymeLogic, FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue,
-    CDIFFE_TYPE_DFT_CONSTANT, CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED,
+    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Integer, CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode, CDerivativeMode_DEM_ReverseModeCombined, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis, EnzymeCreateForwardDiff, EnzymeCreatePrimalAndGradient, EnzymeFreeTypeTree, EnzymeLogicRef, EnzymeMergeTypeTree, EnzymeNewTypeTreeCT, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq, FreeEnzymeLogic, FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue, CDIFFE_TYPE_DFT_CONSTANT, CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED
 };
 use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
@@ -313,6 +308,28 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
+            CompileMode::Forward,
+        )
+    }
+    
+    fn supports_reverse_autodiff(&self) -> bool {
+        true
+    }
+    
+    fn compile_set_u0_rgrad(
+            &mut self,
+            func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
         )
     }
 
@@ -331,6 +348,26 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
+            CompileMode::Forward,
+        )
+    }
+    
+    fn compile_rhs_rgrad(
+            &mut self,
+            func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+        ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
         )
     }
 
@@ -348,6 +385,25 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
+            CompileMode::Forward,
+        )
+    }
+
+    fn compile_calc_out_rgrad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Dup,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
         )
     }
 
@@ -359,6 +415,19 @@ impl CodegenModule for LlvmModule {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+            CompileMode::Forward,
+        )
+    }
+
+    fn compile_set_inputs_rgrad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+            CompileMode::Reverse,
         )
     }
 
@@ -465,6 +534,11 @@ pub enum CompileGradientArgType {
     Const,
     Dup,
     DupNoNeed,
+}
+
+pub enum CompileMode {
+    Forward,
+    Reverse,
 }
 
 pub struct CodeGen<'ctx> {
@@ -2460,6 +2534,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         original_function: FunctionValue<'ctx>,
         args_type: &[CompileGradientArgType],
+        mode: CompileMode,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
 
@@ -2584,6 +2659,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
         // if we have void ret, this must be false;
         let ret_primary_ret = false;
+        let diff_ret = false;
         let ret_activity = CDIFFE_TYPE_DFT_CONSTANT;
         let ret_tree = unsafe {
             EnzymeNewTypeTreeCT(
@@ -2612,28 +2688,55 @@ impl<'ctx> CodeGen<'ctx> {
             unsafe { CreateTypeAnalysis(logic_ref, std::ptr::null_mut(), std::ptr::null_mut(), 0) };
 
         let mut args_uncacheable = vec![0; arg_trees.len()];
-
-        let enzyme_function = unsafe {
-            EnzymeCreateForwardDiff(
-                logic_ref, // Logic
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                original_function.as_value_ref() as *mut LLVMOpaqueValue,
-                ret_activity, // LLVM function, return type
-                input_activity.as_mut_ptr(),
-                input_activity.len(), // constant arguments
-                type_analysis,        // type analysis struct
-                ret_primary_ret as u8,
-                CDerivativeMode_DEM_ForwardMode, // return value, dret_used, top_level which was 1
-                1,                               // free memory
-                0,                               // runtime activity
-                1,                               // vector mode width
-                std::ptr::null_mut(),
-                fn_type_info, // additional_arg, type info (return + args)
-                args_uncacheable.as_mut_ptr(),
-                args_uncacheable.len(), // uncacheable arguments
-                std::ptr::null_mut(),   // write augmented function to this
-            )
+        
+        let enzyme_function = match mode {
+            CompileMode::Forward => unsafe {
+                EnzymeCreateForwardDiff(
+                    logic_ref, // Logic
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    original_function.as_value_ref() as *mut LLVMOpaqueValue,
+                    ret_activity, // LLVM function, return type
+                    input_activity.as_mut_ptr(),
+                    input_activity.len(), // constant arguments
+                    type_analysis,        // type analysis struct
+                    ret_primary_ret as u8,
+                    CDerivativeMode_DEM_ForwardMode, // return value, dret_used, top_level which was 1
+                    1,                               // free memory
+                    0,                               // runtime activity
+                    1,                               // vector mode width
+                    std::ptr::null_mut(),
+                    fn_type_info, // additional_arg, type info (return + args)
+                    args_uncacheable.as_mut_ptr(),
+                    args_uncacheable.len(), // uncacheable arguments
+                    std::ptr::null_mut(),   // write augmented function to this
+                )
+            },
+            CompileMode::Reverse => unsafe {
+                EnzymeCreatePrimalAndGradient(
+                    logic_ref,
+                    std::ptr::null_mut(), 
+                    std::ptr::null_mut(),
+                    original_function.as_value_ref() as *mut LLVMOpaqueValue,
+                    ret_activity,
+                    input_activity.as_mut_ptr(),
+                    input_activity.len(),
+                    type_analysis,
+                    ret_primary_ret as u8,
+                    diff_ret as u8,
+                    CDerivativeMode_DEM_ReverseModeCombined,
+                    0,
+                    1,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    fn_type_info,
+                    args_uncacheable.as_mut_ptr(),
+                    args_uncacheable.len(),
+                    std::ptr::null_mut(),
+                    0
+                )
+            },
         };
 
         // free everything

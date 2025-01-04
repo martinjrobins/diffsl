@@ -1,5 +1,3 @@
-use std::sync::{Arc, Barrier};
-
 use crate::{
     discretise::DiscreteModel,
     execution::interface::{
@@ -58,10 +56,18 @@ struct JitGradFunctions {
     set_inputs_grad: SetInputsGradientFunc,
 }
 
+struct JitGradRFunctions {
+    set_u0_rgrad: U0GradientFunc,
+    rhs_rgrad: RhsGradientFunc,
+    calc_out_rgrad: CalcOutGradientFunc,
+    set_inputs_rgrad: SetInputsGradientFunc,
+}
+
 pub struct Compiler<M: CodegenModule> {
     module: M,
     jit_functions: JitFunctions,
     jit_grad_functions: JitGradFunctions,
+    jit_grad_r_functions: Option<JitGradRFunctions>,
 
     number_of_states: usize,
     number_of_parameters: usize,
@@ -77,6 +83,7 @@ pub enum CompilerMode {
     #[default]
     SingleThreaded,
 }
+
 
 impl<M: CodegenModule> Compiler<M> {
     pub fn from_discrete_str(code: &str, mode: CompilerMode) -> Result<Self> {
@@ -154,6 +161,17 @@ impl<M: CodegenModule> Compiler<M> {
         let rhs_grad = module.compile_rhs_grad(&rhs, model)?;
         let calc_out_grad = module.compile_calc_out_grad(&calc_out, model)?;
         let set_inputs_grad = module.compile_set_inputs_grad(&set_inputs, model)?;
+        
+        let mut set_u0_rgrad = None;
+        let mut rhs_rgrad = None;
+        let mut calc_out_rgrad = None;
+        let mut set_inputs_rgrad = None;
+        if module.supports_reverse_autodiff() {
+            set_u0_rgrad = Some(module.compile_set_u0_rgrad(&set_u0, model)?);
+            rhs_rgrad = Some(module.compile_rhs_rgrad(&rhs, model)?);
+            calc_out_rgrad = Some(module.compile_calc_out_rgrad(&calc_out, model)?);
+            set_inputs_rgrad = Some(module.compile_set_inputs_rgrad(&set_inputs, model)?);
+        }
 
         module.post_autodiff_optimisation()?;
 
@@ -189,6 +207,25 @@ impl<M: CodegenModule> Compiler<M> {
         let set_inputs_grad = unsafe {
             std::mem::transmute::<*const u8, SetInputsGradientFunc>(module.jit(set_inputs_grad)?)
         };
+        
+        let jit_grad_r_functions = if module.supports_reverse_autodiff() {
+            Some(JitGradRFunctions {
+                set_u0_rgrad: unsafe {
+                    std::mem::transmute::<*const u8, U0GradientFunc>(module.jit(set_u0_rgrad.unwrap())?)
+                },
+                rhs_rgrad: unsafe {
+                    std::mem::transmute::<*const u8, RhsGradientFunc>(module.jit(rhs_rgrad.unwrap())?)
+                },
+                calc_out_rgrad: unsafe {
+                    std::mem::transmute::<*const u8, CalcOutGradientFunc>(module.jit(calc_out_rgrad.unwrap())?)
+                },
+                set_inputs_rgrad: unsafe {
+                    std::mem::transmute::<*const u8, SetInputsGradientFunc>(module.jit(set_inputs_rgrad.unwrap())?)
+                },
+            })
+        } else {
+            None
+        };
 
         Ok(Self {
             module,
@@ -210,6 +247,7 @@ impl<M: CodegenModule> Compiler<M> {
                 calc_out_grad,
                 set_inputs_grad,
             },
+            jit_grad_r_functions,
             number_of_states,
             number_of_parameters,
             number_of_outputs,
@@ -218,7 +256,7 @@ impl<M: CodegenModule> Compiler<M> {
             thread_lock,
         })
     }
-
+    
     pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
         let index = self.module.layout().get_data_index(name)?;
         let nnz = self.module.layout().get_data_length(name)?;

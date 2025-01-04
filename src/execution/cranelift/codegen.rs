@@ -205,6 +205,42 @@ unsafe impl Sync for CraneliftModule {}
 
 impl CodegenModule for CraneliftModule {
     type FuncId = FuncId;
+    
+    fn compile_calc_out_rgrad(
+            &mut self,
+            _func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+        ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+    
+    fn compile_rhs_rgrad(
+            &mut self,
+            _func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+        ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+    
+    fn compile_set_inputs_rgrad(
+            &mut self,
+            _func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+        ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+    
+    fn compile_set_u0_rgrad(
+            &mut self,
+            _func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+        ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+    
+    fn supports_reverse_autodiff(&self) -> bool {
+        false
+    }
 
     fn compile_calc_out_grad(
         &mut self,

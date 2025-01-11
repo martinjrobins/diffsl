@@ -31,7 +31,13 @@ type RealType = f64;
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
 use crate::enzyme::{
-    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Integer, CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode, CDerivativeMode_DEM_ReverseModeCombined, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis, EnzymeCreateForwardDiff, EnzymeCreatePrimalAndGradient, EnzymeFreeTypeTree, EnzymeLogicRef, EnzymeMergeTypeTree, EnzymeNewTypeTreeCT, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq, FreeEnzymeLogic, FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue, CDIFFE_TYPE_DFT_CONSTANT, CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED
+    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Integer,
+    CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode,
+    CDerivativeMode_DEM_ReverseModeCombined, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis,
+    EnzymeCreateForwardDiff, EnzymeCreatePrimalAndGradient, EnzymeFreeTypeTree, EnzymeLogicRef,
+    EnzymeMergeTypeTree, EnzymeNewTypeTreeCT, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq,
+    FreeEnzymeLogic, FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue,
+    CDIFFE_TYPE_DFT_CONSTANT, CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED,
 };
 use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
@@ -311,15 +317,15 @@ impl CodegenModule for LlvmModule {
             CompileMode::Forward,
         )
     }
-    
+
     fn supports_reverse_autodiff(&self) -> bool {
         true
     }
-    
+
     fn compile_set_u0_rgrad(
-            &mut self,
-            func_id: &Self::FuncId,
-            _model: &DiscreteModel,
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
     ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
@@ -351,12 +357,12 @@ impl CodegenModule for LlvmModule {
             CompileMode::Forward,
         )
     }
-    
+
     fn compile_rhs_rgrad(
-            &mut self,
-            func_id: &Self::FuncId,
-            _model: &DiscreteModel,
-        ) -> Result<Self::FuncId> {
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[
@@ -2688,7 +2694,7 @@ impl<'ctx> CodeGen<'ctx> {
             unsafe { CreateTypeAnalysis(logic_ref, std::ptr::null_mut(), std::ptr::null_mut(), 0) };
 
         let mut args_uncacheable = vec![0; arg_trees.len()];
-        
+
         let enzyme_function = match mode {
             CompileMode::Forward => unsafe {
                 EnzymeCreateForwardDiff(
@@ -2715,7 +2721,7 @@ impl<'ctx> CodeGen<'ctx> {
             CompileMode::Reverse => unsafe {
                 EnzymeCreatePrimalAndGradient(
                     logic_ref,
-                    std::ptr::null_mut(), 
+                    std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     original_function.as_value_ref() as *mut LLVMOpaqueValue,
                     ret_activity,
@@ -2734,7 +2740,7 @@ impl<'ctx> CodeGen<'ctx> {
                     args_uncacheable.as_mut_ptr(),
                     args_uncacheable.len(),
                     std::ptr::null_mut(),
-                    0
+                    0,
                 )
             },
         };

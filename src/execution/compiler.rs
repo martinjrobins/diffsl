@@ -85,7 +85,6 @@ pub enum CompilerMode {
     SingleThreaded,
 }
 
-
 impl<M: CodegenModule> Compiler<M> {
     pub fn from_discrete_str(code: &str, mode: CompilerMode) -> Result<Self> {
         let uid = Id::<u32>::new();
@@ -167,7 +166,7 @@ impl<M: CodegenModule> Compiler<M> {
         let rhs_grad = module.compile_rhs_grad(&rhs, model)?;
         let calc_out_grad = module.compile_calc_out_grad(&calc_out, model)?;
         let set_inputs_grad = module.compile_set_inputs_grad(&set_inputs, model)?;
-        
+
         let mut set_u0_rgrad = None;
         let mut rhs_rgrad = None;
         let mut calc_out_rgrad = None;
@@ -213,20 +212,28 @@ impl<M: CodegenModule> Compiler<M> {
         let set_inputs_grad = unsafe {
             std::mem::transmute::<*const u8, SetInputsGradientFunc>(module.jit(set_inputs_grad)?)
         };
-        
+
         let jit_grad_r_functions = if module.supports_reverse_autodiff() {
             Some(JitGradRFunctions {
                 set_u0_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, U0GradientFunc>(module.jit(set_u0_rgrad.unwrap())?)
+                    std::mem::transmute::<*const u8, U0GradientFunc>(
+                        module.jit(set_u0_rgrad.unwrap())?,
+                    )
                 },
                 rhs_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, RhsGradientFunc>(module.jit(rhs_rgrad.unwrap())?)
+                    std::mem::transmute::<*const u8, RhsGradientFunc>(
+                        module.jit(rhs_rgrad.unwrap())?,
+                    )
                 },
                 calc_out_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, CalcOutGradientFunc>(module.jit(calc_out_rgrad.unwrap())?)
+                    std::mem::transmute::<*const u8, CalcOutGradientFunc>(
+                        module.jit(calc_out_rgrad.unwrap())?,
+                    )
                 },
                 set_inputs_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, SetInputsGradientFunc>(module.jit(set_inputs_rgrad.unwrap())?)
+                    std::mem::transmute::<*const u8, SetInputsGradientFunc>(
+                        module.jit(set_inputs_rgrad.unwrap())?,
+                    )
                 },
             })
         } else {
@@ -263,14 +270,18 @@ impl<M: CodegenModule> Compiler<M> {
             thread_lock,
         })
     }
-    
+
     pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
         let index = self.module.layout().get_data_index(name)?;
         let nnz = self.module.layout().get_data_length(name)?;
         Some(&data[index..index + nnz])
     }
 
-    pub fn get_tensor_data_mut<'a>(&self, name: &str, data: &'a mut [f64]) -> Option<&'a mut [f64]> {
+    pub fn get_tensor_data_mut<'a>(
+        &self,
+        name: &str,
+        data: &'a mut [f64],
+    ) -> Option<&'a mut [f64]> {
         let index = self.module.layout().get_data_index(name)?;
         let nnz = self.module.layout().get_data_length(name)?;
         Some(&mut data[index..index + nnz])
@@ -339,19 +350,17 @@ impl<M: CodegenModule> Compiler<M> {
         });
     }
 
-    pub fn set_u0_rgrad(
-        &self,
-        yy: &mut [f64],
-        dyy: &mut [f64],
-        data: &[f64],
-        ddata: &mut [f64],
-    ) {
+    pub fn set_u0_rgrad(&self, yy: &mut [f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
         self.check_data_len(ddata, "ddata");
         self.with_threading(|i, dim| unsafe {
-            (self.jit_grad_r_functions.as_ref().expect("module does not support reverse autograd").set_u0_rgrad)(
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .set_u0_rgrad)(
                 yy.as_ptr() as *mut f64,
                 dyy.as_ptr() as *mut f64,
                 data.as_ptr() as *mut f64,
@@ -503,7 +512,11 @@ impl<M: CodegenModule> Compiler<M> {
         self.check_data_len(data, "data");
         self.check_data_len(ddata, "ddata");
         self.with_threading(|i, dim| unsafe {
-            (self.jit_grad_r_functions.as_ref().expect("module does not support reverse autograd").rhs_rgrad)(
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .rhs_rgrad)(
                 t,
                 yy.as_ptr(),
                 dyy.as_ptr(),
@@ -563,7 +576,11 @@ impl<M: CodegenModule> Compiler<M> {
         self.check_data_len(data, "data");
         self.check_data_len(ddata, "ddata");
         self.with_threading(|i, dim| unsafe {
-            (self.jit_grad_r_functions.as_ref().expect("module does not support reverse autograd").calc_out_rgrad)(
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .calc_out_rgrad)(
                 t,
                 yy.as_ptr(),
                 dyy.as_ptr(),
@@ -646,7 +663,11 @@ impl<M: CodegenModule> Compiler<M> {
         self.check_data_len(data, "data");
         self.check_data_len(ddata, "ddata");
         unsafe {
-            (self.jit_grad_r_functions.as_ref().expect("module does not support reverse autograd").set_inputs_rgrad)(
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .set_inputs_rgrad)(
                 inputs.as_ptr(),
                 dinputs.as_ptr(),
                 data.as_ptr() as *mut f64,
@@ -889,7 +910,7 @@ mod tests {
             }
         };
         let compiler = Compiler::<T>::from_discrete_model(&discrete_model, mode).unwrap();
-        let (n_states, n_inputs, n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+        let (n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
         let mut u0 = vec![1.; n_states];
         let mut res = vec![0.; n_states];
         let mut data = compiler.get_new_data();
@@ -953,10 +974,18 @@ mod tests {
         }
         // reverse-mode
         if compiler.module().supports_reverse_autodiff() {
-            for i in 0..n_outputs {
+            let dtensor_len = compiler
+                .module()
+                .layout()
+                .get_data_length(tensor_name)
+                .unwrap();
+            for i in 0..dtensor_len {
                 let mut ddata = compiler.get_new_data();
-                let dout = compiler.get_tensor_data_mut("out", ddata.as_mut_slice()).unwrap();
-                dout[i] = 1.0;
+                let dtensor = compiler
+                    .get_tensor_data_mut(tensor_name, ddata.as_mut_slice())
+                    .unwrap();
+                dtensor[i] = 1.0;
+
                 let mut du0 = vec![0.];
                 let mut dres = vec![0.];
                 let mut dinputs = vec![0.; n_inputs];
@@ -990,13 +1019,8 @@ mod tests {
                     data.as_slice(),
                     ddata.as_mut_slice(),
                 );
-                
-                results.push(
-                    compiler
-                        .get_tensor_data(tensor_name, ddata.as_slice())
-                        .unwrap()
-                        .to_vec(),
-                );
+
+                results.push(dinputs.to_vec());
             }
         }
         results
@@ -1130,7 +1154,7 @@ mod tests {
     }
 
     macro_rules! tensor_grad_test {
-        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
+        ($($name:ident: $text:literal expect $tensor_name:literal $expected_grad:expr ; $expected_rgrad:expr,)*) => {
         $(
             #[test]
             fn $name() {
@@ -1163,85 +1187,41 @@ mod tests {
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
                         let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                        assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                     }
 
                     let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                    assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    assert_eq!(results.len(), 2);
                 }
 
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
                     let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                    assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                 }
 
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                assert_eq!(results.len(), 2);
             }
         )*
         }
     }
 
     tensor_grad_test! {
-        const_grad: "r { 3 }" expect "r" vec![0.],
-        const_vec_grad: "r_i { 3, 4 }" expect "r" vec![0., 0.],
-        input_grad: "r { 2 * p * p }" expect "r" vec![4.],
-        input_vec_grad: "r_i { 2 * p * p, 3 * p }" expect "r" vec![4., 3.],
-        state_grad: "r { 2 * y }" expect "r" vec![2.],
-        input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.],
-    }
+        const_grad: "r { 3 }" expect "r" vec![0.] ; vec![0.],
+        const_vec_grad: "r_i { 3, 4 }" expect "r" vec![0., 0.] ; vec![0.],
+        input_grad: "r { 2 * p * p }" expect "r" vec![4.] ; vec![4.],
+        input_vec_grad: "r_i { 2 * p * p, 3 * p }" expect "r" vec![4., 3.] ; vec![4.],
+        state_grad: "r { 2 * y }" expect "r" vec![2.] ; vec![2.],
+        input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.] ; vec![4.],
+        state_and_const_grad1: "r_i { 2 * y, 3 }" expect "r" vec![2., 0.] ; vec![2.],
+        state_and_const_grad2: "r_i { 3, 2 * y }" expect "r" vec![0., 2.] ; vec![0.],
 
-    macro_rules! tensor_rgrad_test {
-        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
-        $(
-            #[test]
-            fn $name() {
-                let full_text = format!("
-                    u_i {{
-                        y = 0,
-                    }}
-                    {}
-                    F_i {{
-                        y,
-                    }}
-                    out_i {{
-                        y,
-                    }}
-                ", $text);
-
-                #[cfg(feature = "rayon")]
-                {
-                    #[cfg(feature = "llvm")]
-                    {
-                        use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                        assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
-                    }
-
-                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                    assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
-                }
-
-                #[cfg(feature = "llvm")]
-                {
-                    use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                    assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
-                }
-
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
-            }
-        )*
-        }
-    }
-
-    tensor_rgrad_test! {
-        const_rgrad: "r { 3 }" expect "r" vec![0.],
-        const_vec_rgrad: "r_i { 3, 4 }" expect "r" vec![0., 0.],
-        state_rgrad: "r { 2 * y }" expect "r" vec![2.],
     }
 
     macro_rules! tensor_test_big_state {

@@ -39,7 +39,7 @@ pub trait CodegenModule: Sized + Sync {
         func_id: &Self::FuncId,
         model: &DiscreteModel,
     ) -> Result<Self::FuncId>;
-    
+
     fn compile_set_u0_rgrad(
         &mut self,
         func_id: &Self::FuncId,
@@ -51,7 +51,7 @@ pub trait CodegenModule: Sized + Sync {
         func_id: &Self::FuncId,
         model: &DiscreteModel,
     ) -> Result<Self::FuncId>;
-    
+
     fn compile_calc_out_rgrad(
         &mut self,
         func_id: &Self::FuncId,
@@ -63,7 +63,7 @@ pub trait CodegenModule: Sized + Sync {
         func_id: &Self::FuncId,
         model: &DiscreteModel,
     ) -> Result<Self::FuncId>;
-    
+
     fn supports_reverse_autodiff(&self) -> bool;
 
     fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8>;

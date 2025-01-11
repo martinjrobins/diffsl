@@ -1225,14 +1225,16 @@ mod tests {
     }
 
     macro_rules! tensor_test_big_state {
-        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
+        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr ; $expected_grad:expr ; $expected_rgrad:expr,)*) => {
         $(
             #[test]
             fn $name() {
                 let full_text = format!("
+                    in = [p]
+                    p {{ 1 }}
                     u_i {{
-                        (0:50):   x = 1,
-                        (50:100): y = 1,
+                        (0:50):   x = p,
+                        (50:100): y = p,
                     }}
                     {}
                     F_i {{ x_i, y_i, }}
@@ -1243,21 +1245,29 @@ mod tests {
                     use crate::execution::llvm::codegen::LlvmModule;
                     let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                 }
 
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                 assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                assert_eq!(results.len(), 2);
 
                 #[cfg(feature = "rayon")]
                 {
                     let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    assert_eq!(results.len(), 2);
 
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
                         let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                     }
                 }
             }
@@ -1266,11 +1276,11 @@ mod tests {
     }
 
     tensor_test_big_state! {
-        big_state_expr: "r_i { x_i + y_i }" expect "r" vec![2.; 50],
-        big_state_multi: "r_i { x_i + y_i } b_i { x_i, r_i - y_i }" expect "b" vec![1.; 100],
-        big_state_multi_w_scalar: "r { 1.0 + 1.0 } b_i { x_i, r - y_i }" expect "b" vec![1.; 100],
-        big_state_diag: "b_ij { (0..100, 0..100): 3.0 } r_i { b_ij * u_j }" expect "r" vec![3.; 100],
-        big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100],
+        big_state_expr: "r_i { x_i + y_i }" expect "r" vec![2.; 50] ; vec![2.; 50] ; vec![1.; 50],
+        big_state_multi: "r_i { x_i + y_i } b_i { x_i, r_i - y_i }" expect "b" vec![1.; 100] ; vec![1.; 50] ; vec![1.; 50],
+        big_state_multi_w_scalar: "r { 1.0 + 1.0 } b_i { x_i, r - y_i }" expect "b" vec![1.; 100] ; vec![1.; 50] ; vec![1.; 50],
+        big_state_diag: "b_ij { (0..100, 0..100): 3.0 } r_i { b_ij * u_j }" expect "r" vec![3.; 100] ; vec![3.; 100] ; vec![1.; 100],
+        big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![6.; 100]; vec![1.; 100],
     }
 
     #[test]

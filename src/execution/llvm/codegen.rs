@@ -762,14 +762,7 @@ impl<'ctx> CodeGen<'ctx> {
             .builder
             .build_int_unsigned_div(i_times_size, thread_dim, "start")?;
 
-        // if start index is equal or greater than size then we are done and can exit
-        let test_done = self.builder.get_insert_block().unwrap();
-        let next_block = self
-            .context
-            .append_basic_block(self.fn_value_opt.unwrap(), "threading_block");
-        self.builder.position_at_end(next_block);
-
-        // the ending index for thread i is min((i+1) * size / thread_dim, size)
+        // the ending index for thread i is (i+1) * size / thread_dim
         let i_plus_one = self.builder.build_int_add(thread_id, one, "i_plus_one")?;
         let i_plus_one_times_size =
             self.builder
@@ -777,13 +770,12 @@ impl<'ctx> CodeGen<'ctx> {
         let end = self
             .builder
             .build_int_unsigned_div(i_plus_one_times_size, thread_dim, "end")?;
-        let end_less_than_size =
-            self.builder
-                .build_int_compare(IntPredicate::ULT, end, size, "end_less_than_size")?;
-        let end = self
-            .builder
-            .build_select(end_less_than_size, end, size, "end")?
-            .into_int_value();
+
+        let test_done = self.builder.get_insert_block().unwrap();
+        let next_block = self
+            .context
+            .append_basic_block(self.fn_value_opt.unwrap(), "threading_block");
+        self.builder.position_at_end(next_block);
 
         Ok((start, end, test_done, next_block))
     }
@@ -791,7 +783,7 @@ impl<'ctx> CodeGen<'ctx> {
     fn jit_end_threading(
         &mut self,
         start: IntValue<'ctx>,
-        size: IntValue<'ctx>,
+        end: IntValue<'ctx>,
         test_done: BasicBlock<'ctx>,
         next: BasicBlock<'ctx>,
     ) -> Result<()> {
@@ -800,9 +792,10 @@ impl<'ctx> CodeGen<'ctx> {
             .append_basic_block(self.fn_value_opt.unwrap(), "exit");
         self.builder.build_unconditional_branch(exit)?;
         self.builder.position_at_end(test_done);
+        // done if start == end
         let done = self
             .builder
-            .build_int_compare(IntPredicate::UGE, start, size, "done")?;
+            .build_int_compare(IntPredicate::EQ, start, end, "done")?;
         self.builder.build_conditional_branch(done, exit, next)?;
         self.builder.position_at_end(exit);
         Ok(())
@@ -1436,9 +1429,9 @@ impl<'ctx> CodeGen<'ctx> {
             };
 
         // we will thread the output loop, except if we are contracting to a scalar
-        let threading = self.threaded && expr_rank - contract_by > 0;
-        let (thread_start, thread_end, test_done, next) = if threading {
-            let (start, end, test_done, next) = self.jit_threading_limits(expr_shape[0])?;
+        let (thread_start, thread_end, test_done, next) = if self.threaded {
+            let (start, end, test_done, next) =
+                self.jit_threading_limits(*expr_shape.get(0).unwrap_or(&one))?;
             preblock = next;
             (Some(start), Some(end), Some(test_done), Some(next))
         } else {
@@ -1450,7 +1443,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder.build_unconditional_branch(block)?;
             self.builder.position_at_end(block);
 
-            let start_index = if i == 0 && threading {
+            let start_index = if i == 0 && self.threaded {
                 thread_start.unwrap()
             } else {
                 self.int_type.const_zero()
@@ -1530,7 +1523,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.jit_compile_store(name, elmt, elmt_index, contract_sum_value, translation)?;
             }
 
-            let end_index = if i == 0 && threading {
+            let end_index = if i == 0 && self.threaded {
                 thread_end.unwrap()
             } else {
                 expr_shape[i]
@@ -1547,10 +1540,10 @@ impl<'ctx> CodeGen<'ctx> {
             preblock = block;
         }
 
-        if threading {
+        if self.threaded {
             self.jit_end_threading(
                 thread_start.unwrap(),
-                expr_shape[0],
+                thread_end.unwrap(),
                 test_done.unwrap(),
                 next.unwrap(),
             )?;
@@ -1572,7 +1565,6 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let int_type = self.int_type;
 
-        let mut preblock = self.builder.get_insert_block().unwrap();
         let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
         let translation_index = self
             .layout
@@ -1584,12 +1576,12 @@ impl<'ctx> CodeGen<'ctx> {
             int_type.const_int(elmt.layout().nnz().try_into().unwrap(), false);
         let (thread_start, thread_end, test_done, next) = if self.threaded {
             let (start, end, test_done, next) = self.jit_threading_limits(final_contract_index)?;
-            preblock = next;
             (Some(start), Some(end), Some(test_done), Some(next))
         } else {
             (None, None, None, None)
         };
 
+        let preblock = self.builder.get_insert_block().unwrap();
         let contract_sum_ptr = self.builder.build_alloca(self.real_type, "contract_sum")?;
 
         // loop through each contraction
@@ -1745,7 +1737,7 @@ impl<'ctx> CodeGen<'ctx> {
         if self.threaded {
             self.jit_end_threading(
                 thread_start.unwrap(),
-                final_contract_index,
+                thread_end.unwrap(),
                 test_done.unwrap(),
                 next.unwrap(),
             )?;
@@ -1764,23 +1756,22 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Result<()> {
         let int_type = self.int_type;
 
-        let mut preblock = self.builder.get_insert_block().unwrap();
         let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
-        // loop through the non-zero elements
-        let mut block = self.context.append_basic_block(self.fn_value(), name);
-        self.builder.build_unconditional_branch(block)?;
-        self.builder.position_at_end(block);
-
         let start_index = int_type.const_int(0, false);
         let end_index = int_type.const_int(elmt.expr_layout().nnz().try_into().unwrap(), false);
 
         let (thread_start, thread_end, test_done, next) = if self.threaded {
             let (start, end, test_done, next) = self.jit_threading_limits(end_index)?;
-            preblock = next;
             (Some(start), Some(end), Some(test_done), Some(next))
         } else {
             (None, None, None, None)
         };
+
+        // loop through the non-zero elements
+        let preblock = self.builder.get_insert_block().unwrap();
+        let mut block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_unconditional_branch(block)?;
+        self.builder.position_at_end(block);
 
         let curr_index = self.builder.build_phi(int_type, "i")?;
         curr_index.add_incoming(&[(&thread_start.unwrap_or(start_index), preblock)]);
@@ -1850,7 +1841,7 @@ impl<'ctx> CodeGen<'ctx> {
         if self.threaded {
             self.jit_end_threading(
                 thread_start.unwrap(),
-                end_index,
+                thread_end.unwrap(),
                 test_done.unwrap(),
                 next.unwrap(),
             )?;
@@ -1868,17 +1859,24 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Result<()> {
         let int_type = self.int_type;
 
-        let preblock = self.builder.get_insert_block().unwrap();
+        let start_index = int_type.const_int(0, false);
+        let end_index = int_type.const_int(elmt.expr_layout().nnz().try_into().unwrap(), false);
+
+        let (thread_start, thread_end, test_done, next) = if self.threaded {
+            let (start, end, test_done, next) = self.jit_threading_limits(end_index)?;
+            (Some(start), Some(end), Some(test_done), Some(next))
+        } else {
+            (None, None, None, None)
+        };
 
         // loop through the non-zero elements
+        let preblock = self.builder.get_insert_block().unwrap();
         let mut block = self.context.append_basic_block(self.fn_value(), name);
         self.builder.build_unconditional_branch(block)?;
         self.builder.position_at_end(block);
 
-        let start_index = int_type.const_int(0, false);
-        let end_index = int_type.const_int(elmt.expr_layout().nnz().try_into().unwrap(), false);
         let curr_index = self.builder.build_phi(int_type, "i")?;
-        curr_index.add_incoming(&[(&start_index, preblock)]);
+        curr_index.add_incoming(&[(&thread_start.unwrap_or(start_index), preblock)]);
 
         // loop body - index is just the same for each element
         let elmt_index = curr_index.as_basic_value().into_int_value();
@@ -1910,13 +1908,25 @@ impl<'ctx> CodeGen<'ctx> {
         curr_index.add_incoming(&[(&next_index, block)]);
 
         // loop condition
-        let loop_while =
-            self.builder
-                .build_int_compare(IntPredicate::ULT, next_index, end_index, name)?;
+        let loop_while = self.builder.build_int_compare(
+            IntPredicate::ULT,
+            next_index,
+            thread_end.unwrap_or(end_index),
+            name,
+        )?;
         let post_block = self.context.append_basic_block(self.fn_value(), name);
         self.builder
             .build_conditional_branch(loop_while, block, post_block)?;
         self.builder.position_at_end(post_block);
+
+        if self.threaded {
+            self.jit_end_threading(
+                thread_start.unwrap(),
+                thread_end.unwrap(),
+                test_done.unwrap(),
+                next.unwrap(),
+            )?;
+        }
 
         Ok(())
     }
@@ -2740,7 +2750,7 @@ impl<'ctx> CodeGen<'ctx> {
                     args_uncacheable.as_mut_ptr(),
                     args_uncacheable.len(),
                     std::ptr::null_mut(),
-                    0,
+                    1,
                 )
             },
         };

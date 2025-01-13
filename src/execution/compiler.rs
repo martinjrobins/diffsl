@@ -1204,7 +1204,7 @@ mod tests {
         const_grad: "r { 3 }" expect "r" vec![0.] ; vec![0.],
         const_vec_grad: "r_i { 3, 4 }" expect "r" vec![0., 0.] ; vec![0.],
         input_grad: "r { 2 * p * p }" expect "r" vec![4.] ; vec![4.],
-        input_vec_grad: "r_i { 2 * p * p, 3 * p }" expect "r" vec![4., 3.] ; vec![4.],
+        input_vec_grad: "r_i { 2 * p * p, 3 * p }" expect "r" vec![4., 3.] ; vec![7.],
         state_grad: "r { 2 * y }" expect "r" vec![2.] ; vec![2.],
         input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.] ; vec![4.],
         state_and_const_grad1: "r_i { 2 * y, 3 }" expect "r" vec![2., 0.] ; vec![2.],

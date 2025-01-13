@@ -2750,7 +2750,7 @@ impl<'ctx> CodeGen<'ctx> {
                     args_uncacheable.as_mut_ptr(),
                     args_uncacheable.len(),
                     std::ptr::null_mut(),
-                    1,
+                    if self.threaded { 1 } else { 0 },
                 )
             },
         };

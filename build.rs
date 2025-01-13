@@ -3,11 +3,12 @@ mod enzyme {
     use bindgen::{BindgenError, Bindings, Builder};
     use std::{env, path::PathBuf};
 
-    fn compile_enzyme(llvm_dir: String) -> (String, String) {
+    fn compile_enzyme(llvm_lib_dir: String) -> (String, String) {
+        let llvm_cmake_dir = format!("{}/cmake/llvm", llvm_lib_dir);
         let dst = cmake::Config::new("Enzyme/enzyme")
             .define("ENZYME_STATIC_LIB", "ON")
             .define("ENZYME_CLANG", "OFF")
-            .define("LLVM_DIR", llvm_dir)
+            .define("LLVM_DIR", llvm_cmake_dir)
             .define(
                 "CMAKE_CXX_FLAGS",
                 "-Wno-comment -Wno-deprecated-declarations",

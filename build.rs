@@ -75,6 +75,10 @@ mod enzyme {
 
         println!("cargo:rustc-link-search=native={}", libdir);
         println!("cargo:rustc-link-search=native={}", llvm_lib_dir);
+        // add homebrew lib dir if on macos, needed for zstd libraries
+        if cfg!(target_os = "macos") {
+            println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
+        }
         for libname in libnames.iter() {
             println!("cargo:rustc-link-lib={}", libname);
         }

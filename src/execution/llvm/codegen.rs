@@ -2301,12 +2301,14 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_indices();
 
         // calculate time dependant definitions
+        let mut nbarriers = 0;
         for tensor in model.time_dep_defns() {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+            self.jit_compile_call_barrier(nbarriers);
+            nbarriers += 1;
         }
 
         // calculate state dependant definitions
-        let mut nbarriers = 0;
         #[allow(clippy::explicit_counter_loop)]
         for a in model.state_dep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;

@@ -24,6 +24,8 @@ mod enzyme {
         let mut builder = Builder::default()
             .header("wrapper.h")
             .generate_comments(false)
+            .blocklist_type("LLVMBuilderRef")
+            .blocklist_type("LLVMValueRef")
             .clang_arg("-x")
             .clang_arg("c++");
 

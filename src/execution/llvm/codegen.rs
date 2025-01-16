@@ -10,17 +10,18 @@ use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{InitializationConfig, Target, TargetTriple};
 use inkwell::types::{
-    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType,
+    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType
 };
 use inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
-    GlobalValue, IntValue, PointerValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue
 };
 use inkwell::{
     AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntPredicate, OptimizationLevel,
 };
-use llvm_sys::prelude::LLVMValueRef;
+use llvm_sys::core::{LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildLoad2, LLVMBuildStore, LLVMGetArgOperand, LLVMGetNamedFunction, LLVMGlobalGetValueType, LLVMTypeOf};
+use llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
 use std::collections::HashMap;
+use std::ffi::{c_void, CString};
 use std::iter::zip;
 use std::pin::Pin;
 use std::{path::Path, process::Command};
@@ -31,13 +32,7 @@ type RealType = f64;
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
 use crate::enzyme::{
-    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Integer,
-    CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode,
-    CDerivativeMode_DEM_ReverseModeCombined, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis,
-    EnzymeCreateForwardDiff, EnzymeCreatePrimalAndGradient, EnzymeFreeTypeTree, EnzymeLogicRef,
-    EnzymeMergeTypeTree, EnzymeNewTypeTreeCT, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq,
-    FreeEnzymeLogic, FreeTypeAnalysis, IntList, LLVMOpaqueContext, LLVMOpaqueValue,
-    CDIFFE_TYPE_DFT_CONSTANT, CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED,
+    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Integer, CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode, CDerivativeMode_DEM_ReverseModeCombined, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis, DiffeGradientUtils, EnzymeCreateForwardDiff, EnzymeCreatePrimalAndGradient, EnzymeFreeTypeTree, EnzymeLogicRef, EnzymeMergeTypeTree, EnzymeNewTypeTreeCT, EnzymeRegisterCallHandler, EnzymeTypeAnalysisRef, EnzymeTypeTreeOnlyEq, FreeEnzymeLogic, FreeTypeAnalysis, GradientUtils, IntList, LLVMBuildAddrSpaceCast, LLVMOpaqueContext, CDIFFE_TYPE_DFT_CONSTANT, CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED, EnzymeGradientUtilsNewFromOriginal
 };
 use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
@@ -438,6 +433,7 @@ impl CodegenModule for LlvmModule {
     }
 
     fn pre_autodiff_optimisation(&mut self) -> Result<()> {
+        //self.codegen().module().print_to_stderr();
         // optimise at -O2 no unrolling before giving to enzyme
         let pass_options = PassBuilderOptions::create();
         //pass_options.set_verify_each(true);
@@ -466,7 +462,7 @@ impl CodegenModule for LlvmModule {
                 inkwell::targets::CodeModel::Default,
             )
             .unwrap();
-
+        
         self.codegen_mut()
             .module()
             .run_passes("default<O2>", &machine, pass_options)
@@ -474,6 +470,7 @@ impl CodegenModule for LlvmModule {
     }
 
     fn post_autodiff_optimisation(&mut self) -> Result<()> {
+        //self.codegen().module().print_to_file("post_autodiff_optimisation.ll").unwrap();
         Ok(())
     }
 }
@@ -481,6 +478,7 @@ impl CodegenModule for LlvmModule {
 struct Globals<'ctx> {
     indices: Option<GlobalValue<'ctx>>,
     thread_counter: Option<GlobalValue<'ctx>>,
+    registered_barrier: Option<GlobalValue<'ctx>>,
 }
 
 impl<'ctx> Globals<'ctx> {
@@ -509,30 +507,53 @@ impl<'ctx> Globals<'ctx> {
         } else {
             None
         };
-        if layout.indices().is_empty() {
-            return Self {
-                indices: None,
-                thread_counter,
-            };
-        }
-        let indices_array_type =
-            int_type.array_type(u32::try_from(layout.indices().len()).unwrap());
-        let indices_array_values = layout
-            .indices()
-            .iter()
-            .map(|&i| int_type.const_int(i.try_into().unwrap(), false))
-            .collect::<Vec<IntValue>>();
-        let indices_value = int_type.const_array(indices_array_values.as_slice());
-        let globals = Self {
-            indices: Some(module.add_global(
+        let indices = if layout.indices().is_empty() {
+            None
+        } else {
+            let indices_array_type =
+                int_type.array_type(u32::try_from(layout.indices().len()).unwrap());
+            let indices_array_values = layout
+                .indices()
+                .iter()
+                .map(|&i| int_type.const_int(i.try_into().unwrap(), false))
+                .collect::<Vec<IntValue>>();
+            let indices_value = int_type.const_array(indices_array_values.as_slice());
+            let indices = module.add_global(
                 indices_array_type,
                 Some(AddressSpace::default()),
                 "indices",
-            )),
-            thread_counter,
+            );
+            indices.set_initializer(&indices_value);
+            Some(indices)
         };
-        globals.indices.unwrap().set_initializer(&indices_value);
-        globals
+        Self {
+            indices,
+            thread_counter,
+            registered_barrier: None,
+        }
+    }
+    fn add_registered_barrier(&mut self, 
+        context: &'ctx inkwell::context::Context,
+        module: &Module<'ctx>,
+    ) {
+        let barrier_func = module.get_function("barrier").unwrap();
+        let barrier_grad_func = module.get_function("barrier_grad").unwrap();
+        let register_grandient_values = vec![
+            barrier_func.as_global_value().as_pointer_value(),
+            barrier_func.as_global_value().as_pointer_value(),
+            barrier_grad_func.as_global_value().as_pointer_value(),
+        ];
+        let register_gradient_value = context.ptr_type(AddressSpace::default()).const_array(
+            register_grandient_values.as_slice(),
+        );
+        let register_gradient_type = register_gradient_value.get_type();
+        let registered_barrier = module.add_global(
+            register_gradient_type,
+            Some(AddressSpace::default()),
+            "__enzyme_register_gradient_barrier"
+        );
+        registered_barrier.set_initializer(&register_gradient_value);
+        self.registered_barrier = Some(registered_barrier);
     }
 }
 
@@ -564,6 +585,39 @@ pub struct CodeGen<'ctx> {
     globals: Globals<'ctx>,
     ee: ExecutionEngine<'ctx>,
     threaded: bool,
+}
+
+
+unsafe extern "C" fn fwd_handler(
+    _builder: LLVMBuilderRef,
+    _call_instruction: LLVMValueRef,
+    _gutils: *mut GradientUtils,
+    _dcall: *mut LLVMValueRef,
+    _normal_return: *mut LLVMValueRef,
+    _shadow_return: *mut LLVMValueRef,
+    _data: *mut c_void,
+) -> u8 {
+    1
+}
+
+unsafe extern "C" fn rev_handler(
+    builder: LLVMBuilderRef, 
+    call_instruction: LLVMValueRef,
+    gutils: *mut DiffeGradientUtils,
+    _tape: LLVMValueRef,
+    data: *mut c_void,
+) {
+    let module = data as *mut llvm_sys::LLVMModule;
+    let name_c_str = CString::new("barrier_grad").unwrap();
+    let barrier_func = LLVMGetNamedFunction(module, name_c_str.as_ptr());
+    let barrier_func_type = LLVMGlobalGetValueType(barrier_func);
+    let barrier_num = LLVMGetArgOperand(call_instruction, 0);
+    let total_barriers = LLVMGetArgOperand(call_instruction, 1);
+    let thread_count = LLVMGetArgOperand(call_instruction, 2);
+    let thread_count = EnzymeGradientUtilsNewFromOriginal(gutils as *mut GradientUtils, thread_count);
+    let mut args = [barrier_num, total_barriers, thread_count];
+    let name_c_str = CString::new("").unwrap();
+    LLVMBuildCall2(builder, barrier_func_type, barrier_func, args.as_mut_ptr(), args.len() as u32, name_c_str.as_ptr());
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -605,6 +659,11 @@ impl<'ctx> CodeGen<'ctx> {
         if threaded {
             ret.compile_barrier_init()?;
             ret.compile_barrier()?;
+            ret.compile_barrier_grad()?;
+            // todo: think I can remove this unless I want to call enzyme using a llvm pass
+            ret.globals.add_registered_barrier(ret.context, &ret.module);
+            let barrier_string = CString::new("barrier").unwrap();
+            unsafe { EnzymeRegisterCallHandler(barrier_string.as_ptr(), Some(fwd_handler), Some(rev_handler), ret.module.as_mut_ptr() as *mut c_void) };
         }
         Ok(ret)
     }
@@ -641,8 +700,90 @@ impl<'ctx> CodeGen<'ctx> {
     fn compile_barrier(&mut self) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(&[self.int_type.into()], false);
+        let fn_type = void_type.fn_type(&[self.int_type.into(), self.int_type.into(), self.int_type.into()], false);
         let function = self.module.add_function("barrier", fn_type, None);
+        let nolinline_kind_id = Attribute::get_named_enum_kind_id("noinline");
+        let noinline = self.context.create_enum_attribute(nolinline_kind_id, 0);
+        function.add_attribute(AttributeLoc::Function, noinline);
+
+        let entry_block = self.context.append_basic_block(function, "entry");
+        let increment_block = self.context.append_basic_block(function, "increment");
+        let wait_loop_block = self.context.append_basic_block(function, "wait_loop");
+        let barrier_done_block = self.context.append_basic_block(function, "barrier_done");
+
+        self.fn_value_opt = Some(function);
+        self.builder.position_at_end(entry_block);
+        
+        let thread_counter = self.globals.thread_counter.unwrap().as_pointer_value();
+        let barrier_num = function.get_nth_param(0).unwrap().into_int_value();
+        let total_barriers = function.get_nth_param(1).unwrap().into_int_value();
+        let thread_count = function.get_nth_param(2).unwrap().into_int_value();
+        
+        let nbarrier_equals_total_barriers = self.builder.build_int_compare(IntPredicate::EQ, barrier_num, total_barriers, "nbarrier_equals_total_barriers").unwrap();
+        // branch to barrier_done if nbarrier == total_barriers
+        self.builder.build_conditional_branch(nbarrier_equals_total_barriers, barrier_done_block, increment_block)?;
+        self.builder.position_at_end(increment_block);
+
+        let barrier_num_times_thread_count = self.builder.build_int_mul(barrier_num, thread_count, "barrier_num_times_thread_count").unwrap();
+
+        // Atomically increment the barrier counter
+        let i32_type = self.context.i32_type();
+        let one = i32_type.const_int(1, false);
+        self.builder.build_atomicrmw(
+            AtomicRMWBinOp::Add,
+            thread_counter,
+            one,
+            AtomicOrdering::Monotonic,
+        )?;
+
+        // wait_loop:
+        self.builder.build_unconditional_branch(wait_loop_block)?;
+        self.builder.position_at_end(wait_loop_block);
+
+        let current_value = self
+            .builder
+            .build_load(i32_type, thread_counter, "current_value")?
+            .into_int_value();
+
+        current_value
+            .as_instruction_value()
+            .unwrap()
+            .set_atomic_ordering(AtomicOrdering::Monotonic)
+            .map_err(|e| anyhow!("Error setting atomic ordering: {:?}", e))?;
+
+        let all_threads_done = self.builder.build_int_compare(
+            IntPredicate::UGE,
+            current_value,
+            barrier_num_times_thread_count,
+            "all_threads_done",
+        )?;
+
+        self.builder.build_conditional_branch(
+            all_threads_done,
+            barrier_done_block,
+            wait_loop_block,
+        )?;
+        self.builder.position_at_end(barrier_done_block);
+
+        self.builder.build_return(None)?;
+
+        if function.verify(true) {
+            self.functions.insert("barrier".to_owned(), function);
+            Ok(function)
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+    fn compile_barrier_grad(&mut self) -> Result<FunctionValue<'ctx>> {
+        self.clear();
+        let void_type = self.context.void_type();
+        let fn_type = void_type.fn_type(&[self.int_type.into(), self.int_type.into(), self.int_type.into()], false);
+        let function = self.module.add_function("barrier_grad", fn_type, None);
 
         let entry_block = self.context.append_basic_block(function, "entry");
         let wait_loop_block = self.context.append_basic_block(function, "wait_loop");
@@ -652,7 +793,13 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.position_at_end(entry_block);
 
         let thread_counter = self.globals.thread_counter.unwrap().as_pointer_value();
-        let thread_count = function.get_nth_param(0).unwrap().into_int_value();
+        let barrier_num = function.get_nth_param(0).unwrap().into_int_value();
+        let total_barriers = function.get_nth_param(1).unwrap().into_int_value();
+        let thread_count = function.get_nth_param(2).unwrap().into_int_value();
+
+        let twice_total_barriers = self.builder.build_int_mul(total_barriers, self.int_type.const_int(2, false), "twice_total_barriers").unwrap();
+        let twice_total_barriers_minus_barrier_num = self.builder.build_int_sub(twice_total_barriers, barrier_num, "twice_total_barriers_minus_barrier_num").unwrap();
+        let twice_total_barriers_minus_barrier_num_times_thread_count = self.builder.build_int_mul(twice_total_barriers_minus_barrier_num, thread_count, "twice_total_barriers_minus_barrier_num_times_thread_count").unwrap();
 
         // Atomically increment the barrier counter
         let i32_type = self.context.i32_type();
@@ -681,7 +828,7 @@ impl<'ctx> CodeGen<'ctx> {
         let all_threads_done = self.builder.build_int_compare(
             IntPredicate::UGE,
             current_value,
-            thread_count,
+            twice_total_barriers_minus_barrier_num_times_thread_count,
             "all_threads_done",
         )?;
 
@@ -695,7 +842,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.functions.insert("barrier".to_owned(), function);
+            self.functions.insert("barrier_grad".to_owned(), function);
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -706,7 +853,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    fn jit_compile_call_barrier(&mut self, nbarrier: u64) {
+    fn jit_compile_call_barrier(&mut self, nbarrier: u64, total_barriers: u64) {
         if !self.threaded {
             return;
         }
@@ -717,15 +864,12 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap()
             .into_int_value();
         let nbarrier = self.int_type.const_int(nbarrier + 1, false);
-        let thread_dim_mul_nbarrier = self
-            .builder
-            .build_int_mul(thread_dim, nbarrier, "thread_dim_mul_nbarrier")
-            .unwrap();
+        let total_barriers = self.int_type.const_int(total_barriers, false);
         let barrier = self.get_function("barrier").unwrap();
         self.builder
             .build_call(
                 barrier,
-                &[BasicMetadataValueEnum::IntValue(thread_dim_mul_nbarrier)],
+                &[BasicMetadataValueEnum::IntValue(nbarrier), BasicMetadataValueEnum::IntValue(total_barriers), BasicMetadataValueEnum::IntValue(thread_dim)],
                 "barrier",
             )
             .unwrap();
@@ -2238,14 +2382,16 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_indices();
 
         let mut nbarriers = 0;
+        let total_barriers = (model.time_indep_defns().len() + 1) as u64;
         #[allow(clippy::explicit_counter_loop)]
         for a in model.time_indep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
-            self.jit_compile_call_barrier(nbarriers);
+            self.jit_compile_call_barrier(nbarriers, total_barriers);
             nbarriers += 1;
         }
 
         self.jit_compile_tensor(model.state(), Some(*self.get_param("u0")))?;
+        self.jit_compile_call_barrier(nbarriers, total_barriers);
 
         self.builder.build_return(None)?;
 
@@ -2302,9 +2448,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         // calculate time dependant definitions
         let mut nbarriers = 0;
+        let total_barriers = (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
         for tensor in model.time_dep_defns() {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
-            self.jit_compile_call_barrier(nbarriers);
+            self.jit_compile_call_barrier(nbarriers, total_barriers);
             nbarriers += 1;
         }
 
@@ -2312,11 +2459,12 @@ impl<'ctx> CodeGen<'ctx> {
         #[allow(clippy::explicit_counter_loop)]
         for a in model.state_dep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
-            self.jit_compile_call_barrier(nbarriers);
+            self.jit_compile_call_barrier(nbarriers, total_barriers);
             nbarriers += 1;
         }
 
         self.jit_compile_tensor(model.out(), Some(*self.get_var(model.out())))?;
+        self.jit_compile_call_barrier(nbarriers, total_barriers);
         self.builder.build_return(None)?;
 
         if function.verify(true) {
@@ -2374,21 +2522,23 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(stop) = model.stop() {
             // calculate time dependant definitions
             let mut nbarriers = 0;
+            let total_barriers = (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
             for tensor in model.time_dep_defns() {
                 self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
-                self.jit_compile_call_barrier(nbarriers);
+                self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
 
             // calculate state dependant definitions
             for a in model.state_dep_defns() {
                 self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
-                self.jit_compile_call_barrier(nbarriers);
+                self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
 
             let res_ptr = self.get_param("root");
             self.jit_compile_tensor(stop, Some(*res_ptr))?;
+            self.jit_compile_call_barrier(nbarriers, total_barriers);
         }
         self.builder.build_return(None)?;
 
@@ -2443,22 +2593,24 @@ impl<'ctx> CodeGen<'ctx> {
 
         // calculate time dependant definitions
         let mut nbarriers = 0;
+        let total_barriers = (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
         for tensor in model.time_dep_defns() {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
-            self.jit_compile_call_barrier(nbarriers);
+            self.jit_compile_call_barrier(nbarriers, total_barriers);
             nbarriers += 1;
         }
 
         // TODO: could split state dep defns into before and after F
         for a in model.state_dep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
-            self.jit_compile_call_barrier(nbarriers);
+            self.jit_compile_call_barrier(nbarriers, total_barriers);
             nbarriers += 1;
         }
 
         // F
         let res_ptr = self.get_param("rr");
         self.jit_compile_tensor(model.rhs(), Some(*res_ptr))?;
+        self.jit_compile_call_barrier(nbarriers, total_barriers);
 
         self.builder.build_return(None)?;
 
@@ -2518,21 +2670,23 @@ impl<'ctx> CodeGen<'ctx> {
 
             // calculate time dependant definitions
             let mut nbarriers = 0;
+            let total_barriers = (model.time_dep_defns().len() + model.dstate_dep_defns().len() + 1) as u64;
             for tensor in model.time_dep_defns() {
                 self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
-                self.jit_compile_call_barrier(nbarriers);
+                self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
 
             for a in model.dstate_dep_defns() {
                 self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
-                self.jit_compile_call_barrier(nbarriers);
+                self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
 
             // mass
             let res_ptr = self.get_param("rr");
             self.jit_compile_tensor(lhs, Some(*res_ptr))?;
+        self.jit_compile_call_barrier(nbarriers, total_barriers);
         }
 
         self.builder.build_return(None)?;
@@ -2713,7 +2867,7 @@ impl<'ctx> CodeGen<'ctx> {
                     logic_ref, // Logic
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    original_function.as_value_ref() as *mut LLVMOpaqueValue,
+                    original_function.as_value_ref(),
                     ret_activity, // LLVM function, return type
                     input_activity.as_mut_ptr(),
                     input_activity.len(), // constant arguments
@@ -2735,7 +2889,7 @@ impl<'ctx> CodeGen<'ctx> {
                     logic_ref,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    original_function.as_value_ref() as *mut LLVMOpaqueValue,
+                    original_function.as_value_ref(),
                     ret_activity,
                     input_activity.as_mut_ptr(),
                     input_activity.len(),

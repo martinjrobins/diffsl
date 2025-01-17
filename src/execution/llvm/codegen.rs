@@ -20,11 +20,12 @@ use inkwell::{
     AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntPredicate, OptimizationLevel,
 };
 use llvm_sys::core::{
-    LLVMBuildCall2, LLVMGetArgOperand, LLVMGetNamedFunction, LLVMGlobalGetValueType,
+    LLVMBuildCall2, LLVMGetArgOperand, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
+    LLVMGetInstructionParent, LLVMGetNamedFunction, LLVMGlobalGetValueType,
 };
 use llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
 use std::collections::HashMap;
-use std::ffi::{c_void, CString};
+use std::ffi::CString;
 use std::iter::zip;
 use std::pin::Pin;
 use std::{path::Path, process::Command};
@@ -588,7 +589,6 @@ unsafe extern "C" fn fwd_handler(
     _dcall: *mut LLVMValueRef,
     _normal_return: *mut LLVMValueRef,
     _shadow_return: *mut LLVMValueRef,
-    _data: *mut c_void,
 ) -> u8 {
     1
 }
@@ -598,9 +598,10 @@ unsafe extern "C" fn rev_handler(
     call_instruction: LLVMValueRef,
     gutils: *mut DiffeGradientUtils,
     _tape: LLVMValueRef,
-    data: *mut c_void,
 ) {
-    let module = data as *mut llvm_sys::LLVMModule;
+    let call_block = LLVMGetInstructionParent(call_instruction);
+    let call_function = LLVMGetBasicBlockParent(call_block);
+    let module = LLVMGetGlobalParent(call_function);
     let name_c_str = CString::new("barrier_grad").unwrap();
     let barrier_func = LLVMGetNamedFunction(module, name_c_str.as_ptr());
     let barrier_func_type = LLVMGlobalGetValueType(barrier_func);
@@ -2945,18 +2946,7 @@ impl<'ctx> CodeGen<'ctx> {
                 )
             },
             CompileMode::Reverse => {
-                // the register call handler alters a global variable, so we need to lock it
-                let _my_lock = my_mutex.lock().unwrap();
-                let barrier_string = CString::new("barrier").unwrap();
-                unsafe {
-                    EnzymeRegisterCallHandler(
-                        barrier_string.as_ptr(),
-                        Some(fwd_handler),
-                        Some(rev_handler),
-                        self.module.as_mut_ptr() as *mut c_void,
-                    )
-                };
-                let ret = unsafe {
+                let mut call_enzyme = || unsafe {
                     EnzymeCreatePrimalAndGradient(
                         logic_ref,
                         std::ptr::null_mut(),
@@ -2981,15 +2971,24 @@ impl<'ctx> CodeGen<'ctx> {
                         if self.threaded { 1 } else { 0 },
                     )
                 };
-                unsafe {
-                    EnzymeRegisterCallHandler(
-                        barrier_string.as_ptr(),
-                        None,
-                        None,
-                        self.module.as_mut_ptr() as *mut c_void,
-                    )
-                };
-                ret
+                if self.threaded {
+                    // the register call handler alters a global variable, so we need to lock it
+                    let _lock = my_mutex.lock().unwrap();
+                    let barrier_string = CString::new("barrier").unwrap();
+                    unsafe {
+                        EnzymeRegisterCallHandler(
+                            barrier_string.as_ptr(),
+                            Some(fwd_handler),
+                            Some(rev_handler),
+                        )
+                    };
+                    let ret = call_enzyme();
+                    // unregister it so some other thread doesn't use it
+                    unsafe { EnzymeRegisterCallHandler(barrier_string.as_ptr(), None, None) };
+                    ret
+                } else {
+                    call_enzyme()
+                }
             }
         };
 

@@ -1,5 +1,3 @@
-use std::sync::{Arc, Barrier};
-
 use crate::{
     discretise::DiscreteModel,
     execution::interface::{
@@ -58,14 +56,23 @@ struct JitGradFunctions {
     set_inputs_grad: SetInputsGradientFunc,
 }
 
+struct JitGradRFunctions {
+    set_u0_rgrad: U0GradientFunc,
+    rhs_rgrad: RhsGradientFunc,
+    calc_out_rgrad: CalcOutGradientFunc,
+    set_inputs_rgrad: SetInputsGradientFunc,
+}
+
 pub struct Compiler<M: CodegenModule> {
     module: M,
     jit_functions: JitFunctions,
     jit_grad_functions: JitGradFunctions,
+    jit_grad_r_functions: Option<JitGradRFunctions>,
 
     number_of_states: usize,
     number_of_parameters: usize,
     number_of_outputs: usize,
+    number_of_stop: usize,
     has_mass: bool,
     thread_pool: Option<ThreadPool>,
     thread_lock: Option<std::sync::Mutex<()>>,
@@ -136,6 +143,11 @@ impl<M: CodegenModule> Compiler<M> {
             acc + module.layout().get_data_length(name).unwrap()
         });
         let number_of_outputs = module.layout().get_data_length("out").unwrap();
+        let number_of_stop = if let Some(stop) = model.stop() {
+            stop.nnz()
+        } else {
+            0
+        };
         let has_mass = model.lhs().is_some();
 
         let set_u0 = module.compile_set_u0(model)?;
@@ -154,6 +166,17 @@ impl<M: CodegenModule> Compiler<M> {
         let rhs_grad = module.compile_rhs_grad(&rhs, model)?;
         let calc_out_grad = module.compile_calc_out_grad(&calc_out, model)?;
         let set_inputs_grad = module.compile_set_inputs_grad(&set_inputs, model)?;
+
+        let mut set_u0_rgrad = None;
+        let mut rhs_rgrad = None;
+        let mut calc_out_rgrad = None;
+        let mut set_inputs_rgrad = None;
+        if module.supports_reverse_autodiff() {
+            set_u0_rgrad = Some(module.compile_set_u0_rgrad(&set_u0, model)?);
+            rhs_rgrad = Some(module.compile_rhs_rgrad(&rhs, model)?);
+            calc_out_rgrad = Some(module.compile_calc_out_rgrad(&calc_out, model)?);
+            set_inputs_rgrad = Some(module.compile_set_inputs_rgrad(&set_inputs, model)?);
+        }
 
         module.post_autodiff_optimisation()?;
 
@@ -190,6 +213,33 @@ impl<M: CodegenModule> Compiler<M> {
             std::mem::transmute::<*const u8, SetInputsGradientFunc>(module.jit(set_inputs_grad)?)
         };
 
+        let jit_grad_r_functions = if module.supports_reverse_autodiff() {
+            Some(JitGradRFunctions {
+                set_u0_rgrad: unsafe {
+                    std::mem::transmute::<*const u8, U0GradientFunc>(
+                        module.jit(set_u0_rgrad.unwrap())?,
+                    )
+                },
+                rhs_rgrad: unsafe {
+                    std::mem::transmute::<*const u8, RhsGradientFunc>(
+                        module.jit(rhs_rgrad.unwrap())?,
+                    )
+                },
+                calc_out_rgrad: unsafe {
+                    std::mem::transmute::<*const u8, CalcOutGradientFunc>(
+                        module.jit(calc_out_rgrad.unwrap())?,
+                    )
+                },
+                set_inputs_rgrad: unsafe {
+                    std::mem::transmute::<*const u8, SetInputsGradientFunc>(
+                        module.jit(set_inputs_rgrad.unwrap())?,
+                    )
+                },
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             module,
             jit_functions: JitFunctions {
@@ -210,9 +260,11 @@ impl<M: CodegenModule> Compiler<M> {
                 calc_out_grad,
                 set_inputs_grad,
             },
+            jit_grad_r_functions,
             number_of_states,
             number_of_parameters,
             number_of_outputs,
+            number_of_stop,
             has_mass,
             thread_pool,
             thread_lock,
@@ -223,6 +275,16 @@ impl<M: CodegenModule> Compiler<M> {
         let index = self.module.layout().get_data_index(name)?;
         let nnz = self.module.layout().get_data_length(name)?;
         Some(&data[index..index + nnz])
+    }
+
+    pub fn get_tensor_data_mut<'a>(
+        &self,
+        name: &str,
+        data: &'a mut [f64],
+    ) -> Option<&'a mut [f64]> {
+        let index = self.module.layout().get_data_index(name)?;
+        let nnz = self.module.layout().get_data_length(name)?;
+        Some(&mut data[index..index + nnz])
     }
 
     fn with_threading<F>(&self, f: F)
@@ -247,16 +309,65 @@ impl<M: CodegenModule> Compiler<M> {
         }
     }
 
-    pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) {
-        if yy.len() != self.number_of_states {
+    fn check_arg_len(&self, arg: &[f64], expected_len: usize, name: &str) {
+        if arg.len() != expected_len {
             panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
+                "Expected arg {} has len {}, got {}",
+                name,
+                expected_len,
+                arg.len()
             );
         }
+    }
+
+    fn check_state_len(&self, state: &[f64], name: &str) {
+        self.check_arg_len(state, self.number_of_states, name);
+    }
+
+    fn check_stop_len(&self, stop: &[f64], name: &str) {
+        self.check_arg_len(stop, self.number_of_stop, name);
+    }
+
+    fn check_data_len(&self, data: &[f64], name: &str) {
+        self.check_arg_len(data, self.data_len(), name);
+    }
+
+    fn check_inputs_len(&self, inputs: &[f64], name: &str) {
+        if inputs.len() != self.number_of_parameters {
+            panic!(
+                "Expected arg {} has len {}, got {}",
+                name,
+                self.number_of_parameters,
+                inputs.len()
+            );
+        }
+    }
+
+    pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) {
+        self.check_state_len(yy, "yy");
         self.with_threading(|i, dim| unsafe {
             (self.jit_functions.set_u0)(yy.as_ptr() as *mut f64, data.as_ptr() as *mut f64, i, dim);
+        });
+    }
+
+    pub fn set_u0_rgrad(&self, yy: &mut [f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .set_u0_rgrad)(
+                yy.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut f64,
+                data.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut f64,
+                i,
+                dim,
+            );
         });
     }
 
@@ -267,30 +378,10 @@ impl<M: CodegenModule> Compiler<M> {
         data: &mut [f64],
         ddata: &mut [f64],
     ) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
-        }
-        if dyy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states for dyy, got {}",
-                self.number_of_states,
-                dyy.len()
-            );
-        }
-        if data.len() != self.data_len() {
-            panic!("Expected {} data, got {}", self.data_len(), data.len());
-        }
-        if ddata.len() != self.data_len() {
-            panic!(
-                "Expected {} data for ddata, got {}",
-                self.data_len(),
-                ddata.len()
-            );
-        }
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
         self.with_threading(|i, dim| {
             unsafe {
                 (self.jit_grad_functions.set_u0_grad)(
@@ -306,16 +397,12 @@ impl<M: CodegenModule> Compiler<M> {
     }
 
     pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) {
-        let (n_states, _, _, n_data, n_stop, _) = self.get_dims();
-        if yy.len() != n_states {
-            panic!("Expected {} states, got {}", n_states, yy.len());
+        if self.number_of_stop == 0 {
+            panic!("Model does not have a stop function");
         }
-        if data.len() != n_data {
-            panic!("Expected {} data, got {}", n_data, data.len());
-        }
-        if stop.len() != n_stop {
-            panic!("Expected {} stop, got {}", n_stop, stop.len());
-        }
+        self.check_state_len(yy, "yy");
+        self.check_stop_len(stop, "stop");
+        self.check_data_len(data, "data");
         self.with_threading(|i, dim| unsafe {
             (self.jit_functions.calc_stop)(
                 t,
@@ -329,23 +416,9 @@ impl<M: CodegenModule> Compiler<M> {
     }
 
     pub fn rhs(&self, t: f64, yy: &[f64], data: &mut [f64], rr: &mut [f64]) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
-        }
-        if rr.len() != self.number_of_states {
-            panic!(
-                "Expected {} residual states, got {}",
-                self.number_of_states,
-                rr.len()
-            );
-        }
-        if data.len() != self.data_len() {
-            panic!("Expected {} data, got {}", self.data_len(), data.len());
-        }
+        self.check_state_len(yy, "yy");
+        self.check_state_len(rr, "rr");
+        self.check_data_len(data, "data");
         self.with_threading(|i, dim| unsafe {
             (self.jit_functions.rhs)(
                 t,
@@ -366,23 +439,9 @@ impl<M: CodegenModule> Compiler<M> {
         if !self.has_mass {
             panic!("Model does not have a mass function");
         }
-        if yp.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yp.len()
-            );
-        }
-        if rr.len() != self.number_of_states {
-            panic!(
-                "Expected {} residual states, got {}",
-                self.number_of_states,
-                rr.len()
-            );
-        }
-        if data.len() != self.data_len() {
-            panic!("Expected {} data, got {}", self.data_len(), data.len());
-        }
+        self.check_state_len(yp, "yp");
+        self.check_state_len(rr, "rr");
+        self.check_data_len(data, "data");
         self.with_threading(|i, dim| unsafe {
             (self.jit_functions.mass)(
                 t,
@@ -414,44 +473,12 @@ impl<M: CodegenModule> Compiler<M> {
         rr: &mut [f64],
         drr: &mut [f64],
     ) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
-        }
-        if rr.len() != self.number_of_states {
-            panic!(
-                "Expected {} residual states, got {}",
-                self.number_of_states,
-                rr.len()
-            );
-        }
-        if dyy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states for dyy, got {}",
-                self.number_of_states,
-                dyy.len()
-            );
-        }
-        if drr.len() != self.number_of_states {
-            panic!(
-                "Expected {} residual states for drr, got {}",
-                self.number_of_states,
-                drr.len()
-            );
-        }
-        if data.len() != self.data_len() {
-            panic!("Expected {} data, got {}", self.data_len(), data.len());
-        }
-        if ddata.len() != self.data_len() {
-            panic!(
-                "Expected {} data for ddata, got {}",
-                self.data_len(),
-                ddata.len()
-            );
-        }
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_state_len(rr, "rr");
+        self.check_state_len(drr, "drr");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
         self.with_threading(|i, dim| unsafe {
             (self.jit_grad_functions.rhs_grad)(
                 t,
@@ -467,17 +494,45 @@ impl<M: CodegenModule> Compiler<M> {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn rhs_rgrad(
+        &self,
+        t: f64,
+        yy: &[f64],
+        dyy: &mut [f64],
+        data: &[f64],
+        ddata: &mut [f64],
+        rr: &[f64],
+        drr: &mut [f64],
+    ) {
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_state_len(rr, "rr");
+        self.check_state_len(drr, "drr");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .rhs_rgrad)(
+                t,
+                yy.as_ptr(),
+                dyy.as_ptr(),
+                data.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut f64,
+                rr.as_ptr() as *mut f64,
+                drr.as_ptr() as *mut f64,
+                i,
+                dim,
+            )
+        });
+    }
+
     pub fn calc_out(&self, t: f64, yy: &[f64], data: &mut [f64]) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
-        }
-        if data.len() != self.data_len() {
-            panic!("Expected {} data, got {}", self.data_len(), data.len());
-        }
+        self.check_state_len(yy, "yy");
+        self.check_data_len(data, "data");
         self.with_threading(|i, dim| unsafe {
             (self.jit_functions.calc_out)(t, yy.as_ptr(), data.as_ptr() as *mut f64, i, dim)
         });
@@ -491,32 +546,41 @@ impl<M: CodegenModule> Compiler<M> {
         data: &mut [f64],
         ddata: &mut [f64],
     ) {
-        if yy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states, got {}",
-                self.number_of_states,
-                yy.len()
-            );
-        }
-        if data.len() != self.data_len() {
-            panic!("Expected {} data, got {}", self.data_len(), data.len());
-        }
-        if dyy.len() != self.number_of_states {
-            panic!(
-                "Expected {} states for dyy, got {}",
-                self.number_of_states,
-                dyy.len()
-            );
-        }
-        if ddata.len() != self.data_len() {
-            panic!(
-                "Expected {} data for ddata, got {}",
-                self.data_len(),
-                ddata.len()
-            );
-        }
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
         self.with_threading(|i, dim| unsafe {
             (self.jit_grad_functions.calc_out_grad)(
+                t,
+                yy.as_ptr(),
+                dyy.as_ptr(),
+                data.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut f64,
+                i,
+                dim,
+            )
+        });
+    }
+
+    pub fn calc_out_rgrad(
+        &self,
+        t: f64,
+        yy: &[f64],
+        dyy: &mut [f64],
+        data: &[f64],
+        ddata: &mut [f64],
+    ) {
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .calc_out_rgrad)(
                 t,
                 yy.as_ptr(),
                 dyy.as_ptr(),
@@ -561,13 +625,8 @@ impl<M: CodegenModule> Compiler<M> {
     }
 
     pub fn set_inputs(&self, inputs: &[f64], data: &mut [f64]) {
-        let (_, n_inputs, _, _, _, _) = self.get_dims();
-        if n_inputs != inputs.len() {
-            panic!("Expected {} inputs, got {}", n_inputs, inputs.len());
-        }
-        if data.len() != self.data_len() {
-            panic!("Expected {} data, got {}", self.data_len(), data.len());
-        }
+        self.check_inputs_len(inputs, "inputs");
+        self.check_data_len(data, "data");
         unsafe { (self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr()) };
     }
 
@@ -578,32 +637,40 @@ impl<M: CodegenModule> Compiler<M> {
         data: &mut [f64],
         ddata: &mut [f64],
     ) {
-        let (_, n_inputs, _, _, _, _) = self.get_dims();
-        if n_inputs != inputs.len() {
-            panic!("Expected {} inputs, got {}", n_inputs, inputs.len());
-        }
-        if data.len() != self.data_len() {
-            panic!("Expected {} data, got {}", self.data_len(), data.len());
-        }
-        if dinputs.len() != n_inputs {
-            panic!(
-                "Expected {} inputs for dinputs, got {}",
-                n_inputs,
-                dinputs.len()
-            );
-        }
-        if ddata.len() != self.data_len() {
-            panic!(
-                "Expected {} data for ddata, got {}",
-                self.data_len(),
-                ddata.len()
-            );
-        }
+        self.check_inputs_len(inputs, "inputs");
+        self.check_inputs_len(dinputs, "dinputs");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
         unsafe {
             (self.jit_grad_functions.set_inputs_grad)(
                 inputs.as_ptr(),
                 dinputs.as_ptr(),
                 data.as_mut_ptr(),
+                ddata.as_mut_ptr(),
+            )
+        };
+    }
+
+    pub fn set_inputs_rgrad(
+        &self,
+        inputs: &[f64],
+        dinputs: &mut [f64],
+        data: &[f64],
+        ddata: &mut [f64],
+    ) {
+        self.check_inputs_len(inputs, "inputs");
+        self.check_inputs_len(dinputs, "dinputs");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        unsafe {
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .set_inputs_rgrad)(
+                inputs.as_ptr(),
+                dinputs.as_ptr(),
+                data.as_ptr() as *mut f64,
                 ddata.as_mut_ptr(),
             )
         };
@@ -847,10 +914,6 @@ mod tests {
         let mut u0 = vec![1.; n_states];
         let mut res = vec![0.; n_states];
         let mut data = compiler.get_new_data();
-        let mut grad_data = Vec::new();
-        for _ in 0..n_inputs {
-            grad_data.push(compiler.get_new_data());
-        }
         let mut results = Vec::new();
         let inputs = vec![1.; n_inputs];
         compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
@@ -863,46 +926,90 @@ mod tests {
                 .unwrap()
                 .to_vec(),
         );
-        for i in 0..n_inputs {
-            let mut dinputs = vec![0.; n_inputs];
-            dinputs[i] = 1.0;
+        // forward mode
+        let mut dinputs = vec![0.; n_inputs];
+        dinputs.fill(1.);
+        let mut ddata = compiler.get_new_data();
+        let mut du0 = vec![0.; n_states];
+        let mut dres = vec![0.; n_states];
+        let mut grad_data = compiler.get_new_data();
+        compiler.set_inputs_grad(
+            inputs.as_slice(),
+            dinputs.as_slice(),
+            grad_data.as_mut_slice(),
+            ddata.as_mut_slice(),
+        );
+        compiler.set_u0_grad(
+            u0.as_mut_slice(),
+            du0.as_mut_slice(),
+            grad_data.as_mut_slice(),
+            ddata.as_mut_slice(),
+        );
+        compiler.rhs_grad(
+            0.,
+            u0.as_slice(),
+            du0.as_slice(),
+            grad_data.as_mut_slice(),
+            ddata.as_mut_slice(),
+            res.as_mut_slice(),
+            dres.as_mut_slice(),
+        );
+        compiler.calc_out_grad(
+            0.,
+            u0.as_slice(),
+            du0.as_slice(),
+            grad_data.as_mut_slice(),
+            ddata.as_mut_slice(),
+        );
+        results.push(
+            compiler
+                .get_tensor_data(tensor_name, ddata.as_slice())
+                .unwrap()
+                .to_vec(),
+        );
+        // reverse-mode
+        if compiler.module().supports_reverse_autodiff() {
             let mut ddata = compiler.get_new_data();
-            let mut du0 = vec![0.];
-            let mut dres = vec![0.];
-            compiler.set_inputs_grad(
-                inputs.as_slice(),
-                dinputs.as_slice(),
-                grad_data[i].as_mut_slice(),
-                ddata.as_mut_slice(),
-            );
-            compiler.set_u0_grad(
-                u0.as_mut_slice(),
-                du0.as_mut_slice(),
-                grad_data[i].as_mut_slice(),
-                ddata.as_mut_slice(),
-            );
-            compiler.rhs_grad(
+            let dtensor = compiler
+                .get_tensor_data_mut(tensor_name, ddata.as_mut_slice())
+                .unwrap();
+            dtensor.fill(1.);
+
+            let mut du0 = vec![0.; n_states];
+            let mut dres = vec![0.; n_states];
+            let mut dinputs = vec![0.; n_inputs];
+
+            // reverse pass (already done the forward pass)
+            compiler.calc_out_rgrad(
                 0.,
                 u0.as_slice(),
-                du0.as_slice(),
-                grad_data[i].as_mut_slice(),
+                du0.as_mut_slice(),
+                data.as_slice(),
                 ddata.as_mut_slice(),
-                res.as_mut_slice(),
+            );
+            compiler.rhs_rgrad(
+                0.,
+                u0.as_slice(),
+                du0.as_mut_slice(),
+                data.as_slice(),
+                ddata.as_mut_slice(),
+                res.as_slice(),
                 dres.as_mut_slice(),
             );
-            compiler.calc_out_grad(
-                0.,
-                u0.as_slice(),
-                du0.as_slice(),
-                grad_data[i].as_mut_slice(),
+            compiler.set_u0_rgrad(
+                u0.as_mut_slice(),
+                du0.as_mut_slice(),
+                data.as_slice(),
                 ddata.as_mut_slice(),
             );
-            results.push(
-                compiler
-                    .get_tensor_data(tensor_name, ddata.as_slice())
-                    .unwrap()
-                    .to_vec(),
+            compiler.set_inputs_rgrad(
+                inputs.as_slice(),
+                dinputs.as_mut_slice(),
+                data.as_slice(),
+                ddata.as_mut_slice(),
             );
+
+            results.push(dinputs.to_vec());
         }
         results
     }
@@ -1035,7 +1142,7 @@ mod tests {
     }
 
     macro_rules! tensor_grad_test {
-        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
+        ($($name:ident: $text:literal expect $tensor_name:literal $expected_grad:expr ; $expected_rgrad:expr,)*) => {
         $(
             #[test]
             fn $name() {
@@ -1068,45 +1175,54 @@ mod tests {
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
                         let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                        assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                     }
 
                     let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                    assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    assert_eq!(results.len(), 2);
                 }
 
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
                     let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                    assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                 }
 
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[1].as_slice(), $expected_value.as_slice());
+                assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                assert_eq!(results.len(), 2);
             }
         )*
         }
     }
 
     tensor_grad_test! {
-        const_grad: "r { 3 }" expect "r" vec![0.],
-        const_vec_grad: "r_i { 3, 4 }" expect "r" vec![0., 0.],
-        input_grad: "r { 2 * p * p }" expect "r" vec![4.],
-        input_vec_grad: "r_i { 2 * p * p, 3 * p }" expect "r" vec![4., 3.],
-        state_grad: "r { 2 * y }" expect "r" vec![2.],
-        input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.],
+        const_grad: "r { 3 }" expect "r" vec![0.] ; vec![0.],
+        const_vec_grad: "r_i { 3, 4 }" expect "r" vec![0., 0.] ; vec![0.],
+        input_grad: "r { 2 * p * p }" expect "r" vec![4.] ; vec![4.],
+        input_vec_grad: "r_i { 2 * p * p, 3 * p }" expect "r" vec![4., 3.] ; vec![7.],
+        state_grad: "r { 2 * y }" expect "r" vec![2.] ; vec![2.],
+        input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.] ; vec![4.],
+        state_and_const_grad1: "r_i { 2 * y, 3 }" expect "r" vec![2., 0.] ; vec![2.],
+        state_and_const_grad2: "r_i { 3 * y, 2 * y }" expect "r" vec![3., 2.] ; vec![5.],
+
     }
 
     macro_rules! tensor_test_big_state {
-        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
+        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr ; $expected_grad:expr ; $expected_rgrad:expr,)*) => {
         $(
             #[test]
             fn $name() {
                 let full_text = format!("
+                    in = [p]
+                    p {{ 1 }}
                     u_i {{
-                        (0:50):   x = 1,
-                        (50:100): y = 1,
+                        (0:50):   x = p,
+                        (50:100): y = p,
                     }}
                     {}
                     F_i {{ x_i, y_i, }}
@@ -1117,21 +1233,29 @@ mod tests {
                     use crate::execution::llvm::codegen::LlvmModule;
                     let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                 }
 
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                 assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                assert_eq!(results.len(), 2);
 
                 #[cfg(feature = "rayon")]
                 {
                     let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    assert_eq!(results.len(), 2);
 
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
                         let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                     }
                 }
             }
@@ -1140,11 +1264,11 @@ mod tests {
     }
 
     tensor_test_big_state! {
-        big_state_expr: "r_i { x_i + y_i }" expect "r" vec![2.; 50],
-        big_state_multi: "r_i { x_i + y_i } b_i { x_i, r_i - y_i }" expect "b" vec![1.; 100],
-        big_state_multi_w_scalar: "r { 1.0 + 1.0 } b_i { x_i, r - y_i }" expect "b" vec![1.; 100],
-        big_state_diag: "b_ij { (0..100, 0..100): 3.0 } r_i { b_ij * u_j }" expect "r" vec![3.; 100],
-        big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100],
+        big_state_expr: "r_i { x_i + y_i }" expect "r" vec![2.; 50] ; vec![2.; 50] ; vec![100.],
+        big_state_multi: "r_i { x_i + y_i } b_i { x_i, r_i - y_i }" expect "b" vec![1.; 100] ; vec![1.; 100] ; vec![100.],
+        big_state_multi_w_scalar: "r { 1.0 + 1.0 } b_i { x_i, r - y_i }" expect "b" vec![1.; 100] ; vec![1.; 50].into_iter().chain(vec![-1.; 50].into_iter()).collect::<Vec<_>>() ; vec![0.],
+        big_state_diag: "b_ij { (0..100, 0..100): 3.0 } r_i { b_ij * u_j }" expect "r" vec![3.; 100] ; vec![3.; 100] ; vec![300.],
+        big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![6.; 100]; vec![600.],
     }
 
     #[test]

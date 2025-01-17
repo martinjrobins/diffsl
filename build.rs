@@ -3,11 +3,12 @@ mod enzyme {
     use bindgen::{BindgenError, Bindings, Builder};
     use std::{env, path::PathBuf};
 
-    fn compile_enzyme(llvm_dir: String) -> (String, String) {
+    fn compile_enzyme(llvm_lib_dir: String) -> (String, String) {
+        let llvm_cmake_dir = format!("{}/cmake/llvm", llvm_lib_dir);
         let dst = cmake::Config::new("Enzyme/enzyme")
             .define("ENZYME_STATIC_LIB", "ON")
             .define("ENZYME_CLANG", "OFF")
-            .define("LLVM_DIR", llvm_dir)
+            .define("LLVM_DIR", llvm_cmake_dir)
             .define(
                 "CMAKE_CXX_FLAGS",
                 "-Wno-comment -Wno-deprecated-declarations",
@@ -23,6 +24,8 @@ mod enzyme {
         let mut builder = Builder::default()
             .header("wrapper.h")
             .generate_comments(false)
+            .blocklist_type("LLVMBuilderRef")
+            .blocklist_type("LLVMValueRef")
             .clang_arg("-x")
             .clang_arg("c++");
 
@@ -74,6 +77,10 @@ mod enzyme {
 
         println!("cargo:rustc-link-search=native={}", libdir);
         println!("cargo:rustc-link-search=native={}", llvm_lib_dir);
+        // add homebrew lib dir if on macos, needed for zstd libraries
+        if cfg!(target_os = "macos") {
+            println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
+        }
         for libname in libnames.iter() {
             println!("cargo:rustc-link-lib={}", libname);
         }

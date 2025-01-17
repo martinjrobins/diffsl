@@ -206,6 +206,42 @@ unsafe impl Sync for CraneliftModule {}
 impl CodegenModule for CraneliftModule {
     type FuncId = FuncId;
 
+    fn compile_calc_out_rgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_rhs_rgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_set_inputs_rgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_set_u0_rgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn supports_reverse_autodiff(&self) -> bool {
+        false
+    }
+
     fn compile_calc_out_grad(
         &mut self,
         _func_id: &Self::FuncId,
@@ -1255,9 +1291,11 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             };
 
         // we will thread the output loop, except if we are contracting to a scalar
-        let threading = self.threaded && expr_rank - contract_by > 0;
-        let (thread_start, thread_end, exit_block) = if threading {
-            let expr_shape0 = self.builder.ins().iconst(int_type, expr_shape[0]);
+        let (thread_start, thread_end, exit_block) = if self.threaded {
+            let expr_shape0 = self
+                .builder
+                .ins()
+                .iconst(int_type, *expr_shape.get(0).unwrap_or(&1));
             let (start, end, exit_block) = self.jit_threading_limits(expr_shape0);
             (Some(start), Some(end), Some(exit_block))
         } else {
@@ -1267,7 +1305,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         for i in 0..expr_rank {
             let block = self.builder.create_block();
             let curr_index = self.builder.append_block_param(block, self.int_type);
-            let curr_index_start = if i == 0 && threading {
+            let curr_index_start = if i == 0 && self.threaded {
                 thread_start.unwrap()
             } else {
                 zero
@@ -1354,7 +1392,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             // increment index
             let next_index = self.builder.ins().iadd(indices[i], one);
             let block = self.builder.create_block();
-            let loop_cond = if i == 0 && threading {
+            let loop_cond = if i == 0 && self.threaded {
                 self.builder
                     .ins()
                     .icmp(IntCC::UnsignedLessThan, next_index, thread_end.unwrap())

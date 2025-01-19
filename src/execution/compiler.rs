@@ -1278,9 +1278,10 @@ mod tests {
             in = [p]
             p { 1 }
             u_i {
-                (0:100): p,
+                (0:50): x = p,
+                (50:100): y = p,
             }
-            r_i { u_i }
+            r_i { x_i }
             F_i { u_i }";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("test_bad_big_state_expr", &model).unwrap();
@@ -1333,7 +1334,7 @@ mod tests {
             data.as_mut_slice(),
             ddata.as_mut_slice(),
         );
-        assert_relative_eq!(dinputs.as_slice(), vec![100.].as_slice());
+        assert_relative_eq!(dinputs.as_slice(), vec![50.].as_slice());
     }
 
     #[test]

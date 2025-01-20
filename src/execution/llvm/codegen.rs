@@ -471,8 +471,6 @@ impl CodegenModule for LlvmModule {
         //pass_options.set_call_graph_profile(true);
         //pass_options.set_merge_functions(true);
 
-        
-
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
         let triple = TargetTriple::create(self.0.triple.to_string().as_str());
@@ -497,7 +495,10 @@ impl CodegenModule for LlvmModule {
     }
 
     fn post_autodiff_optimisation(&mut self) -> Result<()> {
-        self.codegen().module().print_to_file("post_autodiff_optimisation.ll").unwrap();
+        self.codegen()
+            .module()
+            .print_to_file("post_autodiff_optimisation.ll")
+            .unwrap();
 
         // remove noinline attribute from barrier function as only needed for enzyme
         if let Some(barrier_func) = self.codegen_mut().module().get_function("barrier") {

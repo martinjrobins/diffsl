@@ -9,8 +9,8 @@ use crate::{
 
 use super::{
     interface::{
-        BarrierInitFunc, CalcOutGradientFunc, RhsGradientFunc, SetInputsGradientFunc,
-        U0GradientFunc,
+        BarrierInitFunc, CalcOutGradientFunc, CalcOutReverseGradientFunc, RhsGradientFunc,
+        SetInputsGradientFunc, U0GradientFunc,
     },
     module::CodegenModule,
 };
@@ -59,7 +59,7 @@ struct JitGradFunctions {
 struct JitGradRFunctions {
     set_u0_rgrad: U0GradientFunc,
     rhs_rgrad: RhsGradientFunc,
-    calc_out_rgrad: CalcOutGradientFunc,
+    calc_out_rgrad: CalcOutReverseGradientFunc,
     set_inputs_rgrad: SetInputsGradientFunc,
 }
 
@@ -226,7 +226,7 @@ impl<M: CodegenModule> Compiler<M> {
                     )
                 },
                 calc_out_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, CalcOutGradientFunc>(
+                    std::mem::transmute::<*const u8, CalcOutReverseGradientFunc>(
                         module.jit(calc_out_rgrad.unwrap())?,
                     )
                 },
@@ -583,8 +583,8 @@ impl<M: CodegenModule> Compiler<M> {
                 .calc_out_rgrad)(
                 t,
                 yy.as_ptr(),
-                dyy.as_ptr(),
-                data.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut f64,
+                data.as_ptr(),
                 ddata.as_ptr() as *mut f64,
                 i,
                 dim,

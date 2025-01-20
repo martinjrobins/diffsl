@@ -8,7 +8,7 @@ use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPoin
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
-use inkwell::targets::{InitializationConfig, Target, TargetTriple};
+use inkwell::targets::{InitializationConfig, Target, TargetMachine, TargetTriple};
 use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType,
 };
@@ -450,6 +450,12 @@ impl CodegenModule for LlvmModule {
     }
 
     fn pre_autodiff_optimisation(&mut self) -> Result<()> {
+        //let pass_manager_builder = PassManagerBuilder::create();
+        //pass_manager_builder.set_optimization_level(inkwell::OptimizationLevel::Default);
+        //let pass_manager = PassManager::create(());
+        //pass_manager_builder.populate_module_pass_manager(&pass_manager);
+        //pass_manager.run_on(self.codegen().module());
+
         //self.codegen().module().print_to_stderr();
         // optimise at -O2 no unrolling before giving to enzyme
         let pass_options = PassBuilderOptions::create();
@@ -472,22 +478,27 @@ impl CodegenModule for LlvmModule {
         let machine = target
             .create_target_machine(
                 &triple,
-                "generic", //TargetMachine::get_host_cpu_name().to_string().as_str(),
-                "",        //TargetMachine::get_host_cpu_features().to_string().as_str(),
+                TargetMachine::get_host_cpu_name().to_string().as_str(),
+                TargetMachine::get_host_cpu_features().to_string().as_str(),
                 inkwell::OptimizationLevel::Default,
                 inkwell::targets::RelocMode::Default,
                 inkwell::targets::CodeModel::Default,
             )
             .unwrap();
 
+        //let passes = "default<O2>";
+        let passes = "annotation2metadata,forceattrs,inferattrs,coro-early,function<eager-inv>(lower-expect,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;no-switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,sroa<modify-cfg>,early-cse<>),openmp-opt,ipsccp,called-value-propagation,globalopt,function(mem2reg),function<eager-inv>(instcombine,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>),require<globals-aa>,function(invalidate<aa>),require<profile-summary>,cgscc(devirt<4>(inline<only-mandatory>,inline,function-attrs,openmp-opt-cgscc,function<eager-inv>(sroa<modify-cfg>,early-cse<memssa>,speculative-execution,jump-threading,correlated-propagation,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,instcombine,libcalls-shrinkwrap,tailcallelim,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,reassociate,require<opt-remark-emit>,loop-mssa(loop-instsimplify,loop-simplifycfg,licm<no-allowspeculation>,loop-rotate,licm<allowspeculation>,simple-loop-unswitch<no-nontrivial;trivial>),simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,instcombine,loop(loop-idiom,indvars,loop-deletion),sroa<modify-cfg>,vector-combine,mldst-motion<no-split-footer-bb>,gvn<>,sccp,bdce,instcombine,jump-threading,correlated-propagation,adce,memcpyopt,dse,loop-mssa(licm<allowspeculation>),coro-elide,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;hoist-common-insts;sink-common-insts>,instcombine),coro-split)),deadargelim,coro-cleanup,globalopt,globaldce,elim-avail-extern,rpo-function-attrs,recompute-globalsaa,function<eager-inv>(float2int,lower-constant-intrinsics,loop(loop-rotate,loop-deletion),loop-distribute,inject-tli-mappings,loop-load-elim,instcombine,simplifycfg<bonus-inst-threshold=1;forward-switch-cond;switch-range-to-icmp;switch-to-lookup;no-keep-loops;hoist-common-insts;sink-common-insts>,vector-combine,instcombine,transform-warning,sroa<preserve-cfg>,instcombine,require<opt-remark-emit>,loop-mssa(licm<allowspeculation>),alignment-from-assumptions,loop-sink,instsimplify,div-rem-pairs,tailcallelim,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>),globaldce,constmerge,cg-profile,rel-lookup-table-converter,function(annotation-remarks),verify";
         self.codegen_mut()
             .module()
-            .run_passes("default<O2>", &machine, pass_options)
+            .run_passes(passes, &machine, pass_options)
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))
     }
 
     fn post_autodiff_optimisation(&mut self) -> Result<()> {
-        //self.codegen().module().print_to_file("post_autodiff_optimisation.ll").unwrap();
+        self.codegen()
+            .module()
+            .print_to_file("post_autodiff_optimisation.ll")
+            .unwrap();
 
         // remove noinline attribute from barrier function as only needed for enzyme
         if let Some(barrier_func) = self.codegen_mut().module().get_function("barrier") {

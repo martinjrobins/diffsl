@@ -730,17 +730,19 @@ impl<'ctx> CodeGen<'ctx> {
                 .add_function("printf", printf_type, Some(Linkage::External)),
         };
         let (format_str, format_str_name) = match value {
-            PrintValue::Real(_) => (format!("{}: %f\n", name), "real_format"),
-            PrintValue::Int(_) => (format!("{}: %d\n", name), "int_format"),
+            PrintValue::Real(_) => (format!("{}: %f\n", name), format!("real_format_{}", name)),
+            PrintValue::Int(_) => (format!("{}: %d\n", name), format!("int_format_{}", name)),
         };
+        // change format_str to c string
+        let format_str = CString::new(format_str).unwrap();
         // if format_str_name doesn not already exist as a global, add it
-        let format_str_global = match self.module.get_global(format_str_name) {
+        let format_str_global = match self.module.get_global(format_str_name.as_str()) {
             Some(g) => g,
             None => {
-                let format_str = self.context.const_string(format_str.as_bytes(), false);
+                let format_str = self.context.const_string(format_str.as_bytes(), true);
                 let fmt_str = self
                     .module
-                    .add_global(format_str.get_type(), None, format_str_name);
+                    .add_global(format_str.get_type(), None, format_str_name.as_str());
                 fmt_str.set_initializer(&format_str);
                 fmt_str
             }

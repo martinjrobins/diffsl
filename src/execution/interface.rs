@@ -68,6 +68,15 @@ pub type CalcOutGradientFunc = unsafe extern "C" fn(
     threadId: UIntType,
     threadDim: UIntType,
 );
+pub type CalcOutReverseGradientFunc = unsafe extern "C" fn(
+    time: RealType,
+    u: *const RealType,
+    du: *mut RealType,
+    data: *const RealType,
+    ddata: *mut RealType,
+    threadId: UIntType,
+    threadDim: UIntType,
+);
 pub type GetDimsFunc = unsafe extern "C" fn(
     states: *mut UIntType,
     inputs: *mut UIntType,

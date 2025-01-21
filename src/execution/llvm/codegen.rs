@@ -6,15 +6,15 @@ use inkwell::builder::Builder;
 use inkwell::context::{AsContextRef, Context};
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::intrinsics::Intrinsic;
-use inkwell::module::Module;
+use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
-use inkwell::targets::{InitializationConfig, Target, TargetTriple};
+use inkwell::targets::{InitializationConfig, Target, TargetMachine, TargetTriple};
 use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType,
 };
 use inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
-    GlobalValue, IntValue, PointerValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue, FloatValue,
+    FunctionValue, GlobalValue, IntValue, PointerValue,
 };
 use inkwell::{
     AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntPredicate, OptimizationLevel,
@@ -342,8 +342,8 @@ impl CodegenModule for LlvmModule {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[
-                CompileGradientArgType::Dup,
-                CompileGradientArgType::Dup,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -379,8 +379,8 @@ impl CodegenModule for LlvmModule {
             *func_id,
             &[
                 CompileGradientArgType::Const,
-                CompileGradientArgType::Dup,
-                CompileGradientArgType::Dup,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
@@ -416,8 +416,8 @@ impl CodegenModule for LlvmModule {
             *func_id,
             &[
                 CompileGradientArgType::Const,
-                CompileGradientArgType::Dup,
-                CompileGradientArgType::Dup,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -444,12 +444,21 @@ impl CodegenModule for LlvmModule {
     ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
-            &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+            &[
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+            ],
             CompileMode::Reverse,
         )
     }
 
     fn pre_autodiff_optimisation(&mut self) -> Result<()> {
+        //let pass_manager_builder = PassManagerBuilder::create();
+        //pass_manager_builder.set_optimization_level(inkwell::OptimizationLevel::Default);
+        //let pass_manager = PassManager::create(());
+        //pass_manager_builder.populate_module_pass_manager(&pass_manager);
+        //pass_manager.run_on(self.codegen().module());
+
         //self.codegen().module().print_to_stderr();
         // optimise at -O2 no unrolling before giving to enzyme
         let pass_options = PassBuilderOptions::create();
@@ -472,28 +481,55 @@ impl CodegenModule for LlvmModule {
         let machine = target
             .create_target_machine(
                 &triple,
-                "generic", //TargetMachine::get_host_cpu_name().to_string().as_str(),
-                "",        //TargetMachine::get_host_cpu_features().to_string().as_str(),
+                TargetMachine::get_host_cpu_name().to_string().as_str(),
+                TargetMachine::get_host_cpu_features().to_string().as_str(),
                 inkwell::OptimizationLevel::Default,
                 inkwell::targets::RelocMode::Default,
                 inkwell::targets::CodeModel::Default,
             )
             .unwrap();
 
+        //let passes = "default<O2>";
+        let passes = "annotation2metadata,forceattrs,inferattrs,coro-early,function<eager-inv>(lower-expect,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;no-switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,early-cse<>),openmp-opt,ipsccp,called-value-propagation,globalopt,function(mem2reg),function<eager-inv>(instcombine,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>),require<globals-aa>,function(invalidate<aa>),require<profile-summary>,cgscc(devirt<4>(inline<only-mandatory>,inline,function-attrs,openmp-opt-cgscc,function<eager-inv>(early-cse<memssa>,speculative-execution,jump-threading,correlated-propagation,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,instcombine,libcalls-shrinkwrap,tailcallelim,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,reassociate,require<opt-remark-emit>,loop-mssa(loop-instsimplify,loop-simplifycfg,licm<no-allowspeculation>,loop-rotate,licm<allowspeculation>,simple-loop-unswitch<no-nontrivial;trivial>),simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,instcombine,loop(loop-idiom,indvars,loop-deletion),vector-combine,mldst-motion<no-split-footer-bb>,gvn<>,sccp,bdce,instcombine,jump-threading,correlated-propagation,adce,memcpyopt,dse,loop-mssa(licm<allowspeculation>),coro-elide,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;hoist-common-insts;sink-common-insts>,instcombine),coro-split)),deadargelim,coro-cleanup,globalopt,globaldce,elim-avail-extern,rpo-function-attrs,recompute-globalsaa,function<eager-inv>(float2int,lower-constant-intrinsics,loop(loop-rotate,loop-deletion),loop-distribute,inject-tli-mappings,loop-load-elim,instcombine,simplifycfg<bonus-inst-threshold=1;forward-switch-cond;switch-range-to-icmp;switch-to-lookup;no-keep-loops;hoist-common-insts;sink-common-insts>,vector-combine,instcombine,transform-warning,instcombine,require<opt-remark-emit>,loop-mssa(licm<allowspeculation>),alignment-from-assumptions,loop-sink,instsimplify,div-rem-pairs,tailcallelim,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>),globaldce,constmerge,cg-profile,rel-lookup-table-converter,function(annotation-remarks),verify";
         self.codegen_mut()
             .module()
-            .run_passes("default<O2>", &machine, pass_options)
+            .run_passes(passes, &machine, pass_options)
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))
     }
 
     fn post_autodiff_optimisation(&mut self) -> Result<()> {
-        //self.codegen().module().print_to_file("post_autodiff_optimisation.ll").unwrap();
-
         // remove noinline attribute from barrier function as only needed for enzyme
         if let Some(barrier_func) = self.codegen_mut().module().get_function("barrier") {
             let nolinline_kind_id = Attribute::get_named_enum_kind_id("noinline");
             barrier_func.remove_enum_attribute(AttributeLoc::Function, nolinline_kind_id);
         }
+
+        let initialization_config = &InitializationConfig::default();
+        Target::initialize_all(initialization_config);
+        let triple = TargetTriple::create(self.0.triple.to_string().as_str());
+        let target = Target::from_triple(&triple).unwrap();
+        let machine = target
+            .create_target_machine(
+                &triple,
+                TargetMachine::get_host_cpu_name().to_string().as_str(),
+                TargetMachine::get_host_cpu_features().to_string().as_str(),
+                inkwell::OptimizationLevel::Default,
+                inkwell::targets::RelocMode::Default,
+                inkwell::targets::CodeModel::Default,
+            )
+            .unwrap();
+
+        let passes = "default<O3>";
+        self.codegen_mut()
+            .module()
+            .run_passes(passes, &machine, PassBuilderOptions::create())
+            .map_err(|e| anyhow!("Failed to run passes: {:?}", e))?;
+
+        //self.codegen()
+        //    .module()
+        //    .print_to_file("post_autodiff_optimisation.ll")
+        //    .unwrap();
+
         Ok(())
     }
 }
@@ -625,6 +661,12 @@ unsafe extern "C" fn rev_handler(
     );
 }
 
+#[allow(dead_code)]
+enum PrintValue<'ctx> {
+    Real(FloatValue<'ctx>),
+    Int(IntValue<'ctx>),
+}
+
 impl<'ctx> CodeGen<'ctx> {
     pub fn new(
         model: &DiscreteModel,
@@ -669,6 +711,55 @@ impl<'ctx> CodeGen<'ctx> {
             //ret.globals.add_registered_barrier(ret.context, &ret.module);
         }
         Ok(ret)
+    }
+
+    #[allow(dead_code)]
+    fn compile_print_value(
+        &mut self,
+        name: &str,
+        value: PrintValue<'ctx>,
+    ) -> Result<CallSiteValue> {
+        let void_type = self.context.void_type();
+        // int printf(const char *format, ...)
+        let printf_type = void_type.fn_type(&[self.int_ptr_type.into()], true);
+        // get printf function or declare it if it doesn't exist
+        let printf = match self.module.get_function("printf") {
+            Some(f) => f,
+            None => self
+                .module
+                .add_function("printf", printf_type, Some(Linkage::External)),
+        };
+        let (format_str, format_str_name) = match value {
+            PrintValue::Real(_) => (format!("{}: %f\n", name), format!("real_format_{}", name)),
+            PrintValue::Int(_) => (format!("{}: %d\n", name), format!("int_format_{}", name)),
+        };
+        // change format_str to c string
+        let format_str = CString::new(format_str).unwrap();
+        // if format_str_name doesn not already exist as a global, add it
+        let format_str_global = match self.module.get_global(format_str_name.as_str()) {
+            Some(g) => g,
+            None => {
+                let format_str = self.context.const_string(format_str.as_bytes(), true);
+                let fmt_str =
+                    self.module
+                        .add_global(format_str.get_type(), None, format_str_name.as_str());
+                fmt_str.set_initializer(&format_str);
+                fmt_str
+            }
+        };
+        // call printf with the format string and the value
+        let format_str_ptr = self.builder.build_pointer_cast(
+            format_str_global.as_pointer_value(),
+            self.int_ptr_type,
+            "format_str_ptr",
+        )?;
+        let value: BasicMetadataValueEnum = match value {
+            PrintValue::Real(v) => v.into(),
+            PrintValue::Int(v) => v.into(),
+        };
+        self.builder
+            .build_call(printf, &[format_str_ptr.into(), value], "printf_call")
+            .map_err(|e| anyhow!("Error building call to printf: {}", e))
     }
 
     fn compile_barrier_init(&mut self) -> Result<FunctionValue<'ctx>> {
@@ -2503,6 +2594,12 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_data(model);
         self.insert_indices();
 
+        // print thread_id and thread_dim
+        //let thread_id = function.get_nth_param(3).unwrap();
+        //let thread_dim = function.get_nth_param(4).unwrap();
+        //self.compile_print_value("thread_id", PrintValue::Int(thread_id.into_int_value()))?;
+        //self.compile_print_value("thread_dim", PrintValue::Int(thread_dim.into_int_value()))?;
+
         // calculate time dependant definitions
         let mut nbarriers = 0;
         let total_barriers =
@@ -2802,7 +2899,14 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(fn_type.as_slice(), false);
-        let fn_name = format!("{}_grad", original_function.get_name().to_str().unwrap());
+        let fn_name = match mode {
+            CompileMode::Forward => {
+                format!("{}_grad", original_function.get_name().to_str().unwrap())
+            }
+            CompileMode::Reverse => {
+                format!("{}_rgrad", original_function.get_name().to_str().unwrap())
+            }
+        };
         let function = self.module.add_function(fn_name.as_str(), fn_type, None);
 
         // add noalias
@@ -2968,7 +3072,7 @@ impl<'ctx> CodeGen<'ctx> {
                         args_uncacheable.as_mut_ptr(),
                         args_uncacheable.len(),
                         std::ptr::null_mut(),
-                        if self.threaded { 1 } else { 0 },
+                        0,
                     )
                 };
                 if self.threaded {

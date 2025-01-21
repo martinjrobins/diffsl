@@ -9,8 +9,8 @@ use crate::{
 
 use super::{
     interface::{
-        BarrierInitFunc, CalcOutGradientFunc, RhsGradientFunc, SetInputsGradientFunc,
-        U0GradientFunc,
+        BarrierInitFunc, CalcOutGradientFunc, CalcOutReverseGradientFunc, RhsGradientFunc,
+        SetInputsGradientFunc, U0GradientFunc,
     },
     module::CodegenModule,
 };
@@ -59,7 +59,7 @@ struct JitGradFunctions {
 struct JitGradRFunctions {
     set_u0_rgrad: U0GradientFunc,
     rhs_rgrad: RhsGradientFunc,
-    calc_out_rgrad: CalcOutGradientFunc,
+    calc_out_rgrad: CalcOutReverseGradientFunc,
     set_inputs_rgrad: SetInputsGradientFunc,
 }
 
@@ -226,7 +226,7 @@ impl<M: CodegenModule> Compiler<M> {
                     )
                 },
                 calc_out_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, CalcOutGradientFunc>(
+                    std::mem::transmute::<*const u8, CalcOutReverseGradientFunc>(
                         module.jit(calc_out_rgrad.unwrap())?,
                     )
                 },
@@ -583,8 +583,8 @@ impl<M: CodegenModule> Compiler<M> {
                 .calc_out_rgrad)(
                 t,
                 yy.as_ptr(),
-                dyy.as_ptr(),
-                data.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut f64,
+                data.as_ptr(),
                 ddata.as_ptr() as *mut f64,
                 i,
                 dim,
@@ -1269,6 +1269,73 @@ mod tests {
         big_state_multi_w_scalar: "r { 1.0 + 1.0 } b_i { x_i, r - y_i }" expect "b" vec![1.; 100] ; vec![1.; 50].into_iter().chain(vec![-1.; 50].into_iter()).collect::<Vec<_>>() ; vec![0.],
         big_state_diag: "b_ij { (0..100, 0..100): 3.0 } r_i { b_ij * u_j }" expect "r" vec![3.; 100] ; vec![3.; 100] ; vec![300.],
         big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![6.; 100]; vec![600.],
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_bad_big_state_expr() {
+        let full_text = "
+            in = [p]
+            p { 1 }
+            u_i {
+                (0:50): x = p,
+                (50:100): y = p,
+            }
+            r_i { x_i }
+            F_i { u_i }";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("test_bad_big_state_expr", &model).unwrap();
+        let compiler = Compiler::<crate::LlvmModule>::from_discrete_model(
+            &discrete_model,
+            CompilerMode::MultiThreaded(None),
+        )
+        .unwrap();
+        let mut data = compiler.get_new_data();
+        let inputs = vec![1.];
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        let mut u0 = vec![0.; 100];
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        let mut res = vec![0.; 100];
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+        compiler.calc_out(0., u0.as_slice(), data.as_mut_slice());
+        let mut ddata = compiler.get_new_data();
+        let dr = compiler
+            .get_tensor_data_mut("r", ddata.as_mut_slice())
+            .unwrap();
+        let mut dinputs = vec![0.; 1];
+        dr.fill(1.);
+        let mut dres = vec![0.; 100];
+        let mut du0 = vec![0.; 100];
+        compiler.calc_out_rgrad(
+            0.,
+            u0.as_slice(),
+            du0.as_mut_slice(),
+            data.as_mut_slice(),
+            ddata.as_mut_slice(),
+        );
+        assert_relative_eq!(du0[0..50], vec![1.; 50].as_slice());
+        compiler.rhs_rgrad(
+            0.,
+            u0.as_slice(),
+            du0.as_mut_slice(),
+            data.as_mut_slice(),
+            ddata.as_mut_slice(),
+            res.as_slice(),
+            dres.as_mut_slice(),
+        );
+        compiler.set_u0_rgrad(
+            u0.as_mut_slice(),
+            du0.as_mut_slice(),
+            data.as_mut_slice(),
+            ddata.as_mut_slice(),
+        );
+        compiler.set_inputs_rgrad(
+            inputs.as_slice(),
+            dinputs.as_mut_slice(),
+            data.as_mut_slice(),
+            ddata.as_mut_slice(),
+        );
+        assert_relative_eq!(dinputs.as_slice(), vec![50.].as_slice());
     }
 
     #[test]

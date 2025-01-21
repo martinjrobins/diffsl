@@ -6,15 +6,15 @@ use inkwell::builder::Builder;
 use inkwell::context::{AsContextRef, Context};
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::intrinsics::Intrinsic;
-use inkwell::module::Module;
+use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{InitializationConfig, Target, TargetMachine, TargetTriple};
 use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType,
 };
 use inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue,
-    GlobalValue, IntValue, PointerValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue, FloatValue,
+    FunctionValue, GlobalValue, IntValue, PointerValue,
 };
 use inkwell::{
     AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntPredicate, OptimizationLevel,
@@ -661,6 +661,12 @@ unsafe extern "C" fn rev_handler(
     );
 }
 
+#[allow(dead_code)]
+enum PrintValue<'ctx> {
+    Real(FloatValue<'ctx>),
+    Int(IntValue<'ctx>),
+}
+
 impl<'ctx> CodeGen<'ctx> {
     pub fn new(
         model: &DiscreteModel,
@@ -705,6 +711,53 @@ impl<'ctx> CodeGen<'ctx> {
             //ret.globals.add_registered_barrier(ret.context, &ret.module);
         }
         Ok(ret)
+    }
+
+    #[allow(dead_code)]
+    fn compile_print_value(
+        &mut self,
+        name: &str,
+        value: PrintValue<'ctx>,
+    ) -> Result<CallSiteValue> {
+        let void_type = self.context.void_type();
+        // int printf(const char *format, ...)
+        let printf_type = void_type.fn_type(&[self.int_ptr_type.into()], true);
+        // get printf function or declare it if it doesn't exist
+        let printf = match self.module.get_function("printf") {
+            Some(f) => f,
+            None => self
+                .module
+                .add_function("printf", printf_type, Some(Linkage::External)),
+        };
+        let (format_str, format_str_name) = match value {
+            PrintValue::Real(_) => (format!("{}: %f\n", name), "real_format"),
+            PrintValue::Int(_) => (format!("{}: %d\n", name), "int_format"),
+        };
+        // if format_str_name doesn not already exist as a global, add it
+        let format_str_global = match self.module.get_global(format_str_name) {
+            Some(g) => g,
+            None => {
+                let format_str = self.context.const_string(format_str.as_bytes(), false);
+                let fmt_str = self
+                    .module
+                    .add_global(format_str.get_type(), None, format_str_name);
+                fmt_str.set_initializer(&format_str);
+                fmt_str
+            }
+        };
+        // call printf with the format string and the value
+        let format_str_ptr = self.builder.build_pointer_cast(
+            format_str_global.as_pointer_value(),
+            self.int_ptr_type,
+            "format_str_ptr",
+        )?;
+        let value: BasicMetadataValueEnum = match value {
+            PrintValue::Real(v) => v.into(),
+            PrintValue::Int(v) => v.into(),
+        };
+        self.builder
+            .build_call(printf, &[format_str_ptr.into(), value], "printf_call")
+            .map_err(|e| anyhow!("Error building call to printf: {}", e))
     }
 
     fn compile_barrier_init(&mut self) -> Result<FunctionValue<'ctx>> {
@@ -2538,6 +2591,12 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_state(model.state());
         self.insert_data(model);
         self.insert_indices();
+
+        // print thread_id and thread_dim
+        //let thread_id = function.get_nth_param(3).unwrap();
+        //let thread_dim = function.get_nth_param(4).unwrap();
+        //self.compile_print_value("thread_id", PrintValue::Int(thread_id.into_int_value()))?;
+        //self.compile_print_value("thread_dim", PrintValue::Int(thread_dim.into_int_value()))?;
 
         // calculate time dependant definitions
         let mut nbarriers = 0;

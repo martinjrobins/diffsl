@@ -1313,6 +1313,7 @@ mod tests {
             data.as_mut_slice(),
             ddata.as_mut_slice(),
         );
+        assert_relative_eq!(du0[0..50], vec![1.; 50].as_slice());
         compiler.rhs_rgrad(
             0.,
             u0.as_slice(),

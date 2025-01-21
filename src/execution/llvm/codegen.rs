@@ -504,11 +504,6 @@ impl CodegenModule for LlvmModule {
             barrier_func.remove_enum_attribute(AttributeLoc::Function, nolinline_kind_id);
         }
 
-        //self.codegen()
-        //    .module()
-        //    .print_to_file("post_autodiff_optimisation.ll")
-        //    .unwrap();
-
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
         let triple = TargetTriple::create(self.0.triple.to_string().as_str());
@@ -529,6 +524,11 @@ impl CodegenModule for LlvmModule {
             .module()
             .run_passes(passes, &machine, PassBuilderOptions::create())
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))?;
+
+        //self.codegen()
+        //    .module()
+        //    .print_to_file("post_autodiff_optimisation.ll")
+        //    .unwrap();
 
         Ok(())
     }
@@ -740,9 +740,9 @@ impl<'ctx> CodeGen<'ctx> {
             Some(g) => g,
             None => {
                 let format_str = self.context.const_string(format_str.as_bytes(), true);
-                let fmt_str = self
-                    .module
-                    .add_global(format_str.get_type(), None, format_str_name.as_str());
+                let fmt_str =
+                    self.module
+                        .add_global(format_str.get_type(), None, format_str_name.as_str());
                 fmt_str.set_initializer(&format_str);
                 fmt_str
             }
@@ -2899,7 +2899,14 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(fn_type.as_slice(), false);
-        let fn_name = format!("{}_grad", original_function.get_name().to_str().unwrap());
+        let fn_name = match mode {
+            CompileMode::Forward => {
+                format!("{}_grad", original_function.get_name().to_str().unwrap())
+            }
+            CompileMode::Reverse => {
+                format!("{}_rgrad", original_function.get_name().to_str().unwrap())
+            }
+        };
         let function = self.module.add_function(fn_name.as_str(), fn_type, None);
 
         // add noalias
@@ -3065,7 +3072,7 @@ impl<'ctx> CodeGen<'ctx> {
                         args_uncacheable.as_mut_ptr(),
                         args_uncacheable.len(),
                         std::ptr::null_mut(),
-                        if self.threaded { 1 } else { 0 },
+                        0,
                     )
                 };
                 if self.threaded {

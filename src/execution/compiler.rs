@@ -50,17 +50,27 @@ struct JitFunctions {
 }
 
 struct JitGradFunctions {
-    set_u0_grad: U0GradientFunc,
-    rhs_grad: RhsGradientFunc,
-    calc_out_grad: CalcOutGradientFunc,
-    set_inputs_grad: SetInputsGradientFunc,
+    set_u0_grad: U0GradFunc,
+    rhs_grad: RhsGradFunc,
+    calc_out_grad: CalcOutGradFunc,
+    set_inputs_grad: SetInputsGradFunc,
 }
 
 struct JitGradRFunctions {
-    set_u0_rgrad: U0GradientFunc,
-    rhs_rgrad: RhsGradientFunc,
-    calc_out_rgrad: CalcOutReverseGradientFunc,
-    set_inputs_rgrad: SetInputsGradientFunc,
+    set_u0_rgrad: U0RevGradFunc,
+    rhs_rgrad: RhsRevGradFunc,
+    calc_out_rgrad: CalcOutRevGradFunc,
+    set_inputs_rgrad: SetInputsRevGradFunc,
+}
+
+struct JitSensGradFunctions {
+    rhs_sgrad: RhsSensGradFunc,
+    calc_out_sgrad: CalcOutSensGradFunc,
+}
+
+struct JitSensRevGradFunctions {
+    rhs_rgrad: RhsSensRevGradFunc,
+    calc_out_rgrad: CalcOutSensRevGradFunc,
 }
 
 pub struct Compiler<M: CodegenModule> {
@@ -68,6 +78,8 @@ pub struct Compiler<M: CodegenModule> {
     jit_functions: JitFunctions,
     jit_grad_functions: JitGradFunctions,
     jit_grad_r_functions: Option<JitGradRFunctions>,
+    jit_sens_grad_functions: Option<JitSensGradFunctions>,
+    jit_sens_rev_grad_functions: Option<JitSensRevGradFunctions>,
 
     number_of_states: usize,
     number_of_parameters: usize,
@@ -171,11 +183,22 @@ impl<M: CodegenModule> Compiler<M> {
         let mut rhs_rgrad = None;
         let mut calc_out_rgrad = None;
         let mut set_inputs_rgrad = None;
+        let mut rhs_sgrad = None;
+        let mut rhs_srgrad = None;
+        let mut calc_out_sgrad = None;
+        let mut calc_out_srgrad = None;
         if module.supports_reverse_autodiff() {
             set_u0_rgrad = Some(module.compile_set_u0_rgrad(&set_u0, model)?);
             rhs_rgrad = Some(module.compile_rhs_rgrad(&rhs, model)?);
             calc_out_rgrad = Some(module.compile_calc_out_rgrad(&calc_out, model)?);
             set_inputs_rgrad = Some(module.compile_set_inputs_rgrad(&set_inputs, model)?);
+            
+            let rhs_full = module.compile_rhs_full(model)?;
+            rhs_sgrad = Some(module.compile_rhs_sgrad(&rhs_full, model)?);
+            rhs_srgrad = Some(module.compile_rhs_srgrad(&rhs_full, model)?);
+            let calc_out_full = module.compile_calc_out_full(model)?;
+            calc_out_sgrad = Some(module.compile_calc_out_sgrad(&calc_out_full, model)?);
+            calc_out_srgrad = Some(module.compile_calc_out_srgrad(&calc_out_full, model)?);
         }
 
         module.post_autodiff_optimisation()?;
@@ -239,6 +262,40 @@ impl<M: CodegenModule> Compiler<M> {
         } else {
             None
         };
+        
+        let jit_sens_grad_functions = if module.supports_reverse_autodiff() {
+            Some(JitSensGradFunctions {
+                rhs_sgrad: unsafe {
+                    std::mem::transmute::<*const u8, RhsSensGradFunc>(
+                        module.jit(rhs_sgrad.unwrap())?,
+                    )
+                },
+                calc_out_sgrad: unsafe {
+                    std::mem::transmute::<*const u8, CalcOutSensGradFunc>(
+                        module.jit(calc_out_sgrad.unwrap())?,
+                    )
+                },
+            })
+        } else {
+            None
+        };
+        
+        let jit_sens_rev_grad_functions = if module.supports_reverse_autodiff() {
+            Some(JitSensRevGradFunctions {
+                rhs_rgrad: unsafe {
+                    std::mem::transmute::<*const u8, RhsSensRevGradFunc>(
+                        module.jit(rhs_srgrad.unwrap())?,
+                    )
+                },
+                calc_out_rgrad: unsafe {
+                    std::mem::transmute::<*const u8, CalcOutSensRevGradFunc>(
+                        module.jit(calc_out_srgrad.unwrap())?,
+                    )
+                },
+            })
+        } else {
+            None
+        };
 
         Ok(Self {
             module,
@@ -261,6 +318,8 @@ impl<M: CodegenModule> Compiler<M> {
                 set_inputs_grad,
             },
             jit_grad_r_functions,
+            jit_sens_grad_functions,
+            jit_sens_rev_grad_functions,
             number_of_states,
             number_of_parameters,
             number_of_outputs,

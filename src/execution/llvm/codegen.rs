@@ -281,7 +281,11 @@ impl CodegenModule for LlvmModule {
     }
 
     fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_calc_out(model)
+        self.codegen_mut().compile_calc_out(model, false)
+    }
+    
+    fn compile_calc_out_full(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_calc_out(model, true)
     }
 
     fn compile_calc_stop(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
@@ -289,7 +293,12 @@ impl CodegenModule for LlvmModule {
     }
 
     fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        let ret = self.codegen_mut().compile_rhs(model);
+        let ret = self.codegen_mut().compile_rhs(model, false);
+        ret
+    }
+    
+    fn compile_rhs_full(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        let ret = self.codegen_mut().compile_rhs(model, true);
         ret
     }
 
@@ -321,8 +330,8 @@ impl CodegenModule for LlvmModule {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[
-                CompileGradientArgType::Dup,
-                CompileGradientArgType::Dup,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -360,8 +369,8 @@ impl CodegenModule for LlvmModule {
             *func_id,
             &[
                 CompileGradientArgType::Const,
-                CompileGradientArgType::Dup,
-                CompileGradientArgType::Dup,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
@@ -398,8 +407,8 @@ impl CodegenModule for LlvmModule {
             *func_id,
             &[
                 CompileGradientArgType::Const,
-                CompileGradientArgType::Dup,
-                CompileGradientArgType::Dup,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -432,7 +441,7 @@ impl CodegenModule for LlvmModule {
     ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
-            &[CompileGradientArgType::Dup, CompileGradientArgType::Dup],
+            &[CompileGradientArgType::DupNoNeed, CompileGradientArgType::DupNoNeed],
             CompileMode::Forward,
         )
     }
@@ -451,6 +460,82 @@ impl CodegenModule for LlvmModule {
             CompileMode::Reverse,
         )
     }
+    
+    fn compile_rhs_sgrad(
+            &mut self,
+            func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Forward,
+        )
+    }
+    
+    fn compile_calc_out_sgrad(
+            &mut self,
+            func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+        ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Forward,
+        )
+    }
+    
+    fn compile_calc_out_srgrad(
+            &mut self,
+            func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+        ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
+        )
+    }
+    
+    fn compile_rhs_srgrad(
+            &mut self,
+            func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+        ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
+        )
+    }
+
+    
 
     fn pre_autodiff_optimisation(&mut self) -> Result<()> {
         //let pass_manager_builder = PassManagerBuilder::create();
@@ -2557,6 +2642,7 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn compile_calc_out<'m>(
         &mut self,
         model: &'m DiscreteModel,
+        include_constants: bool,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let void_type = self.context.void_type();
@@ -2571,7 +2657,12 @@ impl<'ctx> CodeGen<'ctx> {
             false,
         );
         let fn_arg_names = &["t", "u", "data", "thread_id", "thread_dim"];
-        let function = self.module.add_function("calc_out", fn_type, None);
+        let function_name = if include_constants {
+            "calc_out_full"
+        } else {
+            "calc_out"
+        };
+        let function = self.module.add_function(function_name, fn_type, None);
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -2600,10 +2691,20 @@ impl<'ctx> CodeGen<'ctx> {
         //self.compile_print_value("thread_id", PrintValue::Int(thread_id.into_int_value()))?;
         //self.compile_print_value("thread_dim", PrintValue::Int(thread_dim.into_int_value()))?;
 
-        // calculate time dependant definitions
         let mut nbarriers = 0;
-        let total_barriers =
+        let mut total_barriers =
             (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
+        if include_constants {
+            total_barriers += model.time_indep_defns().len() as u64;
+            // calculate time independant definitions
+            for tensor in model.time_indep_defns() {
+                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                self.jit_compile_call_barrier(nbarriers, total_barriers);
+                nbarriers += 1;
+            }
+        }
+
+        // calculate time dependant definitions
         for tensor in model.time_dep_defns() {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);
@@ -2709,7 +2810,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    pub fn compile_rhs<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_rhs<'m>(&mut self, model: &'m DiscreteModel, include_constants: bool) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
@@ -2724,7 +2825,8 @@ impl<'ctx> CodeGen<'ctx> {
             false,
         );
         let fn_arg_names = &["t", "u", "data", "rr", "thread_id", "thread_dim"];
-        let function = self.module.add_function("rhs", fn_type, None);
+        let function_name = if include_constants { "rhs_full" } else { "rhs" };
+        let function = self.module.add_function(function_name, fn_type, None);
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -2746,11 +2848,22 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_state(model.state());
         self.insert_data(model);
         self.insert_indices();
+        
+        
+        let mut nbarriers = 0;
+        let mut total_barriers =
+            (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
+        if include_constants {
+            total_barriers += model.time_indep_defns().len() as u64;
+            // calculate constant definitions
+            for tensor in model.time_indep_defns() {
+                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                self.jit_compile_call_barrier(nbarriers, total_barriers);
+                nbarriers += 1;
+            }
+        }
 
         // calculate time dependant definitions
-        let mut nbarriers = 0;
-        let total_barriers =
-            (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
         for tensor in model.time_dep_defns() {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);

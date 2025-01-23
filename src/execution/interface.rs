@@ -83,6 +83,14 @@ pub type U0GradFunc = unsafe extern "C" fn(
     threadId: UIntType,
     threadDim: UIntType,
 );
+pub type U0RevGradFunc = unsafe extern "C" fn(
+    u: *const RealType,
+    du: *const RealType,
+    data: *const RealType,
+    ddata: *mut RealType,
+    threadId: UIntType,
+    threadDim: UIntType,
+);
 pub type CalcOutFunc = unsafe extern "C" fn(
     time: RealType,
     u: *const RealType,
@@ -90,19 +98,35 @@ pub type CalcOutFunc = unsafe extern "C" fn(
     threadId: UIntType,
     threadDim: UIntType,
 );
-pub type CalcOutGradientFunc = unsafe extern "C" fn(
+pub type CalcOutGradFunc = unsafe extern "C" fn(
     time: RealType,
     u: *const RealType,
     du: *const RealType,
-    data: *mut RealType,
+    data: *const RealType,
     ddata: *mut RealType,
     threadId: UIntType,
     threadDim: UIntType,
 );
-pub type CalcOutReverseGradientFunc = unsafe extern "C" fn(
+pub type CalcOutRevGradFunc = unsafe extern "C" fn(
     time: RealType,
     u: *const RealType,
     du: *mut RealType,
+    data: *const RealType,
+    ddata: *mut RealType,
+    threadId: UIntType,
+    threadDim: UIntType,
+);
+pub type CalcOutSensGradFunc = unsafe extern "C" fn(
+    time: RealType,
+    u: *const RealType,
+    data: *const RealType,
+    ddata: *mut RealType,
+    threadId: UIntType,
+    threadDim: UIntType,
+);
+pub type CalcOutSensRevGradFunc = unsafe extern "C" fn(
+    time: RealType,
+    u: *const RealType,
     data: *const RealType,
     ddata: *mut RealType,
     threadId: UIntType,
@@ -117,11 +141,17 @@ pub type GetDimsFunc = unsafe extern "C" fn(
     has_mass: *mut UIntType,
 );
 pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const RealType, data: *mut RealType);
-pub type SetInputsGradientFunc = unsafe extern "C" fn(
+pub type SetInputsGradFunc = unsafe extern "C" fn(
     inputs: *const RealType,
     dinputs: *const RealType,
-    data: *mut RealType,
+    data: *const RealType,
     ddata: *mut RealType,
+);
+pub type SetInputsRevGradFunc = unsafe extern "C" fn(
+    inputs: *const RealType,
+    dinputs: *mut RealType,
+    data: *const RealType,
+    ddata: *const RealType,
 );
 pub type SetIdFunc = unsafe extern "C" fn(id: *mut RealType);
 pub type GetOutFunc = unsafe extern "C" fn(

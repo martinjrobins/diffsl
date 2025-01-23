@@ -238,6 +238,46 @@ impl CodegenModule for CraneliftModule {
         Err(anyhow!("not implemented"))
     }
 
+    fn compile_calc_out_full(&mut self, _model: &DiscreteModel) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_calc_out_sgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_calc_out_srgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_rhs_full(&mut self, _model: &DiscreteModel) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_rhs_sgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_rhs_srgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
     fn supports_reverse_autodiff(&self) -> bool {
         false
     }

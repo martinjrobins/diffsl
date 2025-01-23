@@ -283,7 +283,7 @@ impl CodegenModule for LlvmModule {
     fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_calc_out(model, false)
     }
-    
+
     fn compile_calc_out_full(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_calc_out(model, true)
     }
@@ -296,7 +296,7 @@ impl CodegenModule for LlvmModule {
         let ret = self.codegen_mut().compile_rhs(model, false);
         ret
     }
-    
+
     fn compile_rhs_full(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
         let ret = self.codegen_mut().compile_rhs(model, true);
         ret
@@ -441,7 +441,10 @@ impl CodegenModule for LlvmModule {
     ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
-            &[CompileGradientArgType::DupNoNeed, CompileGradientArgType::DupNoNeed],
+            &[
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+            ],
             CompileMode::Forward,
         )
     }
@@ -460,11 +463,11 @@ impl CodegenModule for LlvmModule {
             CompileMode::Reverse,
         )
     }
-    
+
     fn compile_rhs_sgrad(
-            &mut self,
-            func_id: &Self::FuncId,
-            _model: &DiscreteModel,
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
     ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
@@ -479,12 +482,12 @@ impl CodegenModule for LlvmModule {
             CompileMode::Forward,
         )
     }
-    
+
     fn compile_calc_out_sgrad(
-            &mut self,
-            func_id: &Self::FuncId,
-            _model: &DiscreteModel,
-        ) -> Result<Self::FuncId> {
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[
@@ -497,36 +500,18 @@ impl CodegenModule for LlvmModule {
             CompileMode::Forward,
         )
     }
-    
+
     fn compile_calc_out_srgrad(
-            &mut self,
-            func_id: &Self::FuncId,
-            _model: &DiscreteModel,
-        ) -> Result<Self::FuncId> {
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::Reverse,
-        )
-    }
-    
-    fn compile_rhs_srgrad(
-            &mut self,
-            func_id: &Self::FuncId,
-            _model: &DiscreteModel,
-        ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
@@ -535,7 +520,24 @@ impl CodegenModule for LlvmModule {
         )
     }
 
-    
+    fn compile_rhs_srgrad(
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
+        )
+    }
 
     fn pre_autodiff_optimisation(&mut self) -> Result<()> {
         //let pass_manager_builder = PassManagerBuilder::create();
@@ -2810,7 +2812,11 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    pub fn compile_rhs<'m>(&mut self, model: &'m DiscreteModel, include_constants: bool) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_rhs<'m>(
+        &mut self,
+        model: &'m DiscreteModel,
+        include_constants: bool,
+    ) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
@@ -2848,8 +2854,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_state(model.state());
         self.insert_data(model);
         self.insert_indices();
-        
-        
+
         let mut nbarriers = 0;
         let mut total_barriers =
             (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;

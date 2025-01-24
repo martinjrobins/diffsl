@@ -1089,24 +1089,23 @@ mod tests {
         let mut ddata = compiler.get_new_data();
         let mut du0 = vec![0.; n_states];
         let mut dres = vec![0.; n_states];
-        let mut grad_data = compiler.get_new_data();
         compiler.set_inputs_grad(
             inputs.as_slice(),
             dinputs.as_slice(),
-            grad_data.as_mut_slice(),
+            data.as_mut_slice(),
             ddata.as_mut_slice(),
         );
         compiler.set_u0_grad(
             u0.as_mut_slice(),
             du0.as_mut_slice(),
-            grad_data.as_mut_slice(),
+            data.as_mut_slice(),
             ddata.as_mut_slice(),
         );
         compiler.rhs_grad(
             0.,
             u0.as_slice(),
             du0.as_slice(),
-            grad_data.as_mut_slice(),
+            data.as_mut_slice(),
             ddata.as_mut_slice(),
             res.as_mut_slice(),
             dres.as_mut_slice(),
@@ -1115,7 +1114,7 @@ mod tests {
             0.,
             u0.as_slice(),
             du0.as_slice(),
-            grad_data.as_mut_slice(),
+            data.as_mut_slice(),
             ddata.as_mut_slice(),
         );
         results.push(
@@ -1371,7 +1370,7 @@ mod tests {
     }
 
     macro_rules! tensor_grad_test {
-        ($($name:ident: $text:literal expect $tensor_name:literal $expected_grad:expr ; $expected_rgrad:expr,)*) => {
+        ($($name:ident: $text:literal expect $tensor_name:literal $expected_grad:expr ; $expected_rgrad:expr; $expected_sgrad:expr; $expected_srgrad:expr,)*) => {
         $(
             #[test]
             fn $name() {
@@ -1406,10 +1405,10 @@ mod tests {
                         let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                         assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
-                        assert_relative_eq!(results[3].as_slice(), $expected_grad.as_slice());
-                        assert_relative_eq!(results[4].as_slice(), $expected_grad.as_slice());
-                        assert_relative_eq!(results[5].as_slice(), $expected_rgrad.as_slice());
-                        assert_relative_eq!(results[6].as_slice(), $expected_rgrad.as_slice());
+                        assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                        assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
                     }
 
                     let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
@@ -1423,10 +1422,10 @@ mod tests {
                     let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
-                    assert_relative_eq!(results[3].as_slice(), $expected_grad.as_slice());
-                    assert_relative_eq!(results[4].as_slice(), $expected_grad.as_slice());
-                    assert_relative_eq!(results[5].as_slice(), $expected_rgrad.as_slice());
-                    assert_relative_eq!(results[6].as_slice(), $expected_rgrad.as_slice());
+                    assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                    assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                    assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                    assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
                 }
 
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
@@ -1438,19 +1437,21 @@ mod tests {
     }
 
     tensor_grad_test! {
-        const_grad: "r { 3 }" expect "r" vec![0.] ; vec![0.],
-        const_vec_grad: "r_i { 3, 4 }" expect "r" vec![0., 0.] ; vec![0.],
-        input_grad: "r { 2 * p * p }" expect "r" vec![4.] ; vec![4.],
-        input_vec_grad: "r_i { 2 * p * p, 3 * p }" expect "r" vec![4., 3.] ; vec![7.],
-        state_grad: "r { 2 * y }" expect "r" vec![2.] ; vec![2.],
-        input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.] ; vec![4.],
-        state_and_const_grad1: "r_i { 2 * y, 3 }" expect "r" vec![2., 0.] ; vec![2.],
-        state_and_const_grad2: "r_i { 3 * y, 2 * y }" expect "r" vec![3., 2.] ; vec![5.],
+        const_grad: "r { 3 }" expect "r" vec![0.] ; vec![0.] ; vec![0.] ; vec![0.],
+        const_vec_grad: "r_i { 3, 4 }" expect "r" vec![0., 0.] ; vec![0.] ; vec![0., 0.] ; vec![0.],
+        input_grad: "r { 2 * p * p }" expect "r" vec![4.] ; vec![4.] ;  vec![4.] ; vec![4.],
+        input_vec_grad: "r_i { 2 * p * p, 3 * p }" expect "r" vec![4., 3.] ; vec![7.] ;  vec![4., 3.] ; vec![7.],
+        state_grad: "r { 2 * y }" expect "r" vec![2.] ; vec![2.] ; vec![0.] ; vec![0.],
+        input_and_state_grad: "r { 2 * y * p }" expect "r" vec![4.] ; vec![4.] ; vec![2.] ; vec![2.],
+        state_and_const_grad1: "r_i { 2 * y, 3 }" expect "r" vec![2., 0.] ; vec![2.] ;  vec![0., 0.] ; vec![0.],
+        state_and_const_grad2: "r_i { 3 * y, 2 * y }" expect "r" vec![3., 2.] ; vec![5.] ;  vec![0., 0.] ; vec![0.],
+        state_and_const_grad3: "r_i { 2 * p, 3 }" expect "r" vec![2., 0.] ; vec![2.] ;  vec![2., 0.] ; vec![2.],
+        state_and_const_grad4: "r_i { 3 * p, 2 * p }" expect "r" vec![3., 2.] ; vec![5.] ;  vec![3., 2.] ; vec![5.],
 
     }
 
     macro_rules! tensor_test_big_state {
-        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr ; $expected_grad:expr ; $expected_rgrad:expr,)*) => {
+        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr ; $expected_grad:expr ; $expected_rgrad:expr ; $expected_sgrad:expr ; $expected_srgrad:expr,)*) => {
         $(
             #[test]
             fn $name() {
@@ -1472,10 +1473,10 @@ mod tests {
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
-                    assert_relative_eq!(results[3].as_slice(), $expected_grad.as_slice());
-                    assert_relative_eq!(results[4].as_slice(), $expected_grad.as_slice());
-                    assert_relative_eq!(results[5].as_slice(), $expected_rgrad.as_slice());
-                    assert_relative_eq!(results[6].as_slice(), $expected_rgrad.as_slice());
+                    assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                    assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                    assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                    assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
                 }
 
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
@@ -1497,10 +1498,10 @@ mod tests {
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                         assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
-                        assert_relative_eq!(results[3].as_slice(), $expected_grad.as_slice());
-                        assert_relative_eq!(results[4].as_slice(), $expected_grad.as_slice());
-                        assert_relative_eq!(results[5].as_slice(), $expected_rgrad.as_slice());
-                        assert_relative_eq!(results[6].as_slice(), $expected_rgrad.as_slice());
+                        assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                        assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
                     }
                 }
             }
@@ -1509,11 +1510,12 @@ mod tests {
     }
 
     tensor_test_big_state! {
-        big_state_expr: "r_i { x_i + y_i }" expect "r" vec![2.; 50] ; vec![2.; 50] ; vec![100.],
-        big_state_multi: "r_i { x_i + y_i } b_i { x_i, r_i - y_i }" expect "b" vec![1.; 100] ; vec![1.; 100] ; vec![100.],
-        big_state_multi_w_scalar: "r { 1.0 + 1.0 } b_i { x_i, r - y_i }" expect "b" vec![1.; 100] ; vec![1.; 50].into_iter().chain(vec![-1.; 50].into_iter()).collect::<Vec<_>>() ; vec![0.],
-        big_state_diag: "b_ij { (0..100, 0..100): 3.0 } r_i { b_ij * u_j }" expect "r" vec![3.; 100] ; vec![3.; 100] ; vec![300.],
-        big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![6.; 100]; vec![600.],
+        big_state_expr: "r_i { x_i + y_i }" expect "r" vec![2.; 50] ; vec![2.; 50] ; vec![100.] ; vec![0.; 50] ; vec![0.],
+        big_state_multi: "r_i { x_i + y_i } b_i { x_i, r_i - y_i }" expect "b" vec![1.; 100] ; vec![1.; 100] ; vec![100.] ; vec![0.; 100] ; vec![0.],
+        big_state_multi_w_scalar: "r { 1.0 + 1.0 } b_i { x_i, r - y_i }" expect "b" vec![1.; 100] ; vec![1.; 50].into_iter().chain(vec![-1.; 50].into_iter()).collect::<Vec<_>>() ; vec![0.] ; vec![0.; 100] ; vec![0.],
+        big_state_diag: "b_ij { (0..100, 0..100): 3.0 } r_i { b_ij * u_j }" expect "r" vec![3.; 100] ; vec![3.; 100] ; vec![300.] ; vec![0.; 100] ; vec![0.],
+        big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![6.; 100]; vec![600.] ; vec![0.; 100]; vec![0.],
+        big_state_tridiag2: "b_ij { (0..100, 0..100): p + 2.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![7.; 100]; vec![700.] ; vec![1.; 100]; vec![100.],
     }
 
     #[cfg(feature = "llvm")]

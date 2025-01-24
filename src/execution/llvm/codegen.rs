@@ -512,7 +512,6 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -590,6 +589,10 @@ impl CodegenModule for LlvmModule {
             let nolinline_kind_id = Attribute::get_named_enum_kind_id("noinline");
             barrier_func.remove_enum_attribute(AttributeLoc::Function, nolinline_kind_id);
         }
+        //self.codegen()
+        //    .module()
+        //    .print_to_file("post_autodiff_optimisation.ll")
+        //    .unwrap();
 
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
@@ -611,11 +614,6 @@ impl CodegenModule for LlvmModule {
             .module()
             .run_passes(passes, &machine, PassBuilderOptions::create())
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))?;
-
-        //self.codegen()
-        //    .module()
-        //    .print_to_file("post_autodiff_optimisation.ll")
-        //    .unwrap();
 
         Ok(())
     }

@@ -444,9 +444,9 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn set_u0_grad(
         &self,
-        yy: &mut [f64],
+        yy: &[f64],
         dyy: &mut [f64],
-        data: &mut [f64],
+        data: &[f64],
         ddata: &mut [f64],
     ) {
         self.check_state_len(yy, "yy");
@@ -456,9 +456,9 @@ impl<M: CodegenModule> Compiler<M> {
         self.with_threading(|i, dim| {
             unsafe {
                 (self.jit_grad_functions.set_u0_grad)(
-                    yy.as_ptr() as *mut f64,
+                    yy.as_ptr(),
                     dyy.as_ptr() as *mut f64,
-                    data.as_ptr() as *mut f64,
+                    data.as_ptr(),
                     ddata.as_ptr() as *mut f64,
                     i,
                     dim,
@@ -574,7 +574,7 @@ impl<M: CodegenModule> Compiler<M> {
         data: &[f64],
         ddata: &mut [f64],
         rr: &[f64],
-        drr: &[f64],
+        drr: &mut [f64],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -594,7 +594,7 @@ impl<M: CodegenModule> Compiler<M> {
                 data.as_ptr(),
                 ddata.as_ptr() as *mut f64,
                 rr.as_ptr(),
-                drr.as_ptr(),
+                drr.as_ptr() as *mut f64,
                 i,
                 dim,
             )
@@ -607,7 +607,7 @@ impl<M: CodegenModule> Compiler<M> {
         dv: &mut [f64],
         data: &[f64],
         ddata: &mut [f64],
-        dmv: &[f64],
+        dmv: &mut [f64],
     ) {
         self.check_state_len(dv, "dv");
         self.check_state_len(dmv, "dmv");
@@ -625,7 +625,7 @@ impl<M: CodegenModule> Compiler<M> {
                 data.as_ptr(),
                 ddata.as_ptr() as *mut f64,
                 std::ptr::null(),
-                dmv.as_ptr(),
+                dmv.as_ptr() as *mut f64,
                 i,
                 dim,
             )
@@ -671,7 +671,7 @@ impl<M: CodegenModule> Compiler<M> {
         data: &[f64],
         ddata: &mut [f64],
         rr: &[f64],
-        drr: &[f64],
+        drr: &mut [f64],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
@@ -689,7 +689,7 @@ impl<M: CodegenModule> Compiler<M> {
                 data.as_ptr(),
                 ddata.as_ptr() as *mut f64,
                 rr.as_ptr(),
-                drr.as_ptr(),
+                drr.as_ptr() as *mut f64,
                 i,
                 dim,
             )
@@ -931,50 +931,44 @@ mod tests {
     #[test]
     fn test_from_discrete_str_llvm() {
         use crate::execution::llvm::codegen::LlvmModule;
-        let text = "
-        u { y = 1 }
-        F { -y }
-        out { y }
-        ";
-        let compiler = Compiler::<LlvmModule>::from_discrete_str(text, Default::default()).unwrap();
-        let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
-        assert_eq!(n_states, 1);
-        assert_eq!(n_inputs, 0);
-        assert_eq!(n_outputs, 1);
-        assert_eq!(n_stop, 0);
-        assert!(!has_mass);
-        let mut u0 = vec![0.];
-        let mut res = vec![0.];
-        let mut data = compiler.get_new_data();
-        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
-        assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
-        assert_relative_eq!(res.as_slice(), vec![-1.].as_slice());
+        test_from_discrete_str_common::<LlvmModule>();
     }
 
     #[test]
     fn test_from_discrete_str_cranelift() {
-        let text = "
+        test_from_discrete_str_common::<CraneliftModule>();
+    }
+
+    fn test_from_discrete_str_common<T: CodegenModule>() {
+        let text1 = "
         u { y = 1 }
         F { -y }
         out { y }
         ";
-        let compiler =
-            Compiler::<CraneliftModule>::from_discrete_str(text, Default::default()).unwrap();
-        let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
-        assert_eq!(n_states, 1);
-        assert_eq!(n_inputs, 0);
-        assert_eq!(n_outputs, 1);
-        assert_eq!(n_stop, 0);
-        assert!(!has_mass);
+        let text2 = "
+        p { 1 }
+        u { p }
+        F { -u }
+        out { u }
+        ";
+        for text in [text2, text1] {
+            let compiler =
+                Compiler::<T>::from_discrete_str(text, Default::default()).unwrap();
+            let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
+            assert_eq!(n_states, 1);
+            assert_eq!(n_inputs, 0);
+            assert_eq!(n_outputs, 1);
+            assert_eq!(n_stop, 0);
+            assert!(!has_mass);
 
-        let mut u0 = vec![0.];
-        let mut res = vec![0.];
-        let mut data = compiler.get_new_data();
-        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
-        assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
-        assert_relative_eq!(res.as_slice(), vec![-1.].as_slice());
+            let mut u0 = vec![0.];
+            let mut res = vec![0.];
+            let mut data = compiler.get_new_data();
+            compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+            assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
+            compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+            assert_relative_eq!(res.as_slice(), vec![-1.].as_slice());
+        }
     }
 
     #[test]
@@ -1843,7 +1837,7 @@ mod tests {
         assert_relative_eq!(mv.as_slice(), vec![2.0, 1.0, 1.0].as_slice());
         mv = vec![1.0, 1.0, 1.0];
         let mut ddata = compiler.get_new_data();
-        compiler.mass_rgrad(0.0, v.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice(), mv.as_slice());
+        compiler.mass_rgrad(0.0, v.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice(), mv.as_mut_slice());
         assert_relative_eq!(v.as_slice(), vec![2.0, 3.0, 2.0].as_slice());
     }
 }

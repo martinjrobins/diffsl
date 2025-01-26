@@ -37,7 +37,7 @@ pub type RhsRevGradFunc = unsafe extern "C" fn(
     data: *const RealType,
     ddata: *mut RealType,
     rr: *const RealType,
-    drr: *const RealType,
+    drr: *mut RealType,
     threadId: UIntType,
     threadDim: UIntType,
 );
@@ -57,7 +57,7 @@ pub type RhsSensRevGradFunc = unsafe extern "C" fn(
     data: *const RealType,
     ddata: *mut RealType,
     rr: *const RealType,
-    drr: *const RealType,
+    drr: *mut RealType,
     threadId: UIntType,
     threadDim: UIntType,
 );
@@ -76,7 +76,7 @@ pub type MassRevGradFunc = unsafe extern "C" fn(
     data: *const RealType,
     ddata: *mut RealType,
     mv: *const RealType,
-    dmv: *const RealType,
+    dmv: *mut RealType,
     threadId: UIntType,
     threadDim: UIntType,
 );
@@ -96,7 +96,7 @@ pub type U0GradFunc = unsafe extern "C" fn(
 );
 pub type U0RevGradFunc = unsafe extern "C" fn(
     u: *const RealType,
-    du: *const RealType,
+    du: *mut RealType,
     data: *const RealType,
     ddata: *mut RealType,
     threadId: UIntType,
@@ -163,7 +163,7 @@ pub type SetInputsRevGradFunc = unsafe extern "C" fn(
     inputs: *const RealType,
     dinputs: *mut RealType,
     data: *const RealType,
-    ddata: *const RealType,
+    ddata: *mut RealType,
 );
 pub type SetIdFunc = unsafe extern "C" fn(id: *mut RealType);
 pub type GetOutFunc = unsafe extern "C" fn(

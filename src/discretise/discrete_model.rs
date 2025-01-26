@@ -101,6 +101,15 @@ impl<'s> DiscreteModel<'s> {
 
     fn build_array(array: &ast::Tensor<'s>, env: &mut Env) -> Option<Tensor<'s>> {
         let rank = array.indices().len();
+        let reserved_names = ["u0", "t", "data", "root", "thread_id", "thread_dim", "rr", "states", "inputs", "outputs", "hass_mass"];
+        if reserved_names.contains(&array.name()) {
+            let span = env.current_span().to_owned();
+            env.errs_mut().push(ValidationError::new(
+                format!("{} is a reserved name", array.name()),
+                span,
+            ));
+            return None;
+        }
         let mut elmts = Vec::new();
         let mut start = Index::zeros(rank);
         let nerrs = env.errs().len();
@@ -147,6 +156,14 @@ impl<'s> DiscreteModel<'s> {
                         } else {
                             i64::try_from(elmt_layout.shape()[0]).unwrap()
                         };
+
+                        if reserved_names.contains(&name.as_ref().unwrap_or(&"".to_string()).as_str()) {
+                            let span = env.current_span().to_owned();
+                            env.errs_mut().push(ValidationError::new(
+                                format!("{} is a reserved name", name.as_ref().unwrap()),
+                                span,
+                            ));
+                        }
 
                         elmts.push(TensorBlock::new(
                             name,

@@ -69,6 +69,17 @@ pub type MassFunc = unsafe extern "C" fn(
     threadId: UIntType,
     threadDim: UIntType,
 );
+pub type MassRevGradFunc = unsafe extern "C" fn(
+    time: RealType,
+    v: *const RealType,
+    dv: *mut RealType,
+    data: *const RealType,
+    ddata: *mut RealType,
+    mv: *const RealType,
+    dmv: *const RealType,
+    threadId: UIntType,
+    threadDim: UIntType,
+);
 pub type U0Func = unsafe extern "C" fn(
     u: *mut RealType,
     data: *mut RealType,
@@ -141,6 +152,7 @@ pub type GetDimsFunc = unsafe extern "C" fn(
     has_mass: *mut UIntType,
 );
 pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const RealType, data: *mut RealType);
+pub type GetInputsFunc = unsafe extern "C" fn(inputs: *mut RealType, data: *const RealType);
 pub type SetInputsGradFunc = unsafe extern "C" fn(
     inputs: *const RealType,
     dinputs: *const RealType,

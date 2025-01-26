@@ -446,7 +446,7 @@ impl<'s> DiscreteModel<'s> {
                     None,
                 )],
             );
-            ret.out = Self::build_array(&out_tensor, &mut env).unwrap();
+            ret.out = Self::build_array(&out_tensor, &mut env).unwrap_or(Tensor::new_empty("out"));
         }
         if let Some(span) = span_f {
             Self::check_match(&ret.rhs, &ret.state, span, &mut env);

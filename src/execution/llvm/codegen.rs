@@ -315,7 +315,11 @@ impl CodegenModule for LlvmModule {
     }
 
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_set_inputs(model)
+        self.codegen_mut().compile_inputs(model, false)
+    }
+    
+    fn compile_get_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_inputs(model, true)
     }
 
     fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
@@ -376,6 +380,25 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
+        )
+    }
+
+    fn compile_mass_rgrad(
+            &mut self,
+            func_id: &Self::FuncId,
+            _model: &DiscreteModel,
+        ) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_gradient(
+            *func_id,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
         )
     }
 
@@ -3370,14 +3393,15 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    pub fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_inputs(&mut self, model: &DiscreteModel, is_get: bool) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(
             &[self.real_ptr_type.into(), self.real_ptr_type.into()],
             false,
         );
-        let function = self.module.add_function("set_inputs", fn_type, None);
+        let function_name = if is_get { "get_inputs" } else { "set_inputs" };
+        let function = self.module.add_function(function_name, fn_type, None);
         let mut block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
 
@@ -3395,7 +3419,7 @@ impl<'ctx> CodeGen<'ctx> {
             let name = format!("input_{}", input.name());
             self.insert_tensor(input);
             let ptr = self.get_var(input);
-            // loop thru the elements of this input and set them using the inputs ptr
+            // loop thru the elements of this input and set/get them using the inputs ptr
             let inputs_start_index = self.int_type.const_int(inputs_index as u64, false);
             let start_index = self.int_type.const_int(0, false);
             let end_index = self
@@ -3427,10 +3451,17 @@ impl<'ctx> CodeGen<'ctx> {
                 curr_inputs_index,
                 name.as_str(),
             );
-            let input_value = self
-                .build_load(self.real_type, inputs_ptr, name.as_str())?
-                .into_float_value();
-            self.builder.build_store(input_ptr, input_value)?;
+            if is_get {
+                let input_value = self
+                    .build_load(self.real_type, input_ptr, name.as_str())?
+                    .into_float_value();
+                self.builder.build_store(inputs_ptr, input_value)?;
+            } else {
+                let input_value = self
+                    .build_load(self.real_type, inputs_ptr, name.as_str())?
+                    .into_float_value();
+                self.builder.build_store(input_ptr, input_value)?;
+            }
 
             // increment loop index
             let one = self.int_type.const_int(1, false);

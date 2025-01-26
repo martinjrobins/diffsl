@@ -9,9 +9,7 @@ use crate::{
 
 use super::{
     interface::{
-        BarrierInitFunc, CalcOutGradFunc, CalcOutRevGradFunc, CalcOutSensGradFunc,
-        CalcOutSensRevGradFunc, RhsGradFunc, RhsRevGradFunc, RhsSensGradFunc, RhsSensRevGradFunc,
-        SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc,
+        BarrierInitFunc, CalcOutGradFunc, CalcOutRevGradFunc, CalcOutSensGradFunc, CalcOutSensRevGradFunc, GetInputsFunc, MassRevGradFunc, RhsGradFunc, RhsRevGradFunc, RhsSensGradFunc, RhsSensRevGradFunc, SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc
     },
     module::CodegenModule,
 };
@@ -46,6 +44,7 @@ struct JitFunctions {
     set_id: SetIdFunc,
     get_dims: GetDimsFunc,
     set_inputs: SetInputsFunc,
+    get_inputs: GetInputsFunc,
     get_out: GetOutFunc,
     barrier_init: Option<BarrierInitFunc>,
 }
@@ -60,6 +59,7 @@ struct JitGradFunctions {
 struct JitGradRFunctions {
     set_u0_rgrad: U0RevGradFunc,
     rhs_rgrad: RhsRevGradFunc,
+    mass_rgrad: MassRevGradFunc,
     calc_out_rgrad: CalcOutRevGradFunc,
     set_inputs_rgrad: SetInputsRevGradFunc,
 }
@@ -171,6 +171,7 @@ impl<M: CodegenModule> Compiler<M> {
         let set_id = module.compile_set_id(model)?;
         let get_dims = module.compile_get_dims(model)?;
         let set_inputs = module.compile_set_inputs(model)?;
+        let get_inputs = module.compile_get_inputs(model)?;
         let get_output = module.compile_get_tensor(model, "out")?;
 
         module.pre_autodiff_optimisation()?;
@@ -188,11 +189,13 @@ impl<M: CodegenModule> Compiler<M> {
         let mut rhs_srgrad = None;
         let mut calc_out_sgrad = None;
         let mut calc_out_srgrad = None;
+        let mut mass_rgrad = None;
         if module.supports_reverse_autodiff() {
             set_u0_rgrad = Some(module.compile_set_u0_rgrad(&set_u0, model)?);
             rhs_rgrad = Some(module.compile_rhs_rgrad(&rhs, model)?);
             calc_out_rgrad = Some(module.compile_calc_out_rgrad(&calc_out, model)?);
             set_inputs_rgrad = Some(module.compile_set_inputs_rgrad(&set_inputs, model)?);
+            mass_rgrad = Some(module.compile_mass_rgrad(&mass, model)?);
 
             let rhs_full = module.compile_rhs_full(model)?;
             rhs_sgrad = Some(module.compile_rhs_sgrad(&rhs_full, model)?);
@@ -223,6 +226,8 @@ impl<M: CodegenModule> Compiler<M> {
             unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(module.jit(get_dims)?) };
         let set_inputs =
             unsafe { std::mem::transmute::<*const u8, SetInputsFunc>(module.jit(set_inputs)?) };
+        let get_inputs =
+            unsafe { std::mem::transmute::<*const u8, GetInputsFunc>(module.jit(get_inputs)?) };
         let get_out =
             unsafe { std::mem::transmute::<*const u8, GetOutFunc>(module.jit(get_output)?) };
 
@@ -257,6 +262,11 @@ impl<M: CodegenModule> Compiler<M> {
                 set_inputs_rgrad: unsafe {
                     std::mem::transmute::<*const u8, SetInputsRevGradFunc>(
                         module.jit(set_inputs_rgrad.unwrap())?,
+                    )
+                },
+                mass_rgrad:  unsafe {
+                    std::mem::transmute::<*const u8, MassRevGradFunc>(
+                        module.jit(mass_rgrad.unwrap())?,
                     )
                 },
             })
@@ -305,6 +315,7 @@ impl<M: CodegenModule> Compiler<M> {
                 rhs,
                 mass,
                 calc_out,
+                get_inputs,
                 calc_stop,
                 set_id,
                 get_dims,
@@ -495,19 +506,19 @@ impl<M: CodegenModule> Compiler<M> {
         self.has_mass
     }
 
-    pub fn mass(&self, t: f64, yp: &[f64], data: &mut [f64], rr: &mut [f64]) {
+    pub fn mass(&self, t: f64, v: &[f64], data: &mut [f64], mv: &mut [f64]) {
         if !self.has_mass {
             panic!("Model does not have a mass function");
         }
-        self.check_state_len(yp, "yp");
-        self.check_state_len(rr, "rr");
+        self.check_state_len(v, "v");
+        self.check_state_len(mv, "mv");
         self.check_data_len(data, "data");
         self.with_threading(|i, dim| unsafe {
             (self.jit_functions.mass)(
                 t,
-                yp.as_ptr(),
+                v.as_ptr(),
                 data.as_ptr() as *mut f64,
-                rr.as_ptr() as *mut f64,
+                mv.as_ptr() as *mut f64,
                 i,
                 dim,
             )
@@ -563,7 +574,7 @@ impl<M: CodegenModule> Compiler<M> {
         data: &[f64],
         ddata: &mut [f64],
         rr: &[f64],
-        drr: &mut [f64],
+        drr: &[f64],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -583,7 +594,38 @@ impl<M: CodegenModule> Compiler<M> {
                 data.as_ptr(),
                 ddata.as_ptr() as *mut f64,
                 rr.as_ptr(),
-                drr.as_ptr() as *mut f64,
+                drr.as_ptr(),
+                i,
+                dim,
+            )
+        });
+    }
+
+    pub fn mass_rgrad(
+        &self,
+        t: f64,
+        dv: &mut [f64],
+        data: &[f64],
+        ddata: &mut [f64],
+        dmv: &[f64],
+    ) {
+        self.check_state_len(dv, "dv");
+        self.check_state_len(dmv, "dmv");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .mass_rgrad)(
+                t,
+                std::ptr::null(),
+                dv.as_ptr() as *mut f64,
+                data.as_ptr(),
+                ddata.as_ptr() as *mut f64,
+                std::ptr::null(),
+                dmv.as_ptr(),
                 i,
                 dim,
             )
@@ -785,6 +827,12 @@ impl<M: CodegenModule> Compiler<M> {
         self.check_inputs_len(inputs, "inputs");
         self.check_data_len(data, "data");
         unsafe { (self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr()) };
+    }
+    
+    pub fn get_inputs(&self, inputs: &mut [f64], data: &[f64]) {
+        self.check_inputs_len(inputs, "inputs");
+        self.check_data_len(data, "data");
+        unsafe { (self.jit_functions.get_inputs)(inputs.as_mut_ptr(), data.as_ptr()) };
     }
 
     pub fn set_inputs_grad(
@@ -1158,13 +1206,7 @@ mod tests {
                 data.as_slice(),
                 ddata.as_mut_slice(),
             );
-            compiler.set_inputs_rgrad(
-                inputs.as_slice(),
-                dinputs.as_mut_slice(),
-                data.as_slice(),
-                ddata.as_mut_slice(),
-            );
-
+            compiler.get_inputs(dinputs.as_mut_slice(), ddata.as_slice());
             results.push(dinputs.to_vec());
 
             // forward mode sens (rhs)
@@ -1775,5 +1817,33 @@ mod tests {
                 assert_relative_eq!(inputs, expected_value.as_slice());
             }
         }
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_mass_llvm() {
+        let full_text = "
+            dudt_i { dxdt = 1, dydt = 1, dzdt = 1 }
+            u_i { x = 1, y = 2, z = 3 }
+            F_i { x, y, z }
+            M_i { dxdt + dydt, dydt, dzdt }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("test_mass", &model).unwrap();
+
+        let compiler =
+            Compiler::<crate::LlvmModule>::from_discrete_model(&discrete_model, Default::default())
+                .unwrap();
+        let mut data = compiler.get_new_data();
+        let mut u0 = vec![0.0, 0.0, 0.0];
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        let mut mv = vec![0.0, 0.0, 0.0];
+        let mut v = vec![1.0, 1.0, 1.0];
+        compiler.mass(0.0, v.as_slice(), data.as_mut_slice(), mv.as_mut_slice());
+        assert_relative_eq!(mv.as_slice(), vec![2.0, 1.0, 1.0].as_slice());
+        mv = vec![1.0, 1.0, 1.0];
+        let mut ddata = compiler.get_new_data();
+        compiler.mass_rgrad(0.0, v.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice(), mv.as_slice());
+        assert_relative_eq!(v.as_slice(), vec![2.0, 3.0, 2.0].as_slice());
     }
 }

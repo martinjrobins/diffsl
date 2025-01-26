@@ -19,7 +19,14 @@ pub trait CodegenModule: Sized + Sync {
     fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_get_tensor(&mut self, model: &DiscreteModel, name: &str) -> Result<Self::FuncId>;
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
+    fn compile_get_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
+
+    fn compile_mass_rgrad(
+        &mut self,
+        func_id: &Self::FuncId,
+        model: &DiscreteModel,
+    ) -> Result<Self::FuncId>;
 
     fn compile_set_u0_grad(
         &mut self,

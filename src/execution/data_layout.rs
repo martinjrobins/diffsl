@@ -35,9 +35,10 @@ impl DataLayout {
 
         let mut add_tensor = |tensor: &Tensor| {
             let is_state = tensor.name() == "u" || tensor.name() == "dudt";
+            let is_rhs_or_lhs = tensor.name() == "rhs" || tensor.name() == "lhs";
             // insert the data (non-zeros) for each tensor
             layout_map.insert(tensor.name().to_string(), tensor.layout_ptr().clone());
-            if !is_state {
+            if !is_state && !is_rhs_or_lhs {
                 data_index_map.insert(tensor.name().to_string(), data.len());
                 data_length_map.insert(tensor.name().to_string(), tensor.nnz());
                 data.extend(vec![0.0; tensor.nnz()]);

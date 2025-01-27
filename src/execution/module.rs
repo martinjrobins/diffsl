@@ -11,24 +11,35 @@ pub trait CodegenModule: Sized + Sync {
     fn new(triple: Triple, model: &DiscreteModel, threaded: bool) -> Result<Self>;
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
+    fn compile_calc_out_full(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_calc_stop(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
+    fn compile_rhs_full(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_mass(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_get_tensor(&mut self, model: &DiscreteModel, name: &str) -> Result<Self::FuncId>;
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
+    fn compile_get_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
+
+    fn compile_mass_rgrad(
+        &mut self,
+        func_id: &Self::FuncId,
+        model: &DiscreteModel,
+    ) -> Result<Self::FuncId>;
 
     fn compile_set_u0_grad(
         &mut self,
         func_id: &Self::FuncId,
         model: &DiscreteModel,
     ) -> Result<Self::FuncId>;
+
     fn compile_rhs_grad(
         &mut self,
         func_id: &Self::FuncId,
         model: &DiscreteModel,
     ) -> Result<Self::FuncId>;
+
     fn compile_calc_out_grad(
         &mut self,
         func_id: &Self::FuncId,
@@ -59,6 +70,30 @@ pub trait CodegenModule: Sized + Sync {
     ) -> Result<Self::FuncId>;
 
     fn compile_set_inputs_rgrad(
+        &mut self,
+        func_id: &Self::FuncId,
+        model: &DiscreteModel,
+    ) -> Result<Self::FuncId>;
+
+    fn compile_rhs_sgrad(
+        &mut self,
+        func_id: &Self::FuncId,
+        model: &DiscreteModel,
+    ) -> Result<Self::FuncId>;
+
+    fn compile_rhs_srgrad(
+        &mut self,
+        func_id: &Self::FuncId,
+        model: &DiscreteModel,
+    ) -> Result<Self::FuncId>;
+
+    fn compile_calc_out_sgrad(
+        &mut self,
+        func_id: &Self::FuncId,
+        model: &DiscreteModel,
+    ) -> Result<Self::FuncId>;
+
+    fn compile_calc_out_srgrad(
         &mut self,
         func_id: &Self::FuncId,
         model: &DiscreteModel,

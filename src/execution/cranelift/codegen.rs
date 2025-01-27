@@ -206,6 +206,14 @@ unsafe impl Sync for CraneliftModule {}
 impl CodegenModule for CraneliftModule {
     type FuncId = FuncId;
 
+    fn compile_mass_rgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
     fn compile_calc_out_rgrad(
         &mut self,
         _func_id: &Self::FuncId,
@@ -238,6 +246,46 @@ impl CodegenModule for CraneliftModule {
         Err(anyhow!("not implemented"))
     }
 
+    fn compile_calc_out_full(&mut self, _model: &DiscreteModel) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_calc_out_sgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_calc_out_srgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_rhs_full(&mut self, _model: &DiscreteModel) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_rhs_sgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
+    fn compile_rhs_srgrad(
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
+        Err(anyhow!("not implemented"))
+    }
+
     fn supports_reverse_autodiff(&self) -> bool {
         false
     }
@@ -259,8 +307,6 @@ impl CodegenModule for CraneliftModule {
         let arg_names = &["t", "u", "du", "data", "ddata", "threadId", "threadDim"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        codegen.jit_compile_tensor(model.out(), None, false)?;
-        codegen.jit_compile_call_barrier(0);
         codegen.jit_compile_tensor(model.out(), None, true)?;
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
@@ -300,9 +346,6 @@ impl CodegenModule for CraneliftModule {
         // calculate time dependant definitions
         let mut nbarrier = 0;
         for tensor in model.time_dep_defns() {
-            codegen.jit_compile_tensor(tensor, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
             codegen.jit_compile_tensor(tensor, None, true)?;
             codegen.jit_compile_call_barrier(nbarrier);
             nbarrier += 1;
@@ -310,18 +353,12 @@ impl CodegenModule for CraneliftModule {
 
         // TODO: could split state dep defns into before and after F
         for a in model.state_dep_defns() {
-            codegen.jit_compile_tensor(a, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
             codegen.jit_compile_tensor(a, None, true)?;
             codegen.jit_compile_call_barrier(nbarrier);
             nbarrier += 1;
         }
 
         // F
-        let res = *codegen.variables.get("rr").unwrap();
-        codegen.jit_compile_tensor(model.rhs(), Some(res), false)?;
-        codegen.jit_compile_call_barrier(nbarrier);
         let res = *codegen.variables.get("drr").unwrap();
         codegen.jit_compile_tensor(model.rhs(), Some(res), true)?;
 
@@ -344,13 +381,9 @@ impl CodegenModule for CraneliftModule {
         let arg_names = &["inputs", "dinputs", "data", "ddata"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let base_data_ptr = codegen.variables.get("data").unwrap();
-        let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
-        codegen.jit_compile_set_inputs(model, base_data_ptr, false);
-
         let base_data_ptr = codegen.variables.get("ddata").unwrap();
         let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
-        codegen.jit_compile_set_inputs(model, base_data_ptr, true);
+        codegen.jit_compile_inputs(model, base_data_ptr, true, false);
 
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
@@ -374,21 +407,13 @@ impl CodegenModule for CraneliftModule {
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
         let mut nbarrier = 0;
+        #[allow(clippy::explicit_counter_loop)]
         for a in model.time_indep_defns() {
-            codegen.jit_compile_tensor(a, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
             codegen.jit_compile_tensor(a, None, true)?;
             codegen.jit_compile_call_barrier(nbarrier);
             nbarrier += 1;
         }
 
-        codegen.jit_compile_tensor(
-            model.state(),
-            Some(*codegen.variables.get("u0").unwrap()),
-            false,
-        )?;
-        codegen.jit_compile_call_barrier(nbarrier);
         codegen.jit_compile_tensor(
             model.state(),
             Some(*codegen.variables.get("du0").unwrap()),
@@ -782,11 +807,25 @@ impl CodegenModule for CraneliftModule {
 
         let base_data_ptr = codegen.variables.get("data").unwrap();
         let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
-        codegen.jit_compile_set_inputs(model, base_data_ptr, false);
+        codegen.jit_compile_inputs(model, base_data_ptr, false, false);
 
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
         self.declare_function("set_inputs")
+    }
+
+    fn compile_get_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+        let arg_types = &[self.real_ptr_type, self.real_ptr_type];
+        let arg_names = &["inputs", "data"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        let base_data_ptr = codegen.variables.get("data").unwrap();
+        let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
+        codegen.jit_compile_inputs(model, base_data_ptr, false, true);
+
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function("get_inputs")
     }
 
     fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<FuncId> {
@@ -2054,11 +2093,12 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         codegen
     }
 
-    fn jit_compile_set_inputs(
+    fn jit_compile_inputs(
         &mut self,
         model: &DiscreteModel,
         base_data_ptr: Value,
         is_tangent: bool,
+        is_get: bool,
     ) {
         let mut inputs_index = 0;
         for input in model.inputs() {
@@ -2096,13 +2136,23 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             let indexed_input_ptr =
                 self.ptr_add_offset(self.real_type, input_ptr, curr_input_index_plus_start_index);
             let indexed_data_ptr = self.ptr_add_offset(self.real_type, data_ptr, curr_input_index);
-            let input_value =
+            if is_get {
+                let input_value =
+                    self.builder
+                        .ins()
+                        .load(self.real_type, self.mem_flags, indexed_data_ptr, 0);
                 self.builder
                     .ins()
-                    .load(self.real_type, self.mem_flags, indexed_input_ptr, 0);
-            self.builder
-                .ins()
-                .store(self.mem_flags, input_value, indexed_data_ptr, 0);
+                    .store(self.mem_flags, input_value, indexed_input_ptr, 0);
+            } else {
+                let input_value =
+                    self.builder
+                        .ins()
+                        .load(self.real_type, self.mem_flags, indexed_input_ptr, 0);
+                self.builder
+                    .ins()
+                    .store(self.mem_flags, input_value, indexed_data_ptr, 0);
+            }
 
             // increment loop index
             let one = self.builder.ins().iconst(self.int_type, 1);

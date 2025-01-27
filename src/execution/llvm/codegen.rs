@@ -13,8 +13,7 @@ use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType,
 };
 use inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue, FloatValue,
-    FunctionValue, GlobalValue, IntValue, PointerValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue
 };
 use inkwell::{
     AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntPredicate, OptimizationLevel,
@@ -317,7 +316,7 @@ impl CodegenModule for LlvmModule {
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_inputs(model, false)
     }
-    
+
     fn compile_get_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_inputs(model, true)
     }
@@ -384,10 +383,10 @@ impl CodegenModule for LlvmModule {
     }
 
     fn compile_mass_rgrad(
-            &mut self,
-            func_id: &Self::FuncId,
-            _model: &DiscreteModel,
-        ) -> Result<Self::FuncId> {
+        &mut self,
+        func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
         self.codegen_mut().compile_gradient(
             *func_id,
             &[
@@ -1396,7 +1395,8 @@ impl<'ctx> CodeGen<'ctx> {
                             .take(arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicTypeEnum>>();
-                        intrinsic.get_declaration(&self.module, args_types.as_slice())
+                        // if we get an intrinsic, we don't need to add to the list of functions and can return early
+                        return intrinsic.get_declaration(&self.module, args_types.as_slice());
                     }
                     // some custom functions
                     "sigmoid" => {
@@ -3393,7 +3393,11 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    pub fn compile_inputs(&mut self, model: &DiscreteModel, is_get: bool) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_inputs(
+        &mut self,
+        model: &DiscreteModel,
+        is_get: bool,
+    ) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(

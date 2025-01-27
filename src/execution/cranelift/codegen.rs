@@ -207,10 +207,10 @@ impl CodegenModule for CraneliftModule {
     type FuncId = FuncId;
 
     fn compile_mass_rgrad(
-            &mut self,
-            _func_id: &Self::FuncId,
-            _model: &DiscreteModel,
-        ) -> Result<Self::FuncId> {
+        &mut self,
+        _func_id: &Self::FuncId,
+        _model: &DiscreteModel,
+    ) -> Result<Self::FuncId> {
         Err(anyhow!("not implemented"))
     }
 
@@ -836,7 +836,7 @@ impl CodegenModule for CraneliftModule {
         codegen.builder.finalize();
         self.declare_function("set_inputs")
     }
-    
+
     fn compile_get_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[self.real_ptr_type, self.real_ptr_type];
         let arg_names = &["inputs", "data"];
@@ -2167,7 +2167,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
                 self.builder
                     .ins()
                     .store(self.mem_flags, input_value, indexed_input_ptr, 0);
-                
             } else {
                 let input_value =
                     self.builder

@@ -9,7 +9,10 @@ use crate::{
 
 use super::{
     interface::{
-        BarrierInitFunc, CalcOutGradFunc, CalcOutRevGradFunc, CalcOutSensGradFunc, CalcOutSensRevGradFunc, GetInputsFunc, MassRevGradFunc, RhsGradFunc, RhsRevGradFunc, RhsSensGradFunc, RhsSensRevGradFunc, SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc
+        BarrierInitFunc, CalcOutGradFunc, CalcOutRevGradFunc, CalcOutSensGradFunc,
+        CalcOutSensRevGradFunc, GetInputsFunc, MassRevGradFunc, RhsGradFunc, RhsRevGradFunc,
+        RhsSensGradFunc, RhsSensRevGradFunc, SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc,
+        U0RevGradFunc,
     },
     module::CodegenModule,
 };
@@ -264,7 +267,7 @@ impl<M: CodegenModule> Compiler<M> {
                         module.jit(set_inputs_rgrad.unwrap())?,
                     )
                 },
-                mass_rgrad:  unsafe {
+                mass_rgrad: unsafe {
                     std::mem::transmute::<*const u8, MassRevGradFunc>(
                         module.jit(mass_rgrad.unwrap())?,
                     )
@@ -442,13 +445,7 @@ impl<M: CodegenModule> Compiler<M> {
         });
     }
 
-    pub fn set_u0_grad(
-        &self,
-        yy: &[f64],
-        dyy: &mut [f64],
-        data: &[f64],
-        ddata: &mut [f64],
-    ) {
+    pub fn set_u0_grad(&self, yy: &[f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
@@ -828,7 +825,7 @@ impl<M: CodegenModule> Compiler<M> {
         self.check_data_len(data, "data");
         unsafe { (self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr()) };
     }
-    
+
     pub fn get_inputs(&self, inputs: &mut [f64], data: &[f64]) {
         self.check_inputs_len(inputs, "inputs");
         self.check_data_len(data, "data");
@@ -952,8 +949,7 @@ mod tests {
         out { u }
         ";
         for text in [text2, text1] {
-            let compiler =
-                Compiler::<T>::from_discrete_str(text, Default::default()).unwrap();
+            let compiler = Compiler::<T>::from_discrete_str(text, Default::default()).unwrap();
             let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
             assert_eq!(n_states, 1);
             assert_eq!(n_inputs, 0);
@@ -1673,9 +1669,12 @@ mod tests {
         let mut data = compiler.get_new_data();
         let mut ddata = compiler.get_new_data();
         let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+        let inputs = vec![2.; n_inputs];
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
 
         for _i in 0..3 {
-            let inputs = vec![2.; n_inputs];
             let dinputs = vec![1.; n_inputs];
             compiler.set_inputs_grad(
                 inputs.as_slice(),
@@ -1837,7 +1836,13 @@ mod tests {
         assert_relative_eq!(mv.as_slice(), vec![2.0, 1.0, 1.0].as_slice());
         mv = vec![1.0, 1.0, 1.0];
         let mut ddata = compiler.get_new_data();
-        compiler.mass_rgrad(0.0, v.as_mut_slice(), data.as_mut_slice(), ddata.as_mut_slice(), mv.as_mut_slice());
+        compiler.mass_rgrad(
+            0.0,
+            v.as_mut_slice(),
+            data.as_mut_slice(),
+            ddata.as_mut_slice(),
+            mv.as_mut_slice(),
+        );
         assert_relative_eq!(v.as_slice(), vec![2.0, 3.0, 2.0].as_slice());
     }
 }

@@ -1218,11 +1218,6 @@ impl<'ctx> CodeGen<'ctx> {
         for tensor in model.state_dep_defns() {
             self.insert_tensor(tensor);
         }
-        self.insert_tensor(model.out());
-        if let Some(lhs) = model.lhs() {
-            self.insert_tensor(lhs);
-        }
-        self.insert_tensor(model.rhs());
     }
 
     fn pointer_type(context: &'ctx Context, _ty: BasicTypeEnum<'ctx>) -> PointerType<'ctx> {
@@ -2743,7 +2738,7 @@ impl<'ctx> CodeGen<'ctx> {
             nbarriers += 1;
         }
 
-        self.jit_compile_tensor(model.out(), Some(*self.get_var(model.out())))?;
+        self.jit_compile_tensor(model.out().expect("out not defined"), Some(*self.get_var(model.out().unwrap())))?;
         self.jit_compile_call_barrier(nbarriers, total_barriers);
         self.builder.build_return(None)?;
 
@@ -3294,7 +3289,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         let number_of_states = model.state().nnz() as u64;
         let number_of_inputs = model.inputs().iter().fold(0, |acc, x| acc + x.nnz()) as u64;
-        let number_of_outputs = model.out().nnz() as u64;
+        let number_of_outputs = match model.out() {
+            Some(out) => out.nnz() as u64,
+            None => 0,
+        };
         let number_of_stop = if let Some(stop) = model.stop() {
             stop.nnz() as u64
         } else {

@@ -307,8 +307,6 @@ impl CodegenModule for CraneliftModule {
         let arg_names = &["t", "u", "du", "data", "ddata", "threadId", "threadDim"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        codegen.jit_compile_tensor(model.out(), None, false)?;
-        codegen.jit_compile_call_barrier(0);
         codegen.jit_compile_tensor(model.out(), None, true)?;
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
@@ -348,9 +346,6 @@ impl CodegenModule for CraneliftModule {
         // calculate time dependant definitions
         let mut nbarrier = 0;
         for tensor in model.time_dep_defns() {
-            codegen.jit_compile_tensor(tensor, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
             codegen.jit_compile_tensor(tensor, None, true)?;
             codegen.jit_compile_call_barrier(nbarrier);
             nbarrier += 1;
@@ -358,18 +353,12 @@ impl CodegenModule for CraneliftModule {
 
         // TODO: could split state dep defns into before and after F
         for a in model.state_dep_defns() {
-            codegen.jit_compile_tensor(a, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
             codegen.jit_compile_tensor(a, None, true)?;
             codegen.jit_compile_call_barrier(nbarrier);
             nbarrier += 1;
         }
 
         // F
-        let res = *codegen.variables.get("rr").unwrap();
-        codegen.jit_compile_tensor(model.rhs(), Some(res), false)?;
-        codegen.jit_compile_call_barrier(nbarrier);
         let res = *codegen.variables.get("drr").unwrap();
         codegen.jit_compile_tensor(model.rhs(), Some(res), true)?;
 
@@ -391,10 +380,6 @@ impl CodegenModule for CraneliftModule {
         ];
         let arg_names = &["inputs", "dinputs", "data", "ddata"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
-
-        let base_data_ptr = codegen.variables.get("data").unwrap();
-        let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
-        codegen.jit_compile_inputs(model, base_data_ptr, false, false);
 
         let base_data_ptr = codegen.variables.get("ddata").unwrap();
         let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
@@ -422,21 +407,13 @@ impl CodegenModule for CraneliftModule {
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
         let mut nbarrier = 0;
+        #[allow(clippy::explicit_counter_loop)]
         for a in model.time_indep_defns() {
-            codegen.jit_compile_tensor(a, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
             codegen.jit_compile_tensor(a, None, true)?;
             codegen.jit_compile_call_barrier(nbarrier);
             nbarrier += 1;
         }
 
-        codegen.jit_compile_tensor(
-            model.state(),
-            Some(*codegen.variables.get("u0").unwrap()),
-            false,
-        )?;
-        codegen.jit_compile_call_barrier(nbarrier);
         codegen.jit_compile_tensor(
             model.state(),
             Some(*codegen.variables.get("du0").unwrap()),

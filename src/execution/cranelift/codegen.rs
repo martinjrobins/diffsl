@@ -5,6 +5,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, FuncOrDataId, Linkage, Module};
 use std::collections::HashMap;
 use std::iter::zip;
+use std::slice::from_raw_parts;
 use target_lexicon::{Endianness, PointerWidth, Triple};
 
 use crate::ast::{Ast, AstKind};
@@ -206,6 +207,11 @@ unsafe impl Sync for CraneliftModule {}
 
 impl CodegenModule for CraneliftModule {
     type FuncId = FuncId;
+    
+    fn get_constants(&self) -> &[f64] {
+        let data = self.module.get_finalized_data(self.constants_id);
+        unsafe { from_raw_parts(data.0 as *const f64, data.1 / 8) }
+    }
 
     fn compile_mass_rgrad(
         &mut self,
@@ -404,6 +410,28 @@ impl CodegenModule for CraneliftModule {
         codegen.builder.finalize();
         self.declare_function("set_inputs_grad")
     }
+    
+    fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        let arg_types = &[
+            self.int_type,
+            self.int_type,
+        ];
+        let arg_names = &["threadId", "threadDim"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        let mut nbarrier = 0;
+        #[allow(clippy::explicit_counter_loop)]
+        for a in model.constant_defns() {
+            codegen.jit_compile_tensor(a, None, false)?;
+            codegen.jit_compile_call_barrier(nbarrier);
+            nbarrier += 1;
+        }
+        // Emit the return instruction.
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+
+        self.declare_function("set_constants")
+    }
 
     fn compile_set_u0_grad(
         &mut self,
@@ -513,16 +541,16 @@ impl CodegenModule for CraneliftModule {
         let layout = DataLayout::new(model);
 
         // define constant global data
+        let int_type = types::I32;
+        let real_type = types::F64;
         let mut data_description = DataDescription::new();
-        data_description.define_zeroinit(layout.constants().len());
-        let constants_id = module.declare_data("constants", Linkage::Local, false, false)?;
+        data_description.define_zeroinit(layout.constants().len() * (real_type.bytes() as usize));
+        let constants_id = module.declare_data("constants", Linkage::Local, true, false)?;
         module.define_data(constants_id, &data_description)?;
 
         // write indices data as a global data object
         // convect the indices to bytes
         //let int_type = ptr_type;
-        let int_type = types::I32;
-        let real_type = types::F64;
         let mut vec8: Vec<u8> = vec![];
         for elem in layout.indices() {
             // convert indices to i64
@@ -935,6 +963,7 @@ struct CraneliftCodeGen<'a> {
     functions: HashMap<String, FuncRef>,
     layout: &'a DataLayout,
     indices: GlobalValue,
+    constants: GlobalValue,
     threaded: bool,
 }
 
@@ -1030,6 +1059,10 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             AstKind::Number(value) => Ok(self.fconst(*value)),
             AstKind::Name(iname) => {
                 let ptr = if iname.is_tangent {
+                    // tangent of a constant is zero
+                    if self.layout.is_constant(iname.name) {
+                        return Ok(self.fconst(0.0));
+                    }
                     let name = self.get_tangent_tensor_name(iname.name);
                     self.builder
                         .use_var(*self.variables.get(name.as_str()).unwrap())
@@ -2026,6 +2059,10 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         let indices = module
             .module
             .declare_data_in_func(module.indices_id, builder.func);
+        
+        let constants = module
+            .module
+            .declare_data_in_func(module.constants_id, builder.func);
 
         // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
@@ -2053,6 +2090,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             module: &mut module.module,
             tensor_ptr: None,
             indices,
+            constants,
             variables: HashMap::new(),
             mem_flags: MemFlags::new(),
             functions: HashMap::new(),
@@ -2102,6 +2140,17 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         }
 
         // todo: insert constant tensors
+        
+
+        let constants = codegen
+            .builder
+            .ins()
+            .global_value(codegen.real_ptr_type, codegen.constants);
+        for tensor in model.constant_defns() {
+            let data_index =
+                i64::try_from(codegen.layout.get_data_index(tensor.name()).unwrap()).unwrap();
+            codegen.insert_tensor(tensor, constants, data_index, false);
+        }
 
         // insert all tensors in data if it exists in args
         let tensors = model.inputs().iter();

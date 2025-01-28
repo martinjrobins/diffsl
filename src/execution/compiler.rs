@@ -352,9 +352,21 @@ impl<M: CodegenModule> Compiler<M> {
     }
 
     pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
+        if self.module.layout().is_constant(name) {
+            return None;
+        }
         let index = self.module.layout().get_data_index(name)?;
         let nnz = self.module.layout().get_data_length(name)?;
         Some(&data[index..index + nnz])
+    }
+
+    pub fn get_constants_data(&self, name: &str) -> Option<&[f64]> {
+        if !self.module.layout().is_constant(name) {
+            return None;
+        }
+        let index = self.module.layout().get_data_index(name)?;
+        let nnz = self.module.layout().get_data_length(name)?;
+        Some(&self.module.get_constants()[index..index + nnz])
     }
 
     pub fn get_tensor_data_mut<'a>(
@@ -976,6 +988,53 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
+    
+    fn test_constants<T: CodegenModule>() {
+        let full_text = "
+        in = [a]
+        a { 1 }
+        b { 2 }
+        a2 { a * a }
+        b2 { b * b }
+        u_i { y = 1 }
+        F_i { y * b }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let compiler = Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        // b and b2 should already be set
+        let mut data = compiler.get_new_data();
+        let b = compiler.get_constants_data("b").unwrap();
+        let b2 = compiler.get_constants_data("b2").unwrap();
+        assert_relative_eq!(b[0], 2.);
+        assert_relative_eq!(b2[0], 4.);
+        // a and a2 should not be set (be 0)
+        let a = compiler.get_tensor_data("a", &data).unwrap();
+        let a2 = compiler.get_tensor_data("a2", &data).unwrap();
+        assert_relative_eq!(a[0], 0.);
+        assert_relative_eq!(a2[0], 0.);
+        // set the inputs and u0
+        let inputs = vec![1.];
+        compiler.set_inputs(&inputs, data.as_mut_slice());
+        let mut u0 = vec![0.];
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        // now a and a2 should be set
+        let a = compiler.get_tensor_data("a", &data).unwrap();
+        let a2 = compiler.get_tensor_data("a2", &data).unwrap();
+        assert_relative_eq!(a[0], 1.);
+        assert_relative_eq!(a2[0], 1.);
+    }
+    
+    #[test]
+    fn test_constants_cranelift() {
+        test_constants::<CraneliftModule>();
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_constants_llvm() {
+        test_constants::<crate::LlvmModule>();
+    }
 
     #[cfg(feature = "llvm")]
     #[test]

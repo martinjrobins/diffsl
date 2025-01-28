@@ -14,6 +14,7 @@ use super::Translation;
 // We also store a mapping from tensor names to their layout, so that we can easily look up the layout of a tensor
 #[derive(Debug)]
 pub struct DataLayout {
+    is_constant_map: HashMap<String, bool>,
     data_index_map: HashMap<String, usize>,
     data_length_map: HashMap<String, usize>,
     layout_index_map: HashMap<RcLayout, usize>,
@@ -26,6 +27,7 @@ pub struct DataLayout {
 
 impl DataLayout {
     pub fn new(model: &DiscreteModel) -> Self {
+        let mut is_constant_map = HashMap::new();
         let mut data_index_map = HashMap::new();
         let mut data_length_map = HashMap::new();
         let mut layout_index_map = HashMap::new();
@@ -42,17 +44,20 @@ impl DataLayout {
                 data_index_map.insert(tensor.name().to_string(), data.len());
                 data_length_map.insert(tensor.name().to_string(), tensor.nnz());
                 data.extend(vec![0.0; tensor.nnz()]);
+                is_constant_map.insert(tensor.name().to_string(), false);
             } else if in_constants {
                 data_index_map.insert(tensor.name().to_string(), constants.len());
                 data_length_map.insert(tensor.name().to_string(), tensor.nnz());
                 constants.extend(vec![0.0; tensor.nnz()]);
+                is_constant_map.insert(tensor.name().to_string(), true);
             }
 
             // add the translation info for each block-tensor pair
             for blk in tensor.elmts() {
-                // need layouts of all named tensor blocks
+                // need layouts and is_constant of all named tensor blocks
                 if let Some(name) = blk.name() {
                     layout_map.insert(name.to_string(), blk.layout().clone());
+                    is_constant_map.insert(name.to_string(), in_constants);
                 }
 
                 // insert the layout info for each tensor expression
@@ -113,6 +118,7 @@ impl DataLayout {
         // todo: could we just calculate constants now?
 
         Self {
+            is_constant_map,
             data_index_map,
             layout_index_map,
             data,
@@ -127,6 +133,10 @@ impl DataLayout {
     // get the layout of a tensor by name
     pub fn get_layout(&self, name: &str) -> Option<&RcLayout> {
         self.layout_map.get(name)
+    }
+    
+    pub fn is_constant(&self, name: &str) -> bool {
+        *self.is_constant_map.get(name).unwrap()
     }
 
     // get the index of the data array for the given tensor name

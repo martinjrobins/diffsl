@@ -23,6 +23,7 @@ use llvm_sys::core::{
     LLVMBuildCall2, LLVMGetArgOperand, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
     LLVMGetInstructionParent, LLVMGetNamedFunction, LLVMGlobalGetValueType,
 };
+use llvm_sys::execution_engine::LLVMGetGlobalValueAddress;
 use llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -274,6 +275,13 @@ impl CodegenModule for LlvmModule {
             Ok(f) => Ok(f as *const u8),
             Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
         }
+    }
+
+    fn get_constants(&self) -> &[f64] {
+        let constants_name = CString::new("constants").unwrap();
+        let constants_ptr = unsafe { LLVMGetGlobalValueAddress(self.codegen().ee.as_mut_ptr(), constants_name.into_raw()) as *const f64 };
+        let constants_size = self.layout().constants().len();
+        unsafe { std::slice::from_raw_parts(constants_ptr, constants_size) }
     }
 
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
@@ -620,10 +628,10 @@ impl CodegenModule for LlvmModule {
             let nolinline_kind_id = Attribute::get_named_enum_kind_id("noinline");
             barrier_func.remove_enum_attribute(AttributeLoc::Function, nolinline_kind_id);
         }
-        //self.codegen()
-        //    .module()
-        //    .print_to_file("post_autodiff_optimisation.ll")
-        //    .unwrap();
+        self.codegen()
+            .module()
+            .print_to_file("post_autodiff_optimisation.ll")
+            .unwrap();
 
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
@@ -692,7 +700,8 @@ impl<'ctx> Globals<'ctx> {
                 Some(AddressSpace::default()),
                 "enzyme_const_constants",
             );
-            constants.set_constant(true);
+            constants.set_constant(false);
+            constants.set_linkage(Linkage::AvailableExternally);
             Some(constants)
         };
         let indices = if layout.indices().is_empty() {

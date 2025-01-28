@@ -280,6 +280,10 @@ impl CodegenModule for LlvmModule {
         self.codegen_mut().compile_set_u0(model)
     }
 
+    fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_set_constants(model)
+    }
+
     fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_calc_out(model, false)
     }
@@ -648,17 +652,18 @@ impl CodegenModule for LlvmModule {
 
 struct Globals<'ctx> {
     indices: Option<GlobalValue<'ctx>>,
+    constants: Option<GlobalValue<'ctx>>,
     thread_counter: Option<GlobalValue<'ctx>>,
 }
 
 impl<'ctx> Globals<'ctx> {
     fn new(
         layout: &DataLayout,
-        context: &'ctx inkwell::context::Context,
         module: &Module<'ctx>,
+        int_type: IntType<'ctx>,
+        real_type: FloatType<'ctx>,
         threaded: bool,
     ) -> Self {
-        let int_type = context.i32_type();
         let thread_counter = if threaded {
             let tc = module.add_global(
                 int_type,
@@ -677,6 +682,19 @@ impl<'ctx> Globals<'ctx> {
         } else {
             None
         };
+        let constants = if layout.constants().is_empty() {
+            None
+        } else {
+            let constants_array_type =
+                real_type.array_type(u32::try_from(layout.constants().len()).unwrap());
+            let constants = module.add_global(
+                constants_array_type,
+                Some(AddressSpace::default()),
+                "enzyme_const_constants",
+            );
+            constants.set_constant(true);
+            Some(constants)
+        };
         let indices = if layout.indices().is_empty() {
             None
         } else {
@@ -688,14 +706,19 @@ impl<'ctx> Globals<'ctx> {
                 .map(|&i| int_type.const_int(i.try_into().unwrap(), false))
                 .collect::<Vec<IntValue>>();
             let indices_value = int_type.const_array(indices_array_values.as_slice());
-            let indices =
-                module.add_global(indices_array_type, Some(AddressSpace::default()), "indices");
+            let indices = module.add_global(
+                indices_array_type,
+                Some(AddressSpace::default()),
+                "enzyme_const_indices",
+            );
+            indices.set_constant(true);
             indices.set_initializer(&indices_value);
             Some(indices)
         };
         Self {
             indices,
             thread_counter,
+            constants,
         }
     }
 }
@@ -791,7 +814,7 @@ impl<'ctx> CodeGen<'ctx> {
         let builder = context.create_builder();
         let layout = DataLayout::new(model);
         let module = context.create_module(model.name());
-        let globals = Globals::new(&layout, context, &module, threaded);
+        let globals = Globals::new(&layout, &module, int_type, real_type, threaded);
         let ee = module
             .create_jit_execution_engine(OptimizationLevel::Aggressive)
             .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
@@ -872,6 +895,48 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder
             .build_call(printf, &[format_str_ptr.into(), value], "printf_call")
             .map_err(|e| anyhow!("Error building call to printf: {}", e))
+    }
+
+    fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
+        self.clear();
+        let void_type = self.context.void_type();
+        let fn_type = void_type.fn_type(&[self.int_type.into(), self.int_type.into()], false);
+        let fn_arg_names = &["thread_id", "thread_dim"];
+        let function = self.module.add_function("set_constants", fn_type, None);
+
+        let basic_block = self.context.append_basic_block(function, "entry");
+        self.fn_value_opt = Some(function);
+        self.builder.position_at_end(basic_block);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+
+        self.insert_indices();
+        self.insert_constants(model);
+
+        let mut nbarriers = 0;
+        let total_barriers = (model.constant_defns().len()) as u64;
+        #[allow(clippy::explicit_counter_loop)]
+        for a in model.constant_defns() {
+            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+            self.jit_compile_call_barrier(nbarriers, total_barriers);
+            nbarriers += 1;
+        }
+
+        self.builder.build_return(None)?;
+
+        if function.verify(true) {
+            Ok(function)
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
     }
 
     fn compile_barrier_init(&mut self) -> Result<FunctionValue<'ctx>> {
@@ -1209,18 +1274,29 @@ impl<'ctx> CodeGen<'ctx> {
         self.module.write_bitcode_to_path(path);
     }
 
-    fn insert_data(&mut self, model: &DiscreteModel) {
-        for tensor in model.inputs() {
-            self.insert_tensor(tensor);
+    fn insert_constants(&mut self, model: &DiscreteModel) {
+        if let Some(constants) = self.globals.constants.as_ref() {
+            self.insert_param("constants", constants.as_pointer_value());
+            for tensor in model.constant_defns() {
+                self.insert_tensor(tensor, true);
+            }
         }
-        for tensor in model.time_indep_defns() {
-            self.insert_tensor(tensor);
+    }
+
+    fn insert_data(&mut self, model: &DiscreteModel) {
+        self.insert_constants(model);
+
+        for tensor in model.inputs() {
+            self.insert_tensor(tensor, false);
+        }
+        for tensor in model.input_dep_defns() {
+            self.insert_tensor(tensor, false);
         }
         for tensor in model.time_dep_defns() {
-            self.insert_tensor(tensor);
+            self.insert_tensor(tensor, false);
         }
         for tensor in model.state_dep_defns() {
-            self.insert_tensor(tensor);
+            self.insert_tensor(tensor, false);
         }
     }
 
@@ -1328,8 +1404,9 @@ impl<'ctx> CodeGen<'ctx> {
             data_index += blk.nnz();
         }
     }
-    fn insert_tensor(&mut self, tensor: &Tensor) {
-        let ptr = *self.variables.get("data").unwrap();
+    fn insert_tensor(&mut self, tensor: &Tensor, is_constant: bool) {
+        let var_name = if is_constant { "constants" } else { "data" };
+        let ptr = *self.variables.get(var_name).unwrap();
         let mut data_index = self.layout.get_data_index(tensor.name()).unwrap();
         let i = self
             .context
@@ -2638,9 +2715,9 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_indices();
 
         let mut nbarriers = 0;
-        let total_barriers = (model.time_indep_defns().len() + 1) as u64;
+        let total_barriers = (model.input_dep_defns().len() + 1) as u64;
         #[allow(clippy::explicit_counter_loop)]
-        for a in model.time_indep_defns() {
+        for a in model.input_dep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);
             nbarriers += 1;
@@ -2719,9 +2796,9 @@ impl<'ctx> CodeGen<'ctx> {
             let mut total_barriers =
                 (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
             if include_constants {
-                total_barriers += model.time_indep_defns().len() as u64;
+                total_barriers += model.input_dep_defns().len() as u64;
                 // calculate time independant definitions
-                for tensor in model.time_indep_defns() {
+                for tensor in model.input_dep_defns() {
                     self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
                     self.jit_compile_call_barrier(nbarriers, total_barriers);
                     nbarriers += 1;
@@ -2882,9 +2959,9 @@ impl<'ctx> CodeGen<'ctx> {
         let mut total_barriers =
             (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
         if include_constants {
-            total_barriers += model.time_indep_defns().len() as u64;
+            total_barriers += model.input_dep_defns().len() as u64;
             // calculate constant definitions
-            for tensor in model.time_indep_defns() {
+            for tensor in model.input_dep_defns() {
                 self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
                 self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
@@ -3426,7 +3503,7 @@ impl<'ctx> CodeGen<'ctx> {
         let mut inputs_index = 0usize;
         for input in model.inputs() {
             let name = format!("input_{}", input.name());
-            self.insert_tensor(input);
+            self.insert_tensor(input, false);
             let ptr = self.get_var(input);
             // loop thru the elements of this input and set/get them using the inputs ptr
             let inputs_start_index = self.int_type.const_int(inputs_index as u64, false);

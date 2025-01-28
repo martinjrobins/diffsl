@@ -5,8 +5,8 @@ use crate::discretise::{DiscreteModel, Layout, RcLayout, Tensor};
 use super::Translation;
 
 // there are three different layouts:
-// 1. the data layout is a mapping from tensors to the index of the first element in the data array.
-//    Each tensor in the data layout is a contiguous array of nnz elements
+// 1. the data layout is a mapping from tensors to the index of the first element in the data or constants array.
+//    Each tensor in the data or constants layout is a contiguous array of nnz elements
 // 2. the layout layout is a mapping from Layout to the index of the first element in the indices array.
 //    Only sparse layouts are stored, and each sparse layout is a contiguous array of nnz*rank elements
 // 3. the translation layout is a mapping from layout from-to pairs to the index of the first element in the indices array.
@@ -19,6 +19,7 @@ pub struct DataLayout {
     layout_index_map: HashMap<RcLayout, usize>,
     translate_index_map: HashMap<(RcLayout, RcLayout), usize>,
     data: Vec<f64>,
+    constants: Vec<f64>,
     indices: Vec<i32>,
     layout_map: HashMap<String, RcLayout>,
 }
@@ -30,21 +31,21 @@ impl DataLayout {
         let mut layout_index_map = HashMap::new();
         let mut translate_index_map = HashMap::new();
         let mut data = Vec::new();
+        let mut constants = Vec::new();
         let mut indices = Vec::new();
         let mut layout_map = HashMap::new();
 
-        let mut add_tensor = |tensor: &Tensor| {
-            let is_not_in_data = tensor.name() == "u"
-                || tensor.name() == "dudt"
-                || tensor.name() == "rhs"
-                || tensor.name() == "lhs"
-                || tensor.name() == "out";
+        let mut add_tensor = |tensor: &Tensor, in_data: bool, in_constants: bool| {
             // insert the data (non-zeros) for each tensor
             layout_map.insert(tensor.name().to_string(), tensor.layout_ptr().clone());
-            if !is_not_in_data {
+            if in_data {
                 data_index_map.insert(tensor.name().to_string(), data.len());
                 data_length_map.insert(tensor.name().to_string(), tensor.nnz());
                 data.extend(vec![0.0; tensor.nnz()]);
+            } else if in_constants {
+                data_index_map.insert(tensor.name().to_string(), constants.len());
+                data_length_map.insert(tensor.name().to_string(), tensor.nnz());
+                constants.extend(vec![0.0; tensor.nnz()]);
             }
 
             // add the translation info for each block-tensor pair
@@ -73,25 +74,43 @@ impl DataLayout {
             }
         };
 
-        model.inputs().iter().for_each(&mut add_tensor);
-        model.time_indep_defns().iter().for_each(&mut add_tensor);
-        model.time_dep_defns().iter().for_each(&mut add_tensor);
-        add_tensor(model.state());
+        model
+            .constant_defns()
+            .iter()
+            .for_each(|c| add_tensor(c, false, true));
+        model
+            .inputs()
+            .iter()
+            .for_each(|i| add_tensor(i, true, false));
+        model
+            .input_dep_defns()
+            .iter()
+            .for_each(|i| add_tensor(i, true, false));
+        model
+            .time_dep_defns()
+            .iter()
+            .for_each(|i| add_tensor(i, true, false));
+        add_tensor(model.state(), false, false);
         if let Some(state_dot) = model.state_dot() {
-            add_tensor(state_dot);
+            add_tensor(state_dot, false, false);
         }
-        model.state_dep_defns().iter().for_each(&mut add_tensor);
+        model
+            .state_dep_defns()
+            .iter()
+            .for_each(|i| add_tensor(i, true, false));
         if let Some(lhs) = model.lhs() {
-            add_tensor(lhs);
+            add_tensor(lhs, false, false);
         }
-        add_tensor(model.rhs());
+        add_tensor(model.rhs(), false, false);
         if let Some(out) = model.out() {
-            add_tensor(out);
+            add_tensor(out, false, false);
         }
 
         // add layout info for "t"
         let t_layout = RcLayout::new(Layout::new_scalar());
         layout_map.insert("t".to_string(), t_layout);
+
+        // todo: could we just calculate constants now?
 
         Self {
             data_index_map,
@@ -101,6 +120,7 @@ impl DataLayout {
             translate_index_map,
             layout_map,
             data_length_map,
+            constants,
         }
     }
 
@@ -158,6 +178,14 @@ impl DataLayout {
 
     pub fn data_mut(&mut self) -> &mut [f64] {
         self.data.as_mut_slice()
+    }
+
+    pub fn constants(&self) -> &[f64] {
+        self.constants.as_ref()
+    }
+
+    pub fn constants_mut(&mut self) -> &mut [f64] {
+        self.constants.as_mut_slice()
     }
 
     pub fn indices(&self) -> &[i32] {

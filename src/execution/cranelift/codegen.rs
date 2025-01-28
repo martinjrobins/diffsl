@@ -29,6 +29,7 @@ pub struct CraneliftModule {
     layout: DataLayout,
 
     indices_id: DataId,
+    constants_id: DataId,
     thread_counter: Option<DataId>,
 
     //triple: Triple,
@@ -422,7 +423,7 @@ impl CodegenModule for CraneliftModule {
 
         let mut nbarrier = 0;
         #[allow(clippy::explicit_counter_loop)]
-        for a in model.time_indep_defns() {
+        for a in model.input_dep_defns() {
             codegen.jit_compile_tensor(a, None, true)?;
             codegen.jit_compile_call_barrier(nbarrier);
             nbarrier += 1;
@@ -511,6 +512,12 @@ impl CodegenModule for CraneliftModule {
 
         let layout = DataLayout::new(model);
 
+        // define constant global data
+        let mut data_description = DataDescription::new();
+        data_description.define_zeroinit(layout.constants().len());
+        let constants_id = module.declare_data("constants", Linkage::Local, false, false)?;
+        module.define_data(constants_id, &data_description)?;
+
         // write indices data as a global data object
         // convect the indices to bytes
         //let int_type = ptr_type;
@@ -556,6 +563,7 @@ impl CodegenModule for CraneliftModule {
             ctx: module.make_context(),
             module,
             indices_id,
+            constants_id,
             int_type,
             real_type,
             real_ptr_type: ptr_type,
@@ -583,7 +591,7 @@ impl CodegenModule for CraneliftModule {
 
         let mut nbarrier = 0;
         #[allow(clippy::explicit_counter_loop)]
-        for a in model.time_indep_defns() {
+        for a in model.input_dep_defns() {
             codegen.jit_compile_tensor(a, None, false)?;
             codegen.jit_compile_call_barrier(nbarrier);
             nbarrier += 1;
@@ -2093,9 +2101,11 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             }
         }
 
+        // todo: insert constant tensors
+
         // insert all tensors in data if it exists in args
         let tensors = model.inputs().iter();
-        let tensors = tensors.chain(model.time_indep_defns().iter());
+        let tensors = tensors.chain(model.input_dep_defns().iter());
         let tensors = tensors.chain(model.time_dep_defns().iter());
         let tensors = tensors.chain(model.state_dep_defns().iter());
 

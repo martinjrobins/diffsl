@@ -10,8 +10,8 @@ use super::{
     interface::{
         BarrierInitFunc, CalcOutGradFunc, CalcOutRevGradFunc, CalcOutSensGradFunc,
         CalcOutSensRevGradFunc, GetInputsFunc, MassRevGradFunc, RhsGradFunc, RhsRevGradFunc,
-        RhsSensGradFunc, RhsSensRevGradFunc, SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc,
-        U0RevGradFunc,
+        RhsSensGradFunc, RhsSensRevGradFunc, SetConstantsFunc, SetInputsGradFunc,
+        SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc,
     },
     module::CodegenModule,
 };
@@ -48,6 +48,7 @@ struct JitFunctions {
     set_inputs: SetInputsFunc,
     get_inputs: GetInputsFunc,
     barrier_init: Option<BarrierInitFunc>,
+    set_constants: SetConstantsFunc,
 }
 
 struct JitGradFunctions {
@@ -176,6 +177,7 @@ impl<M: CodegenModule> Compiler<M> {
         let get_dims = module.compile_get_dims(model)?;
         let set_inputs = module.compile_set_inputs(model)?;
         let get_inputs = module.compile_get_inputs(model)?;
+        let set_constants = module.compile_set_constants(model)?;
 
         module.pre_autodiff_optimisation()?;
 
@@ -216,6 +218,9 @@ impl<M: CodegenModule> Compiler<M> {
             })
         } else {
             None
+        };
+        let set_constants = unsafe {
+            std::mem::transmute::<*const u8, SetConstantsFunc>(module.jit(set_constants)?)
         };
         let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(module.jit(set_u0)?) };
         let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(module.jit(rhs)?) };
@@ -308,12 +313,13 @@ impl<M: CodegenModule> Compiler<M> {
             None
         };
 
-        Ok(Self {
+        let mut ret = Self {
             module,
             jit_functions: JitFunctions {
                 set_u0,
                 rhs,
                 mass,
+                set_constants,
                 calc_out,
                 get_inputs,
                 calc_stop,
@@ -338,7 +344,11 @@ impl<M: CodegenModule> Compiler<M> {
             has_mass,
             thread_pool,
             thread_lock,
-        })
+        };
+
+        // all done, can set constants now
+        ret.set_constants();
+        Ok(ret)
     }
 
     pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
@@ -415,6 +425,12 @@ impl<M: CodegenModule> Compiler<M> {
                 inputs.len()
             );
         }
+    }
+
+    fn set_constants(&mut self) {
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_functions.set_constants)(i, dim);
+        });
     }
 
     pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) {

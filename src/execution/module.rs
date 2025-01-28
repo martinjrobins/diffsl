@@ -21,6 +21,7 @@ pub trait CodegenModule: Sized + Sync {
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_get_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
+    fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
 
     fn compile_mass_rgrad(
         &mut self,

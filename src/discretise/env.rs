@@ -14,6 +14,7 @@ pub struct EnvVar {
     is_time_dependent: bool,
     is_state_dependent: bool,
     is_dstatedt_dependent: bool,
+    is_input_dependent: bool,
     is_algebraic: bool,
 }
 
@@ -34,6 +35,10 @@ impl EnvVar {
         self.is_algebraic
     }
 
+    pub fn is_input_dependent(&self) -> bool {
+        self.is_input_dependent
+    }
+
     pub fn layout(&self) -> &Layout {
         self.layout.as_ref()
     }
@@ -43,10 +48,11 @@ pub struct Env {
     current_span: Option<StringSpan>,
     errs: ValidationErrors,
     vars: HashMap<String, EnvVar>,
+    inputs: Vec<String>,
 }
 
-impl Default for Env {
-    fn default() -> Self {
+impl Env {
+    pub fn new(inputs: &[&str]) -> Self {
         let mut vars = HashMap::new();
         vars.insert(
             "t".to_string(),
@@ -55,6 +61,7 @@ impl Default for Env {
                 is_time_dependent: true,
                 is_state_dependent: false,
                 is_dstatedt_dependent: false,
+                is_input_dependent: false,
                 is_algebraic: true,
             },
         );
@@ -62,11 +69,9 @@ impl Default for Env {
             errs: ValidationErrors::default(),
             vars,
             current_span: None,
+            inputs: inputs.iter().map(|s| s.to_string()).collect(),
         }
     }
-}
-
-impl Env {
     pub fn is_tensor_time_dependent(&self, tensor: &Tensor) -> bool {
         if tensor.name() == "u" || tensor.name() == "dudt" {
             return true;
@@ -81,6 +86,12 @@ impl Env {
     }
     pub fn is_tensor_state_dependent(&self, tensor: &Tensor) -> bool {
         self.is_tensor_dependent_on(tensor, "u")
+    }
+
+    pub fn is_tensor_input_dependent(&self, tensor: &Tensor) -> bool {
+        self.inputs
+            .iter()
+            .any(|input| self.is_tensor_dependent_on(tensor, input))
     }
 
     pub fn is_tensor_dstatedt_dependent(&self, tensor: &Tensor) -> bool {
@@ -112,6 +123,7 @@ impl Env {
                 is_time_dependent: self.is_tensor_time_dependent(var),
                 is_state_dependent: self.is_tensor_state_dependent(var),
                 is_dstatedt_dependent: self.is_tensor_dstatedt_dependent(var),
+                is_input_dependent: self.is_tensor_input_dependent(var),
             },
         );
     }
@@ -125,6 +137,7 @@ impl Env {
                 is_time_dependent: self.is_tensor_time_dependent(var),
                 is_state_dependent: self.is_tensor_state_dependent(var),
                 is_dstatedt_dependent: self.is_tensor_dstatedt_dependent(var),
+                is_input_dependent: self.is_tensor_input_dependent(var),
             },
         );
     }

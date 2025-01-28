@@ -301,13 +301,27 @@ impl CodegenModule for CraneliftModule {
             self.real_ptr_type,
             self.real_ptr_type,
             self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["t", "u", "du", "data", "ddata", "threadId", "threadDim"];
+        let arg_names = &[
+            "t",
+            "u",
+            "du",
+            "data",
+            "ddata",
+            "out",
+            "dout",
+            "threadId",
+            "threadDim",
+        ];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        codegen.jit_compile_tensor(model.out().expect("out is not defined"), None, true)?;
+        if let Some(out) = model.out() {
+            codegen.jit_compile_tensor(out, None, true)?;
+        }
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
 
@@ -593,28 +607,31 @@ impl CodegenModule for CraneliftModule {
             self.real_type,
             self.real_ptr_type,
             self.real_ptr_type,
+            self.real_ptr_type,
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "threadId", "threadDim"];
+        let arg_names = &["t", "u", "data", "out", "threadId", "threadDim"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        // calculate time dependant definitions
-        let mut nbarrier = 0;
-        for tensor in model.time_dep_defns() {
-            codegen.jit_compile_tensor(tensor, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
-        }
+        if let Some(out) = model.out() {
+            // calculate time dependant definitions
+            let mut nbarrier = 0;
+            for tensor in model.time_dep_defns() {
+                codegen.jit_compile_tensor(tensor, None, false)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
 
-        // calculate state dependant definitions
-        for a in model.state_dep_defns() {
-            codegen.jit_compile_tensor(a, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
-        }
+            // calculate state dependant definitions
+            for a in model.state_dep_defns() {
+                codegen.jit_compile_tensor(a, None, false)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
 
-        codegen.jit_compile_tensor(model.out().expect("out is not defined"), None, false)?;
+            codegen.jit_compile_tensor(out, None, false)?;
+        }
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
 
@@ -2057,6 +2074,22 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             if let Some(state_dot) = model.state_dot() {
                 let statedot_ptr = codegen.builder.use_var(*dudt);
                 codegen.insert_tensor(state_dot, statedot_ptr, 0, false);
+            }
+        }
+
+        // insert out if it exists in args and is used in the model
+        if let Some(out_var) = codegen.variables.get("out") {
+            if let Some(out) = model.out() {
+                let out_ptr = codegen.builder.use_var(*out_var);
+                codegen.insert_tensor(out, out_ptr, 0, false);
+            }
+        }
+
+        // insert dout if it exists in args and is
+        if let Some(dout) = codegen.variables.get("dout") {
+            if let Some(out) = model.out() {
+                let dout_ptr = codegen.builder.use_var(*dout);
+                codegen.insert_tensor(out, dout_ptr, 0, true);
             }
         }
 

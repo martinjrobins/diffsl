@@ -106,6 +106,7 @@ pub type CalcOutFunc = unsafe extern "C" fn(
     time: RealType,
     u: *const RealType,
     data: *mut RealType,
+    out: *mut RealType,
     threadId: UIntType,
     threadDim: UIntType,
 );
@@ -115,6 +116,8 @@ pub type CalcOutGradFunc = unsafe extern "C" fn(
     du: *const RealType,
     data: *const RealType,
     ddata: *mut RealType,
+    out: *const RealType,
+    dout: *mut RealType,
     threadId: UIntType,
     threadDim: UIntType,
 );
@@ -124,6 +127,8 @@ pub type CalcOutRevGradFunc = unsafe extern "C" fn(
     du: *mut RealType,
     data: *const RealType,
     ddata: *mut RealType,
+    out: *const RealType,
+    dout: *mut RealType,
     threadId: UIntType,
     threadDim: UIntType,
 );
@@ -132,6 +137,8 @@ pub type CalcOutSensGradFunc = unsafe extern "C" fn(
     u: *const RealType,
     data: *const RealType,
     ddata: *mut RealType,
+    out: *const RealType,
+    dout: *mut RealType,
     threadId: UIntType,
     threadDim: UIntType,
 );
@@ -140,6 +147,8 @@ pub type CalcOutSensRevGradFunc = unsafe extern "C" fn(
     u: *const RealType,
     data: *const RealType,
     ddata: *mut RealType,
+    out: *const RealType,
+    dout: *mut RealType,
     threadId: UIntType,
     threadDim: UIntType,
 );
@@ -166,8 +175,3 @@ pub type SetInputsRevGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
 );
 pub type SetIdFunc = unsafe extern "C" fn(id: *mut RealType);
-pub type GetOutFunc = unsafe extern "C" fn(
-    data: *const RealType,
-    tensor_data: *mut *mut RealType,
-    tensor_size: *mut UIntType,
-);

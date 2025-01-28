@@ -432,6 +432,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -448,6 +449,7 @@ impl CodegenModule for LlvmModule {
             *func_id,
             &[
                 CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
@@ -517,6 +519,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -534,6 +537,7 @@ impl CodegenModule for LlvmModule {
             &[
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
@@ -1218,11 +1222,6 @@ impl<'ctx> CodeGen<'ctx> {
         for tensor in model.state_dep_defns() {
             self.insert_tensor(tensor);
         }
-        self.insert_tensor(model.out());
-        if let Some(lhs) = model.lhs() {
-            self.insert_tensor(lhs);
-        }
-        self.insert_tensor(model.rhs());
     }
 
     fn pointer_type(context: &'ctx Context, _ty: BasicTypeEnum<'ctx>) -> PointerType<'ctx> {
@@ -2675,12 +2674,13 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
             false,
         );
-        let fn_arg_names = &["t", "u", "data", "thread_id", "thread_dim"];
+        let fn_arg_names = &["t", "u", "data", "out", "thread_id", "thread_dim"];
         let function_name = if include_constants {
             "calc_out_full"
         } else {
@@ -2714,37 +2714,38 @@ impl<'ctx> CodeGen<'ctx> {
         //let thread_dim = function.get_nth_param(4).unwrap();
         //self.compile_print_value("thread_id", PrintValue::Int(thread_id.into_int_value()))?;
         //self.compile_print_value("thread_dim", PrintValue::Int(thread_dim.into_int_value()))?;
+        if let Some(out) = model.out() {
+            let mut nbarriers = 0;
+            let mut total_barriers =
+                (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
+            if include_constants {
+                total_barriers += model.time_indep_defns().len() as u64;
+                // calculate time independant definitions
+                for tensor in model.time_indep_defns() {
+                    self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                    self.jit_compile_call_barrier(nbarriers, total_barriers);
+                    nbarriers += 1;
+                }
+            }
 
-        let mut nbarriers = 0;
-        let mut total_barriers =
-            (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
-        if include_constants {
-            total_barriers += model.time_indep_defns().len() as u64;
-            // calculate time independant definitions
-            for tensor in model.time_indep_defns() {
+            // calculate time dependant definitions
+            for tensor in model.time_dep_defns() {
                 self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
                 self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
-        }
 
-        // calculate time dependant definitions
-        for tensor in model.time_dep_defns() {
-            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+            // calculate state dependant definitions
+            #[allow(clippy::explicit_counter_loop)]
+            for a in model.state_dep_defns() {
+                self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+                self.jit_compile_call_barrier(nbarriers, total_barriers);
+                nbarriers += 1;
+            }
+
+            self.jit_compile_tensor(out, Some(*self.get_var(model.out().unwrap())))?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);
-            nbarriers += 1;
         }
-
-        // calculate state dependant definitions
-        #[allow(clippy::explicit_counter_loop)]
-        for a in model.state_dep_defns() {
-            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
-            self.jit_compile_call_barrier(nbarriers, total_barriers);
-            nbarriers += 1;
-        }
-
-        self.jit_compile_tensor(model.out(), Some(*self.get_var(model.out())))?;
-        self.jit_compile_call_barrier(nbarriers, total_barriers);
         self.builder.build_return(None)?;
 
         if function.verify(true) {
@@ -3294,7 +3295,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         let number_of_states = model.state().nnz() as u64;
         let number_of_inputs = model.inputs().iter().fold(0, |acc, x| acc + x.nnz()) as u64;
-        let number_of_outputs = model.out().nnz() as u64;
+        let number_of_outputs = match model.out() {
+            Some(out) => out.nnz() as u64,
+            None => 0,
+        };
         let number_of_stop = if let Some(stop) = model.stop() {
             stop.nnz() as u64
         } else {

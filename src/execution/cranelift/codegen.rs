@@ -301,13 +301,27 @@ impl CodegenModule for CraneliftModule {
             self.real_ptr_type,
             self.real_ptr_type,
             self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["t", "u", "du", "data", "ddata", "threadId", "threadDim"];
+        let arg_names = &[
+            "t",
+            "u",
+            "du",
+            "data",
+            "ddata",
+            "out",
+            "dout",
+            "threadId",
+            "threadDim",
+        ];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        codegen.jit_compile_tensor(model.out(), None, true)?;
+        if let Some(out) = model.out() {
+            codegen.jit_compile_tensor(out, None, true)?;
+        }
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
 
@@ -593,28 +607,31 @@ impl CodegenModule for CraneliftModule {
             self.real_type,
             self.real_ptr_type,
             self.real_ptr_type,
+            self.real_ptr_type,
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "threadId", "threadDim"];
+        let arg_names = &["t", "u", "data", "out", "threadId", "threadDim"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        // calculate time dependant definitions
-        let mut nbarrier = 0;
-        for tensor in model.time_dep_defns() {
-            codegen.jit_compile_tensor(tensor, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
-        }
+        if let Some(out) = model.out() {
+            // calculate time dependant definitions
+            let mut nbarrier = 0;
+            for tensor in model.time_dep_defns() {
+                codegen.jit_compile_tensor(tensor, None, false)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
 
-        // calculate state dependant definitions
-        for a in model.state_dep_defns() {
-            codegen.jit_compile_tensor(a, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
-        }
+            // calculate state dependant definitions
+            for a in model.state_dep_defns() {
+                codegen.jit_compile_tensor(a, None, false)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
 
-        codegen.jit_compile_tensor(model.out(), None, false)?;
+            codegen.jit_compile_tensor(out, None, false)?;
+        }
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
 
@@ -747,7 +764,10 @@ impl CodegenModule for CraneliftModule {
         let number_of_states = i64::try_from(model.state().nnz()).unwrap();
         let number_of_inputs =
             i64::try_from(model.inputs().iter().fold(0, |acc, x| acc + x.nnz())).unwrap();
-        let number_of_outputs = i64::try_from(model.out().nnz()).unwrap();
+        let number_of_outputs = match model.out() {
+            Some(out) => i64::try_from(out.nnz()).unwrap(),
+            None => 0,
+        };
         let number_of_stop = if let Some(stop) = model.stop() {
             i64::try_from(stop.nnz()).unwrap()
         } else {
@@ -2057,18 +2077,27 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
             }
         }
 
+        // insert out if it exists in args and is used in the model
+        if let Some(out_var) = codegen.variables.get("out") {
+            if let Some(out) = model.out() {
+                let out_ptr = codegen.builder.use_var(*out_var);
+                codegen.insert_tensor(out, out_ptr, 0, false);
+            }
+        }
+
+        // insert dout if it exists in args and is
+        if let Some(dout) = codegen.variables.get("dout") {
+            if let Some(out) = model.out() {
+                let dout_ptr = codegen.builder.use_var(*dout);
+                codegen.insert_tensor(out, dout_ptr, 0, true);
+            }
+        }
+
         // insert all tensors in data if it exists in args
         let tensors = model.inputs().iter();
         let tensors = tensors.chain(model.time_indep_defns().iter());
         let tensors = tensors.chain(model.time_dep_defns().iter());
         let tensors = tensors.chain(model.state_dep_defns().iter());
-        let mut others = Vec::new();
-        others.push(model.out());
-        others.push(model.rhs());
-        if let Some(lhs) = model.lhs() {
-            others.push(lhs);
-        }
-        let tensors = tensors.chain(others);
 
         if let Some(data) = codegen.variables.get("data") {
             let data_ptr = codegen.builder.use_var(*data);

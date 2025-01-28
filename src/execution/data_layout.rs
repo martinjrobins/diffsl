@@ -34,11 +34,14 @@ impl DataLayout {
         let mut layout_map = HashMap::new();
 
         let mut add_tensor = |tensor: &Tensor| {
-            let is_state = tensor.name() == "u" || tensor.name() == "dudt";
-            let is_rhs_or_lhs = tensor.name() == "rhs" || tensor.name() == "lhs";
+            let is_not_in_data = tensor.name() == "u"
+                || tensor.name() == "dudt"
+                || tensor.name() == "rhs"
+                || tensor.name() == "lhs"
+                || tensor.name() == "out";
             // insert the data (non-zeros) for each tensor
             layout_map.insert(tensor.name().to_string(), tensor.layout_ptr().clone());
-            if !is_state && !is_rhs_or_lhs {
+            if !is_not_in_data {
                 data_index_map.insert(tensor.name().to_string(), data.len());
                 data_length_map.insert(tensor.name().to_string(), tensor.nnz());
                 data.extend(vec![0.0; tensor.nnz()]);
@@ -82,7 +85,9 @@ impl DataLayout {
             add_tensor(lhs);
         }
         add_tensor(model.rhs());
-        add_tensor(model.out());
+        if let Some(out) = model.out() {
+            add_tensor(out);
+        }
 
         // add layout info for "t"
         let t_layout = RcLayout::new(Layout::new_scalar());

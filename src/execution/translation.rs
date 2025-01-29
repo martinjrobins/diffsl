@@ -326,7 +326,7 @@ mod tests {
                         panic!("{}", e.as_error_message(full_text.as_str()));
                     }
                 };
-                let tensor = discrete_model.time_indep_defns().iter().find(|t| t.elmts().iter().find(|blk| blk.name() == Some($blk_name)).is_some()).unwrap();
+                let tensor = discrete_model.constant_defns().iter().find(|t| t.elmts().iter().find(|blk| blk.name() == Some($blk_name)).is_some()).unwrap();
                 let blk = tensor.elmts().iter().find(|blk| blk.name() == Some($blk_name)).unwrap();
                 let translation = Translation::new(blk.expr_layout(), blk.layout(), &blk.start(), tensor.layout_ptr());
                 assert_eq!(translation.to_string(), $expected_value);

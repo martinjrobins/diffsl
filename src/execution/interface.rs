@@ -3,6 +3,8 @@ type UIntType = u32;
 
 pub type BarrierInitFunc = unsafe extern "C" fn();
 
+pub type SetConstantsFunc = unsafe extern "C" fn(threadId: UIntType, threadDim: UIntType);
+
 pub type StopFunc = unsafe extern "C" fn(
     time: RealType,
     u: *const RealType,

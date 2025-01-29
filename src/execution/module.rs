@@ -21,6 +21,7 @@ pub trait CodegenModule: Sized + Sync {
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_get_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
+    fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
 
     fn compile_mass_rgrad(
         &mut self,
@@ -103,6 +104,8 @@ pub trait CodegenModule: Sized + Sync {
 
     fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8>;
     fn jit_barrier_init(&mut self) -> Result<*const u8>;
+
+    fn get_constants(&self) -> &[f64];
 
     fn pre_autodiff_optimisation(&mut self) -> Result<()>;
     fn post_autodiff_optimisation(&mut self) -> Result<()>;

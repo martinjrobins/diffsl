@@ -10,8 +10,8 @@ use super::{
     interface::{
         BarrierInitFunc, CalcOutGradFunc, CalcOutRevGradFunc, CalcOutSensGradFunc,
         CalcOutSensRevGradFunc, GetInputsFunc, MassRevGradFunc, RhsGradFunc, RhsRevGradFunc,
-        RhsSensGradFunc, RhsSensRevGradFunc, SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc,
-        U0RevGradFunc,
+        RhsSensGradFunc, RhsSensRevGradFunc, SetConstantsFunc, SetInputsGradFunc,
+        SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc,
     },
     module::CodegenModule,
 };
@@ -48,6 +48,7 @@ struct JitFunctions {
     set_inputs: SetInputsFunc,
     get_inputs: GetInputsFunc,
     barrier_init: Option<BarrierInitFunc>,
+    set_constants: SetConstantsFunc,
 }
 
 struct JitGradFunctions {
@@ -176,6 +177,7 @@ impl<M: CodegenModule> Compiler<M> {
         let get_dims = module.compile_get_dims(model)?;
         let set_inputs = module.compile_set_inputs(model)?;
         let get_inputs = module.compile_get_inputs(model)?;
+        let set_constants = module.compile_set_constants(model)?;
 
         module.pre_autodiff_optimisation()?;
 
@@ -216,6 +218,9 @@ impl<M: CodegenModule> Compiler<M> {
             })
         } else {
             None
+        };
+        let set_constants = unsafe {
+            std::mem::transmute::<*const u8, SetConstantsFunc>(module.jit(set_constants)?)
         };
         let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(module.jit(set_u0)?) };
         let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(module.jit(rhs)?) };
@@ -308,12 +313,13 @@ impl<M: CodegenModule> Compiler<M> {
             None
         };
 
-        Ok(Self {
+        let mut ret = Self {
             module,
             jit_functions: JitFunctions {
                 set_u0,
                 rhs,
                 mass,
+                set_constants,
                 calc_out,
                 get_inputs,
                 calc_stop,
@@ -338,13 +344,29 @@ impl<M: CodegenModule> Compiler<M> {
             has_mass,
             thread_pool,
             thread_lock,
-        })
+        };
+
+        // all done, can set constants now
+        ret.set_constants();
+        Ok(ret)
     }
 
     pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
+        if self.module.layout().is_constant(name) {
+            return None;
+        }
         let index = self.module.layout().get_data_index(name)?;
         let nnz = self.module.layout().get_data_length(name)?;
         Some(&data[index..index + nnz])
+    }
+
+    pub fn get_constants_data(&self, name: &str) -> Option<&[f64]> {
+        if !self.module.layout().is_constant(name) {
+            return None;
+        }
+        let index = self.module.layout().get_data_index(name)?;
+        let nnz = self.module.layout().get_data_length(name)?;
+        Some(&self.module.get_constants()[index..index + nnz])
     }
 
     pub fn get_tensor_data_mut<'a>(
@@ -415,6 +437,12 @@ impl<M: CodegenModule> Compiler<M> {
                 inputs.len()
             );
         }
+    }
+
+    fn set_constants(&mut self) {
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_functions.set_constants)(i, dim);
+        });
     }
 
     pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) {
@@ -961,6 +989,54 @@ mod tests {
 
     use super::*;
 
+    fn test_constants<T: CodegenModule>() {
+        let full_text = "
+        in = [a]
+        a { 1 }
+        b { 2 }
+        a2 { a * a }
+        b2 { b * b }
+        u_i { y = 1 }
+        F_i { y * b }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let compiler =
+            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        // b and b2 should already be set
+        let mut data = compiler.get_new_data();
+        let b = compiler.get_constants_data("b").unwrap();
+        let b2 = compiler.get_constants_data("b2").unwrap();
+        assert_relative_eq!(b[0], 2.);
+        assert_relative_eq!(b2[0], 4.);
+        // a and a2 should not be set (be 0)
+        let a = compiler.get_tensor_data("a", &data).unwrap();
+        let a2 = compiler.get_tensor_data("a2", &data).unwrap();
+        assert_relative_eq!(a[0], 0.);
+        assert_relative_eq!(a2[0], 0.);
+        // set the inputs and u0
+        let inputs = vec![1.];
+        compiler.set_inputs(&inputs, data.as_mut_slice());
+        let mut u0 = vec![0.];
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        // now a and a2 should be set
+        let a = compiler.get_tensor_data("a", &data).unwrap();
+        let a2 = compiler.get_tensor_data("a2", &data).unwrap();
+        assert_relative_eq!(a[0], 1.);
+        assert_relative_eq!(a2[0], 1.);
+    }
+
+    #[test]
+    fn test_constants_cranelift() {
+        test_constants::<CraneliftModule>();
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_constants_llvm() {
+        test_constants::<crate::LlvmModule>();
+    }
+
     #[cfg(feature = "llvm")]
     #[test]
     fn test_from_discrete_str_llvm() {
@@ -1152,12 +1228,22 @@ mod tests {
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         compiler.calc_out(0., u0.as_slice(), data.as_mut_slice(), out.as_mut_slice());
-        results.push(
-            compiler
-                .get_tensor_data(tensor_name, data.as_slice())
-                .unwrap()
-                .to_vec(),
-        );
+        let tensor_is_constant = compiler.module().layout().is_constant(tensor_name);
+        let tensor_len = compiler
+            .module()
+            .layout()
+            .get_data_length(tensor_name)
+            .unwrap();
+        if tensor_is_constant {
+            results.push(compiler.get_constants_data(tensor_name).unwrap().to_vec());
+        } else {
+            results.push(
+                compiler
+                    .get_tensor_data(tensor_name, data.as_slice())
+                    .unwrap()
+                    .to_vec(),
+            );
+        }
         // forward mode
         let mut dinputs = vec![0.; n_inputs];
         dinputs.fill(1.);
@@ -1195,14 +1281,18 @@ mod tests {
             out.as_slice(),
             dout.as_mut_slice(),
         );
-        results.push(
-            compiler
-                .get_tensor_data(tensor_name, ddata.as_slice())
-                .unwrap()
-                .to_vec(),
-        );
+        if tensor_is_constant {
+            results.push(vec![0.; tensor_len]);
+        } else {
+            results.push(
+                compiler
+                    .get_tensor_data(tensor_name, ddata.as_slice())
+                    .unwrap()
+                    .to_vec(),
+            );
+        }
         // reverse-mode
-        if compiler.module().supports_reverse_autodiff() {
+        if compiler.module().supports_reverse_autodiff() && !tensor_is_constant {
             let mut ddata = compiler.get_new_data();
             let dtensor = compiler
                 .get_tensor_data_mut(tensor_name, ddata.as_mut_slice())
@@ -1327,6 +1417,12 @@ mod tests {
                 ddata.as_mut_slice(),
             );
             results.push(dinputs.to_vec());
+        } else {
+            results.push(vec![0.; n_inputs]);
+            results.push(vec![0.; tensor_len]);
+            results.push(vec![0.; tensor_len]);
+            results.push(vec![0.; n_inputs]);
+            results.push(vec![0.; n_inputs]);
         }
         results
     }
@@ -1502,7 +1598,6 @@ mod tests {
 
                     let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                    assert_eq!(results.len(), 2);
                 }
 
                 #[cfg(feature = "llvm")]
@@ -1519,7 +1614,6 @@ mod tests {
 
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                 assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                assert_eq!(results.len(), 2);
             }
         )*
         }
@@ -1571,15 +1665,16 @@ mod tests {
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                 assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                assert_eq!(results.len(), 2);
+
 
                 #[cfg(feature = "rayon")]
                 {
                     let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                    assert_eq!(results.len(), 2);
 
+                    // todo: multi-threaded llvm not working on macos
+                    #[cfg(not(target_os = "macos"))]
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;

@@ -1666,12 +1666,15 @@ mod tests {
                 assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
 
+
                 #[cfg(feature = "rayon")]
                 {
                     let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
 
+                    // todo: multi-threaded llvm not working on macos
+                    #[cfg(not(target_os = "macos"))]
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;

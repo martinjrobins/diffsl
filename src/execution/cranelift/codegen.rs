@@ -207,7 +207,7 @@ unsafe impl Sync for CraneliftModule {}
 
 impl CodegenModule for CraneliftModule {
     type FuncId = FuncId;
-    
+
     fn get_constants(&self) -> &[f64] {
         let data = self.module.get_finalized_data(self.constants_id);
         unsafe { from_raw_parts(data.0 as *const f64, data.1 / 8) }
@@ -410,12 +410,9 @@ impl CodegenModule for CraneliftModule {
         codegen.builder.finalize();
         self.declare_function("set_inputs_grad")
     }
-    
+
     fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        let arg_types = &[
-            self.int_type,
-            self.int_type,
-        ];
+        let arg_types = &[self.int_type, self.int_type];
         let arg_names = &["threadId", "threadDim"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -2059,7 +2056,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         let indices = module
             .module
             .declare_data_in_func(module.indices_id, builder.func);
-        
+
         let constants = module
             .module
             .declare_data_in_func(module.constants_id, builder.func);
@@ -2140,7 +2137,6 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
         }
 
         // todo: insert constant tensors
-        
 
         let constants = codegen
             .builder

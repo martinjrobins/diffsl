@@ -988,7 +988,7 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
-    
+
     fn test_constants<T: CodegenModule>() {
         let full_text = "
         in = [a]
@@ -1001,7 +1001,8 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler =
+            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         // b and b2 should already be set
         let mut data = compiler.get_new_data();
         let b = compiler.get_constants_data("b").unwrap();
@@ -1024,7 +1025,7 @@ mod tests {
         assert_relative_eq!(a[0], 1.);
         assert_relative_eq!(a2[0], 1.);
     }
-    
+
     #[test]
     fn test_constants_cranelift() {
         test_constants::<CraneliftModule>();
@@ -1227,12 +1228,22 @@ mod tests {
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         compiler.calc_out(0., u0.as_slice(), data.as_mut_slice(), out.as_mut_slice());
-        results.push(
-            compiler
-                .get_tensor_data(tensor_name, data.as_slice())
-                .unwrap()
-                .to_vec(),
-        );
+        let tensor_is_constant = compiler.module().layout().is_constant(tensor_name);
+        let tensor_len = compiler
+            .module()
+            .layout()
+            .get_data_length(tensor_name)
+            .unwrap();
+        if tensor_is_constant {
+            results.push(compiler.get_constants_data(tensor_name).unwrap().to_vec());
+        } else {
+            results.push(
+                compiler
+                    .get_tensor_data(tensor_name, data.as_slice())
+                    .unwrap()
+                    .to_vec(),
+            );
+        }
         // forward mode
         let mut dinputs = vec![0.; n_inputs];
         dinputs.fill(1.);
@@ -1270,14 +1281,18 @@ mod tests {
             out.as_slice(),
             dout.as_mut_slice(),
         );
-        results.push(
-            compiler
-                .get_tensor_data(tensor_name, ddata.as_slice())
-                .unwrap()
-                .to_vec(),
-        );
+        if tensor_is_constant {
+            results.push(vec![0.; tensor_len]);
+        } else {
+            results.push(
+                compiler
+                    .get_tensor_data(tensor_name, ddata.as_slice())
+                    .unwrap()
+                    .to_vec(),
+            );
+        }
         // reverse-mode
-        if compiler.module().supports_reverse_autodiff() {
+        if compiler.module().supports_reverse_autodiff() && !tensor_is_constant {
             let mut ddata = compiler.get_new_data();
             let dtensor = compiler
                 .get_tensor_data_mut(tensor_name, ddata.as_mut_slice())
@@ -1402,6 +1417,12 @@ mod tests {
                 ddata.as_mut_slice(),
             );
             results.push(dinputs.to_vec());
+        } else {
+            results.push(vec![0.; n_inputs]);
+            results.push(vec![0.; tensor_len]);
+            results.push(vec![0.; tensor_len]);
+            results.push(vec![0.; n_inputs]);
+            results.push(vec![0.; n_inputs]);
         }
         results
     }
@@ -1577,7 +1598,6 @@ mod tests {
 
                     let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                    assert_eq!(results.len(), 2);
                 }
 
                 #[cfg(feature = "llvm")]
@@ -1594,7 +1614,6 @@ mod tests {
 
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                 assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                assert_eq!(results.len(), 2);
             }
         )*
         }
@@ -1646,14 +1665,12 @@ mod tests {
                 let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                 assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                assert_eq!(results.len(), 2);
 
                 #[cfg(feature = "rayon")]
                 {
                     let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                    assert_eq!(results.len(), 2);
 
                     #[cfg(feature = "llvm")]
                     {

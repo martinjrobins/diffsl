@@ -49,8 +49,8 @@ impl DataLayout {
                 data_index_map.insert(tensor.name().to_string(), constants.len());
                 data_length_map.insert(tensor.name().to_string(), tensor.nnz());
                 constants.extend(vec![0.0; tensor.nnz()]);
-                is_constant_map.insert(tensor.name().to_string(), true);
             }
+            is_constant_map.insert(tensor.name().to_string(), in_constants);
 
             // add the translation info for each block-tensor pair
             for blk in tensor.elmts() {
@@ -134,7 +134,7 @@ impl DataLayout {
     pub fn get_layout(&self, name: &str) -> Option<&RcLayout> {
         self.layout_map.get(name)
     }
-    
+
     pub fn is_constant(&self, name: &str) -> bool {
         *self.is_constant_map.get(name).unwrap()
     }

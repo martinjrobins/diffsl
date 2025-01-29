@@ -278,8 +278,12 @@ impl CodegenModule for LlvmModule {
     }
 
     fn get_constants(&self) -> &[f64] {
-        let constants_name = CString::new("constants").unwrap();
-        let constants_ptr = unsafe { LLVMGetGlobalValueAddress(self.codegen().ee.as_mut_ptr(), constants_name.into_raw()) as *const f64 };
+        let constants_name = CString::new("enzyme_const_constants").unwrap();
+        let constants_ptr = unsafe {
+            LLVMGetGlobalValueAddress(self.codegen().ee.as_mut_ptr(), constants_name.into_raw())
+                as *const f64
+        };
+        assert!(!constants_ptr.is_null());
         let constants_size = self.layout().constants().len();
         unsafe { std::slice::from_raw_parts(constants_ptr, constants_size) }
     }
@@ -628,10 +632,10 @@ impl CodegenModule for LlvmModule {
             let nolinline_kind_id = Attribute::get_named_enum_kind_id("noinline");
             barrier_func.remove_enum_attribute(AttributeLoc::Function, nolinline_kind_id);
         }
-        self.codegen()
-            .module()
-            .print_to_file("post_autodiff_optimisation.ll")
-            .unwrap();
+        //self.codegen()
+        //    .module()
+        //    .print_to_file("post_autodiff_optimisation.ll")
+        //    .unwrap();
 
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
@@ -701,7 +705,7 @@ impl<'ctx> Globals<'ctx> {
                 "enzyme_const_constants",
             );
             constants.set_constant(false);
-            constants.set_linkage(Linkage::AvailableExternally);
+            constants.set_initializer(&constants_array_type.const_zero());
             Some(constants)
         };
         let indices = if layout.indices().is_empty() {
@@ -3299,7 +3303,7 @@ impl<'ctx> CodeGen<'ctx> {
                         args_uncacheable.as_mut_ptr(),
                         args_uncacheable.len(),
                         std::ptr::null_mut(),
-                        0,
+                        1,
                     )
                 };
                 if self.threaded {

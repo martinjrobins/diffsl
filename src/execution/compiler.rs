@@ -1,3 +1,5 @@
+use std::{collections::HashMap, fs::File, io::Write};
+
 use crate::{
     discretise::DiscreteModel,
     execution::interface::{
@@ -5,6 +7,10 @@ use crate::{
     },
     parser::parse_ds_string,
 };
+use memmap2::MmapMut;
+use mmap_rs::MmapOptions;
+use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, RelocationKind, RelocationTarget, Symbol};
+use rayon::collections::hash_map;
 
 use super::{
     interface::{
@@ -212,6 +218,146 @@ impl<M: CodegenModule> Compiler<M> {
 
         module.post_autodiff_optimisation()?;
 
+        let rhs = if let Ok(buffer) = module.write_to_memory_buffer() {
+            // write the buffer to a file
+            let mut file = File::create("test.o")?;
+            file.write_all(buffer.as_slice())?;
+            let file = object::File::parse(buffer.as_slice())?;
+            let mut text_sec = None;
+            for section in file.sections() {
+                println!(
+                    "Section: {} - {}",
+                    section.name()?,
+                    section.size(),
+                );
+                if section.name() == Ok(".text") {
+                    text_sec = Some(section);
+                }
+            }
+            for symbol in file.symbols() {
+                println!(
+                    "Symbol: {} - {} - {:?}",
+                    symbol.name()?,
+                    symbol.size(),
+                    symbol.kind(),
+                );
+            }
+            let text_sec = text_sec.ok_or_else(|| anyhow!("Could not find .text section"))?;
+            let min_page_size = MmapOptions::page_size();
+            let mut mapped_sections = HashMap::new();
+            mapped_sections.insert(
+                text_sec.name().expect("Could not get section name"),
+                text_sec,
+            );
+            let mapped_sections  = text_sec.relocations().fold(mapped_sections, |acc, (_, rela)| {
+                let section = match rela.target() {
+                    RelocationTarget::Symbol(s) => {
+                        let symbol = file.symbol_by_index(s).expect("Could not find symbol");
+                        file.section_by_index(symbol.section_index().unwrap()).expect("Could not find section")
+                    },
+                    _ => panic!("Unsupported relocation target {:?}", rela.target()),
+                };
+                let section_name = section.name().expect("Could not get section name");
+                acc.insert(section_name, section);
+                acc
+            });
+            let mapped_sizes= mapped_sections.iter().map(|(name, section)| {
+                let section_size = section.size() as usize;
+                // round up to minimum page size
+                (section_size + min_page_size - 1) / min_page_size * min_page_size
+            }).collect::<Vec<_>>();
+            let mapped_size = mapped_sizes.iter().sum::<usize>();
+            let mut map = MmapOptions::new(mapped_size).unwrap().map().unwrap();
+            let mapped_sections = mapped_sections.iter().zip(mapped_sizes.iter()).map(|((name, section), size)| {
+                let submap = map.split_to(*size).unwrap();
+                (*name, submap)
+            }).collect::<Vec<_>>();
+            let text_map = map.split_to(mapped_sizes[0]).unwrap();
+            let mut text_map = MmapMut::map_anon(text_sec.size() as usize).unwrap();
+            let text_ptr = text_map.as_mut_ptr();
+            let mut data_sections = HashMap::new();
+            for (offset, rela) in text_sec.relocations() {
+                println!(
+                    "Relocation2: {:?} {:?}",
+                    rela.kind(),
+                    rela.target(),
+                );
+                
+                match rela.target() {
+                    RelocationTarget::Symbol(s) => {
+                        let symbol = file.symbol_by_index(s)?;
+                        let section = file.section_by_index(symbol.section_index().unwrap())?;
+                        let section_name = section.name().expect("Could not get section name");
+                        let section_map = data_sections
+                            .entry(section_name)
+                            .or_insert_with(|| {
+                                MmapMut::map_anon(section.size() as usize).unwrap()
+                            });
+                        let section_ptr = section_map.as_mut_ptr();
+                        match rela.kind() {
+                            RelocationKind::Relative => {
+                                // S + A - P
+                                // S = symbol address
+                                // A = addend
+                                // P = address of the relocation
+                                assert!(
+                                    rela.size() == 32,
+                                    "Unsupported relocation size {:?}",
+                                    rela.size()
+                                );
+                                println!("Relocation1: {:?} in section {:?} has size {}", symbol, section.name()?, section.size());
+                                let symbol_ptr= unsafe { section_ptr.offset(symbol.address() as isize) };
+                                let addend = rela.addend();
+                                let patch_ptr = unsafe { text_ptr.offset(offset as isize) } as *mut u32;
+                                let patch = unsafe { symbol_ptr.offset(addend as isize).offset(-(patch_ptr as isize)) } as u64;
+                                unsafe { patch_ptr.write(u32::try_from(patch).expect("Could not convert patch to u32")) };
+                                
+                                println!("Relocation1: {:?} in section {:?}", symbol, section.name()?);
+                            },
+                            _ => panic!("Unsupported relocation kind {:?}", rela.kind()),
+
+                        }
+                        println!("Relocation2: {:?} in section {:?}", symbol, section.name()?);
+                    }
+                    _ => panic!("Unsupported relocation target {:?}", rela.target()),
+                }
+            }
+            let size = 10;
+            //let mut rhs = None;
+            //for section in file.sections() {
+            //    if section.name() == Ok(".text") {
+            //        let instructions = section.data()?;
+            //        for symbol in file.symbols() {
+            //            if symbol.name() == Ok("rhs") {
+            //                let address = unsafe { instructions.as_ptr().offset(symbol.address() as isize) };
+            //                let func: RhsFunc = unsafe { std::mem::transmute(address) };
+            //                rhs = Some(func);
+            //                break;
+            //            }
+            //        }
+            //    }
+            //}
+            //for symbol in file.symbols() {
+            //    if symbol.name() == Ok("rhs") {
+            //        let address = symbol.address() as *const u8;
+            //        
+
+            //        //std::ptr::copy(instructions.as_ptr(), map.data(), instructions.len());
+            //        let func: RhsFunc = unsafe { std::mem::transmute(address) };
+            //        rhs = Some(func);
+            //        break;
+            //    } 
+            //}
+            panic!("Could not find rhs function in object file");
+            //match rhs {
+            //    Some(func) => func,
+            //    None => panic!("Could not find rhs function in object file"),
+            //}
+        } else {
+            unsafe { std::mem::transmute::<*const u8, RhsFunc>(module.jit(rhs)?) }
+        };
+            
+
         let barrier_init = if threaded {
             Some(unsafe {
                 std::mem::transmute::<*const u8, BarrierInitFunc>(module.jit_barrier_init()?)
@@ -223,7 +369,6 @@ impl<M: CodegenModule> Compiler<M> {
             std::mem::transmute::<*const u8, SetConstantsFunc>(module.jit(set_constants)?)
         };
         let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(module.jit(set_u0)?) };
-        let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(module.jit(rhs)?) };
         let mass = unsafe { std::mem::transmute::<*const u8, MassFunc>(module.jit(mass)?) };
         let calc_out =
             unsafe { std::mem::transmute::<*const u8, CalcOutFunc>(module.jit(calc_out)?) };

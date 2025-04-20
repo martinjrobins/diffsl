@@ -9,6 +9,8 @@ pub trait CodegenModule: Sized + Sync {
     type FuncId;
 
     fn new(triple: Triple, model: &DiscreteModel, threaded: bool) -> Result<Self>;
+    fn write_to_memory_buffer(&self) -> Result<Vec<u8>>;
+    
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_calc_out_full(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;

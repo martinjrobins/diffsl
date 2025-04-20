@@ -8,7 +8,7 @@ use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPoin
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
-use inkwell::targets::{InitializationConfig, Target, TargetMachine, TargetTriple};
+use inkwell::targets::{FileType, InitializationConfig, Target, TargetMachine, TargetTriple};
 use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType,
 };
@@ -17,7 +17,7 @@ use inkwell::values::{
     FunctionValue, GlobalValue, IntValue, PointerValue,
 };
 use inkwell::{
-    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntPredicate, OptimizationLevel,
+    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, GlobalVisibility, IntPredicate, OptimizationLevel
 };
 use llvm_sys::core::{
     LLVMBuildCall2, LLVMGetArgOperand, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
@@ -253,6 +253,26 @@ impl CodegenModule for LlvmModule {
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
         unsafe { pinned.0.as_mut().get_unchecked_mut().codegen = Some(codegen) };
         Ok(pinned)
+    }
+
+    fn write_to_memory_buffer(&self) -> Result<Vec<u8>> {
+        let triple = TargetTriple::create(self.0.triple.to_string().as_str());
+        let target = Target::from_triple(&triple).unwrap();
+        let machine = target
+            .create_target_machine(
+                &triple,
+                TargetMachine::get_host_cpu_name().to_string().as_str(),
+                TargetMachine::get_host_cpu_features().to_string().as_str(),
+                inkwell::OptimizationLevel::Default,
+                inkwell::targets::RelocMode::PIC,
+                inkwell::targets::CodeModel::Default,
+            )
+            .unwrap();
+
+        let module = self.codegen().module();
+        module.print_to_stderr();
+        let buffer = machine.write_to_memory_buffer(module, FileType::Object).unwrap().as_slice().to_vec();
+        Ok(buffer)
     }
 
     fn layout(&self) -> &DataLayout {
@@ -632,6 +652,14 @@ impl CodegenModule for LlvmModule {
             let nolinline_kind_id = Attribute::get_named_enum_kind_id("noinline");
             barrier_func.remove_enum_attribute(AttributeLoc::Function, nolinline_kind_id);
         }
+
+        // remove all preprocess_* functions
+        for f in self.codegen_mut().module.get_functions() {
+            if f.get_name().to_str().unwrap().starts_with("preprocess_") {
+                unsafe { f.delete() };
+            }
+        }
+
         //self.codegen()
         //    .module()
         //    .print_to_file("post_autodiff_optimisation.ll")
@@ -689,6 +717,7 @@ impl<'ctx> Globals<'ctx> {
             //let md_string = context.metadata_string("enzyme_inactive");
             //tc.set_metadata(md_string, 0);
             let tc_value = int_type.const_zero();
+            tc.set_visibility(GlobalVisibility::Hidden);
             tc.set_initializer(&tc_value.as_basic_value_enum());
             Some(tc)
         } else {
@@ -704,6 +733,7 @@ impl<'ctx> Globals<'ctx> {
                 Some(AddressSpace::default()),
                 "enzyme_const_constants",
             );
+            constants.set_visibility(GlobalVisibility::Hidden);
             constants.set_constant(false);
             constants.set_initializer(&constants_array_type.const_zero());
             Some(constants)
@@ -725,6 +755,7 @@ impl<'ctx> Globals<'ctx> {
                 "enzyme_const_indices",
             );
             indices.set_constant(true);
+            indices.set_visibility(GlobalVisibility::Hidden);
             indices.set_initializer(&indices_value);
             Some(indices)
         };

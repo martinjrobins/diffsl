@@ -208,6 +208,11 @@ unsafe impl Sync for CraneliftModule {}
 impl CodegenModule for CraneliftModule {
     type FuncId = FuncId;
 
+
+    fn write_to_memory_buffer(&self) -> Result<Vec<u8>> {
+        Err(anyhow!("not implemented"))
+    }
+
     fn get_constants(&self) -> &[f64] {
         let data = self.module.get_finalized_data(self.constants_id);
         unsafe { from_raw_parts(data.0 as *const f64, data.1 / 8) }

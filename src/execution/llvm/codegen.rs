@@ -270,7 +270,7 @@ impl CodegenModule for LlvmModule {
             .unwrap();
 
         let module = self.codegen().module();
-        module.print_to_stderr();
+        //module.print_to_stderr();
         let buffer = machine.write_to_memory_buffer(module, FileType::Object).unwrap().as_slice().to_vec();
         Ok(buffer)
     }

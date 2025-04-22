@@ -1,4 +1,4 @@
-use std::{cmp::min, collections::HashMap, io::{self, Write}, num::NonZero};
+use std::{cmp::min, collections::HashMap, env::consts::ARCH, fs::File, io::{self, Write}, num::NonZero};
 
 use crate::{
     discretise::DiscreteModel,
@@ -73,6 +73,7 @@ impl MappedSection {
         }
     }
 }
+
 
 struct JitFunctions {
     set_u0: U0Func,
@@ -417,7 +418,13 @@ impl Compiler {
         }
 
         module.post_autodiff_optimisation()?;
-        module.write_to_memory_buffer()
+        let buffer = module.finish()?;
+        // write the object file to the test.o file
+        let mut file = File::create("test.o")?;
+        file.write_all(&buffer)?;
+        file.flush()?;
+        Ok(buffer)
+
     }
 
     pub fn from_object_file(buffer: Vec<u8>, mode: CompilerMode) -> Result<Self> {
@@ -426,9 +433,27 @@ impl Compiler {
         let file = object::File::parse(buffer.as_slice())?;
         let mut text_sec = None;
         for section in file.sections() {
+            println!(
+                "Section[{}] {} - {} - {:?}",
+                section.index(),
+                section.name().unwrap_or_else(|_| "<unknown>".into()),
+                section.size(),
+                section.kind(),
+            );
             if section.name() == Ok(".text") {
                 text_sec = Some(section);
             }
+            
+        }
+        for symbols in file.symbols() {
+            println!(
+                "Symbol {} - {} - {:?} - {:?} - {}",
+                symbols.name().unwrap_or_else(|_| "<unknown>".into()),
+                symbols.size(),
+                symbols.kind(),
+                symbols.section_index(),
+                symbols.address(),
+            );
         }
         let text_sec = text_sec.ok_or_else(|| anyhow!("Could not find .text section"))?;
         let min_page_size = MmapOptions::page_size();
@@ -437,10 +462,23 @@ impl Compiler {
             text_sec.name().expect("Could not get section name"),
             text_sec.index(),
         );
+
+        let jumptable_entry_size = match ARCH {
+            "x86_64" | "x86" => 7,
+            _ => panic!("Unsupported architecture for jump table"),
+        };
+        let mut jumptable_num_entries: usize = 0;
         let sections_to_map  = text_sec.relocations().fold(sections_to_map, |mut acc, (_, rela)| {
             let section = match rela.target() {
                 RelocationTarget::Symbol(s) => {
                     let symbol = file.symbol_by_index(s).expect("Could not find symbol");
+                    if symbol.section_index().is_none() {
+                        if rela.kind() == RelocationKind::PltRelative || rela.kind() == RelocationKind::Relative {
+                            // this is a jump table entry
+                            jumptable_num_entries += 1;
+                        }
+                        return acc;
+                    }
                     file.section_by_index(symbol.section_index().unwrap()).expect("Could not find section")
                 },
                 _ => panic!("Unsupported relocation target {:?}", rela.target()),
@@ -449,14 +487,14 @@ impl Compiler {
             acc.insert(section_name, section.index());
             acc
         });
+        let jumptable_size = (jumptable_num_entries * jumptable_entry_size).div_ceil(min_page_size) * min_page_size;
         let mapped_sizes= sections_to_map.values().map(|section| {
             let section = file.section_by_index(*section).expect("Could not find section");
             let section_size = section.size() as usize;
             // round up to minimum page size
             section_size.div_ceil(min_page_size) * min_page_size
         }).collect::<Vec<_>>();
-        println!("Mapped sizes: {:?}", mapped_sizes);
-        let mut map = MmapOptions::new(mapped_sizes.iter().sum::<usize>() + min_page_size).unwrap().map().unwrap();
+        let mut map = MmapOptions::new(mapped_sizes.iter().sum::<usize>() + jumptable_size + min_page_size).unwrap().map().unwrap();
         for ((name, section_id), size) in sections_to_map.iter().zip(mapped_sizes.iter()) {
             let section = file.section_by_index(*section_id).expect("Could not find section");
             println!(
@@ -477,36 +515,95 @@ impl Compiler {
                 mapped_sections.insert(name.to_string(), MappedSection::Immutable(section_map.make_read_only().unwrap()));
             }
         }
+        let jumptable_map = map.split_to(jumptable_size).unwrap().make_mut().unwrap();
+        let mut jumptable_idx = 0;
         for (offset, rela) in text_sec.relocations() {
+            let text_ptr = mapped_sections.get_mut(".text").unwrap().as_mut_ptr().unwrap();
+            let patch_ptr = unsafe { text_ptr.offset(offset as isize)};
+            let patch_addr = patch_ptr as u64;
             match rela.target() {
                 RelocationTarget::Symbol(s) => {
-                    let symbol = file.symbol_by_index(s)?;
-                    let section = file.section_by_index(symbol.section_index().unwrap())?;
-                    let section_name = section.name().expect("Could not get section name");
-                    let section_ptr = mapped_sections[section_name].as_ptr();
-                    let text_ptr = mapped_sections.get_mut(".text").unwrap().as_mut_ptr().unwrap();
+                    let symbol = file.symbol_by_index(s).unwrap();
+                    let symbol_name = symbol.name().expect("symbol does not have a name");
+                    println!("relocation {} - {} - {:?} - {:?} - {} - {} - {:?}", symbol_name, symbol.size(), symbol.kind(), symbol.section_index(), rela.addend(), rela.size(), rela.kind());
                     match rela.kind() {
-                        RelocationKind::Relative => {
+                        RelocationKind::Absolute => {
+                            // S + A
+                            // we will assume that any absolute relocation is an external function (from cranelift backend)
+                            // for this address should be 0 and section is undefined and kind is unknown
+                            assert!(symbol.section_index().is_none());
+                            assert!(symbol.address() == 0);
+                            assert!(symbol.kind() == object::SymbolKind::Unknown);
+
+                            // find the function pointer:
+                            let mut ptr: *const u8 = std::ptr::null();
+                            for func in crate::execution::functions::FUNCTIONS.iter() {
+                                if func.0 == symbol_name {
+                                    ptr = func.1 as *const u8;
+                                }
+                            }
+                            for func in crate::execution::functions::TWO_ARG_FUNCTIONS.iter() {
+                                if func.0 == symbol_name {
+                                    ptr = func.1 as *const u8;
+                                }
+                            }
+                            // check we found the function
+                            assert!(!ptr.is_null());
+                            // add the addend and store
+                            unsafe { 
+                                let patch_val = ptr.offset(rela.addend() as isize) as u64;
+                                match rela.size() {
+                                    64 => (patch_ptr as *mut u64).write(patch_val),
+                                    _ => panic!("Unsupported absolute relocation size {:?}", rela.size()),
+                                }
+                            }
+                        },
+                        RelocationKind::Relative | RelocationKind::PltRelative => {
                             // S + A - P
                             // S = symbol address
                             // A = addend
                             // P = address of the relocation
+                            let symbol_ptr = if let Some(section_index) = symbol.section_index() {
+                                let section = file.section_by_index(section_index)?;
+                                let section_name = section.name().expect("Could not get section name");
+                                let section_ptr = mapped_sections[section_name].as_ptr();
+                                unsafe { section_ptr.offset(symbol.address() as isize) }
+                            } else {
+                                // must be an external function call generate the jump table entry
+                                match ARCH {
+                                    "x86_64" | "x86" => {
+                                        let curr_entry = jumptable_idx * jumptable_entry_size;
+                                        jumptable[curr_entry + 0] = addr;
+
+                                        /* x64 unconditional JMP with address stored at -14 bytes offset */
+                                        /* will use the address stored in addr above */
+                                        jumptable[curr_entry + 1] = 0xff;
+                                        jumptable[curr_entry + 2] = 0x25;
+                                        jumptable[curr_entry + 3] = 0xf2;
+                                        jumptable[curr_entry + 4] = 0xff;
+                                        jumptable[curr_entry + 5] = 0xff;
+                                        jumptable[curr_entry + 6] = 0xff;
+                                        unsafe { jumptable.as_ptr().offset(curr_entry + 1) }
+                                    },
+                                    _ => {
+                                        panic!("Unsupported architecture for jump table");
+                                    }
+                                }
+                                jumptable_idx += 1;
+                            };
                             unsafe {
-                                let symbol_addr = (section_ptr as usize) + (symbol.address() as usize);
-                                let addend = rela.addend() as isize;
-                                let patch_ptr = text_ptr.offset(offset as isize);
-                                let patch_addr = patch_ptr as usize;
-                                io::stdout().flush().unwrap();
+                                let symbol_addr = symbol_ptr as u64;
+                                let addend = rela.addend();
                                 let s_minus_p =  if symbol_addr > patch_addr {
-                                    (symbol_addr - patch_addr) as isize
+                                    (symbol_addr - patch_addr) as i64
                                 } else {
-                                    -((patch_addr - symbol_addr) as isize)
+                                    -((patch_addr - symbol_addr) as i64)
                                 };
                                 let patch_val = s_minus_p + addend;
                                 match rela.size() {
                                     32 => (patch_ptr as *mut i32).write(i32::try_from(patch_val).unwrap()),
-                                    64 => (patch_ptr as *mut i64).write(i64::try_from(patch_val).unwrap()),
-                                    _ => panic!("Unsupported relocation size {:?}", rela.size()),
+                                    64 => (patch_ptr as *mut i64).write(patch_val),
+                                    _ => panic!("Unsupported relative relocation size {:?}", rela.size()),
                                 }
                             }
                         },

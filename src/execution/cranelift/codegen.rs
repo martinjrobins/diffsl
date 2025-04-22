@@ -1,11 +1,10 @@
 use anyhow::{anyhow, Ok, Result};
 use codegen::ir::{AtomicRmwOp, FuncRef, GlobalValue, StackSlot};
 use cranelift::prelude::*;
-use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, FuncOrDataId, Linkage, Module};
+use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::HashMap;
 use std::iter::zip;
-use std::slice::from_raw_parts;
 use target_lexicon::{Endianness, PointerWidth, Triple};
 
 use crate::ast::{Ast, AstKind};
@@ -23,9 +22,8 @@ pub struct CraneliftModule {
     /// context per thread, though this isn't in the simple demo here.
     ctx: codegen::Context,
 
-    /// The module, with the jit backend, which manages the JIT'd
-    /// functions.
-    module: JITModule,
+    /// The module, with the object backend.
+    module: ObjectModule,
 
     layout: DataLayout,
 
@@ -53,8 +51,8 @@ impl CraneliftModule {
             .module
             .declare_function(name, Linkage::Export, &self.ctx.func.signature)?;
 
-        //println!("Declared function: {} -------------------------------------------------------------------------------------", name);
-        //println!("IR:\n{}", self.ctx.func);
+        println!("Declared function: {} -------------------------------------------------------------------------------------", name);
+        println!("IR:\n{}", self.ctx.func);
 
         // Define the function to jit. This finishes compilation, although
         // there may be outstanding relocations to perform. Currently, jit
@@ -209,13 +207,8 @@ impl CodegenModule for CraneliftModule {
     type FuncId = FuncId;
 
 
-    fn write_to_memory_buffer(&self) -> Result<Vec<u8>> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn get_constants(&self) -> &[f64] {
-        let data = self.module.get_finalized_data(self.constants_id);
-        unsafe { from_raw_parts(data.0 as *const f64, data.1 / 8) }
+    fn finish(self) -> Result<Vec<u8>> {
+        self.module.finish().emit().map_err(|e| anyhow!(e))
     }
 
     fn compile_mass_rgrad(
@@ -469,22 +462,7 @@ impl CodegenModule for CraneliftModule {
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
 
-        self.declare_function("u0_grad")
-    }
-
-    fn jit(&mut self, id: Self::FuncId) -> Result<*const u8> {
-        // We can now retrieve a pointer to the machine code.
-        let code = self.module.get_finalized_function(id);
-        Ok(code)
-    }
-
-    fn jit_barrier_init(&mut self) -> Result<*const u8> {
-        let id = match self.module.get_name("barrier_init") {
-            Some(FuncOrDataId::Func(id)) => id,
-            Some(FuncOrDataId::Data(_)) => return Err(anyhow!("barrier_init is not a function")),
-            None => return Err(anyhow!("barrier_init not found")),
-        };
-        Ok(self.module.get_finalized_function(id))
+        self.declare_function("set_u0_grad")
     }
 
     fn layout(&self) -> &DataLayout {
@@ -495,7 +473,7 @@ impl CodegenModule for CraneliftModule {
         // Finalize the functions which we just defined, which resolves any
         // outstanding relocations (patching in addresses, now that they're
         // available).
-        self.module.finalize_definitions()?;
+        //self.module.finalize_definitions()?;
         Ok(())
     }
 
@@ -514,25 +492,9 @@ impl CodegenModule for CraneliftModule {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .unwrap();
-        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let builder = ObjectBuilder::new(isa, "diffsol", cranelift_module::default_libcall_names())?;
 
-        // add supported external rust functions
-        for func in crate::execution::functions::FUNCTIONS.iter() {
-            builder.symbol(func.0, func.1 as *const u8);
-            builder.symbol(
-                CraneliftCodeGen::get_function_name(func.0, true),
-                func.2 as *const u8,
-            );
-        }
-        for func in crate::execution::functions::TWO_ARG_FUNCTIONS.iter() {
-            builder.symbol(func.0, func.1 as *const u8);
-            builder.symbol(
-                CraneliftCodeGen::get_function_name(func.0, true),
-                func.2 as *const u8,
-            );
-        }
-
-        let mut module = JITModule::new(builder);
+        let mut module = ObjectModule::new(builder);
 
         let ptr_type = match triple.pointer_width().unwrap() {
             PointerWidth::U16 => types::I16,
@@ -637,7 +599,7 @@ impl CodegenModule for CraneliftModule {
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
 
-        self.declare_function("u0")
+        self.declare_function("set_u0")
     }
 
     fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<FuncId> {
@@ -833,7 +795,7 @@ impl CodegenModule for CraneliftModule {
 
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
-        self.declare_function("gen_dims")
+        self.declare_function("get_dims")
     }
 
     fn compile_get_tensor(&mut self, model: &DiscreteModel, name: &str) -> Result<FuncId> {
@@ -877,7 +839,7 @@ impl CodegenModule for CraneliftModule {
 
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
-        self.declare_function(format!("get_tensor_{}", name).as_str())
+        self.declare_function(format!("get_constant_{}", name).as_str())
     }
 
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
@@ -980,7 +942,7 @@ struct CraneliftCodeGen<'a> {
     real_ptr_type: types::Type,
     int_ptr_type: types::Type,
     builder: FunctionBuilder<'a>,
-    module: &'a mut JITModule,
+    module: &'a mut ObjectModule,
     tensor_ptr: Option<Value>,
     variables: HashMap<String, Variable>,
     mem_flags: MemFlags,

@@ -4,7 +4,6 @@ use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::{AsContextRef, Context};
-use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
@@ -17,13 +16,12 @@ use inkwell::values::{
     FunctionValue, GlobalValue, IntValue, PointerValue,
 };
 use inkwell::{
-    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, GlobalVisibility, IntPredicate, OptimizationLevel
+    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, GlobalVisibility, IntPredicate
 };
 use llvm_sys::core::{
     LLVMBuildCall2, LLVMGetArgOperand, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
     LLVMGetInstructionParent, LLVMGetNamedFunction, LLVMGlobalGetValueType,
 };
-use llvm_sys::execution_engine::LLVMGetGlobalValueAddress;
 use llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -85,16 +83,6 @@ impl LlvmModule {
     fn codegen(&self) -> &CodeGen<'static> {
         self.0.as_ref().get_ref().codegen.as_ref().unwrap()
     }
-    pub fn jit2<O: UnsafeFunctionPointer>(
-        &mut self,
-        name: &str,
-    ) -> Result<JitFunction<'static, O>> {
-        let maybe_fn = unsafe { self.codegen_mut().ee.get_function::<O>(name) };
-        match maybe_fn {
-            Ok(f) => Ok(f),
-            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
-        }
-    }
 }
 
 impl CodegenModule for LlvmModule {
@@ -123,7 +111,7 @@ impl CodegenModule for LlvmModule {
         Ok(pinned)
     }
 
-    fn write_to_memory_buffer(&self) -> Result<Vec<u8>> {
+    fn finish(self) -> Result<Vec<u8>> {
         let triple = TargetTriple::create(self.0.triple.to_string().as_str());
         let target = Target::from_triple(&triple).unwrap();
         let machine = target
@@ -131,7 +119,7 @@ impl CodegenModule for LlvmModule {
                 &triple,
                 TargetMachine::get_host_cpu_name().to_string().as_str(),
                 TargetMachine::get_host_cpu_features().to_string().as_str(),
-                inkwell::OptimizationLevel::Default,
+                inkwell::OptimizationLevel::Aggressive,
                 inkwell::targets::RelocMode::PIC,
                 inkwell::targets::CodeModel::Default,
             )
@@ -147,34 +135,6 @@ impl CodegenModule for LlvmModule {
         &self.codegen().layout
     }
 
-    fn jit_barrier_init(&mut self) -> Result<*const u8> {
-        let name = "barrier_init";
-        let maybe_fn = self.codegen_mut().ee.get_function_address(name);
-        match maybe_fn {
-            Ok(f) => Ok(f as *const u8),
-            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
-        }
-    }
-
-    fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8> {
-        let name = func_id.get_name().to_str().unwrap();
-        let maybe_fn = self.codegen_mut().ee.get_function_address(name);
-        match maybe_fn {
-            Ok(f) => Ok(f as *const u8),
-            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
-        }
-    }
-
-    fn get_constants(&self) -> &[f64] {
-        let constants_name = CString::new("enzyme_const_constants").unwrap();
-        let constants_ptr = unsafe {
-            LLVMGetGlobalValueAddress(self.codegen().ee.as_mut_ptr(), constants_name.into_raw())
-                as *const f64
-        };
-        assert!(!constants_ptr.is_null());
-        let constants_size = self.layout().constants().len();
-        unsafe { std::slice::from_raw_parts(constants_ptr, constants_size) }
-    }
 
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_set_u0(model)
@@ -532,10 +492,10 @@ impl CodegenModule for LlvmModule {
             }
         }
 
-        //self.codegen()
-        //    .module()
-        //    .print_to_file("post_autodiff_optimisation.ll")
-        //    .unwrap();
+        self.codegen()
+            .module()
+            .print_to_file("post_autodiff_optimisation.ll")
+            .unwrap();
 
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
@@ -665,7 +625,6 @@ pub struct CodeGen<'ctx> {
     int_ptr_type: PointerType<'ctx>,
     layout: DataLayout,
     globals: Globals<'ctx>,
-    ee: ExecutionEngine<'ctx>,
     threaded: bool,
 }
 
@@ -731,9 +690,6 @@ impl<'ctx> CodeGen<'ctx> {
         let layout = DataLayout::new(model);
         let module = context.create_module(model.name());
         let globals = Globals::new(&layout, &module, int_type, real_type, threaded);
-        let ee = module
-            .create_jit_execution_engine(OptimizationLevel::Aggressive)
-            .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
         let real_ptr_type = Self::pointer_type(context, real_type.into());
         let int_ptr_type = Self::pointer_type(context, int_type.into());
         let mut ret = Self {
@@ -751,7 +707,6 @@ impl<'ctx> CodeGen<'ctx> {
             int_type,
             int_ptr_type,
             globals,
-            ee,
             threaded,
         };
         if threaded {
@@ -795,6 +750,7 @@ impl<'ctx> CodeGen<'ctx> {
                     self.module
                         .add_global(format_str.get_type(), None, format_str_name.as_str());
                 fmt_str.set_initializer(&format_str);
+                fmt_str.set_visibility(GlobalVisibility::Hidden);
                 fmt_str
             }
         };
@@ -832,6 +788,8 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.insert_indices();
         self.insert_constants(model);
+        let print_value = self.int_type.const_int(0, false);
+        self.compile_print_value("name", PrintValue::Int(print_value))?;
 
         let mut nbarriers = 0;
         let total_barriers = (model.constant_defns().len()) as u64;

@@ -9,7 +9,7 @@ pub trait CodegenModule: Sized + Sync {
     type FuncId;
 
     fn new(triple: Triple, model: &DiscreteModel, threaded: bool) -> Result<Self>;
-    fn write_to_memory_buffer(&self) -> Result<Vec<u8>>;
+    fn finish(self) -> Result<Vec<u8>>;
     
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
     fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId>;
@@ -104,11 +104,6 @@ pub trait CodegenModule: Sized + Sync {
     ) -> Result<Self::FuncId>;
 
     fn supports_reverse_autodiff(&self) -> bool;
-
-    fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8>;
-    fn jit_barrier_init(&mut self) -> Result<*const u8>;
-
-    fn get_constants(&self) -> &[f64];
 
     fn pre_autodiff_optimisation(&mut self) -> Result<()>;
     fn post_autodiff_optimisation(&mut self) -> Result<()>;

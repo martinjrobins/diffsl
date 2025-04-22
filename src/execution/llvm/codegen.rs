@@ -29,7 +29,6 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::iter::zip;
 use std::pin::Pin;
-use std::{path::Path, process::Command};
 use target_lexicon::Triple;
 
 type RealType = f64;
@@ -48,7 +47,6 @@ use crate::enzyme::{
 };
 use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
-use crate::utils::{find_executable, find_runtime_path};
 use lazy_static::lazy_static;
 use std::sync::Mutex;
 
@@ -71,136 +69,6 @@ pub struct LlvmModule(Pin<Box<ImmovableLlvmModule>>);
 unsafe impl Sync for LlvmModule {}
 
 impl LlvmModule {
-    pub fn compile(&self, standalone: bool, wasm: bool, out: &str) -> Result<()> {
-        let clang_name = find_executable(&["clang", "clang-14"])?;
-        let object_filename = format!("{}.o", out);
-        let bitcodefilename = format!("{}.bc", out);
-
-        // generate the bitcode file
-        self.codegen()
-            .module()
-            .write_bitcode_to_path(Path::new(bitcodefilename.as_str()));
-
-        let mut command = Command::new(clang_name);
-        command
-            .arg(bitcodefilename.as_str())
-            .arg("-c")
-            .arg("-o")
-            .arg(object_filename.as_str());
-
-        if wasm {
-            command.arg("-target").arg("wasm32-unknown-emscripten");
-        }
-
-        let output = command.output().unwrap();
-
-        if let Some(code) = output.status.code() {
-            if code != 0 {
-                println!("{}", String::from_utf8_lossy(&output.stderr));
-                return Err(anyhow!("{} returned error code {}", clang_name, code));
-            }
-        }
-
-        // link the object file and our runtime library
-        let mut command = if wasm {
-            let command_name = find_executable(&["emcc"])?;
-            let exported_functions = vec![
-                "Vector_destroy",
-                "Vector_create",
-                "Vector_create_with_capacity",
-                "Vector_push",
-                "Options_destroy",
-                "Options_create",
-                "Sundials_destroy",
-                "Sundials_create",
-                "Sundials_init",
-                "Sundials_solve",
-            ];
-            let mut linked_files = vec![
-                "libdiffeq_runtime_lib.a",
-                "libsundials_idas.a",
-                "libsundials_sunlinsolklu.a",
-                "libklu.a",
-                "libamd.a",
-                "libcolamd.a",
-                "libbtf.a",
-                "libsuitesparseconfig.a",
-                "libsundials_sunmatrixsparse.a",
-                "libargparse.a",
-            ];
-            if standalone {
-                linked_files.push("libdiffeq_runtime.a");
-            }
-            let linked_files = linked_files;
-            let runtime_path = find_runtime_path(&linked_files)?;
-            let mut command = Command::new(command_name);
-            command.arg("-o").arg(out).arg(object_filename.as_str());
-            for file in linked_files {
-                command.arg(Path::new(runtime_path.as_str()).join(file));
-            }
-            if !standalone {
-                let exported_functions = exported_functions
-                    .into_iter()
-                    .map(|s| format!("_{}", s))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                command
-                    .arg("-s")
-                    .arg(format!("EXPORTED_FUNCTIONS={}", exported_functions));
-                command.arg("--no-entry");
-            }
-            command
-        } else {
-            let mut command = Command::new(clang_name);
-            command.arg("-o").arg(out).arg(object_filename.as_str());
-            if standalone {
-                command.arg("-ldiffeq_runtime");
-            } else {
-                command.arg("-ldiffeq_runtime_lib");
-            }
-            command
-        };
-
-        let output = command.output();
-
-        let output = match output {
-            Ok(output) => output,
-            Err(e) => {
-                let args = command
-                    .get_args()
-                    .map(|s| s.to_str().unwrap())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                println!(
-                    "{} {}",
-                    command.get_program().to_os_string().to_str().unwrap(),
-                    args
-                );
-                return Err(anyhow!("Error linking in runtime: {}", e));
-            }
-        };
-
-        if let Some(code) = output.status.code() {
-            if code != 0 {
-                let args = command
-                    .get_args()
-                    .map(|s| s.to_str().unwrap())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                println!(
-                    "{} {}",
-                    command.get_program().to_os_string().to_str().unwrap(),
-                    args
-                );
-                println!("{}", String::from_utf8_lossy(&output.stderr));
-                return Err(anyhow!(
-                    "Error linking in runtime, returned error code {}",
-                    code
-                ));
-            }
-        }
-        Ok(())
-    }
     pub fn print(&self) {
         self.codegen().module().print_to_stderr();
     }
@@ -348,6 +216,10 @@ impl CodegenModule for LlvmModule {
 
     fn compile_get_tensor(&mut self, model: &DiscreteModel, name: &str) -> Result<Self::FuncId> {
         self.codegen_mut().compile_get_tensor(model, name)
+    }
+
+    fn compile_get_constant(&mut self, model: &DiscreteModel, name: &str) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_get_constant(model, name)
     }
 
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
@@ -3482,7 +3354,7 @@ impl<'ctx> CodeGen<'ctx> {
             ],
             false,
         );
-        let function_name = format!("get_{}", name);
+        let function_name = format!("get_tensor_{}", name);
         let function = self
             .module
             .add_function(function_name.as_str(), fn_type, None);
@@ -3490,6 +3362,57 @@ impl<'ctx> CodeGen<'ctx> {
         self.fn_value_opt = Some(function);
 
         let fn_arg_names = &["data", "tensor_data", "tensor_size"];
+        self.builder.position_at_end(basic_block);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+
+        self.insert_data(model);
+        let ptr = self.get_param(name);
+        let tensor_size = self.layout.get_layout(name).unwrap().nnz() as u64;
+        let tensor_size_value = self.int_type.const_int(tensor_size, false);
+        self.builder
+            .build_store(*self.get_param("tensor_data"), ptr.as_basic_value_enum())?;
+        self.builder
+            .build_store(*self.get_param("tensor_size"), tensor_size_value)?;
+        self.builder.build_return(None)?;
+
+        if function.verify(true) {
+            Ok(function)
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+    pub fn compile_get_constant(
+        &mut self,
+        model: &DiscreteModel,
+        name: &str,
+    ) -> Result<FunctionValue<'ctx>> {
+        self.clear();
+        let real_ptr_ptr_type = Self::pointer_type(self.context, self.real_ptr_type.into());
+        let fn_type = self.context.void_type().fn_type(
+            &[
+                real_ptr_ptr_type.into(),
+                self.int_ptr_type.into(),
+            ],
+            false,
+        );
+        let function_name = format!("get_constant_{}", name);
+        let function = self
+            .module
+            .add_function(function_name.as_str(), fn_type, None);
+        let basic_block = self.context.append_basic_block(function, "entry");
+        self.fn_value_opt = Some(function);
+
+        let fn_arg_names = &["tensor_data", "tensor_size"];
         self.builder.position_at_end(basic_block);
 
         for (i, arg) in function.get_param_iter().enumerate() {
@@ -3720,23 +3643,3 @@ impl<'ctx> CodeGen<'ctx> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-
-    #[cfg(feature = "test_compile")]
-    #[test]
-    fn test_compile_wasm_standalone() {
-        use super::*;
-        use crate::Compiler;
-        let text = "
-        u { y = 1 }
-        F { -y }
-        out { y }
-        ";
-        let compiler = Compiler::<LlvmModule>::from_discrete_str(text, Default::default()).unwrap();
-        compiler
-            .module()
-            .compile(true, true, "test_output/test_compile")
-            .unwrap();
-    }
-}

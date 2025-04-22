@@ -177,3 +177,12 @@ pub type SetInputsRevGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
 );
 pub type SetIdFunc = unsafe extern "C" fn(id: *mut RealType);
+pub type GetTensorFunc = unsafe extern "C" fn(
+    data: *const RealType,
+    tensor_data: *mut *mut RealType,
+    tensor_size: *mut UIntType,
+);
+pub type GetConstantFunc = unsafe extern "C" fn(
+    tensor_data: *mut *mut RealType,
+    tensor_size: *mut UIntType,
+);

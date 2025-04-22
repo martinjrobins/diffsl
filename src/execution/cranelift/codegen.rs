@@ -855,7 +855,29 @@ impl CodegenModule for CraneliftModule {
 
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
-        self.declare_function("get_tensor")
+        self.declare_function(format!("get_tensor_{}", name).as_str())
+    }
+
+    fn compile_get_constant(&mut self, model: &DiscreteModel, name: &str) -> Result<FuncId> {
+        let arg_types = &[self.real_ptr_type, self.int_ptr_type];
+        let arg_names = &["tensor_data", "tensor_size"];
+        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+        let tensor_ptr = codegen.variables.get(name).unwrap();
+        let tensor_ptr = codegen.builder.use_var(*tensor_ptr);
+
+        let tensor_size = i64::try_from(codegen.layout.get_layout(name).unwrap().nnz()).unwrap();
+        let tensor_size = codegen.builder.ins().iconst(codegen.int_type, tensor_size);
+
+        for (val, name) in [(tensor_ptr, "tensor_data"), (tensor_size, "tensor_size")] {
+            let ptr = codegen.variables.get(name).unwrap();
+            let ptr = codegen.builder.use_var(*ptr);
+            codegen.builder.ins().store(codegen.mem_flags, val, ptr, 0);
+        }
+
+        codegen.builder.ins().return_(&[]);
+        codegen.builder.finalize();
+        self.declare_function(format!("get_tensor_{}", name).as_str())
     }
 
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {

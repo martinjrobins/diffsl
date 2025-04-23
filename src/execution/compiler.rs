@@ -1,4 +1,4 @@
-use std::{cmp::min, collections::HashMap, env::consts::ARCH, fs::File, io::{self, Write}, num::NonZero};
+use std::{cmp::min, collections::HashMap, env::consts::ARCH, fs::File, io::Write, num::NonZero};
 
 use crate::{
     discretise::DiscreteModel,
@@ -7,12 +7,15 @@ use crate::{
     },
     parser::parse_ds_string,
 };
-use mmap_rs::{Mmap, MmapOptions, MmapMut};
+use mmap_rs::{Mmap, MmapMut, MmapOptions};
 use object::{Object, ObjectSection, ObjectSymbol, RelocationKind, RelocationTarget};
 
 use super::{
     interface::{
-        BarrierInitFunc, CalcOutGradFunc, CalcOutRevGradFunc, CalcOutSensGradFunc, CalcOutSensRevGradFunc, GetConstantFunc, GetInputsFunc, GetTensorFunc, MassRevGradFunc, RhsGradFunc, RhsRevGradFunc, RhsSensGradFunc, RhsSensRevGradFunc, SetConstantsFunc, SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc
+        BarrierInitFunc, CalcOutGradFunc, CalcOutRevGradFunc, CalcOutSensGradFunc,
+        CalcOutSensRevGradFunc, GetConstantFunc, GetInputsFunc, GetTensorFunc, MassRevGradFunc,
+        RhsGradFunc, RhsRevGradFunc, RhsSensGradFunc, RhsSensRevGradFunc, SetConstantsFunc,
+        SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc,
     },
     module::CodegenModule,
 };
@@ -58,22 +61,24 @@ impl MappedSection {
     }
     fn make_read_only(self) -> Result<Self> {
         match self {
-            MappedSection::Mutable(map) => Ok(MappedSection::Immutable(map.make_read_only().map_err(|e| {
-                anyhow!("Failed to make section read-only: {:?}", e)
-            })?)),
+            MappedSection::Mutable(map) => Ok(MappedSection::Immutable(
+                map.make_read_only()
+                    .map_err(|e| anyhow!("Failed to make section read-only: {:?}", e))?,
+            )),
             MappedSection::Immutable(_) => Ok(self),
         }
     }
     fn make_exec(self) -> Result<Self> {
         match self {
             MappedSection::Mutable(_map) => Err(anyhow!("Cannot make mutable section executable")),
-            MappedSection::Immutable(map) => Ok(MappedSection::Immutable(map.make_exec().map_err(|e| {
-                anyhow!("Failed to make section executable: {:?}", e)
-            })?)),
+            MappedSection::Immutable(map) => {
+                Ok(MappedSection::Immutable(map.make_exec().map_err(|e| {
+                    anyhow!("Failed to make section executable: {:?}", e)
+                })?))
+            }
         }
     }
 }
-
 
 struct JitFunctions {
     set_u0: U0Func,
@@ -93,8 +98,16 @@ impl JitFunctions {
     fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
         // check if all required symbols are present
         let required_symbols = [
-            "set_u0", "rhs", "mass", "calc_out", "calc_stop", "set_id", "get_dims",
-            "set_inputs", "get_inputs", "set_constants",
+            "set_u0",
+            "rhs",
+            "mass",
+            "calc_out",
+            "calc_stop",
+            "set_id",
+            "get_dims",
+            "set_inputs",
+            "get_inputs",
+            "set_constants",
         ];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
@@ -104,14 +117,23 @@ impl JitFunctions {
         let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(symbol_map["set_u0"]) };
         let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(symbol_map["rhs"]) };
         let mass = unsafe { std::mem::transmute::<*const u8, MassFunc>(symbol_map["mass"]) };
-        let calc_out = unsafe { std::mem::transmute::<*const u8, CalcOutFunc>(symbol_map["calc_out"]) };
-        let calc_stop = unsafe { std::mem::transmute::<*const u8, StopFunc>(symbol_map["calc_stop"]) };
+        let calc_out =
+            unsafe { std::mem::transmute::<*const u8, CalcOutFunc>(symbol_map["calc_out"]) };
+        let calc_stop =
+            unsafe { std::mem::transmute::<*const u8, StopFunc>(symbol_map["calc_stop"]) };
         let set_id = unsafe { std::mem::transmute::<*const u8, SetIdFunc>(symbol_map["set_id"]) };
-        let get_dims = unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(symbol_map["get_dims"]) };
-        let set_inputs = unsafe { std::mem::transmute::<*const u8, SetInputsFunc>(symbol_map["set_inputs"]) };
-        let get_inputs = unsafe { std::mem::transmute::<*const u8, GetInputsFunc>(symbol_map["get_inputs"]) };
-        let barrier_init = symbol_map.get("barrier_init").map(|func_ptr| unsafe { std::mem::transmute::<*const u8, BarrierInitFunc>(*func_ptr) });
-        let set_constants = unsafe { std::mem::transmute::<*const u8, SetConstantsFunc>(symbol_map["set_constants"]) };
+        let get_dims =
+            unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(symbol_map["get_dims"]) };
+        let set_inputs =
+            unsafe { std::mem::transmute::<*const u8, SetInputsFunc>(symbol_map["set_inputs"]) };
+        let get_inputs =
+            unsafe { std::mem::transmute::<*const u8, GetInputsFunc>(symbol_map["get_inputs"]) };
+        let barrier_init = symbol_map.get("barrier_init").map(|func_ptr| unsafe {
+            std::mem::transmute::<*const u8, BarrierInitFunc>(*func_ptr)
+        });
+        let set_constants = unsafe {
+            std::mem::transmute::<*const u8, SetConstantsFunc>(symbol_map["set_constants"])
+        };
 
         Ok(Self {
             set_u0,
@@ -137,24 +159,23 @@ struct JitGradFunctions {
 }
 
 impl JitGradFunctions {
-    fn new(
-        symbol_map: &HashMap<&str, *const u8>,
-    ) -> Result<Self> {
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
         // check if all required symbols are present
         let required_symbols = [
-            "set_u0_grad", "rhs_grad", "calc_out_grad", "set_inputs_grad",
+            "set_u0_grad",
+            "rhs_grad",
+            "calc_out_grad",
+            "set_inputs_grad",
         ];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
             }
         }
-        let set_u0_grad = unsafe {
-            std::mem::transmute::<*const u8, U0GradFunc>(symbol_map["set_u0_grad"])
-        };
-        let rhs_grad = unsafe {
-            std::mem::transmute::<*const u8, RhsGradFunc>(symbol_map["rhs_grad"])
-        };
+        let set_u0_grad =
+            unsafe { std::mem::transmute::<*const u8, U0GradFunc>(symbol_map["set_u0_grad"]) };
+        let rhs_grad =
+            unsafe { std::mem::transmute::<*const u8, RhsGradFunc>(symbol_map["rhs_grad"]) };
         let calc_out_grad = unsafe {
             std::mem::transmute::<*const u8, CalcOutGradFunc>(symbol_map["calc_out_grad"])
         };
@@ -180,26 +201,25 @@ struct JitGradRFunctions {
 }
 
 impl JitGradRFunctions {
-    fn new(
-        symbol_map: &HashMap<&str, *const u8>,
-    ) -> Result<Self> {
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
         let required_symbols = [
-            "set_u0_rgrad", "rhs_rgrad", "mass_rgrad", "calc_out_rgrad", "set_inputs_rgrad",
+            "set_u0_rgrad",
+            "rhs_rgrad",
+            "mass_rgrad",
+            "calc_out_rgrad",
+            "set_inputs_rgrad",
         ];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
             }
         }
-        let set_u0_rgrad = unsafe {
-            std::mem::transmute::<*const u8, U0RevGradFunc>(symbol_map["set_u0_rgrad"])
-        };
-        let rhs_rgrad = unsafe {
-            std::mem::transmute::<*const u8, RhsRevGradFunc>(symbol_map["rhs_rgrad"])
-        };
-        let mass_rgrad = unsafe {
-            std::mem::transmute::<*const u8, MassRevGradFunc>(symbol_map["mass_rgrad"])
-        };
+        let set_u0_rgrad =
+            unsafe { std::mem::transmute::<*const u8, U0RevGradFunc>(symbol_map["set_u0_rgrad"]) };
+        let rhs_rgrad =
+            unsafe { std::mem::transmute::<*const u8, RhsRevGradFunc>(symbol_map["rhs_rgrad"]) };
+        let mass_rgrad =
+            unsafe { std::mem::transmute::<*const u8, MassRevGradFunc>(symbol_map["mass_rgrad"]) };
         let calc_out_rgrad = unsafe {
             std::mem::transmute::<*const u8, CalcOutRevGradFunc>(symbol_map["calc_out_rgrad"])
         };
@@ -223,20 +243,15 @@ struct JitSensGradFunctions {
 }
 
 impl JitSensGradFunctions {
-    fn new(
-        symbol_map: &HashMap<&str, *const u8>,
-    ) -> Result<Self> {
-        let required_symbols = [
-            "rhs_sgrad", "calc_out_sgrad",
-        ];
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
+        let required_symbols = ["rhs_sgrad", "calc_out_sgrad"];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
             }
         }
-        let rhs_sgrad = unsafe {
-            std::mem::transmute::<*const u8, RhsSensGradFunc>(symbol_map["rhs_sgrad"])
-        };
+        let rhs_sgrad =
+            unsafe { std::mem::transmute::<*const u8, RhsSensGradFunc>(symbol_map["rhs_sgrad"]) };
         let calc_out_sgrad = unsafe {
             std::mem::transmute::<*const u8, CalcOutSensGradFunc>(symbol_map["calc_out_sgrad"])
         };
@@ -254,12 +269,8 @@ struct JitSensRevGradFunctions {
 }
 
 impl JitSensRevGradFunctions {
-    fn new(
-        symbol_map: &HashMap<&str, *const u8>,
-    ) -> Result<Self> {
-        let required_symbols = [
-            "rhs_rgrad", "calc_out_rgrad",
-        ];
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
+        let required_symbols = ["rhs_rgrad", "calc_out_rgrad"];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
@@ -285,9 +296,7 @@ struct JitGetTensorFunctions {
 }
 
 impl JitGetTensorFunctions {
-    fn new(
-        symbol_map: &HashMap<&str, *const u8>,
-    ) -> Result<Self> {
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
         let mut data_map = HashMap::new();
         let mut constant_map = HashMap::new();
         let data_prefix = "get_tensor_";
@@ -298,10 +307,13 @@ impl JitGetTensorFunctions {
                 data_map.insert(name.strip_prefix(data_prefix).unwrap().to_string(), func);
             } else if name.starts_with(constant_prefix) {
                 let func = unsafe { std::mem::transmute::<*const u8, GetConstantFunc>(*func_ptr) };
-                constant_map.insert(name.strip_prefix(constant_prefix).unwrap().to_string(), func);
+                constant_map.insert(
+                    name.strip_prefix(constant_prefix).unwrap().to_string(),
+                    func,
+                );
             }
         }
-        Ok(Self { 
+        Ok(Self {
             data_map,
             constant_map,
         })
@@ -343,7 +355,9 @@ impl CompilerMode {
         match self {
             CompilerMode::MultiThreaded(Some(n)) => min(*n, number_of_states),
             CompilerMode::MultiThreaded(None) => {
-                let num_cpus = std::thread::available_parallelism().unwrap_or(NonZero::new(1).unwrap()).get();
+                let num_cpus = std::thread::available_parallelism()
+                    .unwrap_or(NonZero::new(1).unwrap())
+                    .get();
                 let thread_dim = std::env::var("RAYON_NUM_THREADS")
                     .unwrap_or_else(|_| num_cpus.to_string())
                     .parse::<usize>()
@@ -353,6 +367,61 @@ impl CompilerMode {
             }
             _ => 1,
         }
+    }
+}
+
+#[repr(C)]
+struct JumpTableEntryX86 {
+    addr: *const u8,
+    instr: [u8; 7],
+}
+
+impl JumpTableEntryX86 {
+    fn new(addr: *const u8) -> Self {
+        Self {
+            addr,
+            instr: [0xFF, 0x25, 0xF2, 0xFF, 0xFF, 0xFF, 0xFF],
+        }
+    }
+    fn jump_ptr(&self) -> *const u8 {
+        self.instr.as_ptr()
+    }
+    fn from_bytes(bytes: &mut [u8]) -> &mut [Self] {
+        let size = std::mem::size_of::<Self>();
+        let len = bytes.len() / size;
+        unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut Self, len) }
+    }
+}
+
+#[repr(C)]
+struct JumpTableEntryAarch64 {
+    instr: [u32; 4],
+}
+
+impl JumpTableEntryAarch64 {
+    fn new(addr: *const u8) -> Self {
+        let addr = addr as u64;
+        let mov = 0b11010010100000000000000000001001 | u32::try_from((addr << 48) >> 43).unwrap();
+        let movk1 =
+            0b11110010101000000000000000001001 | u32::try_from(((addr >> 16) << 48) >> 43).unwrap();
+        let movk2 =
+            0b11110010110000000000000000001001 | u32::try_from(((addr >> 32) << 48) >> 43).unwrap();
+
+        // mov  x9, #0x0c14
+        // movk x9, #0x5555, lsl #16
+        // movk x9, #0x5555, lsl #3
+        // br   x9
+        Self {
+            instr: [mov, movk1, movk2, 0xd61f0120],
+        }
+    }
+    fn jump_ptr(&self) -> *const u8 {
+        self.instr.as_ptr() as *const u8
+    }
+    fn from_bytes(bytes: &mut [u8]) -> &mut [Self] {
+        let size = std::mem::size_of::<Self>();
+        let len = bytes.len() / size;
+        unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut Self, len) }
     }
 }
 
@@ -366,12 +435,18 @@ impl Compiler {
         Self::from_discrete_model::<M>(&model, mode)
     }
 
-    pub fn from_discrete_model<M: CodegenModule>(model: &DiscreteModel, mode: CompilerMode) -> Result<Self> {
+    pub fn from_discrete_model<M: CodegenModule>(
+        model: &DiscreteModel,
+        mode: CompilerMode,
+    ) -> Result<Self> {
         let buffer = Self::discrete_model_to_object_file::<M>(model, mode)?;
         Self::from_object_file(buffer, mode)
     }
-    
-    pub fn discrete_model_to_object_file<M: CodegenModule>(model: &DiscreteModel, mode: CompilerMode) -> Result<Vec<u8>> {
+
+    pub fn discrete_model_to_object_file<M: CodegenModule>(
+        model: &DiscreteModel,
+        mode: CompilerMode,
+    ) -> Result<Vec<u8>> {
         let thread_dim = mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
         let mut module = M::new(Triple::host(), model, threaded)?;
@@ -386,7 +461,11 @@ impl Compiler {
         let set_inputs = module.compile_set_inputs(model)?;
         let _get_inputs = module.compile_get_inputs(model)?;
         let _set_constants = module.compile_set_constants(model)?;
-        let tensor_info = module.layout().tensors().map(|(name, is_constant)| (name.to_string(), is_constant)).collect::<Vec<_>>();
+        let tensor_info = module
+            .layout()
+            .tensors()
+            .map(|(name, is_constant)| (name.to_string(), is_constant))
+            .collect::<Vec<_>>();
         for (tensor, is_constant) in tensor_info {
             if is_constant {
                 module.compile_get_constant(model, tensor.as_str())?;
@@ -424,7 +503,6 @@ impl Compiler {
         file.write_all(&buffer)?;
         file.flush()?;
         Ok(buffer)
-
     }
 
     pub fn from_object_file(buffer: Vec<u8>, mode: CompilerMode) -> Result<Self> {
@@ -443,7 +521,6 @@ impl Compiler {
             if section.name() == Ok(".text") {
                 text_sec = Some(section);
             }
-            
         }
         for symbols in file.symbols() {
             println!(
@@ -464,45 +541,58 @@ impl Compiler {
         );
 
         let jumptable_entry_size = match ARCH {
-            "x86_64" | "x86" => 7,
+            "x86_64" | "x86" => std::mem::size_of::<JumpTableEntryX86>(),
+            "aarch64" => std::mem::size_of::<JumpTableEntryAarch64>(),
             _ => panic!("Unsupported architecture for jump table"),
         };
         let mut jumptable_num_entries: usize = 0;
-        let sections_to_map  = text_sec.relocations().fold(sections_to_map, |mut acc, (_, rela)| {
-            let section = match rela.target() {
-                RelocationTarget::Symbol(s) => {
-                    let symbol = file.symbol_by_index(s).expect("Could not find symbol");
-                    if symbol.section_index().is_none() {
-                        if rela.kind() == RelocationKind::PltRelative || rela.kind() == RelocationKind::Relative {
-                            // this is a jump table entry
-                            jumptable_num_entries += 1;
+        let sections_to_map = text_sec
+            .relocations()
+            .fold(sections_to_map, |mut acc, (_, rela)| {
+                let section = match rela.target() {
+                    RelocationTarget::Symbol(s) => {
+                        let symbol = file.symbol_by_index(s).expect("Could not find symbol");
+                        if symbol.section_index().is_none() {
+                            if rela.kind() == RelocationKind::PltRelative
+                                || rela.kind() == RelocationKind::Relative
+                            {
+                                // this is a jump table entry
+                                jumptable_num_entries += 1;
+                            }
+                            return acc;
                         }
-                        return acc;
+                        file.section_by_index(symbol.section_index().unwrap())
+                            .expect("Could not find section")
                     }
-                    file.section_by_index(symbol.section_index().unwrap()).expect("Could not find section")
-                },
-                _ => panic!("Unsupported relocation target {:?}", rela.target()),
-            };
-            let section_name = section.name().expect("Could not get section name");
-            acc.insert(section_name, section.index());
-            acc
-        });
-        let jumptable_size = (jumptable_num_entries * jumptable_entry_size).div_ceil(min_page_size) * min_page_size;
-        let mapped_sizes= sections_to_map.values().map(|section| {
-            let section = file.section_by_index(*section).expect("Could not find section");
-            let section_size = section.size() as usize;
-            // round up to minimum page size
-            section_size.div_ceil(min_page_size) * min_page_size
-        }).collect::<Vec<_>>();
-        let mut map = MmapOptions::new(mapped_sizes.iter().sum::<usize>() + jumptable_size + min_page_size).unwrap().map().unwrap();
+                    _ => panic!("Unsupported relocation target {:?}", rela.target()),
+                };
+                let section_name = section.name().expect("Could not get section name");
+                acc.insert(section_name, section.index());
+                acc
+            });
+        let jumptable_size =
+            (jumptable_num_entries * jumptable_entry_size).div_ceil(min_page_size) * min_page_size;
+        let mapped_sizes = sections_to_map
+            .values()
+            .map(|section| {
+                let section = file
+                    .section_by_index(*section)
+                    .expect("Could not find section");
+                let section_size = section.size() as usize;
+                // round up to minimum page size
+                section_size.div_ceil(min_page_size) * min_page_size
+            })
+            .collect::<Vec<_>>();
+        let mut map =
+            MmapOptions::new(mapped_sizes.iter().sum::<usize>() + jumptable_size + min_page_size)
+                .unwrap()
+                .map()
+                .unwrap();
         for ((name, section_id), size) in sections_to_map.iter().zip(mapped_sizes.iter()) {
-            let section = file.section_by_index(*section_id).expect("Could not find section");
-            println!(
-                "Mapping section {} - {} - {}",
-                name,
-                section.size(),
-                size,
-            );
+            let section = file
+                .section_by_index(*section_id)
+                .expect("Could not find section");
+            println!("Mapping section {} - {} - {}", name, section.size(), size,);
             let mut section_map = map.split_to(*size).unwrap().make_mut().unwrap();
             let section_data = section.data().expect("Could not get section data");
             section_map.as_mut_slice()[..section_data.len()].copy_from_slice(section_data);
@@ -512,20 +602,36 @@ impl Compiler {
                 mapped_sections.insert(name.to_string(), MappedSection::Mutable(section_map));
             } else {
                 // everything else is immutable
-                mapped_sections.insert(name.to_string(), MappedSection::Immutable(section_map.make_read_only().unwrap()));
+                mapped_sections.insert(
+                    name.to_string(),
+                    MappedSection::Immutable(section_map.make_read_only().unwrap()),
+                );
             }
         }
-        let jumptable_map = map.split_to(jumptable_size).unwrap().make_mut().unwrap();
+        let mut jumptable_map = map.split_to(jumptable_size).unwrap().make_mut().unwrap();
         let mut jumptable_idx = 0;
         for (offset, rela) in text_sec.relocations() {
-            let text_ptr = mapped_sections.get_mut(".text").unwrap().as_mut_ptr().unwrap();
-            let patch_ptr = unsafe { text_ptr.offset(offset as isize)};
+            let text_ptr = mapped_sections
+                .get_mut(".text")
+                .unwrap()
+                .as_mut_ptr()
+                .unwrap();
+            let patch_ptr = unsafe { text_ptr.offset(offset as isize) };
             let patch_addr = patch_ptr as u64;
             match rela.target() {
                 RelocationTarget::Symbol(s) => {
                     let symbol = file.symbol_by_index(s).unwrap();
                     let symbol_name = symbol.name().expect("symbol does not have a name");
-                    println!("relocation {} - {} - {:?} - {:?} - {} - {} - {:?}", symbol_name, symbol.size(), symbol.kind(), symbol.section_index(), rela.addend(), rela.size(), rela.kind());
+                    println!(
+                        "relocation {} - {} - {:?} - {:?} - {} - {} - {:?}",
+                        symbol_name,
+                        symbol.size(),
+                        symbol.kind(),
+                        symbol.section_index(),
+                        rela.addend(),
+                        rela.size(),
+                        rela.kind()
+                    );
                     match rela.kind() {
                         RelocationKind::Absolute => {
                             // S + A
@@ -550,14 +656,17 @@ impl Compiler {
                             // check we found the function
                             assert!(!ptr.is_null());
                             // add the addend and store
-                            unsafe { 
+                            unsafe {
                                 let patch_val = ptr.offset(rela.addend() as isize) as u64;
                                 match rela.size() {
                                     64 => (patch_ptr as *mut u64).write(patch_val),
-                                    _ => panic!("Unsupported absolute relocation size {:?}", rela.size()),
+                                    _ => panic!(
+                                        "Unsupported absolute relocation size {:?}",
+                                        rela.size()
+                                    ),
                                 }
                             }
-                        },
+                        }
                         RelocationKind::Relative | RelocationKind::PltRelative => {
                             // S + A - P
                             // S = symbol address
@@ -565,50 +674,73 @@ impl Compiler {
                             // P = address of the relocation
                             let symbol_ptr = if let Some(section_index) = symbol.section_index() {
                                 let section = file.section_by_index(section_index)?;
-                                let section_name = section.name().expect("Could not get section name");
+                                let section_name =
+                                    section.name().expect("Could not get section name");
                                 let section_ptr = mapped_sections[section_name].as_ptr();
                                 unsafe { section_ptr.offset(symbol.address() as isize) }
                             } else {
                                 // must be an external function call generate the jump table entry
+                                let mut addr: *const u8 = std::ptr::null();
+                                for func in crate::execution::functions::FUNCTIONS.iter() {
+                                    if func.0 == symbol_name {
+                                        addr = func.1 as *const u8;
+                                    }
+                                }
+                                for func in crate::execution::functions::TWO_ARG_FUNCTIONS.iter() {
+                                    if func.0 == symbol_name {
+                                        addr = func.1 as *const u8;
+                                    }
+                                }
+                                assert!(
+                                    !addr.is_null(),
+                                    "Could not find function {} in functions",
+                                    symbol_name
+                                );
                                 match ARCH {
                                     "x86_64" | "x86" => {
-                                        let curr_entry = jumptable_idx * jumptable_entry_size;
-                                        jumptable[curr_entry + 0] = addr;
-
-                                        /* x64 unconditional JMP with address stored at -14 bytes offset */
-                                        /* will use the address stored in addr above */
-                                        jumptable[curr_entry + 1] = 0xff;
-                                        jumptable[curr_entry + 2] = 0x25;
-                                        jumptable[curr_entry + 3] = 0xf2;
-                                        jumptable[curr_entry + 4] = 0xff;
-                                        jumptable[curr_entry + 5] = 0xff;
-                                        jumptable[curr_entry + 6] = 0xff;
-                                        unsafe { jumptable.as_ptr().offset(curr_entry + 1) }
-                                    },
+                                        let jumptable = JumpTableEntryX86::from_bytes(
+                                            jumptable_map.as_mut_slice(),
+                                        );
+                                        jumptable[jumptable_idx] = JumpTableEntryX86::new(addr);
+                                        let ptr = jumptable[jumptable_idx].jump_ptr();
+                                        jumptable_idx += 1;
+                                        ptr
+                                    }
+                                    "aarch64" => {
+                                        let jumptable = JumpTableEntryAarch64::from_bytes(
+                                            jumptable_map.as_mut_slice(),
+                                        );
+                                        jumptable[jumptable_idx] = JumpTableEntryAarch64::new(addr);
+                                        let ptr = jumptable[jumptable_idx].jump_ptr();
+                                        jumptable_idx += 1;
+                                        ptr
+                                    }
                                     _ => {
                                         panic!("Unsupported architecture for jump table");
                                     }
                                 }
-                                jumptable_idx += 1;
                             };
                             unsafe {
                                 let symbol_addr = symbol_ptr as u64;
                                 let addend = rela.addend();
-                                let s_minus_p =  if symbol_addr > patch_addr {
+                                let s_minus_p = if symbol_addr > patch_addr {
                                     (symbol_addr - patch_addr) as i64
                                 } else {
                                     -((patch_addr - symbol_addr) as i64)
                                 };
                                 let patch_val = s_minus_p + addend;
                                 match rela.size() {
-                                    32 => (patch_ptr as *mut i32).write(i32::try_from(patch_val).unwrap()),
+                                    32 => (patch_ptr as *mut i32)
+                                        .write(i32::try_from(patch_val).unwrap()),
                                     64 => (patch_ptr as *mut i64).write(patch_val),
-                                    _ => panic!("Unsupported relative relocation size {:?}", rela.size()),
+                                    _ => panic!(
+                                        "Unsupported relative relocation size {:?}",
+                                        rela.size()
+                                    ),
                                 }
                             }
-                        },
+                        }
                         _ => panic!("Unsupported relocation kind {:?}", rela.kind()),
-
                     }
                 }
                 _ => panic!("Unsupported relocation target {:?}", rela.target()),
@@ -624,34 +756,19 @@ impl Compiler {
             if let Ok(name) = symbol.name() {
                 let func_ptr = unsafe { text_sec.as_ptr().offset(symbol.address() as isize) };
                 println!("Symbol {} - {} - {:?}", name, symbol.address(), func_ptr);
-                symbol_map.insert(
-                    name,
-                    func_ptr,
-                );
+                symbol_map.insert(name, func_ptr);
             }
         }
-        
-        let jit_functions = JitFunctions::new(
-            &symbol_map,
-        )?;
-        
-        let jit_grad_functions = JitGradFunctions::new(
-            &symbol_map,
-        )?;
 
-        let jit_get_tensor_functions = JitGetTensorFunctions::new(
-            &symbol_map,
-        )?;
+        let jit_functions = JitFunctions::new(&symbol_map)?;
 
-        let jit_grad_r_functions = JitGradRFunctions::new(
-            &symbol_map,
-        ).ok();
-        let jit_sens_grad_functions = JitSensGradFunctions::new(
-            &symbol_map,
-        ).ok();
-        let jit_sens_rev_grad_functions = JitSensRevGradFunctions::new(
-            &symbol_map,
-        ).ok();
+        let jit_grad_functions = JitGradFunctions::new(&symbol_map)?;
+
+        let jit_get_tensor_functions = JitGetTensorFunctions::new(&symbol_map)?;
+
+        let jit_grad_r_functions = JitGradRFunctions::new(&symbol_map).ok();
+        let jit_sens_grad_functions = JitSensGradFunctions::new(&symbol_map).ok();
+        let jit_sens_rev_grad_functions = JitSensRevGradFunctions::new(&symbol_map).ok();
 
         let mut ret = Self {
             jit_functions,
@@ -670,15 +787,22 @@ impl Compiler {
             thread_lock: None,
             _mapped_sections: mapped_sections,
         };
-        
-        let (number_of_states, number_of_parameters, number_of_outputs, data_size, number_of_stops, has_mass) = ret.get_dims();
+
+        let (
+            number_of_states,
+            number_of_parameters,
+            number_of_outputs,
+            data_size,
+            number_of_stops,
+            has_mass,
+        ) = ret.get_dims();
         ret.number_of_states = number_of_states;
         ret.number_of_parameters = number_of_parameters;
         ret.number_of_outputs = number_of_outputs;
         ret.number_of_stop = number_of_stops;
         ret.has_mass = has_mass;
         ret.data_size = data_size;
-        
+
         let thread_dim = mode.thread_dim(number_of_states);
         let (thread_pool, thread_lock) = if thread_dim > 1 {
             (
@@ -690,7 +814,6 @@ impl Compiler {
         };
         ret.thread_pool = thread_pool;
         ret.thread_lock = thread_lock;
-        
 
         // all done, can set constants now
         ret.set_constants();
@@ -720,7 +843,9 @@ impl Compiler {
                     &mut tensor_size as *mut u32,
                 )
             };
-            Some(unsafe { std::slice::from_raw_parts(tensor_data, usize::try_from(tensor_size).unwrap()) })
+            Some(unsafe {
+                std::slice::from_raw_parts(tensor_data, usize::try_from(tensor_size).unwrap())
+            })
         } else {
             None
         }
@@ -744,7 +869,9 @@ impl Compiler {
                     &mut tensor_size as *mut u32,
                 )
             };
-            Some(unsafe { std::slice::from_raw_parts(tensor_data, usize::try_from(tensor_size).unwrap()) })
+            Some(unsafe {
+                std::slice::from_raw_parts(tensor_data, usize::try_from(tensor_size).unwrap())
+            })
         } else {
             None
         }
@@ -765,7 +892,9 @@ impl Compiler {
                     &mut tensor_size as *mut u32,
                 )
             };
-            Some(unsafe { std::slice::from_raw_parts_mut(tensor_data, usize::try_from(tensor_size).unwrap()) })
+            Some(unsafe {
+                std::slice::from_raw_parts_mut(tensor_data, usize::try_from(tensor_size).unwrap())
+            })
         } else {
             None
         }
@@ -1617,16 +1746,22 @@ mod tests {
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         compiler.calc_out(0., u0.as_slice(), data.as_mut_slice(), out.as_mut_slice());
-        let (tensor_len, tensor_is_constant) = if let Some(tensor_data) = compiler.get_tensor_data(tensor_name, data.as_slice()) {
-            results.push(tensor_data.to_vec());
-            (tensor_data.len(), false)
-        } else if let Some(tensor_data) = compiler.get_constants_data(tensor_name) {
-            results.push(tensor_data.to_vec());
-            (tensor_data.len(), true)
-        } else {
-            panic!("{} is not a valid tensor name, tensors are {:?} and constants are {:?}", tensor_name, compiler.get_tensors(), compiler.get_constants());
-        };
-        
+        let (tensor_len, tensor_is_constant) =
+            if let Some(tensor_data) = compiler.get_tensor_data(tensor_name, data.as_slice()) {
+                results.push(tensor_data.to_vec());
+                (tensor_data.len(), false)
+            } else if let Some(tensor_data) = compiler.get_constants_data(tensor_name) {
+                results.push(tensor_data.to_vec());
+                (tensor_data.len(), true)
+            } else {
+                panic!(
+                    "{} is not a valid tensor name, tensors are {:?} and constants are {:?}",
+                    tensor_name,
+                    compiler.get_tensors(),
+                    compiler.get_constants()
+                );
+            };
+
         // forward mode
         let mut dinputs = vec![0.; n_inputs];
         dinputs.fill(1.);

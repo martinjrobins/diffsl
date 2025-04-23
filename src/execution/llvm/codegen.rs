@@ -16,7 +16,7 @@ use inkwell::values::{
     FunctionValue, GlobalValue, IntValue, PointerValue,
 };
 use inkwell::{
-    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, GlobalVisibility, IntPredicate
+    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, GlobalVisibility, IntPredicate,
 };
 use llvm_sys::core::{
     LLVMBuildCall2, LLVMGetArgOperand, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
@@ -127,14 +127,17 @@ impl CodegenModule for LlvmModule {
 
         let module = self.codegen().module();
         //module.print_to_stderr();
-        let buffer = machine.write_to_memory_buffer(module, FileType::Object).unwrap().as_slice().to_vec();
+        let buffer = machine
+            .write_to_memory_buffer(module, FileType::Object)
+            .unwrap()
+            .as_slice()
+            .to_vec();
         Ok(buffer)
     }
 
     fn layout(&self) -> &DataLayout {
         &self.codegen().layout
     }
-
 
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_set_u0(model)
@@ -788,8 +791,6 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.insert_indices();
         self.insert_constants(model);
-        let print_value = self.int_type.const_int(0, false);
-        self.compile_print_value("name", PrintValue::Int(print_value))?;
 
         let mut nbarriers = 0;
         let total_barriers = (model.constant_defns().len()) as u64;
@@ -3356,13 +3357,10 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_ptr_type = Self::pointer_type(self.context, self.real_ptr_type.into());
-        let fn_type = self.context.void_type().fn_type(
-            &[
-                real_ptr_ptr_type.into(),
-                self.int_ptr_type.into(),
-            ],
-            false,
-        );
+        let fn_type = self
+            .context
+            .void_type()
+            .fn_type(&[real_ptr_ptr_type.into(), self.int_ptr_type.into()], false);
         let function_name = format!("get_constant_{}", name);
         let function = self
             .module
@@ -3379,7 +3377,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_param(name, alloca);
         }
 
-        self.insert_data(model);
+        self.insert_constants(model);
         let ptr = self.get_param(name);
         let tensor_size = self.layout.get_layout(name).unwrap().nnz() as u64;
         let tensor_size_value = self.int_type.const_int(tensor_size, false);
@@ -3600,4 +3598,3 @@ impl<'ctx> CodeGen<'ctx> {
         &self.module
     }
 }
-

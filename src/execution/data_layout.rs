@@ -131,7 +131,9 @@ impl DataLayout {
     }
 
     pub fn tensors(&self) -> impl Iterator<Item = (&String, bool)> {
-        self.data_index_map.keys().map(|name| (name, *self.is_constant_map.get(name).unwrap()))
+        self.data_index_map
+            .keys()
+            .map(|name| (name, *self.is_constant_map.get(name).unwrap()))
     }
 
     // get the layout of a tensor by name

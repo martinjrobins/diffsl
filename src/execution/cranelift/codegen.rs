@@ -206,7 +206,6 @@ unsafe impl Sync for CraneliftModule {}
 impl CodegenModule for CraneliftModule {
     type FuncId = FuncId;
 
-
     fn finish(self) -> Result<Vec<u8>> {
         self.module.finish().emit().map_err(|e| anyhow!(e))
     }
@@ -492,7 +491,8 @@ impl CodegenModule for CraneliftModule {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .unwrap();
-        let builder = ObjectBuilder::new(isa, "diffsol", cranelift_module::default_libcall_names())?;
+        let builder =
+            ObjectBuilder::new(isa, "diffsol", cranelift_module::default_libcall_names())?;
 
         let mut module = ObjectModule::new(builder);
 

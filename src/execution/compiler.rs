@@ -720,7 +720,12 @@ impl Compiler {
         }
         // make jumptable read only and executable and insert it into the mapped sections
         if let Some(jumptable_map) = jumptable_map {
-            mapped_sections.insert("jumptable".to_string(), MappedSection::Immutable(jumptable_map.make_read_only().unwrap().make_exec().unwrap()));
+            mapped_sections.insert(
+                "jumptable".to_string(),
+                MappedSection::Immutable(
+                    jumptable_map.make_read_only().unwrap().make_exec().unwrap(),
+                ),
+            );
         }
         // make text section immutable and executable
         let mut text_sec = mapped_sections.remove(".text").unwrap();

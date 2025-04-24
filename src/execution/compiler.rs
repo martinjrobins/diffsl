@@ -11,7 +11,7 @@ use crate::{
     parser::parse_ds_string,
 };
 use mmap_rs::{Mmap, MmapMut, MmapOptions};
-use object::{Object, ObjectSection, ObjectSymbol, RelocationKind, RelocationTarget};
+use object::{Object, ObjectSection, ObjectSymbol, RelocationKind, RelocationTarget, SectionKind};
 
 use super::{
     interface::{
@@ -521,7 +521,7 @@ impl Compiler {
         let file = object::File::parse(buffer.as_slice())?;
         let mut text_sec = None;
         for section in file.sections() {
-            if section.name() == Ok(".text") {
+            if let SectionKind::Text = section.kind() {
                 text_sec = Some(section);
             }
         }
@@ -589,16 +589,25 @@ impl Compiler {
             let mut section_map = map.split_to(*size).unwrap().make_mut().unwrap();
             let section_data = section.data().expect("Could not get section data");
             section_map.as_mut_slice()[..section_data.len()].copy_from_slice(section_data);
-            if *name == ".text" || name.starts_with(".bss") {
-                // text needs to be mutable to allow for relocations
-                // bss is mutable
-                mapped_sections.insert(name.to_string(), MappedSection::Mutable(section_map));
-            } else {
-                // everything else is immutable
-                mapped_sections.insert(
-                    name.to_string(),
-                    MappedSection::Immutable(section_map.make_read_only().unwrap()),
-                );
+            match section.kind() {
+                SectionKind::Text => {
+                    // text sections need to be writable, standardise name so we can get it again
+                    mapped_sections
+                        .insert(".text".to_string(), MappedSection::Mutable(section_map));
+                }
+                SectionKind::Data
+                | SectionKind::UninitializedData
+                | SectionKind::UninitializedTls => {
+                    // writable data needs to be writable
+                    mapped_sections.insert(name.to_string(), MappedSection::Mutable(section_map));
+                }
+                _ => {
+                    // everything else is immutable
+                    mapped_sections.insert(
+                        name.to_string(),
+                        MappedSection::Immutable(section_map.make_read_only().unwrap()),
+                    );
+                }
             }
         }
         let mut jumptable_map = map.split_to(jumptable_size).unwrap().make_mut().unwrap();

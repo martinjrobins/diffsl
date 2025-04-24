@@ -63,7 +63,7 @@ pub fn function_resolver(name: &str) -> Option<*const u8> {
 }
 
 /// taken from https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/cranelift/jit/src/backend.rs#L636C1-L677C2
-/// Apache License 2.0
+/// Apache License 2.0, see https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/LICENSE#L1
 #[cfg(not(windows))]
 fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
     let c_str = CString::new(name).unwrap();
@@ -77,7 +77,7 @@ fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
 }
 
 /// taken from https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/cranelift/jit/src/backend.rs#L636C1-L677C2
-/// Apache License 2.0
+/// Apache License 2.0, see https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/LICENSE#L1
 #[cfg(windows)]
 fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
     use std::os::windows::io::RawHandle;

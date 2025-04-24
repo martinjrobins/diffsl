@@ -1,4 +1,5 @@
 #![allow(clippy::type_complexity)]
+use std::ffi::CString;
 pub const FUNCTIONS: &[(
     &str,
     extern "C" fn(f64) -> f64,
@@ -31,6 +32,37 @@ pub const TWO_ARG_FUNCTIONS: &[(
     ("min", min, dmin),
     ("max", max, dmax),
 ];
+
+pub fn function_resolver(name: &str) -> Option<*const u8> {
+    let mut addr: *const u8 = std::ptr::null();
+    for func in crate::execution::functions::FUNCTIONS.iter() {
+        if func.0 == name {
+            addr = func.1 as *const u8;
+        }
+        if format!("{}__tangent__", func.0) == name {
+            addr = func.2 as *const u8;
+        }
+    }
+    for func in crate::execution::functions::TWO_ARG_FUNCTIONS.iter() {
+        if func.0 == name {
+            addr = func.1 as *const u8;
+        }
+        if format!("{}__tangent__", func.0) == name {
+            addr = func.2 as *const u8;
+        }
+    }
+    // include a libc lookup
+    if addr.is_null() {
+        let c_str = CString::new(name).unwrap();
+        let c_str_ptr = c_str.as_ptr();
+        addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_str_ptr) } as *const u8;
+    }
+    if addr.is_null() {
+        None
+    } else {
+        Some(addr)
+    }
+}
 
 pub fn function_num_args(name: &str, is_tangent: bool) -> Option<usize> {
     let one = FUNCTIONS.iter().find(|(n, _, _)| n == &name);

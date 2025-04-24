@@ -1,9 +1,12 @@
-use std::{cmp::min, collections::HashMap, env::consts::ARCH, fs::File, io::Write, num::NonZero};
+use std::{cmp::min, collections::HashMap, env::consts::ARCH, num::NonZero};
 
 use crate::{
     discretise::DiscreteModel,
-    execution::interface::{
-        CalcOutFunc, GetDimsFunc, MassFunc, RhsFunc, SetIdFunc, SetInputsFunc, StopFunc, U0Func,
+    execution::{
+        functions::function_resolver,
+        interface::{
+            CalcOutFunc, GetDimsFunc, MassFunc, RhsFunc, SetIdFunc, SetInputsFunc, StopFunc, U0Func,
+        },
     },
     parser::parse_ds_string,
 };
@@ -270,17 +273,17 @@ struct JitSensRevGradFunctions {
 
 impl JitSensRevGradFunctions {
     fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
-        let required_symbols = ["rhs_rgrad", "calc_out_rgrad"];
+        let required_symbols = ["rhs_srgrad", "calc_out_srgrad"];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
             }
         }
         let rhs_rgrad = unsafe {
-            std::mem::transmute::<*const u8, RhsSensRevGradFunc>(symbol_map["rhs_rgrad"])
+            std::mem::transmute::<*const u8, RhsSensRevGradFunc>(symbol_map["rhs_srgrad"])
         };
         let calc_out_rgrad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutSensRevGradFunc>(symbol_map["calc_out_rgrad"])
+            std::mem::transmute::<*const u8, CalcOutSensRevGradFunc>(symbol_map["calc_out_srgrad"])
         };
 
         Ok(Self {
@@ -370,21 +373,32 @@ impl CompilerMode {
     }
 }
 
+/// https://blog.cloudflare.com/how-to-execute-an-object-file-part-3/
 #[repr(C)]
 struct JumpTableEntryX86 {
     addr: *const u8,
-    instr: [u8; 7],
+    instr: [u8; 6],
 }
 
 impl JumpTableEntryX86 {
     fn new(addr: *const u8) -> Self {
-        Self {
+        let mut ret = Self {
             addr,
-            instr: [0xFF, 0x25, 0xF2, 0xFF, 0xFF, 0xFF, 0xFF],
-        }
+            // unconditional x64 JMP instruction
+            // jmp    QWORD PTR [rip+0xfffffffffffffff2]
+            // should always be {0xff, 0x25, 0xf2, 0xff, 0xff, 0xff}
+            // so it would jump to an address stored at addr above
+            instr: [0xFF, 0x25, 0xF2, 0xFF, 0xFF, 0xFF],
+        };
+        // just in case we'll calculate the offset and overwrite it
+        let addr_ptr = &ret.addr as *const *const u8 as *const u8;
+        let after_ptr = unsafe { (ret.instr.as_ptr()).add(ret.instr.len()) };
+        let offset = (-((after_ptr as usize - addr_ptr as usize) as i32)).to_ne_bytes();
+        ret.instr[2..6].copy_from_slice(&offset);
+        ret
     }
     fn jump_ptr(&self) -> *const u8 {
-        self.instr.as_ptr()
+        &self.instr[0] as *const u8
     }
     fn from_bytes(bytes: &mut [u8]) -> &mut [Self] {
         let size = std::mem::size_of::<Self>();
@@ -393,6 +407,7 @@ impl JumpTableEntryX86 {
     }
 }
 
+/// https://blog.cloudflare.com/how-to-execute-an-object-file-part-4/
 #[repr(C)]
 struct JumpTableEntryAarch64 {
     instr: [u32; 4],
@@ -497,12 +512,7 @@ impl Compiler {
         }
 
         module.post_autodiff_optimisation()?;
-        let buffer = module.finish()?;
-        // write the object file to the test.o file
-        let mut file = File::create("test.o")?;
-        file.write_all(&buffer)?;
-        file.flush()?;
-        Ok(buffer)
+        module.finish()
     }
 
     pub fn from_object_file(buffer: Vec<u8>, mode: CompilerMode) -> Result<Self> {
@@ -511,27 +521,11 @@ impl Compiler {
         let file = object::File::parse(buffer.as_slice())?;
         let mut text_sec = None;
         for section in file.sections() {
-            println!(
-                "Section[{}] {} - {} - {:?}",
-                section.index(),
-                section.name().unwrap_or_else(|_| "<unknown>".into()),
-                section.size(),
-                section.kind(),
-            );
             if section.name() == Ok(".text") {
                 text_sec = Some(section);
             }
         }
-        for symbols in file.symbols() {
-            println!(
-                "Symbol {} - {} - {:?} - {:?} - {}",
-                symbols.name().unwrap_or_else(|_| "<unknown>".into()),
-                symbols.size(),
-                symbols.kind(),
-                symbols.section_index(),
-                symbols.address(),
-            );
-        }
+
         let text_sec = text_sec.ok_or_else(|| anyhow!("Could not find .text section"))?;
         let min_page_size = MmapOptions::page_size();
         let mut sections_to_map = HashMap::new();
@@ -541,7 +535,7 @@ impl Compiler {
         );
 
         let jumptable_entry_size = match ARCH {
-            "x86_64" | "x86" => std::mem::size_of::<JumpTableEntryX86>(),
+            "x86_64" => std::mem::size_of::<JumpTableEntryX86>(),
             "aarch64" => std::mem::size_of::<JumpTableEntryAarch64>(),
             _ => panic!("Unsupported architecture for jump table"),
         };
@@ -592,7 +586,6 @@ impl Compiler {
             let section = file
                 .section_by_index(*section_id)
                 .expect("Could not find section");
-            println!("Mapping section {} - {} - {}", name, section.size(), size,);
             let mut section_map = map.split_to(*size).unwrap().make_mut().unwrap();
             let section_data = section.data().expect("Could not get section data");
             section_map.as_mut_slice()[..section_data.len()].copy_from_slice(section_data);
@@ -622,16 +615,6 @@ impl Compiler {
                 RelocationTarget::Symbol(s) => {
                     let symbol = file.symbol_by_index(s).unwrap();
                     let symbol_name = symbol.name().expect("symbol does not have a name");
-                    println!(
-                        "relocation {} - {} - {:?} - {:?} - {} - {} - {:?}",
-                        symbol_name,
-                        symbol.size(),
-                        symbol.kind(),
-                        symbol.section_index(),
-                        rela.addend(),
-                        rela.size(),
-                        rela.kind()
-                    );
                     match rela.kind() {
                         RelocationKind::Absolute => {
                             // S + A
@@ -642,19 +625,11 @@ impl Compiler {
                             assert!(symbol.kind() == object::SymbolKind::Unknown);
 
                             // find the function pointer:
-                            let mut ptr: *const u8 = std::ptr::null();
-                            for func in crate::execution::functions::FUNCTIONS.iter() {
-                                if func.0 == symbol_name {
-                                    ptr = func.1 as *const u8;
-                                }
-                            }
-                            for func in crate::execution::functions::TWO_ARG_FUNCTIONS.iter() {
-                                if func.0 == symbol_name {
-                                    ptr = func.1 as *const u8;
-                                }
-                            }
-                            // check we found the function
-                            assert!(!ptr.is_null());
+
+                            let ptr = function_resolver(symbol_name).unwrap_or_else(|| {
+                                panic!("Could not resolve function {}", symbol_name)
+                            });
+
                             // add the addend and store
                             unsafe {
                                 let patch_val = ptr.offset(rela.addend() as isize) as u64;
@@ -680,45 +655,30 @@ impl Compiler {
                                 unsafe { section_ptr.offset(symbol.address() as isize) }
                             } else {
                                 // must be an external function call generate the jump table entry
-                                let mut addr: *const u8 = std::ptr::null();
-                                for func in crate::execution::functions::FUNCTIONS.iter() {
-                                    if func.0 == symbol_name {
-                                        addr = func.1 as *const u8;
-                                    }
-                                }
-                                for func in crate::execution::functions::TWO_ARG_FUNCTIONS.iter() {
-                                    if func.0 == symbol_name {
-                                        addr = func.1 as *const u8;
-                                    }
-                                }
-                                assert!(
-                                    !addr.is_null(),
-                                    "Could not find function {} in functions",
-                                    symbol_name
-                                );
-                                match ARCH {
-                                    "x86_64" | "x86" => {
+                                let addr = function_resolver(symbol_name).unwrap_or_else(|| {
+                                    panic!("Could not resolve function {}", symbol_name)
+                                });
+                                let symbol_ptr = match ARCH {
+                                    "x86_64" => {
                                         let jumptable = JumpTableEntryX86::from_bytes(
                                             jumptable_map.as_mut_slice(),
                                         );
                                         jumptable[jumptable_idx] = JumpTableEntryX86::new(addr);
-                                        let ptr = jumptable[jumptable_idx].jump_ptr();
-                                        jumptable_idx += 1;
-                                        ptr
+                                        jumptable[jumptable_idx].jump_ptr()
                                     }
                                     "aarch64" => {
                                         let jumptable = JumpTableEntryAarch64::from_bytes(
                                             jumptable_map.as_mut_slice(),
                                         );
                                         jumptable[jumptable_idx] = JumpTableEntryAarch64::new(addr);
-                                        let ptr = jumptable[jumptable_idx].jump_ptr();
-                                        jumptable_idx += 1;
-                                        ptr
+                                        jumptable[jumptable_idx].jump_ptr()
                                     }
                                     _ => {
                                         panic!("Unsupported architecture for jump table");
                                     }
-                                }
+                                };
+                                jumptable_idx += 1;
+                                symbol_ptr
                             };
                             unsafe {
                                 let symbol_addr = symbol_ptr as u64;
@@ -746,6 +706,12 @@ impl Compiler {
                 _ => panic!("Unsupported relocation target {:?}", rela.target()),
             }
         }
+        // make jumptable read only and executable and insert it into the mapped sections
+        let jumptable_map = jumptable_map.make_read_only().unwrap().make_exec().unwrap();
+        mapped_sections.insert(
+            "jumptable".to_string(),
+            MappedSection::Immutable(jumptable_map),
+        );
         // make text section immutable and executable
         let mut text_sec = mapped_sections.remove(".text").unwrap();
         text_sec = text_sec.make_read_only().unwrap().make_exec().unwrap();
@@ -755,17 +721,13 @@ impl Compiler {
         for symbol in file.symbols() {
             if let Ok(name) = symbol.name() {
                 let func_ptr = unsafe { text_sec.as_ptr().offset(symbol.address() as isize) };
-                println!("Symbol {} - {} - {:?}", name, symbol.address(), func_ptr);
                 symbol_map.insert(name, func_ptr);
             }
         }
 
         let jit_functions = JitFunctions::new(&symbol_map)?;
-
         let jit_grad_functions = JitGradFunctions::new(&symbol_map)?;
-
         let jit_get_tensor_functions = JitGetTensorFunctions::new(&symbol_map)?;
-
         let jit_grad_r_functions = JitGradRFunctions::new(&symbol_map).ok();
         let jit_sens_grad_functions = JitSensGradFunctions::new(&symbol_map).ok();
         let jit_sens_rev_grad_functions = JitSensRevGradFunctions::new(&symbol_map).ok();

@@ -211,6 +211,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
+            "set_u0_grad",
         )
     }
 
@@ -232,6 +233,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
+            "set_u0_rgrad",
         )
     }
 
@@ -251,6 +253,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
+            "rhs_grad",
         )
     }
 
@@ -270,6 +273,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
+            "mass_rgrad",
         )
     }
 
@@ -289,6 +293,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
+            "rhs_rgrad",
         )
     }
 
@@ -308,6 +313,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
+            "calc_out_grad",
         )
     }
 
@@ -327,6 +333,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
+            "calc_out_rgrad",
         )
     }
 
@@ -342,6 +349,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
             ],
             CompileMode::Forward,
+            "set_inputs_grad",
         )
     }
 
@@ -357,6 +365,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
             ],
             CompileMode::Reverse,
+            "set_inputs_rgrad",
         )
     }
 
@@ -375,7 +384,8 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
-            CompileMode::Forward,
+            CompileMode::ForwardSens,
+            "rhs_sgrad",
         )
     }
 
@@ -394,7 +404,8 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
-            CompileMode::Forward,
+            CompileMode::ForwardSens,
+            "calc_out_sgrad",
         )
     }
 
@@ -413,7 +424,8 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
-            CompileMode::Reverse,
+            CompileMode::ReverseSens,
+            "calc_out_srgrad",
         )
     }
 
@@ -432,7 +444,8 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
-            CompileMode::Reverse,
+            CompileMode::ReverseSens,
+            "rhs_srgrad",
         )
     }
 
@@ -495,10 +508,10 @@ impl CodegenModule for LlvmModule {
             }
         }
 
-        self.codegen()
-            .module()
-            .print_to_file("post_autodiff_optimisation.ll")
-            .unwrap();
+        //self.codegen()
+        //    .module()
+        //    .print_to_file("post_autodiff_optimisation.ll")
+        //    .unwrap();
 
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
@@ -610,7 +623,9 @@ pub enum CompileGradientArgType {
 
 pub enum CompileMode {
     Forward,
+    ForwardSens,
     Reverse,
+    ReverseSens,
 }
 
 pub struct CodeGen<'ctx> {
@@ -2958,6 +2973,7 @@ impl<'ctx> CodeGen<'ctx> {
         original_function: FunctionValue<'ctx>,
         args_type: &[CompileGradientArgType],
         mode: CompileMode,
+        fn_name: &str,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
 
@@ -2992,15 +3008,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(fn_type.as_slice(), false);
-        let fn_name = match mode {
-            CompileMode::Forward => {
-                format!("{}_grad", original_function.get_name().to_str().unwrap())
-            }
-            CompileMode::Reverse => {
-                format!("{}_rgrad", original_function.get_name().to_str().unwrap())
-            }
-        };
-        let function = self.module.add_function(fn_name.as_str(), fn_type, None);
+        let function = self.module.add_function(fn_name, fn_type, None);
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -3120,7 +3128,7 @@ impl<'ctx> CodeGen<'ctx> {
         let mut args_uncacheable = vec![0; arg_trees.len()];
 
         let enzyme_function = match mode {
-            CompileMode::Forward => unsafe {
+            CompileMode::Forward | CompileMode::ForwardSens => unsafe {
                 EnzymeCreateForwardDiff(
                     logic_ref, // Logic
                     std::ptr::null_mut(),
@@ -3142,7 +3150,7 @@ impl<'ctx> CodeGen<'ctx> {
                     std::ptr::null_mut(),   // write augmented function to this
                 )
             },
-            CompileMode::Reverse => {
+            CompileMode::Reverse | CompileMode::ReverseSens => {
                 let mut call_enzyme = || unsafe {
                     EnzymeCreatePrimalAndGradient(
                         logic_ref,

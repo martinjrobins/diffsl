@@ -51,8 +51,8 @@ impl CraneliftModule {
             .module
             .declare_function(name, Linkage::Export, &self.ctx.func.signature)?;
 
-        println!("Declared function: {} -------------------------------------------------------------------------------------", name);
-        println!("IR:\n{}", self.ctx.func);
+        //println!("Declared function: {} -------------------------------------------------------------------------------------", name);
+        //println!("IR:\n{}", self.ctx.func);
 
         // Define the function to jit. This finishes compilation, although
         // there may be outstanding relocations to perform. Currently, jit

@@ -92,7 +92,7 @@ fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
     unsafe {
         let handles = [
             // try to find the searched symbol in the currently running executable
-            ptr::null_mut(),
+            std::ptr::null_mut(),
             // try to find the searched symbol in local c runtime
             LibraryLoader::GetModuleHandleA(UCRTBASE.as_ptr()) as RawHandle,
         ];

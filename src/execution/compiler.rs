@@ -610,7 +610,11 @@ impl Compiler {
                 }
             }
         }
-        let mut jumptable_map = map.split_to(jumptable_size).unwrap().make_mut().unwrap();
+        let mut jumptable_map = if jumptable_size > 0 {
+            Some(map.split_to(jumptable_size).unwrap().make_mut().unwrap())
+        } else {
+            None
+        };
         let mut jumptable_idx = 0;
         for (offset, rela) in text_sec.relocations() {
             let text_ptr = mapped_sections
@@ -628,10 +632,9 @@ impl Compiler {
                         RelocationKind::Absolute => {
                             // S + A
                             // we will assume that any absolute relocation is an external function (from cranelift backend)
-                            // for this address should be 0 and section is undefined and kind is unknown
+                            // for this address should be 0 and section is undefined
                             assert!(symbol.section_index().is_none());
                             assert!(symbol.address() == 0);
-                            assert!(symbol.kind() == object::SymbolKind::Unknown);
 
                             // find the function pointer:
 
@@ -670,14 +673,14 @@ impl Compiler {
                                 let symbol_ptr = match ARCH {
                                     "x86_64" => {
                                         let jumptable = JumpTableEntryX86::from_bytes(
-                                            jumptable_map.as_mut_slice(),
+                                            jumptable_map.as_mut().unwrap().as_mut_slice(),
                                         );
                                         jumptable[jumptable_idx] = JumpTableEntryX86::new(addr);
                                         jumptable[jumptable_idx].jump_ptr()
                                     }
                                     "aarch64" => {
                                         let jumptable = JumpTableEntryAarch64::from_bytes(
-                                            jumptable_map.as_mut_slice(),
+                                            jumptable_map.as_mut().unwrap().as_mut_slice(),
                                         );
                                         jumptable[jumptable_idx] = JumpTableEntryAarch64::new(addr);
                                         jumptable[jumptable_idx].jump_ptr()
@@ -716,11 +719,9 @@ impl Compiler {
             }
         }
         // make jumptable read only and executable and insert it into the mapped sections
-        let jumptable_map = jumptable_map.make_read_only().unwrap().make_exec().unwrap();
-        mapped_sections.insert(
-            "jumptable".to_string(),
-            MappedSection::Immutable(jumptable_map),
-        );
+        if let Some(jumptable_map) = jumptable_map {
+            mapped_sections.insert("jumptable".to_string(), MappedSection::Immutable(jumptable_map.make_read_only().unwrap().make_exec().unwrap()));
+        }
         // make text section immutable and executable
         let mut text_sec = mapped_sections.remove(".text").unwrap();
         text_sec = text_sec.make_read_only().unwrap().make_exec().unwrap();

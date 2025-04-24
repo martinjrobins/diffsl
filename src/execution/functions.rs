@@ -53,14 +53,59 @@ pub fn function_resolver(name: &str) -> Option<*const u8> {
     }
     // include a libc lookup
     if addr.is_null() {
-        let c_str = CString::new(name).unwrap();
-        let c_str_ptr = c_str.as_ptr();
-        addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_str_ptr) } as *const u8;
+        addr = lookup_with_dlsym(name).unwrap_or(std::ptr::null());
     }
     if addr.is_null() {
         None
     } else {
         Some(addr)
+    }
+}
+
+/// taken from https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/cranelift/jit/src/backend.rs#L636C1-L677C2
+/// Apache License 2.0
+#[cfg(not(windows))]
+fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
+    let c_str = CString::new(name).unwrap();
+    let c_str_ptr = c_str.as_ptr();
+    let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_str_ptr) };
+    if sym.is_null() {
+        None
+    } else {
+        Some(sym as *const u8)
+    }
+}
+
+/// taken from https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/cranelift/jit/src/backend.rs#L636C1-L677C2
+/// Apache License 2.0
+#[cfg(windows)]
+fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
+    use std::os::windows::io::RawHandle;
+    use windows_sys::Win32::Foundation::HMODULE;
+    use windows_sys::Win32::System::LibraryLoader;
+
+    const UCRTBASE: &[u8] = b"ucrtbase.dll\0";
+
+    let c_str = CString::new(name).unwrap();
+    let c_str_ptr = c_str.as_ptr();
+
+    unsafe {
+        let handles = [
+            // try to find the searched symbol in the currently running executable
+            ptr::null_mut(),
+            // try to find the searched symbol in local c runtime
+            LibraryLoader::GetModuleHandleA(UCRTBASE.as_ptr()) as RawHandle,
+        ];
+
+        for handle in &handles {
+            let addr = LibraryLoader::GetProcAddress(*handle as HMODULE, c_str_ptr.cast());
+            match addr {
+                None => continue,
+                Some(addr) => return Some(addr as *const u8),
+            }
+        }
+
+        None
     }
 }
 

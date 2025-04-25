@@ -1,4 +1,5 @@
-use std::{cmp::min, collections::HashMap, env::consts::ARCH, num::NonZero};
+use core::panic;
+use std::{any::Any, cmp::min, collections::HashMap, env::consts::ARCH, num::NonZero};
 
 use crate::{
     discretise::DiscreteModel,
@@ -11,7 +12,7 @@ use crate::{
     parser::parse_ds_string,
 };
 use mmap_rs::{Mmap, MmapMut, MmapOptions};
-use object::{Object, ObjectSection, ObjectSymbol, RelocationKind, RelocationTarget, SectionKind};
+use object::{macho::{ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12}, Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationKind, RelocationTarget, SectionKind};
 
 use super::{
     interface::{
@@ -512,7 +513,21 @@ impl Compiler {
         }
 
         module.post_autodiff_optimisation()?;
-        module.finish()
+        let obj_file = module.finish()?;
+        // write the object file to test.o in current directory
+
+        let obj_file_path = std::env::current_dir()
+            .map_err(|e| anyhow!("Failed to get current directory: {:?}", e))?
+            .join("test.o");
+        std::fs::write(&obj_file_path, &obj_file).map_err(|e| {
+            anyhow!(
+                "Failed to write object file to {}: {:?}",
+                obj_file_path.display(),
+                e
+            )
+        })?;
+        Ok(obj_file)
+
     }
 
     pub fn from_object_file(buffer: Vec<u8>, mode: CompilerMode) -> Result<Self> {
@@ -628,6 +643,7 @@ impl Compiler {
                 RelocationTarget::Symbol(s) => {
                     let symbol = file.symbol_by_index(s).unwrap();
                     let symbol_name = symbol.name().expect("symbol does not have a name");
+                    println!("Relocation: {} {:?}", symbol_name, rela);
                     match rela.kind() {
                         RelocationKind::Absolute => {
                             // S + A
@@ -694,13 +710,12 @@ impl Compiler {
                             };
                             unsafe {
                                 let symbol_addr = symbol_ptr as u64;
-                                let addend = rela.addend();
                                 let s_minus_p = if symbol_addr > patch_addr {
                                     (symbol_addr - patch_addr) as i64
                                 } else {
                                     -((patch_addr - symbol_addr) as i64)
                                 };
-                                let patch_val = s_minus_p + addend;
+                                let patch_val = s_minus_p + rela.addend();
                                 match rela.size() {
                                     32 => (patch_ptr as *mut i32)
                                         .write(i32::try_from(patch_val).unwrap()),
@@ -711,7 +726,52 @@ impl Compiler {
                                     ),
                                 }
                             }
-                        }
+                        },
+                        // support some AARM64 relocations in MachO format
+                        RelocationKind::Unknown => {
+                            match ARCH {
+                                "aarch64" => {
+                                    match rela.flags() {
+                                        RelocationFlags::MachO { r_type, r_pcrel, r_length } => {
+                                            match rtype {
+                                                // offset within page, scaled by r_length
+                                                ARM64_RELOC_PAGEOFF12 => {
+                                                    // https://blog.cloudflare.com/how-to-execute-an-object-file-part-4/§
+                                                    // The mask of `add` instruction to separate 
+	                                                // opcode, registers and calculated value 
+	                                                let mask_add: u32 = 0b11111111110000000000001111111111;
+	                                                // S + A 
+	                                                let val: u32 = (symbol_address + rela.addend()) & !mask_add;
+                                                    *((uint32_t *)patch_offset) &= mask_add;
+                                                    // Final instruction 
+                                                    *((uint32_t *)patch_offset) |= val;
+
+                                                },
+                                                // pc-rel distance to page of target
+                                                ARM64_RELOC_PAGE21 => {
+                                                    // Page(S+A)-Page(P), Page(expr) is defined as (expr & ~0xFFF) 
+	                                                val = (((uint64_t)(symbol_address + relocations[i].r_addend)) & ~0xFFF) - (((uint64_t)patch_offset) & ~0xFFF);
+                                                    // Shift right the calculated value by 12 bits.
+                                                    // During decoding it will be shifted left as described above, 
+                                                    // so we do the opposite.
+                                                    val >>= 12;
+                                                    /* Separate the lower and upper bits to place them in different positions */ 
+                                                    uint32_t immlo = (val & (0xf >> 2)) << 29 ;
+                                                    uint32_t immhi = (val & ((0xffffff >> 13) << 2)) << 22;
+                                                    *((uint32_t *)patch_offset) |= immlo;
+                                                    *((uint32_t *)patch_offset) |= immhi;
+                                                },
+                                            }
+
+                                        },
+                                        _ => {
+                                            panic!("Unsupported relocation flags {:?}", rela.flags())
+                                        }
+                                    }
+                                },
+                                _ => panic!("Unsupported architecture for unknown relocation"),
+                            }
+                        },
                         _ => panic!("Unsupported relocation kind {:?}", rela.kind()),
                     }
                 }
@@ -736,6 +796,12 @@ impl Compiler {
         for symbol in file.symbols() {
             if let Ok(name) = symbol.name() {
                 let func_ptr = unsafe { text_sec.as_ptr().offset(symbol.address() as isize) };
+                // for some reason on macOS the symbol name is prefixed with an underscore, remove it
+                let name = if name.starts_with('_') {
+                    &name[1..]
+                } else {
+                    name
+                };
                 symbol_map.insert(name, func_ptr);
             }
         }

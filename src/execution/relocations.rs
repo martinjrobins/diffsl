@@ -146,7 +146,7 @@ fn handle_relocation_macho_aarch64(
     p: *mut u8,
     r_type: u8,
     _r_pcrel: bool,
-    _r_length: u8,
+    r_length: u8,
 ) -> Result<()> {
     match r_type {
         // offset within page, scaled by r_length
@@ -155,11 +155,11 @@ fn handle_relocation_macho_aarch64(
             // The mask of `add` instruction to separate
             // opcode, registers and calculated value
             let mask_add: u32 = 0b11111111110000000000001111111111;
-            // S + A
-            let val = i64::try_from(s as usize).unwrap() + a;
+            // S + A scaled by r_length
+            let val = (i64::try_from(s as usize).unwrap() + a) / i64::from(r_length);
+
             // shift left the calculated value by 10 bits and bitwise AND with the mask to get the lower 12 bits
             let val = ((val as u32) << 10) & !mask_add;
-
             let mut instr = unsafe { (p as *const u32).read() };
             // zero out the offset bits
             instr &= mask_add;

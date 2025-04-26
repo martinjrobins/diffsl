@@ -6,6 +6,7 @@ pub mod cranelift;
 pub mod functions;
 pub mod interface;
 pub mod module;
+pub mod relocations;
 //pub mod serialize;
 
 pub mod data_layout;

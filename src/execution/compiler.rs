@@ -1,18 +1,15 @@
 use core::panic;
-use std::{any::Any, cmp::min, collections::HashMap, env::consts::ARCH, num::NonZero};
+use std::{cmp::min, collections::HashMap, num::NonZero};
 
 use crate::{
     discretise::DiscreteModel,
-    execution::{
-        functions::function_resolver,
-        interface::{
-            CalcOutFunc, GetDimsFunc, MassFunc, RhsFunc, SetIdFunc, SetInputsFunc, StopFunc, U0Func,
-        },
+    execution::interface::{
+        CalcOutFunc, GetDimsFunc, MassFunc, RhsFunc, SetIdFunc, SetInputsFunc, StopFunc, U0Func,
     },
     parser::parse_ds_string,
 };
 use mmap_rs::{Mmap, MmapMut, MmapOptions};
-use object::{macho::{ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12}, Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationKind, RelocationTarget, SectionKind};
+use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
 
 use super::{
     interface::{
@@ -22,6 +19,10 @@ use super::{
         SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc,
     },
     module::CodegenModule,
+    relocations::{
+        handle_jump_entry, handle_relocation, is_jump_table_entry, relocation_target_section,
+        JumpTableEntry,
+    },
 };
 use anyhow::{anyhow, Result};
 #[cfg(feature = "rayon")]
@@ -45,13 +46,13 @@ macro_rules! impl_from {
 impl_from!(*mut f64);
 impl_from!(*const f64);
 
-enum MappedSection {
+pub(crate) enum MappedSection {
     Mutable(MmapMut),
     Immutable(Mmap),
 }
 
 impl MappedSection {
-    fn as_ptr(&self) -> *const u8 {
+    pub(crate) fn as_ptr(&self) -> *const u8 {
         match self {
             MappedSection::Mutable(map) => map.as_ptr(),
             MappedSection::Immutable(map) => map.as_ptr(),
@@ -374,73 +375,6 @@ impl CompilerMode {
     }
 }
 
-/// https://blog.cloudflare.com/how-to-execute-an-object-file-part-3/
-#[repr(C)]
-struct JumpTableEntryX86 {
-    addr: *const u8,
-    instr: [u8; 6],
-}
-
-impl JumpTableEntryX86 {
-    fn new(addr: *const u8) -> Self {
-        let mut ret = Self {
-            addr,
-            // unconditional x64 JMP instruction
-            // jmp    QWORD PTR [rip+0xfffffffffffffff2]
-            // should always be {0xff, 0x25, 0xf2, 0xff, 0xff, 0xff}
-            // so it would jump to an address stored at addr above
-            instr: [0xFF, 0x25, 0xF2, 0xFF, 0xFF, 0xFF],
-        };
-        // just in case we'll calculate the offset and overwrite it
-        let addr_ptr = &ret.addr as *const *const u8 as *const u8;
-        let after_ptr = unsafe { (ret.instr.as_ptr()).add(ret.instr.len()) };
-        let offset = (-((after_ptr as usize - addr_ptr as usize) as i32)).to_ne_bytes();
-        ret.instr[2..6].copy_from_slice(&offset);
-        ret
-    }
-    fn jump_ptr(&self) -> *const u8 {
-        &self.instr[0] as *const u8
-    }
-    fn from_bytes(bytes: &mut [u8]) -> &mut [Self] {
-        let size = std::mem::size_of::<Self>();
-        let len = bytes.len() / size;
-        unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut Self, len) }
-    }
-}
-
-/// https://blog.cloudflare.com/how-to-execute-an-object-file-part-4/
-#[repr(C)]
-struct JumpTableEntryAarch64 {
-    instr: [u32; 4],
-}
-
-impl JumpTableEntryAarch64 {
-    fn new(addr: *const u8) -> Self {
-        let addr = addr as u64;
-        let mov = 0b11010010100000000000000000001001 | u32::try_from((addr << 48) >> 43).unwrap();
-        let movk1 =
-            0b11110010101000000000000000001001 | u32::try_from(((addr >> 16) << 48) >> 43).unwrap();
-        let movk2 =
-            0b11110010110000000000000000001001 | u32::try_from(((addr >> 32) << 48) >> 43).unwrap();
-
-        // mov  x9, #0x0c14
-        // movk x9, #0x5555, lsl #16
-        // movk x9, #0x5555, lsl #3
-        // br   x9
-        Self {
-            instr: [mov, movk1, movk2, 0xd61f0120],
-        }
-    }
-    fn jump_ptr(&self) -> *const u8 {
-        self.instr.as_ptr() as *const u8
-    }
-    fn from_bytes(bytes: &mut [u8]) -> &mut [Self] {
-        let size = std::mem::size_of::<Self>();
-        let len = bytes.len() / size;
-        unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut Self, len) }
-    }
-}
-
 impl Compiler {
     pub fn from_discrete_str<M: CodegenModule>(code: &str, mode: CompilerMode) -> Result<Self> {
         let uid = Id::<u32>::new();
@@ -527,7 +461,6 @@ impl Compiler {
             )
         })?;
         Ok(obj_file)
-
     }
 
     pub fn from_object_file(buffer: Vec<u8>, mode: CompilerMode) -> Result<Self> {
@@ -549,34 +482,20 @@ impl Compiler {
             text_sec.index(),
         );
 
-        let jumptable_entry_size = match ARCH {
-            "x86_64" => std::mem::size_of::<JumpTableEntryX86>(),
-            "aarch64" => std::mem::size_of::<JumpTableEntryAarch64>(),
-            _ => panic!("Unsupported architecture for jump table"),
-        };
+        let jumptable_entry_size = std::mem::size_of::<JumpTableEntry>();
+
         let mut jumptable_num_entries: usize = 0;
         let sections_to_map = text_sec
             .relocations()
             .fold(sections_to_map, |mut acc, (_, rela)| {
-                let section = match rela.target() {
-                    RelocationTarget::Symbol(s) => {
-                        let symbol = file.symbol_by_index(s).expect("Could not find symbol");
-                        if symbol.section_index().is_none() {
-                            if rela.kind() == RelocationKind::PltRelative
-                                || rela.kind() == RelocationKind::Relative
-                            {
-                                // this is a jump table entry
-                                jumptable_num_entries += 1;
-                            }
-                            return acc;
-                        }
-                        file.section_by_index(symbol.section_index().unwrap())
-                            .expect("Could not find section")
-                    }
-                    _ => panic!("Unsupported relocation target {:?}", rela.target()),
-                };
-                let section_name = section.name().expect("Could not get section name");
-                acc.insert(section_name, section.index());
+                if let Some(section) = relocation_target_section(&file, &rela) {
+                    let section_name = section.name().expect("Could not get section name");
+                    acc.insert(section_name, section.index());
+                }
+                if is_jump_table_entry(&file, &rela) {
+                    // this is a jump table entry
+                    jumptable_num_entries += 1;
+                }
                 acc
             });
         let jumptable_size =
@@ -631,6 +550,9 @@ impl Compiler {
             None
         };
         let mut jumptable_idx = 0;
+        let mut jumptable = jumptable_map
+            .as_mut()
+            .map(|jumptable_map| JumpTableEntry::from_bytes(jumptable_map.as_mut_slice()));
         for (offset, rela) in text_sec.relocations() {
             let text_ptr = mapped_sections
                 .get_mut(".text")
@@ -638,144 +560,12 @@ impl Compiler {
                 .as_mut_ptr()
                 .unwrap();
             let patch_ptr = unsafe { text_ptr.offset(offset as isize) };
-            let patch_addr = patch_ptr as u64;
-            match rela.target() {
-                RelocationTarget::Symbol(s) => {
-                    let symbol = file.symbol_by_index(s).unwrap();
-                    let symbol_name = symbol.name().expect("symbol does not have a name");
-                    println!("Relocation: {} {:?}", symbol_name, rela);
-                    match rela.kind() {
-                        RelocationKind::Absolute => {
-                            // S + A
-                            // we will assume that any absolute relocation is an external function (from cranelift backend)
-                            // for this address should be 0 and section is undefined
-                            assert!(symbol.section_index().is_none());
-                            assert!(symbol.address() == 0);
-
-                            // find the function pointer:
-
-                            let ptr = function_resolver(symbol_name).unwrap_or_else(|| {
-                                panic!("Could not resolve function {}", symbol_name)
-                            });
-
-                            // add the addend and store
-                            unsafe {
-                                let patch_val = ptr.offset(rela.addend() as isize) as u64;
-                                match rela.size() {
-                                    64 => (patch_ptr as *mut u64).write(patch_val),
-                                    _ => panic!(
-                                        "Unsupported absolute relocation size {:?}",
-                                        rela.size()
-                                    ),
-                                }
-                            }
-                        }
-                        RelocationKind::Relative | RelocationKind::PltRelative => {
-                            // S + A - P
-                            // S = symbol address
-                            // A = addend
-                            // P = address of the relocation
-                            let symbol_ptr = if let Some(section_index) = symbol.section_index() {
-                                let section = file.section_by_index(section_index)?;
-                                let section_name =
-                                    section.name().expect("Could not get section name");
-                                let section_ptr = mapped_sections[section_name].as_ptr();
-                                unsafe { section_ptr.offset(symbol.address() as isize) }
-                            } else {
-                                // must be an external function call generate the jump table entry
-                                let addr = function_resolver(symbol_name).unwrap_or_else(|| {
-                                    panic!("Could not resolve function {}", symbol_name)
-                                });
-                                let symbol_ptr = match ARCH {
-                                    "x86_64" => {
-                                        let jumptable = JumpTableEntryX86::from_bytes(
-                                            jumptable_map.as_mut().unwrap().as_mut_slice(),
-                                        );
-                                        jumptable[jumptable_idx] = JumpTableEntryX86::new(addr);
-                                        jumptable[jumptable_idx].jump_ptr()
-                                    }
-                                    "aarch64" => {
-                                        let jumptable = JumpTableEntryAarch64::from_bytes(
-                                            jumptable_map.as_mut().unwrap().as_mut_slice(),
-                                        );
-                                        jumptable[jumptable_idx] = JumpTableEntryAarch64::new(addr);
-                                        jumptable[jumptable_idx].jump_ptr()
-                                    }
-                                    _ => {
-                                        panic!("Unsupported architecture for jump table");
-                                    }
-                                };
-                                jumptable_idx += 1;
-                                symbol_ptr
-                            };
-                            unsafe {
-                                let symbol_addr = symbol_ptr as u64;
-                                let s_minus_p = if symbol_addr > patch_addr {
-                                    (symbol_addr - patch_addr) as i64
-                                } else {
-                                    -((patch_addr - symbol_addr) as i64)
-                                };
-                                let patch_val = s_minus_p + rela.addend();
-                                match rela.size() {
-                                    32 => (patch_ptr as *mut i32)
-                                        .write(i32::try_from(patch_val).unwrap()),
-                                    64 => (patch_ptr as *mut i64).write(patch_val),
-                                    _ => panic!(
-                                        "Unsupported relative relocation size {:?}",
-                                        rela.size()
-                                    ),
-                                }
-                            }
-                        },
-                        // support some AARM64 relocations in MachO format
-                        RelocationKind::Unknown => {
-                            match ARCH {
-                                "aarch64" => {
-                                    match rela.flags() {
-                                        RelocationFlags::MachO { r_type, r_pcrel, r_length } => {
-                                            match rtype {
-                                                // offset within page, scaled by r_length
-                                                ARM64_RELOC_PAGEOFF12 => {
-                                                    // https://blog.cloudflare.com/how-to-execute-an-object-file-part-4/§
-                                                    // The mask of `add` instruction to separate 
-	                                                // opcode, registers and calculated value 
-	                                                let mask_add: u32 = 0b11111111110000000000001111111111;
-	                                                // S + A 
-	                                                let val: u32 = (symbol_address + rela.addend()) & !mask_add;
-                                                    *((uint32_t *)patch_offset) &= mask_add;
-                                                    // Final instruction 
-                                                    *((uint32_t *)patch_offset) |= val;
-
-                                                },
-                                                // pc-rel distance to page of target
-                                                ARM64_RELOC_PAGE21 => {
-                                                    // Page(S+A)-Page(P), Page(expr) is defined as (expr & ~0xFFF) 
-	                                                val = (((uint64_t)(symbol_address + relocations[i].r_addend)) & ~0xFFF) - (((uint64_t)patch_offset) & ~0xFFF);
-                                                    // Shift right the calculated value by 12 bits.
-                                                    // During decoding it will be shifted left as described above, 
-                                                    // so we do the opposite.
-                                                    val >>= 12;
-                                                    /* Separate the lower and upper bits to place them in different positions */ 
-                                                    uint32_t immlo = (val & (0xf >> 2)) << 29 ;
-                                                    uint32_t immhi = (val & ((0xffffff >> 13) << 2)) << 22;
-                                                    *((uint32_t *)patch_offset) |= immlo;
-                                                    *((uint32_t *)patch_offset) |= immhi;
-                                                },
-                                            }
-
-                                        },
-                                        _ => {
-                                            panic!("Unsupported relocation flags {:?}", rela.flags())
-                                        }
-                                    }
-                                },
-                                _ => panic!("Unsupported architecture for unknown relocation"),
-                            }
-                        },
-                        _ => panic!("Unsupported relocation kind {:?}", rela.kind()),
-                    }
-                }
-                _ => panic!("Unsupported relocation target {:?}", rela.target()),
+            if is_jump_table_entry(&file, &rela) {
+                let jumptable_entry = &mut jumptable.as_mut().unwrap()[jumptable_idx];
+                handle_jump_entry(&file, &rela, patch_ptr, jumptable_entry)?;
+                jumptable_idx += 1;
+            } else {
+                handle_relocation(&file, &rela, patch_ptr, &mapped_sections)?;
             }
         }
         // make jumptable read only and executable and insert it into the mapped sections
@@ -798,7 +588,7 @@ impl Compiler {
                 let func_ptr = unsafe { text_sec.as_ptr().offset(symbol.address() as isize) };
                 // for some reason on macOS the symbol name is prefixed with an underscore, remove it
                 let name = if name.starts_with('_') {
-                    &name[1..]
+                    name.strip_prefix("_").unwrap()
                 } else {
                     name
                 };
@@ -1545,10 +1335,13 @@ impl Compiler {
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser::parse_ds_string, CraneliftModule};
+    use crate::{
+        discretise::DiscreteModel, execution::module::CodegenModule, parser::parse_ds_string,
+        Compiler, CraneliftModule,
+    };
     use approx::assert_relative_eq;
 
-    use super::*;
+    use super::CompilerMode;
 
     fn test_constants<T: CodegenModule>() {
         let full_text = "

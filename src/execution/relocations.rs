@@ -1,11 +1,13 @@
 use std::{collections::HashMap, env::consts::ARCH};
+use std::io::Write;
 
+use object::BinaryFormat;
 use object::{
     elf::{
         R_386_16, R_386_8, R_386_PC16, R_386_PC8, R_X86_64_16, R_X86_64_32, R_X86_64_64,
         R_X86_64_8, R_X86_64_PC16, R_X86_64_PC32, R_X86_64_PC8, R_X86_64_PLT32,
     },
-    macho::{ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12},
+    macho::{ARM64_RELOC_BRANCH26, ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12},
     File, Object, ObjectSection, ObjectSymbol, Relocation, RelocationFlags, RelocationKind,
     RelocationTarget, Section,
 };
@@ -103,8 +105,9 @@ pub(crate) fn relocation_target_section<'file, 'data>(
 }
 
 pub(crate) fn is_jump_table_entry(file: &File<'_>, rela: &Relocation) -> bool {
-    relocation_target_section(file, rela).is_none()
-        && (rela.kind() == RelocationKind::PltRelative || rela.kind() == RelocationKind::Relative)
+    // any relocation that is not a local symbol and with a size smaller than the
+    // architecture's pointer size is a jump table entry
+    relocation_target_section(file, rela).is_none() && (rela.size() < u8::try_from(std::mem::size_of::<usize>() * 8).unwrap())
 }
 
 fn handle_relocation_elf_x86(
@@ -145,41 +148,78 @@ fn handle_relocation_macho_aarch64(
     a: i64,
     p: *mut u8,
     r_type: u8,
-    _r_pcrel: bool,
+    r_pcrel: bool,
     r_length: u8,
 ) -> Result<()> {
+    println!("s: {:#x}, a: {:#x}, p: {:#x}, r_type: {:#x}, r_pcrel: {}, r_length: {}",
+        s as usize, a, p as usize, r_type, r_pcrel, r_length);
+    assert!(r_length == 2, "only 2-byte relocations are supported");
     match r_type {
         // offset within page, scaled by r_length
         ARM64_RELOC_PAGEOFF12 => {
+            println!("ARM64_RELOC_PAGEOFF12");
             // https://blog.cloudflare.com/how-to-execute-an-object-file-part-4/§
-            // The mask of `add` instruction to separate
+            // The mask of `add` or `str` instruction to separate
             // opcode, registers and calculated value
             let mask_add: u32 = 0b11111111110000000000001111111111;
-            // S + A scaled by r_length
-            let val = (i64::try_from(s as usize).unwrap() + a) / i64::from(r_length);
+            // S + A
+            let val = (i64::try_from(s as usize).unwrap() + a);
+            println!("val: {:#b}", val);
+            let val = val as u32;
 
             // shift left the calculated value by 10 bits and bitwise AND with the mask to get the lower 12 bits
-            let val = ((val as u32) << 10) & !mask_add;
+            let val = (val << 10) & !mask_add;
             let mut instr = unsafe { (p as *const u32).read() };
             // zero out the offset bits
             instr &= mask_add;
             // insert the calculated value
             instr |= val;
+            println!("val: {:#b} new instr :{:#b}, old instr:{:#b}", val, instr, unsafe { (p as *const u32).read() });
             // write the instruction back to the patch offset
             unsafe { (p as *mut u32).write(instr) };
         }
         // pc-rel distance to page of target
         ARM64_RELOC_PAGE21 => {
+            println!("ARM64_RELOC_PAGE21");
             // Page(S+A)-Page(P), Page(expr) is defined as (expr & ~0xFFF)
             let val = ((i64::try_from(s as usize).unwrap() + a) >> 12) - ((p as i64) >> 12);
-            let val = u32::try_from(val).unwrap();
+            println!("val: {:#b} {}", val, val);
+            let val = val as u32;
+            // Set an ADRP immediate value to bits [32:12] of the X
             // 2 low bits of immediate value are placed in the position 30:29 and the rest in the position 23:5.
-            let immlo = (val & (0xf >> 2)) << 29;
-            let immhi = (val & ((0xffffff >> 13) << 2)) << 22;
+            let masklo = 0b00000000000000000000000000000011;
+            let maskhi = 0b00000000000111111111111111111100;
+            let immlo = (val & masklo) << 29;
+            let immhi = (val & maskhi) << (5 - 2);
+            let mask =   0b10011111000000000000000000011111;
+            let mut instr = unsafe { (p as *const u32).read()};
+            instr &= mask;
+            instr |= immlo | immhi;
+            println!("val: {:#b} immlo: {:#b}, immhi: {:#b} new instr :{:#b}, old instr:{:#b}", val, immlo, immhi, instr, unsafe { (p as *const u32).read() });
             unsafe {
-                let instr = (p as *const u32).read();
-                (p as *mut u32).write(instr | immlo | immhi);
+                (p as *mut u32).write(instr);
             }
+        },
+        // a B/BL instruction with 26-bit displacement
+        ARM64_RELOC_BRANCH26 => {
+            println!("ARM64_RELOC_BRANCH26");
+            // S + A - P
+            let val = i64::try_from(s as usize).unwrap() + a - i64::try_from(p as usize).unwrap();
+                
+            // Set a B immediate field to bits [27:2] of X
+            let mut val = (i32::try_from(val).unwrap() as u32) >> 2;
+            
+            // need to set lower 26 bits of the instruction
+            let mask: u32 = 0xffffffff << 26;
+            val &= !mask;
+            
+            let mut instr = unsafe { (p as *const u32).read() };
+            // zero out the offset bits
+            instr &= mask;
+            // insert the calculated value
+            instr |= val;
+            // write the instruction back to the patch offset
+            unsafe { (p as *mut u32).write(instr) };
         }
         _ => {
             return Err(anyhow!(
@@ -188,6 +228,8 @@ fn handle_relocation_macho_aarch64(
             ))
         }
     }
+    // flush stdout
+    std::io::stdout().flush().unwrap();
     Ok(())
 }
 
@@ -229,18 +271,46 @@ pub(crate) fn handle_relocation(
             "Only relocation targets that are symbols are supported"
         ))?,
     };
+    println!("mapped sections are");
+    for (section_name, section) in mapped_sections.iter() {
+        println!("{}: {:#x}", section_name, section.as_ptr() as usize);
+    }
     let symbol = file.symbol_by_index(symbol_index).unwrap();
+    println!("Handling relocation: {:?} {:?}", symbol, rela);
     let s = match symbol.section_index() {
         Some(section_index) => {
             let section = file.section_by_index(section_index).unwrap();
+            println!("section: {:?}", section);
             let section_name = section.name().expect("Could not get section name");
             let section_ptr = mapped_sections[section_name].as_ptr();
-            unsafe { section_ptr.offset(symbol.address() as isize) }
+            match file.format() {
+                BinaryFormat::Elf => {
+                    // ELF files have the symbol address as an offset from the section address
+                    let offset = symbol.address() as isize;
+                    unsafe { section_ptr.offset(offset) }
+                },
+                BinaryFormat::MachO => {
+                    // MachO files have an absolute symbol address within the object file
+                    // so subtract the section address to get the offset
+                    let offset = symbol.address() as isize - section.address() as isize;
+                    unsafe { section_ptr.offset(offset) }
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Unsupported binary format {:?}, only ELF and MachO are supported",
+                        file.format()
+                    ))
+                }
+            }
+
         }
         None => {
             // must be an external function call generate the jump table entry
-            function_resolver(symbol.name().unwrap())
-                .unwrap_or_else(|| panic!("Could not resolve function {}", symbol.name().unwrap()))
+            // return an Err if the function is not found
+            function_resolver(symbol.name().unwrap()).ok_or(anyhow!(
+                "Could not resolve function {}",
+                symbol.name().unwrap()
+            ))?
         }
     };
     relocation(rela, s, p)
@@ -260,9 +330,12 @@ pub(crate) fn handle_jump_entry(
     };
     let symbol = file.symbol_by_index(symbol_index).unwrap();
     let symbol_name = symbol.name().unwrap();
+    println!("handle_jump_entry {} {:?}", symbol_name, rela);
     // must be an external function call generate the jump table entry
-    let addr = function_resolver(symbol_name)
-        .unwrap_or_else(|| panic!("Could not resolve function {}", symbol_name));
+    let addr = function_resolver(symbol_name).ok_or(anyhow!(
+        "Could not resolve function {}",
+        symbol_name
+    ))?;
     *jumptable_entry = JumpTableEntry::new(addr);
     let s = jumptable_entry.jump_ptr();
     relocation(rela, s, p)

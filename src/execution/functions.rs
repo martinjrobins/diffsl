@@ -34,6 +34,7 @@ pub const TWO_ARG_FUNCTIONS: &[(
 ];
 
 pub fn function_resolver(name: &str) -> Option<*const u8> {
+    let name = name.strip_prefix("_").unwrap_or(name);
     let mut addr: *const u8 = std::ptr::null();
     for func in crate::execution::functions::FUNCTIONS.iter() {
         if func.0 == name {

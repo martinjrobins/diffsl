@@ -530,6 +530,7 @@ impl Compiler {
                         .insert(".text".to_string(), MappedSection::Mutable(section_map));
                 }
                 SectionKind::Data
+                | SectionKind::Common
                 | SectionKind::UninitializedData
                 | SectionKind::UninitializedTls => {
                     // writable data needs to be writable
@@ -587,11 +588,7 @@ impl Compiler {
             if let Ok(name) = symbol.name() {
                 let func_ptr = unsafe { text_sec.as_ptr().offset(symbol.address() as isize) };
                 // for some reason on macOS the symbol name is prefixed with an underscore, remove it
-                let name = if name.starts_with('_') {
-                    name.strip_prefix("_").unwrap()
-                } else {
-                    name
-                };
+                let name = name.strip_prefix("_").unwrap_or(name);
                 symbol_map.insert(name, func_ptr);
             }
         }

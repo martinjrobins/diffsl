@@ -9,7 +9,7 @@ use crate::{
     parser::parse_ds_string,
 };
 use mmap_rs::{Mmap, MmapMut, MmapOptions};
-use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
+use object::{Object, ObjectSection, ObjectSymbol, SectionKind, BinaryFormat};
 
 use super::{
     interface::{
@@ -560,6 +560,7 @@ impl Compiler {
                 .unwrap()
                 .as_mut_ptr()
                 .unwrap();
+            println!("offset: {:#x}", offset);
             let patch_ptr = unsafe { text_ptr.offset(offset as isize) };
             if is_jump_table_entry(&file, &rela) {
                 let jumptable_entry = &mut jumptable.as_mut().unwrap()[jumptable_idx];
@@ -586,10 +587,48 @@ impl Compiler {
         let mut symbol_map = HashMap::new();
         for symbol in file.symbols() {
             if let Ok(name) = symbol.name() {
-                let func_ptr = unsafe { text_sec.as_ptr().offset(symbol.address() as isize) };
-                // for some reason on macOS the symbol name is prefixed with an underscore, remove it
-                let name = name.strip_prefix("_").unwrap_or(name);
-                symbol_map.insert(name, func_ptr);
+                if let Some(section_index) = symbol.section_index() {
+                    let section = file
+                        .section_by_index(section_index)
+                        .expect("Could not find section");
+                    if let SectionKind::Text = section.kind() {
+                        let offset = match file.format() {
+                            // ELF files have the symbol address as an offset from the section address
+                            BinaryFormat::Elf => symbol.address() as isize,
+                            // MachO files have an absolute symbol address within the object file
+                            // so subtract the section address to get the offset
+                            BinaryFormat::MachO => symbol.address() as isize - section.address() as isize,
+                            _ => {
+                                return Err(anyhow!(
+                                    "Unsupported binary format {:?}, only ELF and MachO are supported",
+                                    file.format()
+                                ))
+                            }
+                        };
+                        //let offset = symbol.address() as isize;
+                        //println!("{:?}", symbol);
+                        //println!("{:?}", section);
+                        // for some reason for macho the actual function address is one less than reported
+                        //let offset =  match file.format() {
+                        //    BinaryFormat::Elf => symbol.address() as isize,
+                        //    BinaryFormat::MachO => symbol.address() as isize - 4,
+                        //    _ => panic!("Unsupported binary format"),
+                        //};
+                        let func_ptr = unsafe { text_sec.as_ptr().offset(offset) };
+                        // print first instruction of function
+                        println!(
+                            "Function {}: {:#010x?}",
+                            name,
+                            unsafe { (func_ptr as *const u32).read() }
+                        );
+                        // for some reason on macOS the symbol name is prefixed with an underscore, remove it
+                        let name = name.strip_prefix("_").unwrap_or(name);
+                        symbol_map.insert(name, func_ptr);
+                        // skip text sections, they are already mapped
+                    }
+                }
+                
+                
             }
         }
 
@@ -691,14 +730,20 @@ impl Compiler {
 
     pub fn get_constants_data(&self, name: &str) -> Option<&[f64]> {
         if let Some(get_func) = self.jit_get_tensor_functions.constant_map.get(name) {
-            let mut tensor_data: *mut f64 = std::ptr::null_mut();
+            let mut tensor_data: *const f64 = std::ptr::null_mut();
             let mut tensor_size: u32 = 0;
+            println!("actual function we're calling");
+            for i in 0..10 {
+                let instr_ptr = unsafe { std::mem::transmute::<GetConstantFunc, *const u8>(*get_func) };
+                println!("{}: {:#010x?}", i, unsafe { (instr_ptr as *const u32).offset(i).read() } );
+            }
             unsafe {
                 (get_func)(
-                    &mut tensor_data as *mut *mut f64,
+                    &mut tensor_data as *mut *const f64,
                     &mut tensor_size as *mut u32,
                 )
             };
+            println!("tensor_data: {:x?}, tensor_size: {}", tensor_data, tensor_size);
             Some(unsafe {
                 std::slice::from_raw_parts(tensor_data, usize::try_from(tensor_size).unwrap())
             })

@@ -183,4 +183,4 @@ pub type GetTensorFunc = unsafe extern "C" fn(
     tensor_size: *mut UIntType,
 );
 pub type GetConstantFunc =
-    unsafe extern "C" fn(tensor_data: *mut *mut RealType, tensor_size: *mut UIntType);
+    unsafe extern "C" fn(tensor_data: *mut *const RealType, tensor_size: *mut UIntType);

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, env::consts::ARCH};
 use std::io::Write;
 
+use object::macho::ARM64_RELOC_UNSIGNED;
 use object::BinaryFormat;
 use object::{
     elf::{
@@ -136,8 +137,8 @@ fn handle_relocation_elf_x86(
         }
     };
     match size {
-        32 => unsafe { (p as *mut i32).write(i32::try_from(val).unwrap()) },
-        64 => unsafe { (p as *mut i64).write(val) },
+        32 => unsafe { (p as *mut i32).write_unaligned(i32::try_from(val).unwrap()) },
+        64 => unsafe { (p as *mut i64).write_unaligned(val) },
         _ => return Err(anyhow!("Unsupported relocation size {:?}", size)),
     }
     Ok(())
@@ -153,8 +154,26 @@ fn handle_relocation_macho_aarch64(
 ) -> Result<()> {
     println!("s: {:#x}, a: {:#x}, p: {:#x}, r_type: {:#x}, r_pcrel: {}, r_length: {}",
         s as usize, a, p as usize, r_type, r_pcrel, r_length);
-    assert!(r_length == 2, "only 2-byte relocations are supported");
     match r_type {
+        // for pointers
+        ARM64_RELOC_UNSIGNED => {
+            println!("ARM64_RELOC_UNSIGNED");
+            // S + A
+            let val = i64::try_from(s as usize).unwrap() + a;
+            println!("val: {:#x}, p: {:?} old_instr: {:#b}", val, p, unsafe { (p as *const u32).read_unaligned() });
+            println!("instruction before: {:#x}", unsafe { (p.offset(-4) as *const u32).read_unaligned() });
+            println!("instruction after: {:#x}", unsafe { (p.offset(4) as *const u32).read_unaligned() });
+            match r_length {
+                2 => unsafe { (p as *mut u32).write_unaligned(val as u32) },
+                3 => unsafe { (p as *mut u64).write_unaligned(val as u64) },
+                _ => return Err(anyhow!("Unsupported relocation length {:?}", r_length)),
+            }
+            println!("instruction before: {:#x}", unsafe { (p.offset(-4) as *const u32).read_unaligned() });
+            println!("instruction {:#x}", unsafe { (p as *const u32).read_unaligned() });
+            println!("instruction {:#x}", unsafe { (p as *const u64).read_unaligned() });
+            println!("instruction after: {:#x}", unsafe { (p.offset(4) as *const u32).read_unaligned() });
+            println!("instruction after after: {:#x}", unsafe { (p.offset(8) as *const u32).read_unaligned() });
+        }
         // offset within page, scaled by r_length
         ARM64_RELOC_PAGEOFF12 => {
             println!("ARM64_RELOC_PAGEOFF12");
@@ -169,14 +188,14 @@ fn handle_relocation_macho_aarch64(
 
             // shift left the calculated value by 10 bits and bitwise AND with the mask to get the lower 12 bits
             let val = (val << 10) & !mask_add;
-            let mut instr = unsafe { (p as *const u32).read() };
+            let mut instr = unsafe { (p as *const u32).read_unaligned() };
             // zero out the offset bits
             instr &= mask_add;
             // insert the calculated value
             instr |= val;
-            println!("val: {:#b} new instr :{:#b}, old instr:{:#b}", val, instr, unsafe { (p as *const u32).read() });
+            println!("val: {:#b} new instr :{:#b}, old instr:{:#b}", val, instr, unsafe { (p as *const u32).read_unaligned() });
             // write the instruction back to the patch offset
-            unsafe { (p as *mut u32).write(instr) };
+            unsafe { (p as *mut u32).write_unaligned(instr) };
         }
         // pc-rel distance to page of target
         ARM64_RELOC_PAGE21 => {
@@ -192,12 +211,12 @@ fn handle_relocation_macho_aarch64(
             let immlo = (val & masklo) << 29;
             let immhi = (val & maskhi) << (5 - 2);
             let mask =   0b10011111000000000000000000011111;
-            let mut instr = unsafe { (p as *const u32).read()};
+            let mut instr = unsafe { (p as *const u32).read_unaligned()};
             instr &= mask;
             instr |= immlo | immhi;
-            println!("val: {:#b} immlo: {:#b}, immhi: {:#b} new instr :{:#b}, old instr:{:#b}", val, immlo, immhi, instr, unsafe { (p as *const u32).read() });
+            println!("val: {:#b} immlo: {:#b}, immhi: {:#b} new instr :{:#b}, old instr:{:#b}", val, immlo, immhi, instr, unsafe { (p as *const u32).read_unaligned() });
             unsafe {
-                (p as *mut u32).write(instr);
+                (p as *mut u32).write_unaligned(instr);
             }
         },
         // a B/BL instruction with 26-bit displacement
@@ -213,13 +232,13 @@ fn handle_relocation_macho_aarch64(
             let mask: u32 = 0xffffffff << 26;
             val &= !mask;
             
-            let mut instr = unsafe { (p as *const u32).read() };
+            let mut instr = unsafe { (p as *const u32).read_unaligned() };
             // zero out the offset bits
             instr &= mask;
             // insert the calculated value
             instr |= val;
             // write the instruction back to the patch offset
-            unsafe { (p as *mut u32).write(instr) };
+            unsafe { (p as *mut u32).write_unaligned(instr) };
         }
         _ => {
             return Err(anyhow!(
@@ -293,6 +312,7 @@ pub(crate) fn handle_relocation(
                     // MachO files have an absolute symbol address within the object file
                     // so subtract the section address to get the offset
                     let offset = symbol.address() as isize - section.address() as isize;
+                    println!("section address: {:#x}, symbol address: {:#x}, offset: {:#x}", section.address(), symbol.address(), offset);
                     unsafe { section_ptr.offset(offset) }
                 }
                 _ => {

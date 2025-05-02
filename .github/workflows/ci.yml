@@ -52,7 +52,7 @@ jobs:
               llvm: ["16.0", "16-0"]
             - toolchain: stable
               os: macos-13
-              llvm: ["16.0", "16-0"]
+              llvm: ["15.0", "15-0"]
             - toolchain: beta
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]

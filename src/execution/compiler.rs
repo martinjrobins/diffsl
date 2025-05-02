@@ -95,6 +95,7 @@ struct JitFunctions {
     get_dims: GetDimsFunc,
     set_inputs: SetInputsFunc,
     get_inputs: GetInputsFunc,
+    #[allow(dead_code)]
     barrier_init: Option<BarrierInitFunc>,
     set_constants: SetConstantsFunc,
 }
@@ -339,7 +340,10 @@ pub struct Compiler {
     number_of_stop: usize,
     data_size: usize,
     has_mass: bool,
+    #[cfg(feature = "rayon")]
     thread_pool: Option<ThreadPool>,
+    #[cfg(not(feature = "rayon"))]
+    thread_pool: Option<()>,
     thread_lock: Option<std::sync::Mutex<()>>,
     _mapped_sections: HashMap<String, MappedSection>,
 }
@@ -660,11 +664,20 @@ impl Compiler {
         ret.data_size = data_size;
 
         let thread_dim = mode.thread_dim(number_of_states);
+        #[cfg(feature = "rayon")]
         let (thread_pool, thread_lock) = if thread_dim > 1 {
             (
                 Some(ThreadPoolBuilder::new().num_threads(thread_dim).build()?),
                 Some(std::sync::Mutex::new(())),
             )
+        } else {
+            (None, None)
+        };
+        #[cfg(not(feature = "rayon"))]
+        let (thread_pool, thread_lock) = if thread_dim > 1 {
+            return Err(anyhow!(
+                "Threading is not supported in this build, please enable the 'rayon' feature"
+            ));
         } else {
             (None, None)
         };
@@ -760,6 +773,7 @@ impl Compiler {
     where
         F: Fn(u32, u32) + Sync + Send,
     {
+        #[cfg(feature = "rayon")]
         if let (Some(thread_pool), Some(thread_lock)) = (&self.thread_pool, &self.thread_lock) {
             let _lock = thread_lock.lock().unwrap();
             let dim = thread_pool.current_num_threads();
@@ -776,6 +790,8 @@ impl Compiler {
         } else {
             f(0, 1);
         }
+        #[cfg(not(feature = "rayon"))]
+        f(0, 1);
     }
 
     fn check_arg_len(&self, arg: &[f64], expected_len: usize, name: &str) {
@@ -1360,7 +1376,7 @@ impl Compiler {
 mod tests {
     use crate::{
         discretise::DiscreteModel, execution::module::CodegenModule, parser::parse_ds_string,
-        Compiler, CraneliftModule,
+        Compiler,
     };
     use approx::assert_relative_eq;
 
@@ -1403,9 +1419,10 @@ mod tests {
         assert_relative_eq!(a2[0], 1.);
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_constants_cranelift() {
-        test_constants::<CraneliftModule>();
+        test_constants::<crate::CraneliftModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -1421,9 +1438,10 @@ mod tests {
         test_from_discrete_str_common::<LlvmModule>();
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_from_discrete_str_cranelift() {
-        test_from_discrete_str_common::<CraneliftModule>();
+        test_from_discrete_str_common::<crate::CraneliftModule>();
     }
 
     fn test_from_discrete_str_common<T: CodegenModule>() {
@@ -1457,9 +1475,10 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_stop_cranelift() {
-        test_stop::<CraneliftModule>();
+        test_stop::<crate::CraneliftModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -1534,9 +1553,10 @@ mod tests {
         assert_relative_eq!(stop[0], 0.5);
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_out_depends_on_internal_tensor_cranelift() {
-        test_out_depends_on_internal_tensor::<CraneliftModule>();
+        test_out_depends_on_internal_tensor::<crate::CraneliftModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -1545,6 +1565,7 @@ mod tests {
         test_out_depends_on_internal_tensor::<crate::LlvmModule>();
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_vector_add_scalar_cranelift() {
         let n = 1;
@@ -1570,9 +1591,11 @@ mod tests {
         let name = "$name";
         let discrete_model = DiscreteModel::build(name, &model).unwrap();
         env_logger::builder().is_test(true).try_init().unwrap();
-        let _compiler =
-            Compiler::from_discrete_model::<CraneliftModule>(&discrete_model, Default::default())
-                .unwrap();
+        let _compiler = Compiler::from_discrete_model::<crate::CraneliftModule>(
+            &discrete_model,
+            Default::default(),
+        )
+        .unwrap();
     }
 
     fn tensor_test_common<T: CodegenModule>(
@@ -1824,12 +1847,26 @@ mod tests {
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
 
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                #[cfg(feature = "cranelift")]
+                {
+                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                }
+
+                #[cfg(not(feature = "cranelift"))]
+                {
+                    let model = parse_ds_string(full_text.as_str()).unwrap();
+                    match DiscreteModel::build("$name", &model) {
+                        Ok(model) => model,
+                        Err(e) => {
+                            panic!("{}", e.as_error_message(full_text.as_str()));
+                        }
+                    };
+                }
 
                 #[cfg(feature = "rayon")]
                 {
-                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
 
                     #[cfg(feature = "llvm")]
@@ -1968,8 +2005,11 @@ mod tests {
                         assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
                     }
 
-                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    #[cfg(feature = "cranelift")]
+                    {
+                        let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    }
                 }
 
                 #[cfg(feature = "llvm")]
@@ -1984,8 +2024,11 @@ mod tests {
                     assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
                 }
 
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                #[cfg(feature = "cranelift")]
+                {
+                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                }
             }
         )*
         }
@@ -2034,16 +2077,22 @@ mod tests {
                     //assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
                 }
 
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                #[cfg(feature = "cranelift")]
+                {
+                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                }
 
 
                 #[cfg(feature = "rayon")]
                 {
-                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    #[cfg(feature = "cranelift")]
+                    {
+                        let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    }
 
                     // todo: multi-threaded llvm not working on macos
                     #[cfg(not(target_os = "macos"))]
@@ -2074,9 +2123,10 @@ mod tests {
         big_state_tridiag2: "b_ij { (0..100, 0..100): p + 2.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![7.; 100]; vec![700.] ; vec![1.; 100]; vec![100.],
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_repeated_grad_cranelift() {
-        test_repeated_grad_common::<CraneliftModule>();
+        test_repeated_grad_common::<crate::CraneliftModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -2188,43 +2238,50 @@ mod tests {
             }
         ";
         let model = parse_ds_string(full_text).unwrap();
+        #[allow(unused_variables)]
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler =
-            Compiler::from_discrete_model::<CraneliftModule>(&discrete_model, Default::default())
-                .unwrap();
-        let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass) = compiler.get_dims();
-        assert_eq!(n_states, 2);
-        assert_eq!(n_inputs, 1);
-        assert_eq!(n_outputs, 3);
-        assert_eq!(n_data, compiler.data_len());
 
-        let mut data = compiler.get_new_data();
-        let inputs = vec![1.1];
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        #[cfg(feature = "cranelift")]
+        {
+            let compiler = Compiler::from_discrete_model::<crate::CraneliftModule>(
+                &discrete_model,
+                Default::default(),
+            )
+            .unwrap();
+            let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass) = compiler.get_dims();
+            assert_eq!(n_states, 2);
+            assert_eq!(n_inputs, 1);
+            assert_eq!(n_outputs, 3);
+            assert_eq!(n_data, compiler.data_len());
 
-        let inputs = compiler.get_tensor_data("k", data.as_slice()).unwrap();
-        assert_relative_eq!(inputs, vec![1.1].as_slice());
+            let mut data = compiler.get_new_data();
+            let inputs = vec![1.1];
+            compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-        let mut id = vec![0.0, 0.0];
-        compiler.set_id(id.as_mut_slice());
-        assert_eq!(id, vec![1.0, 0.0]);
+            let inputs = compiler.get_tensor_data("k", data.as_slice()).unwrap();
+            assert_relative_eq!(inputs, vec![1.1].as_slice());
 
-        let mut u = vec![0., 0.];
-        compiler.set_u0(u.as_mut_slice(), data.as_mut_slice());
-        assert_relative_eq!(u.as_slice(), vec![1., 2.].as_slice());
+            let mut id = vec![0.0, 0.0];
+            compiler.set_id(id.as_mut_slice());
+            assert_eq!(id, vec![1.0, 0.0]);
 
-        let mut rr = vec![1., 1.];
-        compiler.rhs(0., u.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
-        assert_relative_eq!(rr.as_slice(), vec![0., 0.].as_slice());
+            let mut u = vec![0., 0.];
+            compiler.set_u0(u.as_mut_slice(), data.as_mut_slice());
+            assert_relative_eq!(u.as_slice(), vec![1., 2.].as_slice());
 
-        let up = vec![2., 3.];
-        rr = vec![1., 1.];
-        compiler.mass(0., up.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
-        assert_relative_eq!(rr.as_slice(), vec![2., 0.].as_slice());
+            let mut rr = vec![1., 1.];
+            compiler.rhs(0., u.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
+            assert_relative_eq!(rr.as_slice(), vec![0., 0.].as_slice());
 
-        let mut out = vec![0.; 3];
-        compiler.calc_out(0., u.as_slice(), data.as_mut_slice(), out.as_mut_slice());
-        assert_relative_eq!(out.as_slice(), vec![1., 2., 4.].as_slice());
+            let up = vec![2., 3.];
+            rr = vec![1., 1.];
+            compiler.mass(0., up.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
+            assert_relative_eq!(rr.as_slice(), vec![2., 0.].as_slice());
+
+            let mut out = vec![0.; 3];
+            compiler.calc_out(0., u.as_slice(), data.as_mut_slice(), out.as_mut_slice());
+            assert_relative_eq!(out.as_slice(), vec![1., 2., 4.].as_slice());
+        }
     }
 
     #[test]
@@ -2239,16 +2296,21 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("test_inputs", &model).unwrap();
 
-        let compiler =
-            Compiler::from_discrete_model::<CraneliftModule>(&discrete_model, Default::default())
-                .unwrap();
-        let mut data = compiler.get_new_data();
-        let inputs = vec![1.0, 2.0, 3.0];
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        #[cfg(feature = "cranelift")]
+        {
+            let compiler = Compiler::from_discrete_model::<crate::CraneliftModule>(
+                &discrete_model,
+                Default::default(),
+            )
+            .unwrap();
+            let mut data = compiler.get_new_data();
+            let inputs = vec![1.0, 2.0, 3.0];
+            compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-        for (name, expected_value) in [("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
-            let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
-            assert_relative_eq!(inputs, expected_value.as_slice());
+            for (name, expected_value) in [("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
+                let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
+                assert_relative_eq!(inputs, expected_value.as_slice());
+            }
         }
 
         #[cfg(feature = "llvm")]

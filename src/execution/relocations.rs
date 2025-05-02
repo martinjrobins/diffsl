@@ -16,8 +16,9 @@ use object::{
 use object::{BinaryFormat, RelocationKind};
 
 use anyhow::{anyhow, Result};
+use wasmtime_runtime::MmapVec;
 
-use super::{compiler::MappedSection, functions::function_resolver};
+use super::functions::function_resolver;
 
 /// https://blog.cloudflare.com/how-to-execute-an-object-file-part-3/
 #[cfg(target_arch = "x86_64")]
@@ -365,7 +366,7 @@ pub(crate) fn handle_relocation(
     file: &File<'_>,
     rela: &Relocation,
     p: *mut u8,
-    mapped_sections: &HashMap<String, MappedSection>,
+    mapped_sections: &HashMap<String, MmapVec>,
 ) -> Result<()> {
     let symbol_index = match rela.target() {
         RelocationTarget::Symbol(s) => s,

@@ -8,8 +8,8 @@ use crate::{
     },
     parser::parse_ds_string,
 };
-use mmap_rs::{Mmap, MmapMut, MmapOptions};
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
+use wasmtime_runtime::{page_size, MmapVec};
 
 use super::{
     interface::{
@@ -45,45 +45,6 @@ macro_rules! impl_from {
 
 impl_from!(*mut f64);
 impl_from!(*const f64);
-
-pub(crate) enum MappedSection {
-    Mutable(MmapMut),
-    Immutable(Mmap),
-}
-
-impl MappedSection {
-    pub(crate) fn as_ptr(&self) -> *const u8 {
-        match self {
-            MappedSection::Mutable(map) => map.as_ptr(),
-            MappedSection::Immutable(map) => map.as_ptr(),
-        }
-    }
-    fn as_mut_ptr(&mut self) -> Option<*mut u8> {
-        match self {
-            MappedSection::Mutable(map) => Some(map.as_mut_ptr()),
-            MappedSection::Immutable(_map) => None,
-        }
-    }
-    fn make_read_only(self) -> Result<Self> {
-        match self {
-            MappedSection::Mutable(map) => Ok(MappedSection::Immutable(
-                map.make_read_only()
-                    .map_err(|e| anyhow!("Failed to make section read-only: {:?}", e))?,
-            )),
-            MappedSection::Immutable(_) => Ok(self),
-        }
-    }
-    fn make_exec(self) -> Result<Self> {
-        match self {
-            MappedSection::Mutable(_map) => Err(anyhow!("Cannot make mutable section executable")),
-            MappedSection::Immutable(map) => {
-                Ok(MappedSection::Immutable(map.make_exec().map_err(|e| {
-                    anyhow!("Failed to make section executable: {:?}", e)
-                })?))
-            }
-        }
-    }
-}
 
 struct JitFunctions {
     set_u0: U0Func,
@@ -345,7 +306,7 @@ pub struct Compiler {
     #[cfg(not(feature = "rayon"))]
     thread_pool: Option<()>,
     thread_lock: Option<std::sync::Mutex<()>>,
-    _mapped_sections: HashMap<String, MappedSection>,
+    _mapped_sections: HashMap<String, MmapVec>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -484,7 +445,7 @@ impl Compiler {
         }
 
         let text_sec = text_sec.ok_or_else(|| anyhow!("Could not find .text section"))?;
-        let min_page_size = MmapOptions::page_size();
+        let min_page_size = page_size();
         let mut sections_to_map = HashMap::new();
         sections_to_map.insert(
             text_sec.name().expect("Could not get section name"),
@@ -524,18 +485,15 @@ impl Compiler {
                 section_size.div_ceil(min_page_size) * min_page_size
             })
             .collect::<Vec<_>>();
-        let mut map =
-            MmapOptions::new(mapped_sizes.iter().sum::<usize>() + jumptable_size + min_page_size)
-                .unwrap()
-                .map()
+        let mut map = MmapVec::with_capacity(mapped_sizes.iter().sum::<usize>() + jumptable_size + min_page_size)
                 .unwrap();
         for ((name, section_id), size) in sections_to_map.iter().zip(mapped_sizes.iter()) {
             let section = file
                 .section_by_index(*section_id)
                 .expect("Could not find section");
-            let mut section_map = map.split_to(*size).unwrap().make_mut().unwrap();
+            let mut section_map = map.split_off(map.len() - *size);
             let section_data = section.data().expect("Could not get section data");
-            section_map.as_mut_slice()[..section_data.len()].copy_from_slice(section_data);
+            section_map[..section_data.len()].copy_from_slice(section_data);
             match section.kind() {
                 SectionKind::Data
                 | SectionKind::Text
@@ -543,32 +501,31 @@ impl Compiler {
                 | SectionKind::UninitializedData
                 | SectionKind::UninitializedTls => {
                     // writable data needs to be writable
-                    mapped_sections.insert(name.to_string(), MappedSection::Mutable(section_map));
                 }
                 _ => {
                     // everything else is immutable
-                    mapped_sections.insert(
-                        name.to_string(),
-                        MappedSection::Immutable(section_map.make_read_only().unwrap()),
-                    );
+                    unsafe { section_map.make_readonly(0..section_map.len()).unwrap() };
                 }
             }
+            mapped_sections.insert(
+                name.to_string(),
+                section_map,
+            );
         }
         let mut jumptable_map = if jumptable_size > 0 {
-            Some(map.split_to(jumptable_size).unwrap().make_mut().unwrap())
+            Some(map.split_off(map.len() - jumptable_size))
         } else {
             None
         };
         let mut jumptable_idx = 0;
         let mut jumptable = jumptable_map
             .as_mut()
-            .map(|jumptable_map| JumpTableEntry::from_bytes(jumptable_map.as_mut_slice()));
+            .map(|jumptable_map| JumpTableEntry::from_bytes(jumptable_map));
         for (offset, rela) in text_sec.relocations() {
             let text_ptr = mapped_sections
                 .get_mut(text_sec.name().unwrap())
                 .unwrap()
-                .as_mut_ptr()
-                .unwrap();
+                .as_mut_ptr();
             let patch_ptr = unsafe { text_ptr.offset(offset as isize) };
             if is_jump_table_entry(&file, &rela) {
                 let jumptable_entry = &mut jumptable.as_mut().unwrap()[jumptable_idx];
@@ -580,17 +537,15 @@ impl Compiler {
         }
         // make jumptable read only and executable and insert it into the mapped sections
         if let Some(jumptable_map) = jumptable_map {
+            unsafe { jumptable_map.make_readonly(0..jumptable_map.len()).unwrap() };
             mapped_sections.insert(
                 "jumptable".to_string(),
-                MappedSection::Immutable(
-                    jumptable_map.make_read_only().unwrap().make_exec().unwrap(),
-                ),
+                jumptable_map,
             );
         }
         // make text section immutable and executable
-        let mut text_map = mapped_sections.remove(text_sec.name().unwrap()).unwrap();
-        text_map = text_map.make_read_only().unwrap().make_exec().unwrap();
-        mapped_sections.insert(text_sec.name().unwrap().to_string(), text_map);
+        let text_map = &mapped_sections[text_sec.name().unwrap()];
+        unsafe { text_map.make_readonly(0..text_map.len()).unwrap() };
         let text_sec = &mapped_sections[text_sec.name().unwrap()];
         let mut symbol_map = HashMap::new();
         for symbol in file.symbols() {

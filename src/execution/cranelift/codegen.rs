@@ -485,12 +485,8 @@ impl CodegenModule for CraneliftModule {
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
         flag_builder.set("opt_level", "speed").unwrap();
-        let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
-            panic!("host machine is not supported: {}", msg);
-        });
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .unwrap();
+        let flags = settings::Flags::new(flag_builder);
+        let isa = isa::lookup(triple.clone())?.finish(flags)?;
         let builder =
             ObjectBuilder::new(isa, "diffsol", cranelift_module::default_libcall_names())?;
 

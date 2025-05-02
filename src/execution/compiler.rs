@@ -27,7 +27,7 @@ use super::{
 use anyhow::{anyhow, Result};
 #[cfg(feature = "rayon")]
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use target_lexicon::{BinaryFormat, Triple};
+use target_lexicon::Triple;
 use uid::Id;
 
 struct SendWrapper<T>(T);
@@ -393,21 +393,19 @@ impl Compiler {
         model: &DiscreteModel,
         mode: CompilerMode,
     ) -> Result<Self> {
-        let buffer = Self::discrete_model_to_object_file::<M>(model, mode)?;
+        let buffer = Self::discrete_model_to_object_file::<M>(model, mode, None)?;
         Self::from_object_file(buffer, mode)
     }
 
     pub fn discrete_model_to_object_file<M: CodegenModule>(
         model: &DiscreteModel,
         mode: CompilerMode,
+        triple: Option<Triple>,
     ) -> Result<Vec<u8>> {
         let thread_dim = mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
 
-        // lets force the elf binary format for now
-        let mut triple = Triple::host();
-        triple.binary_format = BinaryFormat::Elf;
-        let mut module = M::new(Triple::host(), model, threaded)?;
+        let mut module = M::new(triple.unwrap_or(Triple::host()), model, threaded)?;
 
         let set_u0 = module.compile_set_u0(model)?;
         let _calc_stop = module.compile_calc_stop(model)?;

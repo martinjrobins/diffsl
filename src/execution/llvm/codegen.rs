@@ -4,11 +4,10 @@ use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::{AsContextRef, Context};
-use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
-use inkwell::targets::{InitializationConfig, Target, TargetMachine, TargetTriple};
+use inkwell::targets::{FileType, InitializationConfig, Target, TargetMachine, TargetTriple};
 use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType,
 };
@@ -17,19 +16,17 @@ use inkwell::values::{
     FunctionValue, GlobalValue, IntValue, PointerValue,
 };
 use inkwell::{
-    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntPredicate, OptimizationLevel,
+    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, GlobalVisibility, IntPredicate,
 };
 use llvm_sys::core::{
     LLVMBuildCall2, LLVMGetArgOperand, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
     LLVMGetInstructionParent, LLVMGetNamedFunction, LLVMGlobalGetValueType,
 };
-use llvm_sys::execution_engine::LLVMGetGlobalValueAddress;
 use llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::iter::zip;
 use std::pin::Pin;
-use std::{path::Path, process::Command};
 use target_lexicon::Triple;
 
 type RealType = f64;
@@ -48,7 +45,6 @@ use crate::enzyme::{
 };
 use crate::execution::module::CodegenModule;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
-use crate::utils::{find_executable, find_runtime_path};
 use lazy_static::lazy_static;
 use std::sync::Mutex;
 
@@ -71,136 +67,6 @@ pub struct LlvmModule(Pin<Box<ImmovableLlvmModule>>);
 unsafe impl Sync for LlvmModule {}
 
 impl LlvmModule {
-    pub fn compile(&self, standalone: bool, wasm: bool, out: &str) -> Result<()> {
-        let clang_name = find_executable(&["clang", "clang-14"])?;
-        let object_filename = format!("{}.o", out);
-        let bitcodefilename = format!("{}.bc", out);
-
-        // generate the bitcode file
-        self.codegen()
-            .module()
-            .write_bitcode_to_path(Path::new(bitcodefilename.as_str()));
-
-        let mut command = Command::new(clang_name);
-        command
-            .arg(bitcodefilename.as_str())
-            .arg("-c")
-            .arg("-o")
-            .arg(object_filename.as_str());
-
-        if wasm {
-            command.arg("-target").arg("wasm32-unknown-emscripten");
-        }
-
-        let output = command.output().unwrap();
-
-        if let Some(code) = output.status.code() {
-            if code != 0 {
-                println!("{}", String::from_utf8_lossy(&output.stderr));
-                return Err(anyhow!("{} returned error code {}", clang_name, code));
-            }
-        }
-
-        // link the object file and our runtime library
-        let mut command = if wasm {
-            let command_name = find_executable(&["emcc"])?;
-            let exported_functions = vec![
-                "Vector_destroy",
-                "Vector_create",
-                "Vector_create_with_capacity",
-                "Vector_push",
-                "Options_destroy",
-                "Options_create",
-                "Sundials_destroy",
-                "Sundials_create",
-                "Sundials_init",
-                "Sundials_solve",
-            ];
-            let mut linked_files = vec![
-                "libdiffeq_runtime_lib.a",
-                "libsundials_idas.a",
-                "libsundials_sunlinsolklu.a",
-                "libklu.a",
-                "libamd.a",
-                "libcolamd.a",
-                "libbtf.a",
-                "libsuitesparseconfig.a",
-                "libsundials_sunmatrixsparse.a",
-                "libargparse.a",
-            ];
-            if standalone {
-                linked_files.push("libdiffeq_runtime.a");
-            }
-            let linked_files = linked_files;
-            let runtime_path = find_runtime_path(&linked_files)?;
-            let mut command = Command::new(command_name);
-            command.arg("-o").arg(out).arg(object_filename.as_str());
-            for file in linked_files {
-                command.arg(Path::new(runtime_path.as_str()).join(file));
-            }
-            if !standalone {
-                let exported_functions = exported_functions
-                    .into_iter()
-                    .map(|s| format!("_{}", s))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                command
-                    .arg("-s")
-                    .arg(format!("EXPORTED_FUNCTIONS={}", exported_functions));
-                command.arg("--no-entry");
-            }
-            command
-        } else {
-            let mut command = Command::new(clang_name);
-            command.arg("-o").arg(out).arg(object_filename.as_str());
-            if standalone {
-                command.arg("-ldiffeq_runtime");
-            } else {
-                command.arg("-ldiffeq_runtime_lib");
-            }
-            command
-        };
-
-        let output = command.output();
-
-        let output = match output {
-            Ok(output) => output,
-            Err(e) => {
-                let args = command
-                    .get_args()
-                    .map(|s| s.to_str().unwrap())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                println!(
-                    "{} {}",
-                    command.get_program().to_os_string().to_str().unwrap(),
-                    args
-                );
-                return Err(anyhow!("Error linking in runtime: {}", e));
-            }
-        };
-
-        if let Some(code) = output.status.code() {
-            if code != 0 {
-                let args = command
-                    .get_args()
-                    .map(|s| s.to_str().unwrap())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                println!(
-                    "{} {}",
-                    command.get_program().to_os_string().to_str().unwrap(),
-                    args
-                );
-                println!("{}", String::from_utf8_lossy(&output.stderr));
-                return Err(anyhow!(
-                    "Error linking in runtime, returned error code {}",
-                    code
-                ));
-            }
-        }
-        Ok(())
-    }
     pub fn print(&self) {
         self.codegen().module().print_to_stderr();
     }
@@ -216,16 +82,6 @@ impl LlvmModule {
     }
     fn codegen(&self) -> &CodeGen<'static> {
         self.0.as_ref().get_ref().codegen.as_ref().unwrap()
-    }
-    pub fn jit2<O: UnsafeFunctionPointer>(
-        &mut self,
-        name: &str,
-    ) -> Result<JitFunction<'static, O>> {
-        let maybe_fn = unsafe { self.codegen_mut().ee.get_function::<O>(name) };
-        match maybe_fn {
-            Ok(f) => Ok(f),
-            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
-        }
     }
 }
 
@@ -255,37 +111,32 @@ impl CodegenModule for LlvmModule {
         Ok(pinned)
     }
 
+    fn finish(self) -> Result<Vec<u8>> {
+        let triple = TargetTriple::create(self.0.triple.to_string().as_str());
+        let target = Target::from_triple(&triple).unwrap();
+        let machine = target
+            .create_target_machine(
+                &triple,
+                TargetMachine::get_host_cpu_name().to_string().as_str(),
+                TargetMachine::get_host_cpu_features().to_string().as_str(),
+                inkwell::OptimizationLevel::Aggressive,
+                inkwell::targets::RelocMode::PIC,
+                inkwell::targets::CodeModel::Default,
+            )
+            .unwrap();
+
+        let module = self.codegen().module();
+        //module.print_to_stderr();
+        let buffer = machine
+            .write_to_memory_buffer(module, FileType::Object)
+            .unwrap()
+            .as_slice()
+            .to_vec();
+        Ok(buffer)
+    }
+
     fn layout(&self) -> &DataLayout {
         &self.codegen().layout
-    }
-
-    fn jit_barrier_init(&mut self) -> Result<*const u8> {
-        let name = "barrier_init";
-        let maybe_fn = self.codegen_mut().ee.get_function_address(name);
-        match maybe_fn {
-            Ok(f) => Ok(f as *const u8),
-            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
-        }
-    }
-
-    fn jit(&mut self, func_id: Self::FuncId) -> Result<*const u8> {
-        let name = func_id.get_name().to_str().unwrap();
-        let maybe_fn = self.codegen_mut().ee.get_function_address(name);
-        match maybe_fn {
-            Ok(f) => Ok(f as *const u8),
-            Err(err) => Err(anyhow!("Error during jit for {}: {}", name, err)),
-        }
-    }
-
-    fn get_constants(&self) -> &[f64] {
-        let constants_name = CString::new("enzyme_const_constants").unwrap();
-        let constants_ptr = unsafe {
-            LLVMGetGlobalValueAddress(self.codegen().ee.as_mut_ptr(), constants_name.into_raw())
-                as *const f64
-        };
-        assert!(!constants_ptr.is_null());
-        let constants_size = self.layout().constants().len();
-        unsafe { std::slice::from_raw_parts(constants_ptr, constants_size) }
     }
 
     fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
@@ -330,6 +181,10 @@ impl CodegenModule for LlvmModule {
         self.codegen_mut().compile_get_tensor(model, name)
     }
 
+    fn compile_get_constant(&mut self, model: &DiscreteModel, name: &str) -> Result<Self::FuncId> {
+        self.codegen_mut().compile_get_constant(model, name)
+    }
+
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
         self.codegen_mut().compile_inputs(model, false)
     }
@@ -356,6 +211,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
+            "set_u0_grad",
         )
     }
 
@@ -377,6 +233,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
+            "set_u0_rgrad",
         )
     }
 
@@ -396,6 +253,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
+            "rhs_grad",
         )
     }
 
@@ -415,6 +273,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
+            "mass_rgrad",
         )
     }
 
@@ -434,6 +293,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
+            "rhs_rgrad",
         )
     }
 
@@ -453,6 +313,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
+            "calc_out_grad",
         )
     }
 
@@ -472,6 +333,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
+            "calc_out_rgrad",
         )
     }
 
@@ -487,6 +349,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
             ],
             CompileMode::Forward,
+            "set_inputs_grad",
         )
     }
 
@@ -502,6 +365,7 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
             ],
             CompileMode::Reverse,
+            "set_inputs_rgrad",
         )
     }
 
@@ -520,7 +384,8 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
-            CompileMode::Forward,
+            CompileMode::ForwardSens,
+            "rhs_sgrad",
         )
     }
 
@@ -539,7 +404,8 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
-            CompileMode::Forward,
+            CompileMode::ForwardSens,
+            "calc_out_sgrad",
         )
     }
 
@@ -558,7 +424,8 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
-            CompileMode::Reverse,
+            CompileMode::ReverseSens,
+            "calc_out_srgrad",
         )
     }
 
@@ -577,7 +444,8 @@ impl CodegenModule for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
-            CompileMode::Reverse,
+            CompileMode::ReverseSens,
+            "rhs_srgrad",
         )
     }
 
@@ -632,6 +500,14 @@ impl CodegenModule for LlvmModule {
             let nolinline_kind_id = Attribute::get_named_enum_kind_id("noinline");
             barrier_func.remove_enum_attribute(AttributeLoc::Function, nolinline_kind_id);
         }
+
+        // remove all preprocess_* functions
+        for f in self.codegen_mut().module.get_functions() {
+            if f.get_name().to_str().unwrap().starts_with("preprocess_") {
+                unsafe { f.delete() };
+            }
+        }
+
         //self.codegen()
         //    .module()
         //    .print_to_file("post_autodiff_optimisation.ll")
@@ -689,6 +565,7 @@ impl<'ctx> Globals<'ctx> {
             //let md_string = context.metadata_string("enzyme_inactive");
             //tc.set_metadata(md_string, 0);
             let tc_value = int_type.const_zero();
+            tc.set_visibility(GlobalVisibility::Hidden);
             tc.set_initializer(&tc_value.as_basic_value_enum());
             Some(tc)
         } else {
@@ -704,6 +581,7 @@ impl<'ctx> Globals<'ctx> {
                 Some(AddressSpace::default()),
                 "enzyme_const_constants",
             );
+            constants.set_visibility(GlobalVisibility::Hidden);
             constants.set_constant(false);
             constants.set_initializer(&constants_array_type.const_zero());
             Some(constants)
@@ -725,6 +603,7 @@ impl<'ctx> Globals<'ctx> {
                 "enzyme_const_indices",
             );
             indices.set_constant(true);
+            indices.set_visibility(GlobalVisibility::Hidden);
             indices.set_initializer(&indices_value);
             Some(indices)
         };
@@ -744,7 +623,9 @@ pub enum CompileGradientArgType {
 
 pub enum CompileMode {
     Forward,
+    ForwardSens,
     Reverse,
+    ReverseSens,
 }
 
 pub struct CodeGen<'ctx> {
@@ -762,7 +643,6 @@ pub struct CodeGen<'ctx> {
     int_ptr_type: PointerType<'ctx>,
     layout: DataLayout,
     globals: Globals<'ctx>,
-    ee: ExecutionEngine<'ctx>,
     threaded: bool,
 }
 
@@ -828,9 +708,6 @@ impl<'ctx> CodeGen<'ctx> {
         let layout = DataLayout::new(model);
         let module = context.create_module(model.name());
         let globals = Globals::new(&layout, &module, int_type, real_type, threaded);
-        let ee = module
-            .create_jit_execution_engine(OptimizationLevel::Aggressive)
-            .map_err(|e| anyhow::anyhow!("Error creating execution engine: {:?}", e))?;
         let real_ptr_type = Self::pointer_type(context, real_type.into());
         let int_ptr_type = Self::pointer_type(context, int_type.into());
         let mut ret = Self {
@@ -848,7 +725,6 @@ impl<'ctx> CodeGen<'ctx> {
             int_type,
             int_ptr_type,
             globals,
-            ee,
             threaded,
         };
         if threaded {
@@ -878,8 +754,8 @@ impl<'ctx> CodeGen<'ctx> {
                 .add_function("printf", printf_type, Some(Linkage::External)),
         };
         let (format_str, format_str_name) = match value {
-            PrintValue::Real(_) => (format!("{}: %f\n", name), format!("real_format_{}", name)),
-            PrintValue::Int(_) => (format!("{}: %d\n", name), format!("int_format_{}", name)),
+            PrintValue::Real(_) => (format!("{name}: %f\n"), format!("real_format_{name}")),
+            PrintValue::Int(_) => (format!("{name}: %d\n"), format!("int_format_{name}")),
         };
         // change format_str to c string
         let format_str = CString::new(format_str).unwrap();
@@ -892,6 +768,7 @@ impl<'ctx> CodeGen<'ctx> {
                     self.module
                         .add_global(format_str.get_type(), None, format_str_name.as_str());
                 fmt_str.set_initializer(&format_str);
+                fmt_str.set_visibility(GlobalVisibility::Hidden);
                 fmt_str
             }
         };
@@ -1481,8 +1358,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let intrinsic = Intrinsic::find(&llvm_name).unwrap();
                         let ret_type = self.real_type;
 
-                        let args_types = std::iter::repeat(ret_type)
-                            .take(arg_len)
+                        let args_types = std::iter::repeat_n(ret_type, arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicTypeEnum>>();
                         // if we get an intrinsic, we don't need to add to the list of functions and can return early
@@ -1493,8 +1369,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let arg_len = 1;
                         let ret_type = self.real_type;
 
-                        let args_types = std::iter::repeat(ret_type)
-                            .take(arg_len)
+                        let args_types = std::iter::repeat_n(ret_type, arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicMetadataTypeEnum>>();
 
@@ -1540,8 +1415,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let arg_len = 1;
                         let ret_type = self.real_type;
 
-                        let args_types = std::iter::repeat(ret_type)
-                            .take(arg_len)
+                        let args_types = std::iter::repeat_n(ret_type, arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicMetadataTypeEnum>>();
 
@@ -1604,8 +1478,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let arg_len = 1;
                         let ret_type = self.real_type;
 
-                        let args_types = std::iter::repeat(ret_type)
-                            .take(arg_len)
+                        let args_types = std::iter::repeat_n(ret_type, arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicMetadataTypeEnum>>();
 
@@ -1641,8 +1514,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let arg_len = 1;
                         let ret_type = self.real_type;
 
-                        let args_types = std::iter::repeat(ret_type)
-                            .take(arg_len)
+                        let args_types = std::iter::repeat_n(ret_type, arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicMetadataTypeEnum>>();
 
@@ -1939,9 +1811,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.int_type.const_zero()
             };
 
-            let curr_index = self
-                .builder
-                .build_phi(int_type, format!["i{}", i].as_str())?;
+            let curr_index = self.builder.build_phi(int_type, format!["i{i}"].as_str())?;
             curr_index.add_incoming(&[(&start_index, preblock)]);
 
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
@@ -2125,7 +1995,7 @@ impl<'ctx> CodeGen<'ctx> {
         // loop through each element in the contraction
         let contract_block = self
             .context
-            .append_basic_block(self.fn_value(), format!("{}_contract", name).as_str());
+            .append_basic_block(self.fn_value(), format!("{name}_contract").as_str());
         self.builder.build_unconditional_branch(contract_block)?;
         self.builder.position_at_end(contract_block);
 
@@ -3096,6 +2966,7 @@ impl<'ctx> CodeGen<'ctx> {
         original_function: FunctionValue<'ctx>,
         args_type: &[CompileGradientArgType],
         mode: CompileMode,
+        fn_name: &str,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
 
@@ -3130,15 +3001,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let void_type = self.context.void_type();
         let fn_type = void_type.fn_type(fn_type.as_slice(), false);
-        let fn_name = match mode {
-            CompileMode::Forward => {
-                format!("{}_grad", original_function.get_name().to_str().unwrap())
-            }
-            CompileMode::Reverse => {
-                format!("{}_rgrad", original_function.get_name().to_str().unwrap())
-            }
-        };
-        let function = self.module.add_function(fn_name.as_str(), fn_type, None);
+        let function = self.module.add_function(fn_name, fn_type, None);
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -3258,7 +3121,7 @@ impl<'ctx> CodeGen<'ctx> {
         let mut args_uncacheable = vec![0; arg_trees.len()];
 
         let enzyme_function = match mode {
-            CompileMode::Forward => unsafe {
+            CompileMode::Forward | CompileMode::ForwardSens => unsafe {
                 EnzymeCreateForwardDiff(
                     logic_ref, // Logic
                     std::ptr::null_mut(),
@@ -3280,7 +3143,7 @@ impl<'ctx> CodeGen<'ctx> {
                     std::ptr::null_mut(),   // write augmented function to this
                 )
             },
-            CompileMode::Reverse => {
+            CompileMode::Reverse | CompileMode::ReverseSens => {
                 let mut call_enzyme = || unsafe {
                     EnzymeCreatePrimalAndGradient(
                         logic_ref,
@@ -3451,7 +3314,7 @@ impl<'ctx> CodeGen<'ctx> {
             ],
             false,
         );
-        let function_name = format!("get_{}", name);
+        let function_name = format!("get_tensor_{name}");
         let function = self
             .module
             .add_function(function_name.as_str(), fn_type, None);
@@ -3468,6 +3331,54 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         self.insert_data(model);
+        let ptr = self.get_param(name);
+        let tensor_size = self.layout.get_layout(name).unwrap().nnz() as u64;
+        let tensor_size_value = self.int_type.const_int(tensor_size, false);
+        self.builder
+            .build_store(*self.get_param("tensor_data"), ptr.as_basic_value_enum())?;
+        self.builder
+            .build_store(*self.get_param("tensor_size"), tensor_size_value)?;
+        self.builder.build_return(None)?;
+
+        if function.verify(true) {
+            Ok(function)
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+    pub fn compile_get_constant(
+        &mut self,
+        model: &DiscreteModel,
+        name: &str,
+    ) -> Result<FunctionValue<'ctx>> {
+        self.clear();
+        let real_ptr_ptr_type = Self::pointer_type(self.context, self.real_ptr_type.into());
+        let fn_type = self
+            .context
+            .void_type()
+            .fn_type(&[real_ptr_ptr_type.into(), self.int_ptr_type.into()], false);
+        let function_name = format!("get_constant_{name}");
+        let function = self
+            .module
+            .add_function(function_name.as_str(), fn_type, None);
+        let basic_block = self.context.append_basic_block(function, "entry");
+        self.fn_value_opt = Some(function);
+
+        let fn_arg_names = &["tensor_data", "tensor_size"];
+        self.builder.position_at_end(basic_block);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+
+        self.insert_constants(model);
         let ptr = self.get_param(name);
         let tensor_size = self.layout.get_layout(name).unwrap().nnz() as u64;
         let tensor_size_value = self.int_type.const_int(tensor_size, false);
@@ -3686,26 +3597,5 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn module(&self) -> &Module<'ctx> {
         &self.module
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[cfg(feature = "test_compile")]
-    #[test]
-    fn test_compile_wasm_standalone() {
-        use super::*;
-        use crate::Compiler;
-        let text = "
-        u { y = 1 }
-        F { -y }
-        out { y }
-        ";
-        let compiler = Compiler::<LlvmModule>::from_discrete_str(text, Default::default()).unwrap();
-        compiler
-            .module()
-            .compile(true, true, "test_output/test_compile")
-            .unwrap();
     }
 }

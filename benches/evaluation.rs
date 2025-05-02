@@ -9,7 +9,7 @@ fn main() {
     divan::main();
 }
 
-fn setup<M: CodegenModule>(n: usize, f_text: &str, name: &str) -> Compiler<M> {
+fn setup<M: CodegenModule>(n: usize, f_text: &str, name: &str) -> Compiler {
     let u = vec![1.0; n];
     let full_text = format!(
         "
@@ -31,7 +31,7 @@ fn setup<M: CodegenModule>(n: usize, f_text: &str, name: &str) -> Compiler<M> {
     );
     let model = parse_ds_string(&full_text).unwrap();
     let discrete_model = DiscreteModel::build(name, &model).unwrap();
-    Compiler::from_discrete_model(&discrete_model, Default::default()).unwrap()
+    Compiler::from_discrete_model::<M>(&discrete_model, Default::default()).unwrap()
 }
 
 #[cfg(feature = "llvm")]

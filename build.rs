@@ -4,7 +4,7 @@ mod enzyme {
     use std::{env, path::PathBuf};
 
     fn compile_enzyme(llvm_lib_dir: String) -> (String, String) {
-        let llvm_cmake_dir = format!("{}/cmake/llvm", llvm_lib_dir);
+        let llvm_cmake_dir = format!("{llvm_lib_dir}/cmake/llvm");
         let dst = cmake::Config::new("Enzyme/enzyme")
             .define("ENZYME_STATIC_LIB", "ON")
             .define("ENZYME_CLANG", "OFF")
@@ -15,7 +15,7 @@ mod enzyme {
             )
             .build();
         let dst_disp = dst.display();
-        let lib_dir = format!("{}/lib", dst_disp);
+        let lib_dir = format!("{dst_disp}/lib");
         let inc_dir = "Enzyme/enzyme".to_string();
         (lib_dir, inc_dir)
     }
@@ -31,11 +31,11 @@ mod enzyme {
 
         // add include dirs
         for dir in inc_dirs {
-            builder = builder.clang_arg(format!("-I{}", dir))
+            builder = builder.clang_arg(format!("-I{dir}"))
         }
         if cfg!(target_os = "macos") {
             let xcode_inc_dir = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include";
-            builder = builder.clang_arg(format!("-I{}", xcode_inc_dir));
+            builder = builder.clang_arg(format!("-I{xcode_inc_dir}"));
         }
 
         builder.generate()
@@ -65,7 +65,7 @@ mod enzyme {
 
         // compile enzyme
         let (libdir, incdir) = compile_enzyme(llvm_lib_dir.clone());
-        let libnames = [format!("EnzymeStatic-{}", llvm_version)];
+        let libnames = [format!("EnzymeStatic-{llvm_version}")];
 
         // bind enzyme api
         let bindings_rs = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
@@ -75,14 +75,14 @@ mod enzyme {
             .write_to_file(bindings_rs)
             .expect("Couldn't write file bindings.rs!");
 
-        println!("cargo:rustc-link-search=native={}", libdir);
-        println!("cargo:rustc-link-search=native={}", llvm_lib_dir);
+        println!("cargo:rustc-link-search=native={libdir}");
+        println!("cargo:rustc-link-search=native={llvm_lib_dir}");
         // add homebrew lib dir if on macos, needed for zstd libraries
         if cfg!(target_os = "macos") {
             println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
         }
         for libname in libnames.iter() {
-            println!("cargo:rustc-link-lib={}", libname);
+            println!("cargo:rustc-link-lib={libname}");
         }
         println!("cargo:rustc-link-lib=LLVMDemangle");
         println!("cargo:rerun-if-changed=wrapper.h");

@@ -44,6 +44,12 @@ jobs:
             - toolchain: stable
               os: macos-latest
               llvm: ["16.0", "16-0"]
+            - toolchain: stable
+              os: ubuntu-24.04-arm
+              llvm: ["16.0", "16-0"]
+            #- toolchain: stable
+            #  os: macos-13
+            #  llvm: ["15.0", "15-0"]
             - toolchain: beta
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
@@ -68,9 +74,13 @@ jobs:
       run: rustc -Vv
     - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@v2
-      if : matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'macos-13'
+      if : matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm'
       with:
         version: ${{ matrix.llvm[0] }}
+    - name: Install LLVM 16 (macos-13)
+      if : matrix.os == 'macos-13'
+      run: 
+        brew install llvm@16
     - name: Run tests (LLVM)
       if : matrix.llvm != ''
       run: cargo test --verbose --features llvm${{ matrix.llvm[1] }}

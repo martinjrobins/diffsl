@@ -1,4 +1,5 @@
 #![allow(clippy::type_complexity)]
+use std::ffi::CString;
 pub const FUNCTIONS: &[(
     &str,
     extern "C" fn(f64) -> f64,
@@ -31,6 +32,83 @@ pub const TWO_ARG_FUNCTIONS: &[(
     ("min", min, dmin),
     ("max", max, dmax),
 ];
+
+pub fn function_resolver(name: &str) -> Option<*const u8> {
+    let name = name.strip_prefix("_").unwrap_or(name);
+    let mut addr: *const u8 = std::ptr::null();
+    for func in crate::execution::functions::FUNCTIONS.iter() {
+        if func.0 == name {
+            addr = func.1 as *const u8;
+        }
+        if format!("{}__tangent__", func.0) == name {
+            addr = func.2 as *const u8;
+        }
+    }
+    for func in crate::execution::functions::TWO_ARG_FUNCTIONS.iter() {
+        if func.0 == name {
+            addr = func.1 as *const u8;
+        }
+        if format!("{}__tangent__", func.0) == name {
+            addr = func.2 as *const u8;
+        }
+    }
+    // include a libc lookup
+    if addr.is_null() {
+        addr = lookup_with_dlsym(name).unwrap_or(std::ptr::null());
+    }
+    if addr.is_null() {
+        None
+    } else {
+        Some(addr)
+    }
+}
+
+/// taken from https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/cranelift/jit/src/backend.rs#L636C1-L677C2
+/// Apache License 2.0, see https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/LICENSE#L1
+#[cfg(not(windows))]
+fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
+    let c_str = CString::new(name).unwrap();
+    let c_str_ptr = c_str.as_ptr();
+    let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_str_ptr) };
+    if sym.is_null() {
+        None
+    } else {
+        Some(sym as *const u8)
+    }
+}
+
+/// taken from https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/cranelift/jit/src/backend.rs#L636C1-L677C2
+/// Apache License 2.0, see https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/LICENSE#L1
+#[cfg(windows)]
+fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
+    use std::os::windows::io::RawHandle;
+    use windows_sys::Win32::Foundation::HMODULE;
+    use windows_sys::Win32::System::LibraryLoader;
+
+    const UCRTBASE: &[u8] = b"ucrtbase.dll\0";
+
+    let c_str = CString::new(name).unwrap();
+    let c_str_ptr = c_str.as_ptr();
+
+    unsafe {
+        let handles = [
+            // try to find the searched symbol in the currently running executable
+            std::ptr::null_mut(),
+            // try to find the searched symbol in local c runtime
+            LibraryLoader::GetModuleHandleA(UCRTBASE.as_ptr()) as RawHandle,
+        ];
+
+        for handle in &handles {
+            let addr = LibraryLoader::GetProcAddress(*handle as HMODULE, c_str_ptr.cast());
+            match addr {
+                None => continue,
+                Some(addr) => return Some(addr as *const u8),
+            }
+        }
+
+        None
+    }
+}
 
 pub fn function_num_args(name: &str, is_tangent: bool) -> Option<usize> {
     let one = FUNCTIONS.iter().find(|(n, _, _)| n == &name);

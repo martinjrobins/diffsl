@@ -52,34 +52,34 @@ impl fmt::Display for DiscreteModel<'_> {
             }
             writeln!(f, "]")?;
             for input in &self.inputs {
-                writeln!(f, "{}", input)?;
+                writeln!(f, "{input}")?;
             }
         }
         for defn in &self.constant_defns {
-            writeln!(f, "{}", defn)?;
+            writeln!(f, "{defn}")?;
         }
         for defn in &self.input_dep_defns {
-            writeln!(f, "{}", defn)?;
+            writeln!(f, "{defn}")?;
         }
         for defn in &self.time_dep_defns {
-            writeln!(f, "{}", defn)?;
+            writeln!(f, "{defn}")?;
         }
         writeln!(f, "{}", self.state)?;
         if let Some(state_dot) = &self.state_dot {
-            writeln!(f, "{}", state_dot)?;
+            writeln!(f, "{state_dot}")?;
         }
         for defn in &self.state_dep_defns {
-            writeln!(f, "{}", defn)?;
+            writeln!(f, "{defn}")?;
         }
         if let Some(lhs) = &self.lhs {
-            writeln!(f, "{}", lhs)?;
+            writeln!(f, "{lhs}")?;
         }
         writeln!(f, "{}", self.rhs)?;
         if let Some(stop) = &self.stop {
-            writeln!(f, "{}", stop)?;
+            writeln!(f, "{stop}")?;
         }
         if let Some(out) = &self.out {
-            writeln!(f, "{}", out)?;
+            writeln!(f, "{out}")?;
         }
         Ok(())
     }
@@ -237,7 +237,7 @@ impl<'s> DiscreteModel<'s> {
                 Err(e) => {
                     let span = env.current_span().to_owned();
                     env.errs_mut()
-                        .push(ValidationError::new(format!("{}", e), span));
+                        .push(ValidationError::new(format!("{e}"), span));
                     None
                 }
             }
@@ -372,9 +372,9 @@ impl<'s> DiscreteModel<'s> {
                                 }
                             }
                         }
-                        _name => {
+                        name => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
-                                let is_input = model.inputs.iter().any(|name| *name == _name);
+                                let is_input = model.inputs.contains(&name);
                                 if let Some(env_entry) = env.get(built.name()) {
                                     let dependent_on_state = env_entry.is_state_dependent();
                                     let dependent_on_time = env_entry.is_time_dependent();
@@ -454,7 +454,7 @@ impl<'s> DiscreteModel<'s> {
         for name in model.inputs.iter() {
             if env.get(name).is_none() {
                 env.errs_mut().push(ValidationError::new(
-                    format!("input {} is not defined", name),
+                    format!("input {name} is not defined"),
                     span_all,
                 ));
             }
@@ -794,7 +794,7 @@ mod tests {
         assert_eq!(discrete.state.shape()[0], 1);
         assert_eq!(discrete.state.elmts().len(), 1);
         assert_eq!(discrete.out().unwrap().elmts().len(), 3);
-        println!("{}", discrete);
+        println!("{discrete}");
     }
     #[test]
     fn rate_equation() {
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(discrete.out().unwrap().elmts()[0].expr().to_string(), "y");
         assert_eq!(discrete.out().unwrap().elmts()[1].expr().to_string(), "t");
         assert_eq!(discrete.out().unwrap().elmts()[2].expr().to_string(), "z");
-        println!("{}", discrete);
+        println!("{discrete}");
     }
 
     #[test]

@@ -234,7 +234,7 @@ impl Layout {
             None => {
                 let shapes_str = shapes
                     .iter()
-                    .map(|x| format!("{}", x))
+                    .map(|x| format!("{x}"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 return Err(anyhow!("cannot broadcast shapes: {}", shapes_str));
@@ -281,16 +281,16 @@ impl Layout {
             n_dense_axes.unwrap()
         } else {
             if any_diagonal && !all_diagonal {
-                return Err(anyhow!("cannot broadcast diagonal and non-diagonal layouts, except for multiply. Layouts are [{}]", layouts.iter().map(|x| format!("{}", x)).join(", ")));
+                return Err(anyhow!("cannot broadcast diagonal and non-diagonal layouts, except for multiply. Layouts are [{}]", layouts.iter().map(|x| format!("{x}")).join(", ")));
             }
             if any_sparse && !all_sparse {
-                return Err(anyhow!("cannot broadcast sparse and non-sparse layouts, except for multiply. Layouts are [{}]", layouts.iter().map(|x| format!("{}", x)).join(", ")));
+                return Err(anyhow!("cannot broadcast sparse and non-sparse layouts, except for multiply. Layouts are [{}]", layouts.iter().map(|x| format!("{x}")).join(", ")));
             }
             if layouts
                 .iter()
                 .any(|x| x.n_dense_axes != layouts[0].n_dense_axes)
             {
-                return Err(anyhow!("cannot broadcast diagonal layouts with different numbers of dense axes. Layouts are [{}]", layouts.iter().map(|x| format!("{}", x)).join(", ")));
+                return Err(anyhow!("cannot broadcast diagonal layouts with different numbers of dense axes. Layouts are [{}]", layouts.iter().map(|x| format!("{x}")).join(", ")));
             }
             layouts[0].n_dense_axes
         };
@@ -645,7 +645,7 @@ impl Layout {
                 self.shape
                     .iter()
                     .cloned()
-                    .chain(std::iter::repeat(1).take(new_ranks)),
+                    .chain(std::iter::repeat_n(1, new_ranks)),
             );
             let n_dense_axes = self.n_dense_axes + new_ranks;
             Some(Self {

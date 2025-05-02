@@ -130,10 +130,8 @@ impl<'s> Variable<'s> {
                             "NonNegative" => (0.0, f64::INFINITY),
                             "R" => (-f64::INFINITY, f64::INFINITY),
                             _ => {
-                                info.errors.push(Output::new(
-                                    format!("Unknown domain {}", name),
-                                    node.span,
-                                ));
+                                info.errors
+                                    .push(Output::new(format!("Unknown domain {name}"), node.span));
                                 (-f64::INFINITY, f64::INFINITY)
                             }
                         },
@@ -167,7 +165,7 @@ impl<'s> Variable<'s> {
                     init_conditions: Vec::new(),
                 }
             }
-            _ => panic!("Cannot create variable from {}", node),
+            _ => panic!("Cannot create variable from {node}"),
         }
     }
 }
@@ -188,7 +186,7 @@ impl<'s> ModelInfo<'s> {
         let t_name = "t";
         let time = Rc::new(RefCell::new(Variable {
             name: t_name,
-            time_gradient_name: format!("d{}dt", t_name),
+            time_gradient_name: format!("d{t_name}dt"),
             dim: 1,
             bounds: (0.0, f64::INFINITY),
             equation: None,
@@ -216,7 +214,7 @@ impl<'s> ModelInfo<'s> {
                 model_info.allocate_stmts(&ast[i]);
                 Ok(model_info)
             }
-            None => Err(format!("Model name {} not found", name)),
+            None => Err(format!("Model name {name} not found")),
         }
     }
     fn build_submodel(name: &'s str, models: &[&ast::Model<'s>]) -> Option<Self> {
@@ -379,14 +377,14 @@ impl<'s> ModelInfo<'s> {
             if v.is_state() && v.has_equation() {
                 if !v.is_algebraic().unwrap() && !v.has_initial_condition() {
                     self.errors.push(Output::new(
-                        format!("{} does not have an inital condition", v),
+                        format!("{v} does not have an inital condition"),
                         ast.span,
                     ));
                 }
                 // check algebraic variables do not have initial conditions
                 if v.is_algebraic().unwrap() && v.has_initial_condition() {
                     self.errors.push(Output::new(
-                        format!("overdetermined initial condition, algebraic variable {} should not have an initial condition", v),
+                        format!("overdetermined initial condition, algebraic variable {v} should not have an initial condition"),
                         v.init_conditions[0].equation.span,
                     ));
                 }
@@ -524,7 +522,7 @@ impl<'s> ModelInfo<'s> {
                     .any(|(var_name, _)| *var_name == name.name)
                 {
                     self.errors
-                        .push(Output::new(format!("name {} not found", name), expr.span))
+                        .push(Output::new(format!("name {name} not found"), expr.span))
                 }
             }
             AstKind::Binop(binop) => {
@@ -583,8 +581,7 @@ impl<'s> ModelInfo<'s> {
                                 if var.dependents.iter().all(|v| v.borrow().name != name) {
                                     self.errors.push(Output::new(
                                         format!(
-                                            "named arg {} does not exist in variable {}",
-                                            name, var
+                                            "named arg {name} does not exist in variable {var}"
                                         ),
                                         arg.span,
                                     ));

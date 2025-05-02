@@ -36,7 +36,7 @@ mod tests {
             let unparsed_file =
                 fs::read_to_string(BASE_DIR.to_owned() + "/" + filename).expect("cannot read file");
             let _list = MsParser::parse(MsRule::main, &unparsed_file)
-                .unwrap_or_else(|e| panic!("unsuccessful parse ({}) {}", filename, e));
+                .unwrap_or_else(|e| panic!("unsuccessful parse ({filename}) {e}"));
         }
     }
 }

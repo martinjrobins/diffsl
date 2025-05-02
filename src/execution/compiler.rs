@@ -1,3 +1,6 @@
+use core::panic;
+use std::{cmp::min, collections::HashMap, num::NonZero};
+
 use crate::{
     discretise::DiscreteModel,
     execution::interface::{
@@ -5,15 +8,21 @@ use crate::{
     },
     parser::parse_ds_string,
 };
+use mmap_rs::{Mmap, MmapMut, MmapOptions};
+use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
 
 use super::{
     interface::{
         BarrierInitFunc, CalcOutGradFunc, CalcOutRevGradFunc, CalcOutSensGradFunc,
-        CalcOutSensRevGradFunc, GetInputsFunc, MassRevGradFunc, RhsGradFunc, RhsRevGradFunc,
-        RhsSensGradFunc, RhsSensRevGradFunc, SetConstantsFunc, SetInputsGradFunc,
-        SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc,
+        CalcOutSensRevGradFunc, GetConstantFunc, GetInputsFunc, GetTensorFunc, MassRevGradFunc,
+        RhsGradFunc, RhsRevGradFunc, RhsSensGradFunc, RhsSensRevGradFunc, SetConstantsFunc,
+        SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc,
     },
     module::CodegenModule,
+    relocations::{
+        handle_jump_entry, handle_relocation, is_jump_table_entry, relocation_target_section,
+        symbol_offset, JumpTableEntry,
+    },
 };
 use anyhow::{anyhow, Result};
 #[cfg(feature = "rayon")]
@@ -37,6 +46,45 @@ macro_rules! impl_from {
 impl_from!(*mut f64);
 impl_from!(*const f64);
 
+pub(crate) enum MappedSection {
+    Mutable(MmapMut),
+    Immutable(Mmap),
+}
+
+impl MappedSection {
+    pub(crate) fn as_ptr(&self) -> *const u8 {
+        match self {
+            MappedSection::Mutable(map) => map.as_ptr(),
+            MappedSection::Immutable(map) => map.as_ptr(),
+        }
+    }
+    fn as_mut_ptr(&mut self) -> Option<*mut u8> {
+        match self {
+            MappedSection::Mutable(map) => Some(map.as_mut_ptr()),
+            MappedSection::Immutable(_map) => None,
+        }
+    }
+    fn make_read_only(self) -> Result<Self> {
+        match self {
+            MappedSection::Mutable(map) => Ok(MappedSection::Immutable(
+                map.make_read_only()
+                    .map_err(|e| anyhow!("Failed to make section read-only: {:?}", e))?,
+            )),
+            MappedSection::Immutable(_) => Ok(self),
+        }
+    }
+    fn make_exec(self) -> Result<Self> {
+        match self {
+            MappedSection::Mutable(_map) => Err(anyhow!("Cannot make mutable section executable")),
+            MappedSection::Immutable(map) => {
+                Ok(MappedSection::Immutable(map.make_exec().map_err(|e| {
+                    anyhow!("Failed to make section executable: {:?}", e)
+                })?))
+            }
+        }
+    }
+}
+
 struct JitFunctions {
     set_u0: U0Func,
     rhs: RhsFunc,
@@ -47,8 +95,66 @@ struct JitFunctions {
     get_dims: GetDimsFunc,
     set_inputs: SetInputsFunc,
     get_inputs: GetInputsFunc,
+    #[allow(dead_code)]
     barrier_init: Option<BarrierInitFunc>,
     set_constants: SetConstantsFunc,
+}
+
+impl JitFunctions {
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
+        // check if all required symbols are present
+        let required_symbols = [
+            "set_u0",
+            "rhs",
+            "mass",
+            "calc_out",
+            "calc_stop",
+            "set_id",
+            "get_dims",
+            "set_inputs",
+            "get_inputs",
+            "set_constants",
+        ];
+        for symbol in &required_symbols {
+            if !symbol_map.contains_key(*symbol) {
+                return Err(anyhow!("Missing required symbol: {}", symbol));
+            }
+        }
+        let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(symbol_map["set_u0"]) };
+        let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(symbol_map["rhs"]) };
+        let mass = unsafe { std::mem::transmute::<*const u8, MassFunc>(symbol_map["mass"]) };
+        let calc_out =
+            unsafe { std::mem::transmute::<*const u8, CalcOutFunc>(symbol_map["calc_out"]) };
+        let calc_stop =
+            unsafe { std::mem::transmute::<*const u8, StopFunc>(symbol_map["calc_stop"]) };
+        let set_id = unsafe { std::mem::transmute::<*const u8, SetIdFunc>(symbol_map["set_id"]) };
+        let get_dims =
+            unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(symbol_map["get_dims"]) };
+        let set_inputs =
+            unsafe { std::mem::transmute::<*const u8, SetInputsFunc>(symbol_map["set_inputs"]) };
+        let get_inputs =
+            unsafe { std::mem::transmute::<*const u8, GetInputsFunc>(symbol_map["get_inputs"]) };
+        let barrier_init = symbol_map.get("barrier_init").map(|func_ptr| unsafe {
+            std::mem::transmute::<*const u8, BarrierInitFunc>(*func_ptr)
+        });
+        let set_constants = unsafe {
+            std::mem::transmute::<*const u8, SetConstantsFunc>(symbol_map["set_constants"])
+        };
+
+        Ok(Self {
+            set_u0,
+            rhs,
+            mass,
+            calc_out,
+            calc_stop,
+            set_id,
+            get_dims,
+            set_inputs,
+            get_inputs,
+            barrier_init,
+            set_constants,
+        })
+    }
 }
 
 struct JitGradFunctions {
@@ -56,6 +162,40 @@ struct JitGradFunctions {
     rhs_grad: RhsGradFunc,
     calc_out_grad: CalcOutGradFunc,
     set_inputs_grad: SetInputsGradFunc,
+}
+
+impl JitGradFunctions {
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
+        // check if all required symbols are present
+        let required_symbols = [
+            "set_u0_grad",
+            "rhs_grad",
+            "calc_out_grad",
+            "set_inputs_grad",
+        ];
+        for symbol in &required_symbols {
+            if !symbol_map.contains_key(*symbol) {
+                return Err(anyhow!("Missing required symbol: {}", symbol));
+            }
+        }
+        let set_u0_grad =
+            unsafe { std::mem::transmute::<*const u8, U0GradFunc>(symbol_map["set_u0_grad"]) };
+        let rhs_grad =
+            unsafe { std::mem::transmute::<*const u8, RhsGradFunc>(symbol_map["rhs_grad"]) };
+        let calc_out_grad = unsafe {
+            std::mem::transmute::<*const u8, CalcOutGradFunc>(symbol_map["calc_out_grad"])
+        };
+        let set_inputs_grad = unsafe {
+            std::mem::transmute::<*const u8, SetInputsGradFunc>(symbol_map["set_inputs_grad"])
+        };
+
+        Ok(Self {
+            set_u0_grad,
+            rhs_grad,
+            calc_out_grad,
+            set_inputs_grad,
+        })
+    }
 }
 
 struct JitGradRFunctions {
@@ -66,9 +206,67 @@ struct JitGradRFunctions {
     set_inputs_rgrad: SetInputsRevGradFunc,
 }
 
+impl JitGradRFunctions {
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
+        let required_symbols = [
+            "set_u0_rgrad",
+            "rhs_rgrad",
+            "mass_rgrad",
+            "calc_out_rgrad",
+            "set_inputs_rgrad",
+        ];
+        for symbol in &required_symbols {
+            if !symbol_map.contains_key(*symbol) {
+                return Err(anyhow!("Missing required symbol: {}", symbol));
+            }
+        }
+        let set_u0_rgrad =
+            unsafe { std::mem::transmute::<*const u8, U0RevGradFunc>(symbol_map["set_u0_rgrad"]) };
+        let rhs_rgrad =
+            unsafe { std::mem::transmute::<*const u8, RhsRevGradFunc>(symbol_map["rhs_rgrad"]) };
+        let mass_rgrad =
+            unsafe { std::mem::transmute::<*const u8, MassRevGradFunc>(symbol_map["mass_rgrad"]) };
+        let calc_out_rgrad = unsafe {
+            std::mem::transmute::<*const u8, CalcOutRevGradFunc>(symbol_map["calc_out_rgrad"])
+        };
+        let set_inputs_rgrad = unsafe {
+            std::mem::transmute::<*const u8, SetInputsRevGradFunc>(symbol_map["set_inputs_rgrad"])
+        };
+
+        Ok(Self {
+            set_u0_rgrad,
+            rhs_rgrad,
+            mass_rgrad,
+            calc_out_rgrad,
+            set_inputs_rgrad,
+        })
+    }
+}
+
 struct JitSensGradFunctions {
     rhs_sgrad: RhsSensGradFunc,
     calc_out_sgrad: CalcOutSensGradFunc,
+}
+
+impl JitSensGradFunctions {
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
+        let required_symbols = ["rhs_sgrad", "calc_out_sgrad"];
+        for symbol in &required_symbols {
+            if !symbol_map.contains_key(*symbol) {
+                return Err(anyhow!("Missing required symbol: {}", symbol));
+            }
+        }
+        let rhs_sgrad =
+            unsafe { std::mem::transmute::<*const u8, RhsSensGradFunc>(symbol_map["rhs_sgrad"]) };
+        let calc_out_sgrad = unsafe {
+            std::mem::transmute::<*const u8, CalcOutSensGradFunc>(symbol_map["calc_out_sgrad"])
+        };
+
+        Ok(Self {
+            rhs_sgrad,
+            calc_out_sgrad,
+        })
+    }
 }
 
 struct JitSensRevGradFunctions {
@@ -76,70 +274,386 @@ struct JitSensRevGradFunctions {
     calc_out_rgrad: CalcOutSensRevGradFunc,
 }
 
-pub struct Compiler<M: CodegenModule> {
-    module: M,
+impl JitSensRevGradFunctions {
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
+        let required_symbols = ["rhs_srgrad", "calc_out_srgrad"];
+        for symbol in &required_symbols {
+            if !symbol_map.contains_key(*symbol) {
+                return Err(anyhow!("Missing required symbol: {}", symbol));
+            }
+        }
+        let rhs_rgrad = unsafe {
+            std::mem::transmute::<*const u8, RhsSensRevGradFunc>(symbol_map["rhs_srgrad"])
+        };
+        let calc_out_rgrad = unsafe {
+            std::mem::transmute::<*const u8, CalcOutSensRevGradFunc>(symbol_map["calc_out_srgrad"])
+        };
+
+        Ok(Self {
+            rhs_rgrad,
+            calc_out_rgrad,
+        })
+    }
+}
+
+struct JitGetTensorFunctions {
+    data_map: HashMap<String, GetTensorFunc>,
+    constant_map: HashMap<String, GetConstantFunc>,
+}
+
+impl JitGetTensorFunctions {
+    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
+        let mut data_map = HashMap::new();
+        let mut constant_map = HashMap::new();
+        let data_prefix = "get_tensor_";
+        let constant_prefix = "get_constant_";
+        for (name, func_ptr) in symbol_map.iter() {
+            if name.starts_with(data_prefix) {
+                let func = unsafe { std::mem::transmute::<*const u8, GetTensorFunc>(*func_ptr) };
+                data_map.insert(name.strip_prefix(data_prefix).unwrap().to_string(), func);
+            } else if name.starts_with(constant_prefix) {
+                let func = unsafe { std::mem::transmute::<*const u8, GetConstantFunc>(*func_ptr) };
+                constant_map.insert(
+                    name.strip_prefix(constant_prefix).unwrap().to_string(),
+                    func,
+                );
+            }
+        }
+        Ok(Self {
+            data_map,
+            constant_map,
+        })
+    }
+}
+
+pub struct Compiler {
     jit_functions: JitFunctions,
     jit_grad_functions: JitGradFunctions,
     jit_grad_r_functions: Option<JitGradRFunctions>,
     jit_sens_grad_functions: Option<JitSensGradFunctions>,
     jit_sens_rev_grad_functions: Option<JitSensRevGradFunctions>,
+    jit_get_tensor_functions: JitGetTensorFunctions,
 
     number_of_states: usize,
     number_of_parameters: usize,
     number_of_outputs: usize,
     number_of_stop: usize,
+    data_size: usize,
     has_mass: bool,
+    #[cfg(feature = "rayon")]
     thread_pool: Option<ThreadPool>,
+    #[cfg(not(feature = "rayon"))]
+    thread_pool: Option<()>,
     thread_lock: Option<std::sync::Mutex<()>>,
+    _mapped_sections: HashMap<String, MappedSection>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub enum CompilerMode {
     MultiThreaded(Option<usize>),
     #[default]
     SingleThreaded,
 }
 
-impl<M: CodegenModule> Compiler<M> {
-    pub fn from_discrete_str(code: &str, mode: CompilerMode) -> Result<Self> {
-        let uid = Id::<u32>::new();
-        let name = format!("diffsl_{}", uid);
-        let model = parse_ds_string(code).map_err(|e| anyhow!(e.to_string()))?;
-        let model = DiscreteModel::build(name.as_str(), &model)
-            .map_err(|e| anyhow!(e.as_error_message(code)))?;
-        Self::from_discrete_model(&model, mode)
-    }
-
-    pub fn from_discrete_model(model: &DiscreteModel, mode: CompilerMode) -> Result<Self> {
-        let threaded = matches!(mode, CompilerMode::MultiThreaded(_));
-        // if rayon feature is not enabled and threaded is true, return an error
-        if threaded && !cfg!(feature = "rayon") {
-            return Err(anyhow!(
-                "the 'rayon' feature must be enabled to use threaded execution"
-            ));
-        }
-
-        // number of threads to use
-        // prefer the number of threads specified by the user (RAYON_NUM_THREADS)
-        // if not specified, use the number of available threads
-        // don't use more threads than the number of states
-        let number_of_states = model.state().shape().first().unwrap_or(&1).to_owned();
-        let thread_dim = match mode {
-            CompilerMode::MultiThreaded(Some(n)) => n.min(number_of_states),
+impl CompilerMode {
+    /// number of threads to use
+    /// prefer the number of threads specified by the user (RAYON_NUM_THREADS)
+    /// if not specified, use the number of available threads
+    /// don't use more threads than the number of states
+    pub fn thread_dim(&self, number_of_states: usize) -> usize {
+        match self {
+            CompilerMode::MultiThreaded(Some(n)) => min(*n, number_of_states),
             CompilerMode::MultiThreaded(None) => {
-                let num_cpus = std::thread::available_parallelism()?.get();
+                let num_cpus = std::thread::available_parallelism()
+                    .unwrap_or(NonZero::new(1).unwrap())
+                    .get();
                 let thread_dim = std::env::var("RAYON_NUM_THREADS")
                     .unwrap_or_else(|_| num_cpus.to_string())
                     .parse::<usize>()
                     .unwrap();
                 let max_threads = (number_of_states / 10).max(1);
-                thread_dim.min(max_threads)
+                min(thread_dim, max_threads)
             }
             _ => 1,
+        }
+    }
+}
+
+impl Compiler {
+    pub fn from_discrete_str<M: CodegenModule>(code: &str, mode: CompilerMode) -> Result<Self> {
+        let uid = Id::<u32>::new();
+        let name = format!("diffsl_{uid}");
+        let model = parse_ds_string(code).map_err(|e| anyhow!(e.to_string()))?;
+        let model = DiscreteModel::build(name.as_str(), &model)
+            .map_err(|e| anyhow!(e.as_error_message(code)))?;
+        Self::from_discrete_model::<M>(&model, mode)
+    }
+
+    pub fn from_discrete_model<M: CodegenModule>(
+        model: &DiscreteModel,
+        mode: CompilerMode,
+    ) -> Result<Self> {
+        let buffer = Self::discrete_model_to_object_file::<M>(model, mode, None)?;
+        Self::from_object_file(buffer, mode)
+    }
+
+    pub fn discrete_model_to_object_file<M: CodegenModule>(
+        model: &DiscreteModel,
+        mode: CompilerMode,
+        triple: Option<Triple>,
+    ) -> Result<Vec<u8>> {
+        let thread_dim = mode.thread_dim(model.state().nnz());
+        let threaded = thread_dim > 1;
+
+        let mut module = M::new(triple.unwrap_or(Triple::host()), model, threaded)?;
+
+        let set_u0 = module.compile_set_u0(model)?;
+        let _calc_stop = module.compile_calc_stop(model)?;
+        let rhs = module.compile_rhs(model)?;
+        let mass = module.compile_mass(model)?;
+        let calc_out = module.compile_calc_out(model)?;
+        let _set_id = module.compile_set_id(model)?;
+        let _get_dims = module.compile_get_dims(model)?;
+        let set_inputs = module.compile_set_inputs(model)?;
+        let _get_inputs = module.compile_get_inputs(model)?;
+        let _set_constants = module.compile_set_constants(model)?;
+        let tensor_info = module
+            .layout()
+            .tensors()
+            .map(|(name, is_constant)| (name.to_string(), is_constant))
+            .collect::<Vec<_>>();
+        for (tensor, is_constant) in tensor_info {
+            if is_constant {
+                module.compile_get_constant(model, tensor.as_str())?;
+            } else {
+                module.compile_get_tensor(model, tensor.as_str())?;
+            }
+        }
+
+        module.pre_autodiff_optimisation()?;
+
+        let _set_u0_grad = module.compile_set_u0_grad(&set_u0, model)?;
+        let _rhs_grad = module.compile_rhs_grad(&rhs, model)?;
+        let _calc_out_grad = module.compile_calc_out_grad(&calc_out, model)?;
+        let _set_inputs_grad = module.compile_set_inputs_grad(&set_inputs, model)?;
+
+        if module.supports_reverse_autodiff() {
+            module.compile_set_u0_rgrad(&set_u0, model)?;
+            module.compile_rhs_rgrad(&rhs, model)?;
+            module.compile_calc_out_rgrad(&calc_out, model)?;
+            module.compile_set_inputs_rgrad(&set_inputs, model)?;
+            module.compile_mass_rgrad(&mass, model)?;
+
+            let rhs_full = module.compile_rhs_full(model)?;
+            module.compile_rhs_sgrad(&rhs_full, model)?;
+            module.compile_rhs_srgrad(&rhs_full, model)?;
+            let calc_out_full = module.compile_calc_out_full(model)?;
+            module.compile_calc_out_sgrad(&calc_out_full, model)?;
+            module.compile_calc_out_srgrad(&calc_out_full, model)?;
+        }
+
+        module.post_autodiff_optimisation()?;
+        let obj_file = module.finish()?;
+        // write the object file to test.o in current directory
+
+        let obj_file_path = std::env::current_dir()
+            .map_err(|e| anyhow!("Failed to get current directory: {:?}", e))?
+            .join("test.o");
+        std::fs::write(&obj_file_path, &obj_file).map_err(|e| {
+            anyhow!(
+                "Failed to write object file to {}: {:?}",
+                obj_file_path.display(),
+                e
+            )
+        })?;
+        Ok(obj_file)
+    }
+
+    pub fn from_object_file(buffer: Vec<u8>, mode: CompilerMode) -> Result<Self> {
+        let mut mapped_sections = HashMap::new();
+
+        let file = object::File::parse(buffer.as_slice())?;
+        let mut text_sec = None;
+        for section in file.sections() {
+            if let SectionKind::Text = section.kind() {
+                if text_sec.is_some() {
+                    return Err(anyhow!("Multiple .text sections found"));
+                }
+                text_sec = Some(section);
+            }
+        }
+
+        let text_sec = text_sec.ok_or_else(|| anyhow!("Could not find .text section"))?;
+        let min_page_size = MmapOptions::page_size();
+        let mut sections_to_map = HashMap::new();
+        sections_to_map.insert(
+            text_sec.name().expect("Could not get section name"),
+            text_sec.index(),
+        );
+
+        let jumptable_entry_size = std::mem::size_of::<JumpTableEntry>();
+
+        let mut jumptable_num_entries: usize = 0;
+        let sections_to_map = text_sec
+            .relocations()
+            .fold(sections_to_map, |mut acc, (_, rela)| {
+                if let Some(section) = relocation_target_section(&file, &rela) {
+                    if section.index() == text_sec.index() {
+                        // skip the text section
+                        return acc;
+                    }
+                    let section_name = section.name().expect("Could not get section name");
+                    acc.insert(section_name, section.index());
+                }
+                if is_jump_table_entry(&file, &rela) {
+                    // this is a jump table entry
+                    jumptable_num_entries += 1;
+                }
+                acc
+            });
+        let jumptable_size =
+            (jumptable_num_entries * jumptable_entry_size).div_ceil(min_page_size) * min_page_size;
+        let mapped_sizes = sections_to_map
+            .values()
+            .map(|section| {
+                let section = file
+                    .section_by_index(*section)
+                    .expect("Could not find section");
+                let section_size = section.size() as usize;
+                // round up to minimum page size
+                section_size.div_ceil(min_page_size) * min_page_size
+            })
+            .collect::<Vec<_>>();
+        let mut map =
+            MmapOptions::new(mapped_sizes.iter().sum::<usize>() + jumptable_size + min_page_size)
+                .unwrap()
+                .map()
+                .unwrap();
+        for ((name, section_id), size) in sections_to_map.iter().zip(mapped_sizes.iter()) {
+            let section = file
+                .section_by_index(*section_id)
+                .expect("Could not find section");
+            let mut section_map = map.split_to(*size).unwrap().make_mut().unwrap();
+            let section_data = section.data().expect("Could not get section data");
+            section_map.as_mut_slice()[..section_data.len()].copy_from_slice(section_data);
+            match section.kind() {
+                SectionKind::Data
+                | SectionKind::Text
+                | SectionKind::Common
+                | SectionKind::UninitializedData
+                | SectionKind::UninitializedTls => {
+                    // writable data needs to be writable
+                    mapped_sections.insert(name.to_string(), MappedSection::Mutable(section_map));
+                }
+                _ => {
+                    // everything else is immutable
+                    mapped_sections.insert(
+                        name.to_string(),
+                        MappedSection::Immutable(section_map.make_read_only().unwrap()),
+                    );
+                }
+            }
+        }
+        let mut jumptable_map = if jumptable_size > 0 {
+            Some(map.split_to(jumptable_size).unwrap().make_mut().unwrap())
+        } else {
+            None
+        };
+        let mut jumptable_idx = 0;
+        let mut jumptable = jumptable_map
+            .as_mut()
+            .map(|jumptable_map| JumpTableEntry::from_bytes(jumptable_map.as_mut_slice()));
+        for (offset, rela) in text_sec.relocations() {
+            let text_ptr = mapped_sections
+                .get_mut(text_sec.name().unwrap())
+                .unwrap()
+                .as_mut_ptr()
+                .unwrap();
+            let patch_ptr = unsafe { text_ptr.offset(offset as isize) };
+            if is_jump_table_entry(&file, &rela) {
+                let jumptable_entry = &mut jumptable.as_mut().unwrap()[jumptable_idx];
+                handle_jump_entry(&file, &rela, patch_ptr, jumptable_entry)?;
+                jumptable_idx += 1;
+            } else {
+                handle_relocation(&file, &rela, patch_ptr, &mapped_sections)?;
+            }
+        }
+        // make jumptable read only and executable and insert it into the mapped sections
+        if let Some(jumptable_map) = jumptable_map {
+            mapped_sections.insert(
+                "jumptable".to_string(),
+                MappedSection::Immutable(
+                    jumptable_map.make_read_only().unwrap().make_exec().unwrap(),
+                ),
+            );
+        }
+        // make text section immutable and executable
+        let mut text_map = mapped_sections.remove(text_sec.name().unwrap()).unwrap();
+        text_map = text_map.make_read_only().unwrap().make_exec().unwrap();
+        mapped_sections.insert(text_sec.name().unwrap().to_string(), text_map);
+        let text_sec = &mapped_sections[text_sec.name().unwrap()];
+        let mut symbol_map = HashMap::new();
+        for symbol in file.symbols() {
+            if let Ok(name) = symbol.name() {
+                if let Some(section_index) = symbol.section_index() {
+                    let section = file
+                        .section_by_index(section_index)
+                        .expect("Could not find section");
+                    if let SectionKind::Text = section.kind() {
+                        let offset = symbol_offset(&file, &symbol, &section)?;
+                        let func_ptr = unsafe { text_sec.as_ptr().offset(offset) };
+                        // for some reason on macOS the symbol name is prefixed with an underscore, remove it
+                        let name = name.strip_prefix("_").unwrap_or(name);
+                        symbol_map.insert(name, func_ptr);
+                        // skip text sections, they are already mapped
+                    }
+                }
+            }
+        }
+
+        let jit_functions = JitFunctions::new(&symbol_map)?;
+        let jit_grad_functions = JitGradFunctions::new(&symbol_map)?;
+        let jit_get_tensor_functions = JitGetTensorFunctions::new(&symbol_map)?;
+        let jit_grad_r_functions = JitGradRFunctions::new(&symbol_map).ok();
+        let jit_sens_grad_functions = JitSensGradFunctions::new(&symbol_map).ok();
+        let jit_sens_rev_grad_functions = JitSensRevGradFunctions::new(&symbol_map).ok();
+
+        let mut ret = Self {
+            jit_functions,
+            jit_grad_functions,
+            jit_grad_r_functions,
+            jit_sens_grad_functions,
+            jit_sens_rev_grad_functions,
+            jit_get_tensor_functions,
+            number_of_states: 0,
+            number_of_parameters: 0,
+            number_of_outputs: 0,
+            number_of_stop: 0,
+            data_size: 0,
+            has_mass: false,
+            thread_pool: None,
+            thread_lock: None,
+            _mapped_sections: mapped_sections,
         };
 
-        let threaded = threaded && thread_dim > 1;
-        let (thread_pool, thread_lock) = if threaded {
+        let (
+            number_of_states,
+            number_of_parameters,
+            number_of_outputs,
+            data_size,
+            number_of_stops,
+            has_mass,
+        ) = ret.get_dims();
+        ret.number_of_states = number_of_states;
+        ret.number_of_parameters = number_of_parameters;
+        ret.number_of_outputs = number_of_outputs;
+        ret.number_of_stop = number_of_stops;
+        ret.has_mass = has_mass;
+        ret.data_size = data_size;
+
+        let thread_dim = mode.thread_dim(number_of_states);
+        #[cfg(feature = "rayon")]
+        let (thread_pool, thread_lock) = if thread_dim > 1 {
             (
                 Some(ThreadPoolBuilder::new().num_threads(thread_dim).build()?),
                 Some(std::sync::Mutex::new(())),
@@ -147,226 +661,77 @@ impl<M: CodegenModule> Compiler<M> {
         } else {
             (None, None)
         };
-
-        let input_names = model
-            .inputs()
-            .iter()
-            .map(|input| input.name().to_owned())
-            .collect::<Vec<_>>();
-        let mut module = M::new(Triple::host(), model, threaded)?;
-        let number_of_parameters = input_names.iter().fold(0, |acc, name| {
-            acc + module.layout().get_data_length(name).unwrap()
-        });
-        let number_of_outputs = match model.out() {
-            Some(out) => out.nnz(),
-            None => 0,
-        };
-        let number_of_stop = if let Some(stop) = model.stop() {
-            stop.nnz()
+        #[cfg(not(feature = "rayon"))]
+        let (thread_pool, thread_lock) = if thread_dim > 1 {
+            return Err(anyhow!(
+                "Threading is not supported in this build, please enable the 'rayon' feature"
+            ));
         } else {
-            0
+            (None, None)
         };
-        let has_mass = model.lhs().is_some();
-
-        let set_u0 = module.compile_set_u0(model)?;
-        let calc_stop = module.compile_calc_stop(model)?;
-        let rhs = module.compile_rhs(model)?;
-        let mass = module.compile_mass(model)?;
-        let calc_out = module.compile_calc_out(model)?;
-        let set_id = module.compile_set_id(model)?;
-        let get_dims = module.compile_get_dims(model)?;
-        let set_inputs = module.compile_set_inputs(model)?;
-        let get_inputs = module.compile_get_inputs(model)?;
-        let set_constants = module.compile_set_constants(model)?;
-
-        module.pre_autodiff_optimisation()?;
-
-        let set_u0_grad = module.compile_set_u0_grad(&set_u0, model)?;
-        let rhs_grad = module.compile_rhs_grad(&rhs, model)?;
-        let calc_out_grad = module.compile_calc_out_grad(&calc_out, model)?;
-        let set_inputs_grad = module.compile_set_inputs_grad(&set_inputs, model)?;
-
-        let mut set_u0_rgrad = None;
-        let mut rhs_rgrad = None;
-        let mut calc_out_rgrad = None;
-        let mut set_inputs_rgrad = None;
-        let mut rhs_sgrad = None;
-        let mut rhs_srgrad = None;
-        let mut calc_out_sgrad = None;
-        let mut calc_out_srgrad = None;
-        let mut mass_rgrad = None;
-        if module.supports_reverse_autodiff() {
-            set_u0_rgrad = Some(module.compile_set_u0_rgrad(&set_u0, model)?);
-            rhs_rgrad = Some(module.compile_rhs_rgrad(&rhs, model)?);
-            calc_out_rgrad = Some(module.compile_calc_out_rgrad(&calc_out, model)?);
-            set_inputs_rgrad = Some(module.compile_set_inputs_rgrad(&set_inputs, model)?);
-            mass_rgrad = Some(module.compile_mass_rgrad(&mass, model)?);
-
-            let rhs_full = module.compile_rhs_full(model)?;
-            rhs_sgrad = Some(module.compile_rhs_sgrad(&rhs_full, model)?);
-            rhs_srgrad = Some(module.compile_rhs_srgrad(&rhs_full, model)?);
-            let calc_out_full = module.compile_calc_out_full(model)?;
-            calc_out_sgrad = Some(module.compile_calc_out_sgrad(&calc_out_full, model)?);
-            calc_out_srgrad = Some(module.compile_calc_out_srgrad(&calc_out_full, model)?);
-        }
-
-        module.post_autodiff_optimisation()?;
-
-        let barrier_init = if threaded {
-            Some(unsafe {
-                std::mem::transmute::<*const u8, BarrierInitFunc>(module.jit_barrier_init()?)
-            })
-        } else {
-            None
-        };
-        let set_constants = unsafe {
-            std::mem::transmute::<*const u8, SetConstantsFunc>(module.jit(set_constants)?)
-        };
-        let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(module.jit(set_u0)?) };
-        let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(module.jit(rhs)?) };
-        let mass = unsafe { std::mem::transmute::<*const u8, MassFunc>(module.jit(mass)?) };
-        let calc_out =
-            unsafe { std::mem::transmute::<*const u8, CalcOutFunc>(module.jit(calc_out)?) };
-        let calc_stop =
-            unsafe { std::mem::transmute::<*const u8, StopFunc>(module.jit(calc_stop)?) };
-        let set_id = unsafe { std::mem::transmute::<*const u8, SetIdFunc>(module.jit(set_id)?) };
-        let get_dims =
-            unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(module.jit(get_dims)?) };
-        let set_inputs =
-            unsafe { std::mem::transmute::<*const u8, SetInputsFunc>(module.jit(set_inputs)?) };
-        let get_inputs =
-            unsafe { std::mem::transmute::<*const u8, GetInputsFunc>(module.jit(get_inputs)?) };
-        let set_u0_grad =
-            unsafe { std::mem::transmute::<*const u8, U0GradFunc>(module.jit(set_u0_grad)?) };
-        let rhs_grad =
-            unsafe { std::mem::transmute::<*const u8, RhsGradFunc>(module.jit(rhs_grad)?) };
-        let calc_out_grad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutGradFunc>(module.jit(calc_out_grad)?)
-        };
-        let set_inputs_grad = unsafe {
-            std::mem::transmute::<*const u8, SetInputsGradFunc>(module.jit(set_inputs_grad)?)
-        };
-
-        let jit_grad_r_functions = if module.supports_reverse_autodiff() {
-            Some(JitGradRFunctions {
-                set_u0_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, U0RevGradFunc>(
-                        module.jit(set_u0_rgrad.unwrap())?,
-                    )
-                },
-                rhs_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, RhsRevGradFunc>(
-                        module.jit(rhs_rgrad.unwrap())?,
-                    )
-                },
-                calc_out_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, CalcOutRevGradFunc>(
-                        module.jit(calc_out_rgrad.unwrap())?,
-                    )
-                },
-                set_inputs_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, SetInputsRevGradFunc>(
-                        module.jit(set_inputs_rgrad.unwrap())?,
-                    )
-                },
-                mass_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, MassRevGradFunc>(
-                        module.jit(mass_rgrad.unwrap())?,
-                    )
-                },
-            })
-        } else {
-            None
-        };
-
-        let jit_sens_grad_functions = if module.supports_reverse_autodiff() {
-            Some(JitSensGradFunctions {
-                rhs_sgrad: unsafe {
-                    std::mem::transmute::<*const u8, RhsSensGradFunc>(
-                        module.jit(rhs_sgrad.unwrap())?,
-                    )
-                },
-                calc_out_sgrad: unsafe {
-                    std::mem::transmute::<*const u8, CalcOutSensGradFunc>(
-                        module.jit(calc_out_sgrad.unwrap())?,
-                    )
-                },
-            })
-        } else {
-            None
-        };
-
-        let jit_sens_rev_grad_functions = if module.supports_reverse_autodiff() {
-            Some(JitSensRevGradFunctions {
-                rhs_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, RhsSensRevGradFunc>(
-                        module.jit(rhs_srgrad.unwrap())?,
-                    )
-                },
-                calc_out_rgrad: unsafe {
-                    std::mem::transmute::<*const u8, CalcOutSensRevGradFunc>(
-                        module.jit(calc_out_srgrad.unwrap())?,
-                    )
-                },
-            })
-        } else {
-            None
-        };
-
-        let mut ret = Self {
-            module,
-            jit_functions: JitFunctions {
-                set_u0,
-                rhs,
-                mass,
-                set_constants,
-                calc_out,
-                get_inputs,
-                calc_stop,
-                set_id,
-                get_dims,
-                set_inputs,
-                barrier_init,
-            },
-            jit_grad_functions: JitGradFunctions {
-                set_u0_grad,
-                rhs_grad,
-                calc_out_grad,
-                set_inputs_grad,
-            },
-            jit_grad_r_functions,
-            jit_sens_grad_functions,
-            jit_sens_rev_grad_functions,
-            number_of_states,
-            number_of_parameters,
-            number_of_outputs,
-            number_of_stop,
-            has_mass,
-            thread_pool,
-            thread_lock,
-        };
+        ret.thread_pool = thread_pool;
+        ret.thread_lock = thread_lock;
 
         // all done, can set constants now
         ret.set_constants();
         Ok(ret)
     }
 
+    pub fn supports_reverse_autodiff(&self) -> bool {
+        self.jit_grad_r_functions.is_some()
+    }
+
+    pub fn get_tensors(&self) -> Vec<String> {
+        self.jit_get_tensor_functions
+            .data_map
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
-        if self.module.layout().is_constant(name) {
-            return None;
+        if let Some(get_func) = self.jit_get_tensor_functions.data_map.get(name) {
+            let mut tensor_data: *mut f64 = std::ptr::null_mut();
+            let mut tensor_size: u32 = 0;
+            unsafe {
+                (get_func)(
+                    data.as_ptr(),
+                    &mut tensor_data as *mut *mut f64,
+                    &mut tensor_size as *mut u32,
+                )
+            };
+            Some(unsafe {
+                std::slice::from_raw_parts(tensor_data, usize::try_from(tensor_size).unwrap())
+            })
+        } else {
+            None
         }
-        let index = self.module.layout().get_data_index(name)?;
-        let nnz = self.module.layout().get_data_length(name)?;
-        Some(&data[index..index + nnz])
+    }
+
+    pub fn get_constants(&self) -> Vec<String> {
+        self.jit_get_tensor_functions
+            .constant_map
+            .keys()
+            .cloned()
+            .collect()
     }
 
     pub fn get_constants_data(&self, name: &str) -> Option<&[f64]> {
-        if !self.module.layout().is_constant(name) {
-            return None;
+        if let Some(get_func) = self.jit_get_tensor_functions.constant_map.get(name) {
+            let mut tensor_data: *const f64 = std::ptr::null_mut();
+            let mut tensor_size: u32 = 0;
+            unsafe {
+                (get_func)(
+                    &mut tensor_data as *mut *const f64,
+                    &mut tensor_size as *mut u32,
+                )
+            };
+            Some(unsafe {
+                std::slice::from_raw_parts(tensor_data, usize::try_from(tensor_size).unwrap())
+            })
+        } else {
+            None
         }
-        let index = self.module.layout().get_data_index(name)?;
-        let nnz = self.module.layout().get_data_length(name)?;
-        Some(&self.module.get_constants()[index..index + nnz])
     }
 
     pub fn get_tensor_data_mut<'a>(
@@ -374,15 +739,29 @@ impl<M: CodegenModule> Compiler<M> {
         name: &str,
         data: &'a mut [f64],
     ) -> Option<&'a mut [f64]> {
-        let index = self.module.layout().get_data_index(name)?;
-        let nnz = self.module.layout().get_data_length(name)?;
-        Some(&mut data[index..index + nnz])
+        if let Some(get_func) = self.jit_get_tensor_functions.data_map.get(name) {
+            let mut tensor_data: *mut f64 = std::ptr::null_mut();
+            let mut tensor_size: u32 = 0;
+            unsafe {
+                (get_func)(
+                    data.as_ptr(),
+                    &mut tensor_data as *mut *mut f64,
+                    &mut tensor_size as *mut u32,
+                )
+            };
+            Some(unsafe {
+                std::slice::from_raw_parts_mut(tensor_data, usize::try_from(tensor_size).unwrap())
+            })
+        } else {
+            None
+        }
     }
 
     fn with_threading<F>(&self, f: F)
     where
         F: Fn(u32, u32) + Sync + Send,
     {
+        #[cfg(feature = "rayon")]
         if let (Some(thread_pool), Some(thread_lock)) = (&self.thread_pool, &self.thread_lock) {
             let _lock = thread_lock.lock().unwrap();
             let dim = thread_pool.current_num_threads();
@@ -399,6 +778,8 @@ impl<M: CodegenModule> Compiler<M> {
         } else {
             f(0, 1);
         }
+        #[cfg(not(feature = "rayon"))]
+        f(0, 1);
     }
 
     fn check_arg_len(&self, arg: &[f64], expected_len: usize, name: &str) {
@@ -551,7 +932,7 @@ impl<M: CodegenModule> Compiler<M> {
     }
 
     pub fn data_len(&self) -> usize {
-        self.module.layout().data().len()
+        self.data_size
     }
 
     pub fn get_new_data(&self) -> Vec<f64> {
@@ -977,17 +1358,17 @@ impl<M: CodegenModule> Compiler<M> {
     pub fn number_of_outputs(&self) -> usize {
         self.number_of_outputs
     }
-    pub fn module(&self) -> &M {
-        &self.module
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser::parse_ds_string, CraneliftModule};
+    use crate::{
+        discretise::DiscreteModel, execution::module::CodegenModule, parser::parse_ds_string,
+        Compiler,
+    };
     use approx::assert_relative_eq;
 
-    use super::*;
+    use super::CompilerMode;
 
     fn test_constants<T: CodegenModule>() {
         let full_text = "
@@ -1002,7 +1383,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::from_discrete_model::<T>(&discrete_model, Default::default()).unwrap();
         // b and b2 should already be set
         let mut data = compiler.get_new_data();
         let b = compiler.get_constants_data("b").unwrap();
@@ -1026,9 +1407,10 @@ mod tests {
         assert_relative_eq!(a2[0], 1.);
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_constants_cranelift() {
-        test_constants::<CraneliftModule>();
+        test_constants::<crate::CraneliftModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -1044,9 +1426,10 @@ mod tests {
         test_from_discrete_str_common::<LlvmModule>();
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_from_discrete_str_cranelift() {
-        test_from_discrete_str_common::<CraneliftModule>();
+        test_from_discrete_str_common::<crate::CraneliftModule>();
     }
 
     fn test_from_discrete_str_common<T: CodegenModule>() {
@@ -1062,7 +1445,7 @@ mod tests {
         out { u }
         ";
         for text in [text2, text1] {
-            let compiler = Compiler::<T>::from_discrete_str(text, Default::default()).unwrap();
+            let compiler = Compiler::from_discrete_str::<T>(text, Default::default()).unwrap();
             let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
             assert_eq!(n_states, 1);
             assert_eq!(n_inputs, 0);
@@ -1080,9 +1463,10 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_stop_cranelift() {
-        test_stop::<CraneliftModule>();
+        test_stop::<crate::CraneliftModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -1115,7 +1499,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::from_discrete_model::<T>(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut stop = vec![0.];
@@ -1138,7 +1522,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::from_discrete_model::<T>(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut data = compiler.get_new_data();
         // need this to set the constants
@@ -1157,9 +1541,10 @@ mod tests {
         assert_relative_eq!(stop[0], 0.5);
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_out_depends_on_internal_tensor_cranelift() {
-        test_out_depends_on_internal_tensor::<CraneliftModule>();
+        test_out_depends_on_internal_tensor::<crate::CraneliftModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -1168,6 +1553,7 @@ mod tests {
         test_out_depends_on_internal_tensor::<crate::LlvmModule>();
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_vector_add_scalar_cranelift() {
         let n = 1;
@@ -1193,9 +1579,11 @@ mod tests {
         let name = "$name";
         let discrete_model = DiscreteModel::build(name, &model).unwrap();
         env_logger::builder().is_test(true).try_init().unwrap();
-        let _compiler =
-            Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default())
-                .unwrap();
+        let _compiler = Compiler::from_discrete_model::<crate::CraneliftModule>(
+            &discrete_model,
+            Default::default(),
+        )
+        .unwrap();
     }
 
     fn tensor_test_common<T: CodegenModule>(
@@ -1205,9 +1593,8 @@ mod tests {
     ) -> Vec<Vec<f64>> {
         let full_text = format!(
             "
-            {}
-        ",
-            text
+            {text}
+        "
         );
         let model = parse_ds_string(full_text.as_str()).unwrap();
         let discrete_model = match DiscreteModel::build("$name", &model) {
@@ -1216,7 +1603,7 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text.as_str()));
             }
         };
-        let compiler = Compiler::<T>::from_discrete_model(&discrete_model, mode).unwrap();
+        let compiler = Compiler::from_discrete_model::<T>(&discrete_model, mode).unwrap();
         let (n_states, n_inputs, n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
         let mut u0 = vec![1.; n_states];
         let mut res = vec![0.; n_states];
@@ -1228,22 +1615,22 @@ mod tests {
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         compiler.calc_out(0., u0.as_slice(), data.as_mut_slice(), out.as_mut_slice());
-        let tensor_is_constant = compiler.module().layout().is_constant(tensor_name);
-        let tensor_len = compiler
-            .module()
-            .layout()
-            .get_data_length(tensor_name)
-            .unwrap();
-        if tensor_is_constant {
-            results.push(compiler.get_constants_data(tensor_name).unwrap().to_vec());
-        } else {
-            results.push(
-                compiler
-                    .get_tensor_data(tensor_name, data.as_slice())
-                    .unwrap()
-                    .to_vec(),
-            );
-        }
+        let (tensor_len, tensor_is_constant) =
+            if let Some(tensor_data) = compiler.get_tensor_data(tensor_name, data.as_slice()) {
+                results.push(tensor_data.to_vec());
+                (tensor_data.len(), false)
+            } else if let Some(tensor_data) = compiler.get_constants_data(tensor_name) {
+                results.push(tensor_data.to_vec());
+                (tensor_data.len(), true)
+            } else {
+                panic!(
+                    "{} is not a valid tensor name, tensors are {:?} and constants are {:?}",
+                    tensor_name,
+                    compiler.get_tensors(),
+                    compiler.get_constants()
+                );
+            };
+
         // forward mode
         let mut dinputs = vec![0.; n_inputs];
         dinputs.fill(1.);
@@ -1281,18 +1668,13 @@ mod tests {
             out.as_slice(),
             dout.as_mut_slice(),
         );
-        if tensor_is_constant {
-            results.push(vec![0.; tensor_len]);
+        if let Some(tensor_data) = compiler.get_tensor_data(tensor_name, ddata.as_slice()) {
+            results.push(tensor_data.to_vec());
         } else {
-            results.push(
-                compiler
-                    .get_tensor_data(tensor_name, ddata.as_slice())
-                    .unwrap()
-                    .to_vec(),
-            );
+            results.push(vec![0.; tensor_len]);
         }
         // reverse-mode
-        if compiler.module().supports_reverse_autodiff() && !tensor_is_constant {
+        if compiler.supports_reverse_autodiff() && !tensor_is_constant {
             let mut ddata = compiler.get_new_data();
             let dtensor = compiler
                 .get_tensor_data_mut(tensor_name, ddata.as_mut_slice())
@@ -1452,12 +1834,26 @@ mod tests {
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
 
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                #[cfg(feature = "cranelift")]
+                {
+                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                }
+
+                #[cfg(not(feature = "cranelift"))]
+                {
+                    let model = parse_ds_string(full_text.as_str()).unwrap();
+                    match DiscreteModel::build("$name", &model) {
+                        Ok(model) => model,
+                        Err(e) => {
+                            panic!("{}", e.as_error_message(full_text.as_str()));
+                        }
+                    };
+                }
 
                 #[cfg(feature = "rayon")]
                 {
-                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
 
                     #[cfg(feature = "llvm")]
@@ -1596,8 +1992,11 @@ mod tests {
                         assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
                     }
 
-                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    #[cfg(feature = "cranelift")]
+                    {
+                        let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    }
                 }
 
                 #[cfg(feature = "llvm")]
@@ -1612,8 +2011,11 @@ mod tests {
                     assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
                 }
 
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                #[cfg(feature = "cranelift")]
+                {
+                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                }
             }
         )*
         }
@@ -1662,16 +2064,22 @@ mod tests {
                     //assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
                 }
 
-                let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
-                assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                #[cfg(feature = "cranelift")]
+                {
+                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                }
 
 
                 #[cfg(feature = "rayon")]
                 {
-                    let results = tensor_test_common::<CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    #[cfg(feature = "cranelift")]
+                    {
+                        let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    }
 
                     // todo: multi-threaded llvm not working on macos
                     #[cfg(not(target_os = "macos"))]
@@ -1702,9 +2110,10 @@ mod tests {
         big_state_tridiag2: "b_ij { (0..100, 0..100): p + 2.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![7.; 100]; vec![700.] ; vec![1.; 100]; vec![100.],
     }
 
+    #[cfg(feature = "cranelift")]
     #[test]
     fn test_repeated_grad_cranelift() {
-        test_repeated_grad_common::<CraneliftModule>();
+        test_repeated_grad_common::<crate::CraneliftModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -1746,7 +2155,7 @@ mod tests {
             }
         };
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::from_discrete_model::<T>(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut du0 = vec![1.];
         let mut res = vec![0.];
@@ -1816,43 +2225,50 @@ mod tests {
             }
         ";
         let model = parse_ds_string(full_text).unwrap();
+        #[allow(unused_variables)]
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler =
-            Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default())
-                .unwrap();
-        let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass) = compiler.get_dims();
-        assert_eq!(n_states, 2);
-        assert_eq!(n_inputs, 1);
-        assert_eq!(n_outputs, 3);
-        assert_eq!(n_data, compiler.data_len());
 
-        let mut data = compiler.get_new_data();
-        let inputs = vec![1.1];
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        #[cfg(feature = "cranelift")]
+        {
+            let compiler = Compiler::from_discrete_model::<crate::CraneliftModule>(
+                &discrete_model,
+                Default::default(),
+            )
+            .unwrap();
+            let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass) = compiler.get_dims();
+            assert_eq!(n_states, 2);
+            assert_eq!(n_inputs, 1);
+            assert_eq!(n_outputs, 3);
+            assert_eq!(n_data, compiler.data_len());
 
-        let inputs = compiler.get_tensor_data("k", data.as_slice()).unwrap();
-        assert_relative_eq!(inputs, vec![1.1].as_slice());
+            let mut data = compiler.get_new_data();
+            let inputs = vec![1.1];
+            compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-        let mut id = vec![0.0, 0.0];
-        compiler.set_id(id.as_mut_slice());
-        assert_eq!(id, vec![1.0, 0.0]);
+            let inputs = compiler.get_tensor_data("k", data.as_slice()).unwrap();
+            assert_relative_eq!(inputs, vec![1.1].as_slice());
 
-        let mut u = vec![0., 0.];
-        compiler.set_u0(u.as_mut_slice(), data.as_mut_slice());
-        assert_relative_eq!(u.as_slice(), vec![1., 2.].as_slice());
+            let mut id = vec![0.0, 0.0];
+            compiler.set_id(id.as_mut_slice());
+            assert_eq!(id, vec![1.0, 0.0]);
 
-        let mut rr = vec![1., 1.];
-        compiler.rhs(0., u.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
-        assert_relative_eq!(rr.as_slice(), vec![0., 0.].as_slice());
+            let mut u = vec![0., 0.];
+            compiler.set_u0(u.as_mut_slice(), data.as_mut_slice());
+            assert_relative_eq!(u.as_slice(), vec![1., 2.].as_slice());
 
-        let up = vec![2., 3.];
-        rr = vec![1., 1.];
-        compiler.mass(0., up.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
-        assert_relative_eq!(rr.as_slice(), vec![2., 0.].as_slice());
+            let mut rr = vec![1., 1.];
+            compiler.rhs(0., u.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
+            assert_relative_eq!(rr.as_slice(), vec![0., 0.].as_slice());
 
-        let mut out = vec![0.; 3];
-        compiler.calc_out(0., u.as_slice(), data.as_mut_slice(), out.as_mut_slice());
-        assert_relative_eq!(out.as_slice(), vec![1., 2., 4.].as_slice());
+            let up = vec![2., 3.];
+            rr = vec![1., 1.];
+            compiler.mass(0., up.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
+            assert_relative_eq!(rr.as_slice(), vec![2., 0.].as_slice());
+
+            let mut out = vec![0.; 3];
+            compiler.calc_out(0., u.as_slice(), data.as_mut_slice(), out.as_mut_slice());
+            assert_relative_eq!(out.as_slice(), vec![1., 2., 4.].as_slice());
+        }
     }
 
     #[test]
@@ -1867,21 +2283,26 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("test_inputs", &model).unwrap();
 
-        let compiler =
-            Compiler::<CraneliftModule>::from_discrete_model(&discrete_model, Default::default())
-                .unwrap();
-        let mut data = compiler.get_new_data();
-        let inputs = vec![1.0, 2.0, 3.0];
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        #[cfg(feature = "cranelift")]
+        {
+            let compiler = Compiler::from_discrete_model::<crate::CraneliftModule>(
+                &discrete_model,
+                Default::default(),
+            )
+            .unwrap();
+            let mut data = compiler.get_new_data();
+            let inputs = vec![1.0, 2.0, 3.0];
+            compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-        for (name, expected_value) in [("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
-            let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
-            assert_relative_eq!(inputs, expected_value.as_slice());
+            for (name, expected_value) in [("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
+                let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
+                assert_relative_eq!(inputs, expected_value.as_slice());
+            }
         }
 
         #[cfg(feature = "llvm")]
         {
-            let compiler = Compiler::<crate::LlvmModule>::from_discrete_model(
+            let compiler = Compiler::from_discrete_model::<crate::LlvmModule>(
                 &discrete_model,
                 Default::default(),
             )
@@ -1910,7 +2331,7 @@ mod tests {
         let discrete_model = DiscreteModel::build("test_mass", &model).unwrap();
 
         let compiler =
-            Compiler::<crate::LlvmModule>::from_discrete_model(&discrete_model, Default::default())
+            Compiler::from_discrete_model::<crate::LlvmModule>(&discrete_model, Default::default())
                 .unwrap();
         let mut data = compiler.get_new_data();
         let mut u0 = vec![0.0, 0.0, 0.0];

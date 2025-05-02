@@ -12,6 +12,7 @@ pub mod parser;
 pub mod utils;
 
 pub use execution::compiler::Compiler;
+#[cfg(feature = "cranelift")]
 pub use execution::cranelift::codegen::CraneliftModule;
 #[cfg(feature = "llvm")]
 pub use execution::llvm::codegen::LlvmModule;

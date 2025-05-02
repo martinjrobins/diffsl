@@ -77,7 +77,7 @@ impl ValidationErrors {
 impl fmt::Display for ValidationErrors {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for err in &self.errors {
-            write!(f, "{}", err)?;
+            write!(f, "{err}")?;
         }
         Ok(())
     }

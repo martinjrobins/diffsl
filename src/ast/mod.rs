@@ -15,7 +15,7 @@ impl fmt::Display for DsModel<'_> {
         if self.inputs.len() > 1 {
             write!(f, "in = [")?;
             for (i, name) in self.inputs.iter().enumerate() {
-                write!(f, "{}", name)?;
+                write!(f, "{name}")?;
                 if i < self.inputs.len() - 1 {
                     write!(f, ", ")?;
                 }
@@ -23,7 +23,7 @@ impl fmt::Display for DsModel<'_> {
             write!(f, "]")?;
         }
         for tensor in self.tensors.iter() {
-            write!(f, "{}", tensor)?;
+            write!(f, "{tensor}")?;
         }
         Ok(())
     }
@@ -84,7 +84,7 @@ impl fmt::Display for Name<'_> {
         if !self.indices.is_empty() {
             write!(f, "_")?;
             for idx in self.indices.iter() {
-                write!(f, "{}", idx)?;
+                write!(f, "{idx}")?;
             }
         }
         Ok(())
@@ -195,12 +195,12 @@ impl fmt::Display for Tensor<'_> {
         if !self.indices.is_empty() {
             write!(f, "_")?;
             for idx in self.indices.iter() {
-                write!(f, "{}", idx)?;
+                write!(f, "{idx}")?;
             }
         }
         writeln!(f, " {{")?;
         for elmt in self.elmts.iter() {
-            writeln!(f, "{},", elmt)?;
+            writeln!(f, "{elmt},")?;
         }
         Ok(())
     }
@@ -218,7 +218,7 @@ impl fmt::Display for Indice<'_> {
         write!(f, "{}", self.first)?;
         if let Some(ref last) = self.last {
             if let Some(ref sep) = self.sep {
-                write!(f, "{}{}", sep, last)?;
+                write!(f, "{sep}{last}")?;
             }
         }
         Ok(())
@@ -234,7 +234,7 @@ impl fmt::Display for Vector<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(")?;
         for (i, elmt) in self.data.iter().enumerate() {
-            write!(f, "{}", elmt)?;
+            write!(f, "{elmt}")?;
             if i < self.data.len() - 1 {
                 write!(f, ", ")?;
             }
@@ -924,10 +924,10 @@ impl fmt::Display for Ast<'_> {
                 )
             }
             AstKind::Name(name) => {
-                write!(f, "{}", name)
+                write!(f, "{name}")
             }
-            AstKind::Number(num) => write!(f, "{}", num),
-            AstKind::Integer(num) => write!(f, "{}", num),
+            AstKind::Number(num) => write!(f, "{num}"),
+            AstKind::Integer(num) => write!(f, "{num}"),
             AstKind::Unknown(unknown) => write!(
                 f,
                 "Unknown ({})({:#?}) -> {:#?}",
@@ -942,7 +942,7 @@ impl fmt::Display for Ast<'_> {
             }),
             AstKind::IntRange(range) => write!(f, "({}, {})", range.lower, range.upper),
             AstKind::Equation(eqn) => {
-                write!(f, "{}", eqn)
+                write!(f, "{eqn}")
             }
             AstKind::RateEquation(reqn) => {
                 write!(f, "dot({}) = {}", reqn.name, reqn.rhs)
@@ -1002,12 +1002,12 @@ impl fmt::Display for Ast<'_> {
             AstKind::Assignment(a) => {
                 write!(f, "{} = {}", a.name, a.expr)
             }
-            AstKind::DsModel(m) => write!(f, "{}", m),
-            AstKind::Tensor(tensor) => write!(f, "{}", tensor),
-            AstKind::Range(range) => write!(f, "{}", range),
-            AstKind::Vector(v) => write!(f, "{}", v),
-            AstKind::Indice(i) => write!(f, "{}", i),
-            AstKind::NamedGradient(gradient) => write!(f, "{}", gradient),
+            AstKind::DsModel(m) => write!(f, "{m}"),
+            AstKind::Tensor(tensor) => write!(f, "{tensor}"),
+            AstKind::Range(range) => write!(f, "{range}"),
+            AstKind::Vector(v) => write!(f, "{v}"),
+            AstKind::Indice(i) => write!(f, "{i}"),
+            AstKind::NamedGradient(gradient) => write!(f, "{gradient}"),
         }
     }
 }

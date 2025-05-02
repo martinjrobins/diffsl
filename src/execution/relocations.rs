@@ -326,8 +326,9 @@ fn relocation(rela: &Relocation, s: *const u8, p: *mut u8) -> Result<()> {
             r_pcrel,
             r_length,
         } => match ARCH {
-            "x86" => handle_relocation_generic_x86(rela, s, p),
-            "x86_64" => handle_relocation_generic_x86(rela, s, p),
+            // TODO: require x86_64 for intel macOS
+            //"x86" => handle_relocation_generic_x86(rela, s, p),
+            //"x86_64" => handle_relocation_generic_x86(rela, s, p),
             "aarch64" => handle_relocation_macho_aarch64(s, a, p, r_type, r_pcrel, r_length),
             _ => Err(anyhow!(
                 "Unsupported architecture {} for MachO relocations",

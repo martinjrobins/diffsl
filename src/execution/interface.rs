@@ -3,23 +3,23 @@ type UIntType = u32;
 
 pub type BarrierInitFunc = unsafe extern "C" fn();
 
-pub type SetConstantsFunc = unsafe extern "C" fn(threadId: UIntType, threadDim: UIntType);
+pub type SetConstantsFunc = unsafe extern "C" fn(thread_id: UIntType, thread_dim: UIntType);
 
 pub type StopFunc = unsafe extern "C" fn(
     time: RealType,
     u: *const RealType,
     data: *mut RealType,
     root: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type RhsFunc = unsafe extern "C" fn(
     time: RealType,
     u: *const RealType,
     data: *mut RealType,
     rr: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type RhsGradFunc = unsafe extern "C" fn(
     time: RealType,
@@ -29,8 +29,8 @@ pub type RhsGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
     rr: *const RealType,
     drr: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type RhsRevGradFunc = unsafe extern "C" fn(
     time: RealType,
@@ -40,8 +40,8 @@ pub type RhsRevGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
     rr: *const RealType,
     drr: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type RhsSensGradFunc = unsafe extern "C" fn(
     time: RealType,
@@ -50,8 +50,8 @@ pub type RhsSensGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
     rr: *const RealType,
     drr: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type RhsSensRevGradFunc = unsafe extern "C" fn(
     time: RealType,
@@ -60,16 +60,16 @@ pub type RhsSensRevGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
     rr: *const RealType,
     drr: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type MassFunc = unsafe extern "C" fn(
     time: RealType,
     v: *const RealType,
     data: *mut RealType,
     mv: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type MassRevGradFunc = unsafe extern "C" fn(
     time: RealType,
@@ -79,38 +79,38 @@ pub type MassRevGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
     mv: *const RealType,
     dmv: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type U0Func = unsafe extern "C" fn(
     u: *mut RealType,
     data: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type U0GradFunc = unsafe extern "C" fn(
     u: *const RealType,
     du: *mut RealType,
     data: *const RealType,
     ddata: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type U0RevGradFunc = unsafe extern "C" fn(
     u: *const RealType,
     du: *mut RealType,
     data: *const RealType,
     ddata: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type CalcOutFunc = unsafe extern "C" fn(
     time: RealType,
     u: *const RealType,
     data: *mut RealType,
     out: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type CalcOutGradFunc = unsafe extern "C" fn(
     time: RealType,
@@ -120,8 +120,8 @@ pub type CalcOutGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
     out: *const RealType,
     dout: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type CalcOutRevGradFunc = unsafe extern "C" fn(
     time: RealType,
@@ -131,8 +131,8 @@ pub type CalcOutRevGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
     out: *const RealType,
     dout: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type CalcOutSensGradFunc = unsafe extern "C" fn(
     time: RealType,
@@ -141,8 +141,8 @@ pub type CalcOutSensGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
     out: *const RealType,
     dout: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type CalcOutSensRevGradFunc = unsafe extern "C" fn(
     time: RealType,
@@ -151,8 +151,8 @@ pub type CalcOutSensRevGradFunc = unsafe extern "C" fn(
     ddata: *mut RealType,
     out: *const RealType,
     dout: *mut RealType,
-    threadId: UIntType,
-    threadDim: UIntType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
 );
 pub type GetDimsFunc = unsafe extern "C" fn(
     states: *mut UIntType,

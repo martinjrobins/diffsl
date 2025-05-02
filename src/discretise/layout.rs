@@ -645,7 +645,7 @@ impl Layout {
                 self.shape
                     .iter()
                     .cloned()
-                    .chain(std::iter::repeat(1).take(new_ranks)),
+                    .chain(std::iter::repeat_n(1, new_ranks)),
             );
             let n_dense_axes = self.n_dense_axes + new_ranks;
             Some(Self {

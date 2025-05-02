@@ -372,9 +372,9 @@ impl<'s> DiscreteModel<'s> {
                                 }
                             }
                         }
-                        _name => {
+                        name => {
                             if let Some(built) = Self::build_array(tensor, &mut env) {
-                                let is_input = model.inputs.iter().any(|name| *name == _name);
+                                let is_input = model.inputs.contains(&name);
                                 if let Some(env_entry) = env.get(built.name()) {
                                     let dependent_on_state = env_entry.is_state_dependent();
                                     let dependent_on_time = env_entry.is_time_dependent();

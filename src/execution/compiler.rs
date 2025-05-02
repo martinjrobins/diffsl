@@ -470,6 +470,9 @@ impl Compiler {
         let mut text_sec = None;
         for section in file.sections() {
             if let SectionKind::Text = section.kind() {
+                if text_sec.is_some() {
+                    return Err(anyhow!("Multiple .text sections found"));
+                }
                 text_sec = Some(section);
             }
         }
@@ -489,6 +492,10 @@ impl Compiler {
             .relocations()
             .fold(sections_to_map, |mut acc, (_, rela)| {
                 if let Some(section) = relocation_target_section(&file, &rela) {
+                    if section.index() == text_sec.index() {
+                        // skip the text section
+                        return acc;
+                    }
                     let section_name = section.name().expect("Could not get section name");
                     acc.insert(section_name, section.index());
                 }
@@ -524,12 +531,8 @@ impl Compiler {
             let section_data = section.data().expect("Could not get section data");
             section_map.as_mut_slice()[..section_data.len()].copy_from_slice(section_data);
             match section.kind() {
-                SectionKind::Text => {
-                    // text sections need to be writable, standardise name so we can get it again
-                    mapped_sections
-                        .insert(".text".to_string(), MappedSection::Mutable(section_map));
-                }
                 SectionKind::Data
+                | SectionKind::Text
                 | SectionKind::Common
                 | SectionKind::UninitializedData
                 | SectionKind::UninitializedTls => {
@@ -555,9 +558,7 @@ impl Compiler {
             .as_mut()
             .map(|jumptable_map| JumpTableEntry::from_bytes(jumptable_map.as_mut_slice()));
         for (offset, rela) in text_sec.relocations() {
-            let text_ptr = mapped_sections
-                .get_mut(".text")
-                .unwrap()
+            let text_ptr = mapped_sections.get_mut(text_sec.name().unwrap()).unwrap()
                 .as_mut_ptr()
                 .unwrap();
             println!("offset: {:#x}", offset);
@@ -580,10 +581,10 @@ impl Compiler {
             );
         }
         // make text section immutable and executable
-        let mut text_sec = mapped_sections.remove(".text").unwrap();
-        text_sec = text_sec.make_read_only().unwrap().make_exec().unwrap();
-        mapped_sections.insert(".text".to_string(), text_sec);
-        let text_sec = mapped_sections.get(".text").unwrap();
+        let mut text_map= mapped_sections.remove(text_sec.name().unwrap()).unwrap();
+        text_map = text_map.make_read_only().unwrap().make_exec().unwrap();
+        mapped_sections.insert(text_sec.name().unwrap().to_string(), text_map);
+        let text_sec = &mapped_sections[text_sec.name().unwrap()];
         let mut symbol_map = HashMap::new();
         for symbol in file.symbols() {
             if let Ok(name) = symbol.name() {
@@ -615,12 +616,6 @@ impl Compiler {
                         //    _ => panic!("Unsupported binary format"),
                         //};
                         let func_ptr = unsafe { text_sec.as_ptr().offset(offset) };
-                        // print first instruction of function
-                        println!(
-                            "Function {}: {:#010x?}",
-                            name,
-                            unsafe { (func_ptr as *const u32).read() }
-                        );
                         // for some reason on macOS the symbol name is prefixed with an underscore, remove it
                         let name = name.strip_prefix("_").unwrap_or(name);
                         symbol_map.insert(name, func_ptr);
@@ -732,11 +727,6 @@ impl Compiler {
         if let Some(get_func) = self.jit_get_tensor_functions.constant_map.get(name) {
             let mut tensor_data: *const f64 = std::ptr::null_mut();
             let mut tensor_size: u32 = 0;
-            println!("actual function we're calling");
-            for i in 0..10 {
-                let instr_ptr = unsafe { std::mem::transmute::<GetConstantFunc, *const u8>(*get_func) };
-                println!("{}: {:#010x?}", i, unsafe { (instr_ptr as *const u32).offset(i).read() } );
-            }
             unsafe {
                 (get_func)(
                     &mut tensor_data as *mut *const f64,

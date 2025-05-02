@@ -183,12 +183,28 @@ fn handle_relocation_macho_aarch64(
             let mask_add: u32 = 0b11111111110000000000001111111111;
             // S + A
             let val = (i64::try_from(s as usize).unwrap() + a);
+            println!("mem at val: {}", unsafe { (val as *const f64).read_unaligned() });
+            println!("mem at val+1: {}", unsafe { (val as *const f64).offset(1).read_unaligned() });
             println!("val: {:#b}", val);
             let val = val as u32;
+            
+            
 
             // shift left the calculated value by 10 bits and bitwise AND with the mask to get the lower 12 bits
-            let val = (val << 10) & !mask_add;
+            let mut val = (val << 10) & !mask_add;
+            
             let mut instr = unsafe { (p as *const u32).read_unaligned() };
+            // taken from https://github.com/llvm/llvm-project/blob/a88d580860b88bbb02797bae95032b6eb0c4579c/lld/MachO/Arch/ARM64Common.h#L89C3-L94C4
+            // Apache License 2.0
+            if ((instr & 0x3b00_0000) == 0x3900_0000) { // load/store
+                let mut scale = instr >> 30;
+                if (scale == 0 && (instr & 0x0480_0000) == 0x0480_0000) { // 128-bit variant
+                    scale = 4;
+                }           
+                println!("scale: {}", scale);
+                // scale by r_length and apply the mask again
+                val = (val >> scale) & !mask_add;
+            }
             // zero out the offset bits
             instr &= mask_add;
             // insert the calculated value

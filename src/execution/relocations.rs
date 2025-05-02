@@ -4,6 +4,7 @@ use std::{collections::HashMap, env::consts::ARCH};
 use object::elf::{
     R_AARCH64_ABS16, R_AARCH64_ABS32, R_AARCH64_ABS64, R_AARCH64_ADD_ABS_LO12_NC,
     R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_ADR_PREL_PG_HI21_NC, R_AARCH64_CALL26, R_AARCH64_JUMP26,
+    R_AARCH64_LDST16_ABS_LO12_NC, R_AARCH64_LDST32_ABS_LO12_NC, R_AARCH64_LDST64_ABS_LO12_NC,
     R_AARCH64_LDST8_ABS_LO12_NC,
 };
 use object::macho::ARM64_RELOC_UNSIGNED;
@@ -150,7 +151,11 @@ fn handle_relocation_elf_aarch64(
         // for pointers
         R_AARCH64_ABS64 | R_AARCH64_ABS32 | R_AARCH64_ABS16 => arm64_absolute(s, a, p, size),
         // offset within page, scaled by r_length
-        R_AARCH64_ADD_ABS_LO12_NC | R_AARCH64_LDST8_ABS_LO12_NC => arm64_page_offset(s, a, p),
+        R_AARCH64_ADD_ABS_LO12_NC
+        | R_AARCH64_LDST8_ABS_LO12_NC
+        | R_AARCH64_LDST16_ABS_LO12_NC
+        | R_AARCH64_LDST32_ABS_LO12_NC
+        | R_AARCH64_LDST64_ABS_LO12_NC => arm64_page_offset(s, a, p),
 
         // pc-rel distance to page of target
         R_AARCH64_ADR_PREL_PG_HI21 | R_AARCH64_ADR_PREL_PG_HI21_NC => arm64_relative_page(s, a, p),
@@ -159,7 +164,7 @@ fn handle_relocation_elf_aarch64(
         R_AARCH64_JUMP26 | R_AARCH64_CALL26 => arm64_branch(s, a, p),
         _ => {
             return Err(anyhow!(
-                "Unsupported relocation type {:?} for macho aarch64",
+                "Unsupported relocation type {:?} for elf aarch64",
                 r_type
             ))
         }

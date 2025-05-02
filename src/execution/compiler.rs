@@ -9,7 +9,7 @@ use crate::{
     parser::parse_ds_string,
 };
 use mmap_rs::{Mmap, MmapMut, MmapOptions};
-use object::{BinaryFormat, Object, ObjectSection, ObjectSymbol, SectionKind};
+use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
 
 use super::{
     interface::{
@@ -21,7 +21,7 @@ use super::{
     module::CodegenModule,
     relocations::{
         handle_jump_entry, handle_relocation, is_jump_table_entry, relocation_target_section,
-        JumpTableEntry,
+        symbol_offset, JumpTableEntry,
     },
 };
 use anyhow::{anyhow, Result};
@@ -598,21 +598,7 @@ impl Compiler {
                         .section_by_index(section_index)
                         .expect("Could not find section");
                     if let SectionKind::Text = section.kind() {
-                        let offset = match file.format() {
-                            // ELF files have the symbol address as an offset from the section address
-                            BinaryFormat::Elf => symbol.address() as isize,
-                            // MachO files have an absolute symbol address within the object file
-                            // so subtract the section address to get the offset
-                            BinaryFormat::MachO => {
-                                symbol.address() as isize - section.address() as isize
-                            }
-                            _ => {
-                                return Err(anyhow!(
-                                "Unsupported binary format {:?}, only ELF and MachO are supported",
-                                file.format()
-                            ))
-                            }
-                        };
+                        let offset = symbol_offset(&file, &symbol, &section)?;
                         let func_ptr = unsafe { text_sec.as_ptr().offset(offset) };
                         // for some reason on macOS the symbol name is prefixed with an underscore, remove it
                         let name = name.strip_prefix("_").unwrap_or(name);

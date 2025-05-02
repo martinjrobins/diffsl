@@ -2,16 +2,12 @@ use std::io::Write;
 use std::{collections::HashMap, env::consts::ARCH};
 
 use object::macho::ARM64_RELOC_UNSIGNED;
-use object::BinaryFormat;
 use object::{
-    elf::{
-        R_386_16, R_386_8, R_386_PC16, R_386_PC8, R_X86_64_16, R_X86_64_32, R_X86_64_64,
-        R_X86_64_8, R_X86_64_PC16, R_X86_64_PC32, R_X86_64_PC8, R_X86_64_PLT32,
-    },
     macho::{ARM64_RELOC_BRANCH26, ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12},
     File, Object, ObjectSection, ObjectSymbol, Relocation, RelocationFlags, RelocationTarget,
-    Section,
+    Section, Symbol,
 };
+use object::{BinaryFormat, RelocationKind};
 
 use anyhow::{anyhow, Result};
 
@@ -112,28 +108,20 @@ pub(crate) fn is_jump_table_entry(file: &File<'_>, rela: &Relocation) -> bool {
         && (rela.size() < u8::try_from(std::mem::size_of::<usize>() * 8).unwrap())
 }
 
-fn handle_relocation_elf_x86(
-    s: *const u8,
-    a: i64,
-    p: *mut u8,
-    r_type: u32,
-    size: u8,
-) -> Result<()> {
-    let val = match r_type {
+fn handle_relocation_generic_x86(rela: &Relocation, s: *const u8, p: *mut u8) -> Result<()> {
+    let a = rela.addend();
+    let size = rela.size();
+    let val = match rela.kind() {
         // S + A
-        R_386_16 | R_386_8 | R_X86_64_64 | R_X86_64_32 | R_X86_64_16 | R_X86_64_8 => {
-            // also R_386_32
-            i64::try_from(s as usize).unwrap() + a
-        }
+        RelocationKind::Absolute => i64::try_from(s as usize).unwrap() + a,
         // S + A - P
-        R_386_PC16 | R_386_PC8 | R_X86_64_PC32 | R_X86_64_PC16 | R_X86_64_PC8 | R_X86_64_PLT32 => {
-            // also R_386_PC32
+        RelocationKind::Relative | RelocationKind::PltRelative => {
             i64::try_from(s as usize).unwrap() + a - i64::try_from(p as usize).unwrap()
         }
         _ => {
             return Err(anyhow!(
-                "Unsupported relocation type {:?} for elf x64",
-                r_type
+                "Unsupported relocation type {:?} for generic x86",
+                rela.kind()
             ))
         }
     };
@@ -251,11 +239,11 @@ fn handle_relocation_macho_aarch64(
 fn relocation(rela: &Relocation, s: *const u8, p: *mut u8) -> Result<()> {
     let a = rela.addend();
     match rela.flags() {
-        RelocationFlags::Elf { r_type } => match ARCH {
-            "x86_64" => handle_relocation_elf_x86(s, a, p, r_type, rela.size()),
-            "x86" => handle_relocation_elf_x86(s, a, p, r_type, rela.size()),
+        RelocationFlags::Elf { r_type: _ } | RelocationFlags::Coff { typ: _ } => match ARCH {
+            "x86_64" => handle_relocation_generic_x86(rela, s, p),
+            "x86" => handle_relocation_generic_x86(rela, s, p),
             _ => Err(anyhow!(
-                "Unsupported architecture {} for ELF relocations",
+                "Unsupported architecture {} for ELF & Coff relocations",
                 ARCH
             ))?,
         },
@@ -271,6 +259,28 @@ fn relocation(rela: &Relocation, s: *const u8, p: *mut u8) -> Result<()> {
             ))?,
         },
         _ => Err(anyhow!("Only ELF and MachO relocations are supported")),
+    }
+}
+
+pub(crate) fn symbol_offset(
+    file: &File,
+    symbol: &Symbol,
+    section: &Section<'_, '_>,
+) -> Result<isize> {
+    match file.format() {
+        BinaryFormat::Elf | BinaryFormat::Coff => {
+            // ELF files have the symbol address as an offset from the section address
+            Ok(symbol.address() as isize)
+        }
+        BinaryFormat::MachO => {
+            // MachO files have an absolute symbol address within the object file
+            // so subtract the section address to get the offset
+            Ok(symbol.address() as isize - section.address() as isize)
+        }
+        _ => Err(anyhow!(
+            "Unsupported binary format {:?}, only ELF and MachO are supported",
+            file.format()
+        )),
     }
 }
 
@@ -292,25 +302,8 @@ pub(crate) fn handle_relocation(
             let section = file.section_by_index(section_index).unwrap();
             let section_name = section.name().expect("Could not get section name");
             let section_ptr = mapped_sections[section_name].as_ptr();
-            match file.format() {
-                BinaryFormat::Elf => {
-                    // ELF files have the symbol address as an offset from the section address
-                    let offset = symbol.address() as isize;
-                    unsafe { section_ptr.offset(offset) }
-                }
-                BinaryFormat::MachO => {
-                    // MachO files have an absolute symbol address within the object file
-                    // so subtract the section address to get the offset
-                    let offset = symbol.address() as isize - section.address() as isize;
-                    unsafe { section_ptr.offset(offset) }
-                }
-                _ => {
-                    return Err(anyhow!(
-                        "Unsupported binary format {:?}, only ELF and MachO are supported",
-                        file.format()
-                    ))
-                }
-            }
+            let offset = symbol_offset(file, &symbol, &section)?;
+            unsafe { section_ptr.offset(offset) }
         }
         None => {
             // must be an external function call generate the jump table entry

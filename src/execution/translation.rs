@@ -43,9 +43,9 @@ impl fmt::Display for TranslationFrom {
             TranslationFrom::DenseContraction {
                 contract_by,
                 contract_len,
-            } => write!(f, "DenseContraction({}, {})", contract_by, contract_len),
+            } => write!(f, "DenseContraction({contract_by}, {contract_len})"),
             TranslationFrom::DiagonalContraction { contract_by } => {
-                write!(f, "DiagonalContraction({})", contract_by)
+                write!(f, "DiagonalContraction({contract_by})")
             }
             TranslationFrom::SparseContraction {
                 contract_by,
@@ -53,14 +53,13 @@ impl fmt::Display for TranslationFrom {
                 contract_end_indices,
             } => write!(
                 f,
-                "SparseContraction({}, {:?}, {:?})",
-                contract_by, contract_start_indices, contract_end_indices
+                "SparseContraction({contract_by}, {contract_start_indices:?}, {contract_end_indices:?})"
             ),
             TranslationFrom::ElementWise => write!(f, "ElementWise"),
             TranslationFrom::Broadcast {
                 broadcast_by,
                 broadcast_len,
-            } => write!(f, "Broadcast({}, {})", broadcast_by, broadcast_len),
+            } => write!(f, "Broadcast({broadcast_by}, {broadcast_len})"),
         }
     }
 }
@@ -179,8 +178,8 @@ pub enum TranslationTo {
 impl fmt::Display for TranslationTo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TranslationTo::Contiguous { start, end } => write!(f, "Contiguous({}, {})", start, end),
-            TranslationTo::Sparse { indices } => write!(f, "Sparse{:?}", indices),
+            TranslationTo::Contiguous { start, end } => write!(f, "Contiguous({start}, {end})"),
+            TranslationTo::Sparse { indices } => write!(f, "Sparse{indices:?}"),
         }
     }
 }

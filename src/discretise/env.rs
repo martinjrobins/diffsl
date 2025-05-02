@@ -177,7 +177,7 @@ impl Env {
         let var = self.get(name);
         if var.is_none() {
             self.errs.push(ValidationError::new(
-                format!("cannot find variable {}", name),
+                format!("cannot find variable {name}"),
                 ast.span,
             ));
             return None;
@@ -217,7 +217,7 @@ impl Env {
             Ok(layout) => layout,
             Err(e) => {
                 self.errs
-                    .push(ValidationError::new(format!("{}", e), ast.span));
+                    .push(ValidationError::new(format!("{e}"), ast.span));
                 return None;
             }
         };
@@ -240,7 +240,7 @@ impl Env {
             Ok(layout) => Some(layout),
             Err(e) => {
                 self.errs
-                    .push(ValidationError::new(format!("{}", e), ast.span));
+                    .push(ValidationError::new(format!("{e}"), ast.span));
                 None
             }
         }
@@ -302,7 +302,7 @@ impl Env {
                     Ok(layout) => layout,
                     Err(e) => {
                         self.errs
-                            .push(ValidationError::new(format!("{}", e), elmt.expr.span));
+                            .push(ValidationError::new(format!("{e}"), elmt.expr.span));
                         return None;
                     }
                 }

@@ -813,7 +813,7 @@ impl CodegenModule for CraneliftModule {
 
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
-        self.declare_function(format!("get_tensor_{}", name).as_str())
+        self.declare_function(format!("get_tensor_{name}").as_str())
     }
 
     fn compile_get_constant(&mut self, model: &DiscreteModel, name: &str) -> Result<FuncId> {
@@ -835,7 +835,7 @@ impl CodegenModule for CraneliftModule {
 
         codegen.builder.ins().return_(&[]);
         codegen.builder.finalize();
-        self.declare_function(format!("get_constant_{}", name).as_str())
+        self.declare_function(format!("get_constant_{name}").as_str())
     }
 
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
@@ -1128,7 +1128,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
 
     fn get_function_name(name: &str, is_tangent: bool) -> String {
         if is_tangent {
-            format!("{}__tangent__", name)
+            format!("{name}__tangent__")
         } else {
             name.to_owned()
         }
@@ -1992,7 +1992,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
     }
 
     fn get_tangent_tensor_name(&self, name: &str) -> String {
-        format!("{}__tangent__", name)
+        format!("{name}__tangent__")
     }
 
     fn insert_tensor(&mut self, tensor: &Tensor, ptr: Value, data_index: i64, is_tangent: bool) {

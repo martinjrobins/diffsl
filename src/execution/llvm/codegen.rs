@@ -754,8 +754,8 @@ impl<'ctx> CodeGen<'ctx> {
                 .add_function("printf", printf_type, Some(Linkage::External)),
         };
         let (format_str, format_str_name) = match value {
-            PrintValue::Real(_) => (format!("{}: %f\n", name), format!("real_format_{}", name)),
-            PrintValue::Int(_) => (format!("{}: %d\n", name), format!("int_format_{}", name)),
+            PrintValue::Real(_) => (format!("{name}: %f\n"), format!("real_format_{name}")),
+            PrintValue::Int(_) => (format!("{name}: %d\n"), format!("int_format_{name}")),
         };
         // change format_str to c string
         let format_str = CString::new(format_str).unwrap();
@@ -1811,9 +1811,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.int_type.const_zero()
             };
 
-            let curr_index = self
-                .builder
-                .build_phi(int_type, format!["i{}", i].as_str())?;
+            let curr_index = self.builder.build_phi(int_type, format!["i{i}"].as_str())?;
             curr_index.add_incoming(&[(&start_index, preblock)]);
 
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
@@ -1997,7 +1995,7 @@ impl<'ctx> CodeGen<'ctx> {
         // loop through each element in the contraction
         let contract_block = self
             .context
-            .append_basic_block(self.fn_value(), format!("{}_contract", name).as_str());
+            .append_basic_block(self.fn_value(), format!("{name}_contract").as_str());
         self.builder.build_unconditional_branch(contract_block)?;
         self.builder.position_at_end(contract_block);
 
@@ -3316,7 +3314,7 @@ impl<'ctx> CodeGen<'ctx> {
             ],
             false,
         );
-        let function_name = format!("get_tensor_{}", name);
+        let function_name = format!("get_tensor_{name}");
         let function = self
             .module
             .add_function(function_name.as_str(), fn_type, None);
@@ -3364,7 +3362,7 @@ impl<'ctx> CodeGen<'ctx> {
             .context
             .void_type()
             .fn_type(&[real_ptr_ptr_type.into(), self.int_ptr_type.into()], false);
-        let function_name = format!("get_constant_{}", name);
+        let function_name = format!("get_constant_{name}");
         let function = self
             .module
             .add_function(function_name.as_str(), fn_type, None);

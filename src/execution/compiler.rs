@@ -382,7 +382,7 @@ impl CompilerMode {
 impl Compiler {
     pub fn from_discrete_str<M: CodegenModule>(code: &str, mode: CompilerMode) -> Result<Self> {
         let uid = Id::<u32>::new();
-        let name = format!("diffsl_{}", uid);
+        let name = format!("diffsl_{uid}");
         let model = parse_ds_string(code).map_err(|e| anyhow!(e.to_string()))?;
         let model = DiscreteModel::build(name.as_str(), &model)
             .map_err(|e| anyhow!(e.as_error_message(code)))?;
@@ -1593,9 +1593,8 @@ mod tests {
     ) -> Vec<Vec<f64>> {
         let full_text = format!(
             "
-            {}
-        ",
-            text
+            {text}
+        "
         );
         let model = parse_ds_string(full_text.as_str()).unwrap();
         let discrete_model = match DiscreteModel::build("$name", &model) {

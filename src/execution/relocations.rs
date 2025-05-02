@@ -220,7 +220,7 @@ fn arm64_absolute(s: *const u8, a: i64, p: *mut u8, size: u8) {
         16 => unsafe { (p as *mut u16).write_unaligned(val as u16) },
         32 => unsafe { (p as *mut u32).write_unaligned(val as u32) },
         64 => unsafe { (p as *mut u64).write_unaligned(val as u64) },
-        _ => panic!("Unsupported relocation length {:?}", size),
+        _ => panic!("Unsupported relocation length {size:?}"),
     }
 }
 

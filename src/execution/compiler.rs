@@ -9,7 +9,7 @@ use crate::{
     parser::parse_ds_string,
 };
 use mmap_rs::{Mmap, MmapMut, MmapOptions};
-use object::{Object, ObjectSection, ObjectSymbol, SectionKind, BinaryFormat};
+use object::{BinaryFormat, Object, ObjectSection, ObjectSymbol, SectionKind};
 
 use super::{
     interface::{
@@ -558,10 +558,11 @@ impl Compiler {
             .as_mut()
             .map(|jumptable_map| JumpTableEntry::from_bytes(jumptable_map.as_mut_slice()));
         for (offset, rela) in text_sec.relocations() {
-            let text_ptr = mapped_sections.get_mut(text_sec.name().unwrap()).unwrap()
+            let text_ptr = mapped_sections
+                .get_mut(text_sec.name().unwrap())
+                .unwrap()
                 .as_mut_ptr()
                 .unwrap();
-            println!("offset: {:#x}", offset);
             let patch_ptr = unsafe { text_ptr.offset(offset as isize) };
             if is_jump_table_entry(&file, &rela) {
                 let jumptable_entry = &mut jumptable.as_mut().unwrap()[jumptable_idx];
@@ -581,7 +582,7 @@ impl Compiler {
             );
         }
         // make text section immutable and executable
-        let mut text_map= mapped_sections.remove(text_sec.name().unwrap()).unwrap();
+        let mut text_map = mapped_sections.remove(text_sec.name().unwrap()).unwrap();
         text_map = text_map.make_read_only().unwrap().make_exec().unwrap();
         mapped_sections.insert(text_sec.name().unwrap().to_string(), text_map);
         let text_sec = &mapped_sections[text_sec.name().unwrap()];
@@ -598,23 +599,16 @@ impl Compiler {
                             BinaryFormat::Elf => symbol.address() as isize,
                             // MachO files have an absolute symbol address within the object file
                             // so subtract the section address to get the offset
-                            BinaryFormat::MachO => symbol.address() as isize - section.address() as isize,
+                            BinaryFormat::MachO => {
+                                symbol.address() as isize - section.address() as isize
+                            }
                             _ => {
                                 return Err(anyhow!(
-                                    "Unsupported binary format {:?}, only ELF and MachO are supported",
-                                    file.format()
-                                ))
+                                "Unsupported binary format {:?}, only ELF and MachO are supported",
+                                file.format()
+                            ))
                             }
                         };
-                        //let offset = symbol.address() as isize;
-                        //println!("{:?}", symbol);
-                        //println!("{:?}", section);
-                        // for some reason for macho the actual function address is one less than reported
-                        //let offset =  match file.format() {
-                        //    BinaryFormat::Elf => symbol.address() as isize,
-                        //    BinaryFormat::MachO => symbol.address() as isize - 4,
-                        //    _ => panic!("Unsupported binary format"),
-                        //};
                         let func_ptr = unsafe { text_sec.as_ptr().offset(offset) };
                         // for some reason on macOS the symbol name is prefixed with an underscore, remove it
                         let name = name.strip_prefix("_").unwrap_or(name);
@@ -622,8 +616,6 @@ impl Compiler {
                         // skip text sections, they are already mapped
                     }
                 }
-                
-                
             }
         }
 
@@ -733,7 +725,6 @@ impl Compiler {
                     &mut tensor_size as *mut u32,
                 )
             };
-            println!("tensor_data: {:x?}, tensor_size: {}", tensor_data, tensor_size);
             Some(unsafe {
                 std::slice::from_raw_parts(tensor_data, usize::try_from(tensor_size).unwrap())
             })

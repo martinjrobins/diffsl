@@ -1,6 +1,11 @@
 use std::io::Write;
 use std::{collections::HashMap, env::consts::ARCH};
 
+use object::elf::{
+    R_AARCH64_ABS16, R_AARCH64_ABS32, R_AARCH64_ABS64, R_AARCH64_ADD_ABS_LO12_NC,
+    R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_ADR_PREL_PG_HI21_NC, R_AARCH64_CALL26, R_AARCH64_JUMP26,
+    R_AARCH64_LDST8_ABS_LO12_NC,
+};
 use object::macho::ARM64_RELOC_UNSIGNED;
 use object::{
     macho::{ARM64_RELOC_BRANCH26, ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12},
@@ -126,10 +131,41 @@ fn handle_relocation_generic_x86(rela: &Relocation, s: *const u8, p: *mut u8) ->
         }
     };
     match size {
+        16 => unsafe { (p as *mut i16).write_unaligned(i16::try_from(val).unwrap()) },
         32 => unsafe { (p as *mut i32).write_unaligned(i32::try_from(val).unwrap()) },
         64 => unsafe { (p as *mut i64).write_unaligned(val) },
         _ => return Err(anyhow!("Unsupported relocation size {:?}", size)),
     }
+    Ok(())
+}
+
+fn handle_relocation_elf_aarch64(
+    s: *const u8,
+    a: i64,
+    p: *mut u8,
+    r_type: u32,
+    size: u8,
+) -> Result<()> {
+    match r_type {
+        // for pointers
+        R_AARCH64_ABS64 | R_AARCH64_ABS32 | R_AARCH64_ABS16 => arm64_absolute(s, a, p, size),
+        // offset within page, scaled by r_length
+        R_AARCH64_ADD_ABS_LO12_NC | R_AARCH64_LDST8_ABS_LO12_NC => arm64_page_offset(s, a, p),
+
+        // pc-rel distance to page of target
+        R_AARCH64_ADR_PREL_PG_HI21 | R_AARCH64_ADR_PREL_PG_HI21_NC => arm64_relative_page(s, a, p),
+
+        // a B/BL instruction with 26-bit displacement
+        R_AARCH64_JUMP26 | R_AARCH64_CALL26 => arm64_branch(s, a, p),
+        _ => {
+            return Err(anyhow!(
+                "Unsupported relocation type {:?} for macho aarch64",
+                r_type
+            ))
+        }
+    }
+    // flush stdout
+    std::io::stdout().flush().unwrap();
     Ok(())
 }
 
@@ -144,86 +180,20 @@ fn handle_relocation_macho_aarch64(
     match r_type {
         // for pointers
         ARM64_RELOC_UNSIGNED => {
-            // S + A
-            let val = i64::try_from(s as usize).unwrap() + a;
-            match r_length {
-                2 => unsafe { (p as *mut u32).write_unaligned(val as u32) },
-                3 => unsafe { (p as *mut u64).write_unaligned(val as u64) },
+            let size = match r_length {
+                1 => 16,
+                2 => 32,
+                3 => 64,
                 _ => return Err(anyhow!("Unsupported relocation length {:?}", r_length)),
-            }
+            };
+            arm64_absolute(s, a, p, size);
         }
         // offset within page, scaled by r_length
-        ARM64_RELOC_PAGEOFF12 => {
-            // https://blog.cloudflare.com/how-to-execute-an-object-file-part-4/§
-            // The mask of `add` or `str` instruction to separate
-            // opcode, registers and calculated value
-            let mask_add: u32 = 0b11111111110000000000001111111111;
-            // S + A
-            let val = i64::try_from(s as usize).unwrap() + a;
-            let val = val as u32;
-
-            // shift left the calculated value by 10 bits and bitwise AND with the mask to get the lower 12 bits
-            let mut val = (val << 10) & !mask_add;
-
-            let mut instr = unsafe { (p as *const u32).read_unaligned() };
-            // taken from https://github.com/llvm/llvm-project/blob/a88d580860b88bbb02797bae95032b6eb0c4579c/lld/MachO/Arch/ARM64Common.h#L89C3-L94C4
-            // Apache License 2.0
-            if (instr & 0x3b00_0000) == 0x3900_0000 {
-                // load/store
-                let mut scale = instr >> 30;
-                if scale == 0 && (instr & 0x0480_0000) == 0x0480_0000 {
-                    // 128-bit variant
-                    scale = 4;
-                }
-                // scale by r_length and apply the mask again
-                val = (val >> scale) & !mask_add;
-            }
-            // zero out the offset bits
-            instr &= mask_add;
-            // insert the calculated value
-            instr |= val;
-            // write the instruction back to the patch offset
-            unsafe { (p as *mut u32).write_unaligned(instr) };
-        }
+        ARM64_RELOC_PAGEOFF12 => arm64_page_offset(s, a, p),
         // pc-rel distance to page of target
-        ARM64_RELOC_PAGE21 => {
-            // Page(S+A)-Page(P), Page(expr) is defined as (expr & ~0xFFF)
-            let val = ((i64::try_from(s as usize).unwrap() + a) >> 12) - ((p as i64) >> 12);
-            let val = val as u32;
-            // Set an ADRP immediate value to bits [32:12] of the X
-            // 2 low bits of immediate value are placed in the position 30:29 and the rest in the position 23:5.
-            let masklo = 0b00000000000000000000000000000011;
-            let maskhi = 0b00000000000111111111111111111100;
-            let immlo = (val & masklo) << 29;
-            let immhi = (val & maskhi) << (5 - 2);
-            let mask = 0b10011111000000000000000000011111;
-            let mut instr = unsafe { (p as *const u32).read_unaligned() };
-            instr &= mask;
-            instr |= immlo | immhi;
-            unsafe {
-                (p as *mut u32).write_unaligned(instr);
-            }
-        }
+        ARM64_RELOC_PAGE21 => arm64_relative_page(s, a, p),
         // a B/BL instruction with 26-bit displacement
-        ARM64_RELOC_BRANCH26 => {
-            // S + A - P
-            let val = i64::try_from(s as usize).unwrap() + a - i64::try_from(p as usize).unwrap();
-
-            // Set a B immediate field to bits [27:2] of X
-            let mut val = (i32::try_from(val).unwrap() as u32) >> 2;
-
-            // need to set lower 26 bits of the instruction
-            let mask: u32 = 0xffffffff << 26;
-            val &= !mask;
-
-            let mut instr = unsafe { (p as *const u32).read_unaligned() };
-            // zero out the offset bits
-            instr &= mask;
-            // insert the calculated value
-            instr |= val;
-            // write the instruction back to the patch offset
-            unsafe { (p as *mut u32).write_unaligned(instr) };
-        }
+        ARM64_RELOC_BRANCH26 => arm64_branch(s, a, p),
         _ => {
             return Err(anyhow!(
                 "Unsupported relocation type {:?} for macho aarch64",
@@ -236,14 +206,112 @@ fn handle_relocation_macho_aarch64(
     Ok(())
 }
 
+/// absolute relocation
+fn arm64_absolute(s: *const u8, a: i64, p: *mut u8, size: u8) {
+    // S + A
+    let val = i64::try_from(s as usize).unwrap() + a;
+    match size {
+        16 => unsafe { (p as *mut u16).write_unaligned(val as u16) },
+        32 => unsafe { (p as *mut u32).write_unaligned(val as u32) },
+        64 => unsafe { (p as *mut u64).write_unaligned(val as u64) },
+        _ => panic!("Unsupported relocation length {:?}", size),
+    }
+}
+
+/// a B/BL instruction with 26-bit displacement
+fn arm64_branch(s: *const u8, a: i64, p: *mut u8) {
+    // S + A - P
+    let val = i64::try_from(s as usize).unwrap() + a - i64::try_from(p as usize).unwrap();
+
+    // Set a B immediate field to bits [27:2] of X
+    let mut val = (i32::try_from(val).unwrap() as u32) >> 2;
+
+    // need to set lower 26 bits of the instruction
+    let mask: u32 = 0xffffffff << 26;
+    val &= !mask;
+
+    let mut instr = unsafe { (p as *const u32).read_unaligned() };
+    // zero out the offset bits
+    instr &= mask;
+    // insert the calculated value
+    instr |= val;
+    // write the instruction back to the patch offset
+    unsafe { (p as *mut u32).write_unaligned(instr) };
+}
+
+/// pc-rel distance to page of target
+/// Page(S+A)-Page(P), Page(expr) is defined as (expr & ~0xFFF)
+/// encode to ADRP instruction (bits [32:12] of the X)
+fn arm64_relative_page(s: *const u8, a: i64, p: *mut u8) {
+    let val = ((i64::try_from(s as usize).unwrap() + a) >> 12) - ((p as i64) >> 12);
+    let val = val as u32;
+    // Set an ADRP immediate value to bits [32:12] of the X
+    // 2 low bits of immediate value are placed in the position 30:29 and the rest in the position 23:5.
+    let masklo = 0b00000000000000000000000000000011;
+    let maskhi = 0b00000000000111111111111111111100;
+    let immlo = (val & masklo) << 29;
+    let immhi = (val & maskhi) << (5 - 2);
+    let mask = 0b10011111000000000000000000011111;
+    let mut instr = unsafe { (p as *const u32).read_unaligned() };
+    instr &= mask;
+    instr |= immlo | immhi;
+    unsafe {
+        (p as *mut u32).write_unaligned(instr);
+    }
+}
+
+/// offset within page, scaled by size for load/store instructions
+/// should work for ADD, STR, LDR instructions
+fn arm64_page_offset(s: *const u8, a: i64, p: *mut u8) {
+    // https://blog.cloudflare.com/how-to-execute-an-object-file-part-4/§
+    // The mask of `add` or `str` instruction to separate
+    // opcode, registers and calculated value
+    let mask_add: u32 = 0b11111111110000000000001111111111;
+    // S + A
+    let val = i64::try_from(s as usize).unwrap() + a;
+    let val = val as u32;
+
+    // shift left the calculated value by 10 bits and bitwise AND with the mask to get the lower 12 bits
+    let mut val = (val << 10) & !mask_add;
+
+    let mut instr = unsafe { (p as *const u32).read_unaligned() };
+    // taken from https://github.com/llvm/llvm-project/blob/a88d580860b88bbb02797bae95032b6eb0c4579c/lld/MachO/Arch/ARM64Common.h#L89C3-L94C4
+    // Apache License 2.0
+    if (instr & 0x3b00_0000) == 0x3900_0000 {
+        // load/store
+        let mut scale = instr >> 30;
+        if scale == 0 && (instr & 0x0480_0000) == 0x0480_0000 {
+            // 128-bit variant
+            scale = 4;
+        }
+        // scale by r_length and apply the mask again
+        val = (val >> scale) & !mask_add;
+    }
+    // zero out the offset bits
+    instr &= mask_add;
+    // insert the calculated value
+    instr |= val;
+    // write the instruction back to the patch offset
+    unsafe { (p as *mut u32).write_unaligned(instr) };
+}
+
 fn relocation(rela: &Relocation, s: *const u8, p: *mut u8) -> Result<()> {
     let a = rela.addend();
     match rela.flags() {
-        RelocationFlags::Elf { r_type: _ } | RelocationFlags::Coff { typ: _ } => match ARCH {
+        RelocationFlags::Coff { typ: _ } => match ARCH {
             "x86_64" => handle_relocation_generic_x86(rela, s, p),
             "x86" => handle_relocation_generic_x86(rela, s, p),
             _ => Err(anyhow!(
-                "Unsupported architecture {} for ELF & Coff relocations",
+                "Unsupported architecture {} for Coff relocations",
+                ARCH
+            ))?,
+        },
+        RelocationFlags::Elf { r_type } => match ARCH {
+            "x86_64" => handle_relocation_generic_x86(rela, s, p),
+            "x86" => handle_relocation_generic_x86(rela, s, p),
+            "aarch64" => handle_relocation_elf_aarch64(s, a, p, r_type, rela.size()),
+            _ => Err(anyhow!(
+                "Unsupported architecture {} for ELF relocations",
                 ARCH
             ))?,
         },

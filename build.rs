@@ -75,14 +75,14 @@ mod enzyme {
             .write_to_file(bindings_rs)
             .expect("Couldn't write file bindings.rs!");
 
-        println!("cargo:rustc-link-search=native={}", libdir);
-        println!("cargo:rustc-link-search=native={}", llvm_lib_dir);
+        println!("cargo:rustc-link-search=native={libdir}");
+        println!("cargo:rustc-link-search=native={llvm_lib_dir}");
         // add homebrew lib dir if on macos, needed for zstd libraries
         if cfg!(target_os = "macos") {
             println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
         }
         for libname in libnames.iter() {
-            println!("cargo:rustc-link-lib={}", libname);
+            println!("cargo:rustc-link-lib={libname}");
         }
         println!("cargo:rustc-link-lib=LLVMDemangle");
         println!("cargo:rerun-if-changed=wrapper.h");

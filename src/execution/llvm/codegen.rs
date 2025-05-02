@@ -1358,8 +1358,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let intrinsic = Intrinsic::find(&llvm_name).unwrap();
                         let ret_type = self.real_type;
 
-                        let args_types = std::iter::repeat(ret_type)
-                            .take(arg_len)
+                        let args_types = std::iter::repeat_n(ret_type, arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicTypeEnum>>();
                         // if we get an intrinsic, we don't need to add to the list of functions and can return early
@@ -1370,8 +1369,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let arg_len = 1;
                         let ret_type = self.real_type;
 
-                        let args_types = std::iter::repeat(ret_type)
-                            .take(arg_len)
+                        let args_types = std::iter::repeat_n(ret_type, arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicMetadataTypeEnum>>();
 
@@ -1417,8 +1415,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let arg_len = 1;
                         let ret_type = self.real_type;
 
-                        let args_types = std::iter::repeat(ret_type)
-                            .take(arg_len)
+                        let args_types = std::iter::repeat_n(ret_type, arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicMetadataTypeEnum>>();
 
@@ -1481,8 +1478,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let arg_len = 1;
                         let ret_type = self.real_type;
 
-                        let args_types = std::iter::repeat(ret_type)
-                            .take(arg_len)
+                        let args_types = std::iter::repeat_n(ret_type, arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicMetadataTypeEnum>>();
 
@@ -1518,8 +1514,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let arg_len = 1;
                         let ret_type = self.real_type;
 
-                        let args_types = std::iter::repeat(ret_type)
-                            .take(arg_len)
+                        let args_types = std::iter::repeat_n(ret_type, arg_len)
                             .map(|f| f.into())
                             .collect::<Vec<BasicMetadataTypeEnum>>();
 

@@ -1,9 +1,11 @@
-#[cfg(target_os = "wasm32")]
+#[cfg(target_arch = "wasm32")]
 mod wasm;
-#[cfg(target_os = "wasm32")]
+#[cfg(target_arch = "wasm32")]
 pub(crate) use wasm::{Mmap, MmapMut, MmapOptions};
-#[cfg(not(target_os = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use mmap_rs::{Mmap, MmapMut, MmapOptions};
+
+use anyhow::{anyhow, Result};
 
 pub(crate) enum MappedSection {
     Mutable(MmapMut),
@@ -11,19 +13,19 @@ pub(crate) enum MappedSection {
 }
 
 impl MappedSection {
-    pub(crate) fn as_ptr(&self) -> *const u8 {
+    pub fn as_ptr(&self) -> *const u8 {
         match self {
             MappedSection::Mutable(map) => map.as_ptr(),
             MappedSection::Immutable(map) => map.as_ptr(),
         }
     }
-    fn as_mut_ptr(&mut self) -> Option<*mut u8> {
+    pub fn as_mut_ptr(&mut self) -> Option<*mut u8> {
         match self {
             MappedSection::Mutable(map) => Some(map.as_mut_ptr()),
             MappedSection::Immutable(_map) => None,
         }
     }
-    fn make_read_only(self) -> Result<Self> {
+    pub fn make_read_only(self) -> Result<Self> {
         match self {
             MappedSection::Mutable(map) => Ok(MappedSection::Immutable(
                 map.make_read_only()
@@ -32,7 +34,7 @@ impl MappedSection {
             MappedSection::Immutable(_) => Ok(self),
         }
     }
-    fn make_exec(self) -> Result<Self> {
+    pub fn make_exec(self) -> Result<Self> {
         match self {
             MappedSection::Mutable(_map) => Err(anyhow!("Cannot make mutable section executable")),
             MappedSection::Immutable(map) => {

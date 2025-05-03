@@ -8,7 +8,7 @@ use crate::{
     },
     parser::parse_ds_string,
 };
-use super::mmap::{MappedSection, Mmap, MmapMut, MmapOptions};
+use super::mmap::{MappedSection, MmapOptions};
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
 
 use super::{
@@ -27,7 +27,6 @@ use super::{
 use anyhow::{anyhow, Result};
 #[cfg(feature = "rayon")]
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use target_lexicon::Triple;
 use uid::Id;
 
 struct SendWrapper<T>(T);
@@ -354,80 +353,9 @@ impl Compiler {
         model: &DiscreteModel,
         mode: CompilerMode,
     ) -> Result<Self> {
-        let buffer = Self::discrete_model_to_object_file::<M>(model, mode, None)?;
+        let module = M::from_discrete_model(model, mode, None)?;
+        let buffer = module.finish()?;
         Self::from_object_file(buffer, mode)
-    }
-
-    pub fn discrete_model_to_object_file<M: CodegenModule>(
-        model: &DiscreteModel,
-        mode: CompilerMode,
-        triple: Option<Triple>,
-    ) -> Result<Vec<u8>> {
-        let thread_dim = mode.thread_dim(model.state().nnz());
-        let threaded = thread_dim > 1;
-
-        let mut module = M::new(triple.unwrap_or(Triple::host()), model, threaded)?;
-
-        let set_u0 = module.compile_set_u0(model)?;
-        let _calc_stop = module.compile_calc_stop(model)?;
-        let rhs = module.compile_rhs(model)?;
-        let mass = module.compile_mass(model)?;
-        let calc_out = module.compile_calc_out(model)?;
-        let _set_id = module.compile_set_id(model)?;
-        let _get_dims = module.compile_get_dims(model)?;
-        let set_inputs = module.compile_set_inputs(model)?;
-        let _get_inputs = module.compile_get_inputs(model)?;
-        let _set_constants = module.compile_set_constants(model)?;
-        let tensor_info = module
-            .layout()
-            .tensors()
-            .map(|(name, is_constant)| (name.to_string(), is_constant))
-            .collect::<Vec<_>>();
-        for (tensor, is_constant) in tensor_info {
-            if is_constant {
-                module.compile_get_constant(model, tensor.as_str())?;
-            } else {
-                module.compile_get_tensor(model, tensor.as_str())?;
-            }
-        }
-
-        module.pre_autodiff_optimisation()?;
-
-        let _set_u0_grad = module.compile_set_u0_grad(&set_u0, model)?;
-        let _rhs_grad = module.compile_rhs_grad(&rhs, model)?;
-        let _calc_out_grad = module.compile_calc_out_grad(&calc_out, model)?;
-        let _set_inputs_grad = module.compile_set_inputs_grad(&set_inputs, model)?;
-
-        if module.supports_reverse_autodiff() {
-            module.compile_set_u0_rgrad(&set_u0, model)?;
-            module.compile_rhs_rgrad(&rhs, model)?;
-            module.compile_calc_out_rgrad(&calc_out, model)?;
-            module.compile_set_inputs_rgrad(&set_inputs, model)?;
-            module.compile_mass_rgrad(&mass, model)?;
-
-            let rhs_full = module.compile_rhs_full(model)?;
-            module.compile_rhs_sgrad(&rhs_full, model)?;
-            module.compile_rhs_srgrad(&rhs_full, model)?;
-            let calc_out_full = module.compile_calc_out_full(model)?;
-            module.compile_calc_out_sgrad(&calc_out_full, model)?;
-            module.compile_calc_out_srgrad(&calc_out_full, model)?;
-        }
-
-        module.post_autodiff_optimisation()?;
-        let obj_file = module.finish()?;
-        // write the object file to test.o in current directory
-
-        let obj_file_path = std::env::current_dir()
-            .map_err(|e| anyhow!("Failed to get current directory: {:?}", e))?
-            .join("test.o");
-        std::fs::write(&obj_file_path, &obj_file).map_err(|e| {
-            anyhow!(
-                "Failed to write object file to {}: {:?}",
-                obj_file_path.display(),
-                e
-            )
-        })?;
-        Ok(obj_file)
     }
 
     pub fn from_object_file(buffer: Vec<u8>, mode: CompilerMode) -> Result<Self> {
@@ -1328,6 +1256,8 @@ mod tests {
         Compiler,
     };
     use approx::assert_relative_eq;
+    use target_lexicon::triple;
+    use std::io::Write;
 
     use super::CompilerMode;
 
@@ -1546,6 +1476,25 @@ mod tests {
         )
         .unwrap();
     }
+    
+    fn write_to_wasm<T: CodegenModule>(
+        text: &str,
+        filename: &str,
+        mode: CompilerMode,
+    ) {
+        let model = parse_ds_string(text).unwrap();
+        let discrete_model = match DiscreteModel::build("$name", &model) {
+            Ok(model) => model,
+            Err(e) => {
+                panic!("{}", e.as_error_message(text));
+            }
+        };
+        let module = T::from_discrete_model(&discrete_model, mode, Some(triple!("wasm32-unknown-unknown"))).unwrap();
+        let buffer = module.finish().unwrap();
+        let full_filename = format!("test_output/{filename}.wasm");
+        let mut file = std::fs::File::create(full_filename.as_str()).unwrap();
+        file.write_all(&buffer).unwrap();
+    }
 
     fn tensor_test_common<T: CodegenModule>(
         text: &str,
@@ -1565,6 +1514,14 @@ mod tests {
             }
         };
         let compiler = Compiler::from_discrete_model::<T>(&discrete_model, mode).unwrap();
+        tensor_test_common_impl(compiler, tensor_name)
+    }
+        
+    
+    fn tensor_test_common_impl(
+        compiler: Compiler,
+        tensor_name: &str,
+    ) -> Vec<Vec<f64>> {
         let (n_states, n_inputs, n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
         let mut u0 = vec![1.; n_states];
         let mut res = vec![0.; n_states];
@@ -1791,6 +1748,7 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
+                    write_to_wasm::<LlvmModule>(full_text.as_str(), concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
                     let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
@@ -1799,6 +1757,24 @@ mod tests {
                 {
                     let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                }
+                
+                #[cfg(target_arch = "wasm32")]
+                {
+                    for filename in [
+                        concat!(stringify!($name),"_llvm"),
+                    ] {
+                        let filename = format!("test_output/{filename}.wasm");
+                        let mut file = std::fs::File::open(filename.as_str()).unwrap();
+                        let mut buffer = Vec::new();
+                        file.read_to_end(&mut buffer).unwrap();
+                        let compiler = Compiler::from_object_file(
+                            buffer.as_slice(),
+                            CompilerMode::SingleThreaded,
+                        );
+                        let results = tensor_test_common_impl(compiler, $tensor_name);
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    }
                 }
 
                 #[cfg(not(feature = "cranelift"))]
@@ -1963,6 +1939,7 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
+                    write_to_wasm::<LlvmModule>(full_text.as_str(), concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
                     let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
@@ -1976,6 +1953,29 @@ mod tests {
                 {
                     let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                }
+                
+                #[cfg(target_arch = "wasm32")]
+                {
+                    for filename in [
+                        concat!(stringify!($name),"_llvm"),
+                    ] {
+                        let filename = format!("test_output/{filename}.wasm");
+                        let mut file = std::fs::File::open(filename.as_str()).unwrap();
+                        let mut buffer = Vec::new();
+                        file.read_to_end(&mut buffer).unwrap();
+                        let compiler = Compiler::from_object_file(
+                            buffer.as_slice(),
+                            CompilerMode::SingleThreaded,
+                        );
+                        let results = tensor_test_common_impl(compiler, $tensor_name);
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
+                        assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                        assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
+                    }
                 }
             }
         )*
@@ -2015,6 +2015,7 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
+                    write_to_wasm::<LlvmModule>(full_text.as_str(), concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
                     let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
@@ -2030,6 +2031,25 @@ mod tests {
                     let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                }
+                
+                #[cfg(target_arch = "wasm32")]
+                {
+                    for filename in [
+                        concat!(stringify!($name),"_llvm"),
+                    ] {
+                        let filename = format!("test_output/{filename}.wasm");
+                        let mut file = std::fs::File::open(filename.as_str()).unwrap();
+                        let mut buffer = Vec::new();
+                        file.read_to_end(&mut buffer).unwrap();
+                        let compiler = Compiler::from_object_file(
+                            buffer.as_slice(),
+                            CompilerMode::SingleThreaded,
+                        );
+                        let results = tensor_test_common_impl(compiler, $tensor_name);
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    }
                 }
 
 

@@ -58,11 +58,13 @@ struct ImmovableLlvmModule {
     codegen: Option<CodeGen<'static>>,
     // safety: we must never move out of this box as long as codgen is alive
     context: AliasableBox<Context>,
-    triple: Triple,
     _pin: std::marker::PhantomPinned,
 }
 
-pub struct LlvmModule(Pin<Box<ImmovableLlvmModule>>);
+pub struct LlvmModule {
+    inner: Pin<Box<ImmovableLlvmModule>>,
+    machine: TargetMachine,
+}
 
 unsafe impl Sync for LlvmModule {}
 
@@ -72,7 +74,7 @@ impl LlvmModule {
     }
     fn codegen_mut(&mut self) -> &mut CodeGen<'static> {
         unsafe {
-            self.0
+            self.inner
                 .as_mut()
                 .get_unchecked_mut()
                 .codegen
@@ -80,23 +82,69 @@ impl LlvmModule {
                 .unwrap()
         }
     }
+    fn codegen_and_machine_mut(&mut self) -> (&mut CodeGen<'static>, &TargetMachine) {
+        (
+        unsafe {
+            self.inner
+                .as_mut()
+                .get_unchecked_mut()
+                .codegen
+                .as_mut()
+                .unwrap()
+        },
+        &self.machine,
+        )
+    }
+
     fn codegen(&self) -> &CodeGen<'static> {
-        self.0.as_ref().get_ref().codegen.as_ref().unwrap()
+        self.inner.as_ref().get_ref().codegen.as_ref().unwrap()
     }
 }
 
 impl CodegenModule for LlvmModule {
     type FuncId = FunctionValue<'static>;
-    fn new(triple: Triple, model: &DiscreteModel, threaded: bool) -> Result<Self> {
+    fn new(triple: Option<Triple>, model: &DiscreteModel, threaded: bool) -> Result<Self> {
+        let initialization_config = &InitializationConfig::default();
+        Target::initialize_all(initialization_config);
+        let host_triple = Triple::host();
+        let (triple_str, native) = match triple {
+            Some(ref triple) => (triple.to_string(), false),
+            None => (host_triple.to_string(), true),
+        };
+        let triple = TargetTriple::create(triple_str.as_str());
+        let target = Target::from_triple(&triple).unwrap();
+        let cpu = if native {
+            TargetMachine::get_host_cpu_name().to_string()
+        } else {
+            "generic".to_string()
+        };
+        let features = if native {
+            TargetMachine::get_host_cpu_features().to_string()
+        } else {
+            "".to_string()
+        };
+        let machine = target
+            .create_target_machine(
+                &triple,
+                cpu.as_str(),
+                features.as_str(),
+                inkwell::OptimizationLevel::Aggressive,
+                inkwell::targets::RelocMode::PIC,
+                inkwell::targets::CodeModel::Default,
+            )
+            .unwrap();
+        
         let context = AliasableBox::from_unique(Box::new(Context::create()));
-        let mut pinned = Self(Box::pin(ImmovableLlvmModule {
-            codegen: None,
-            context,
-            triple,
-            _pin: std::marker::PhantomPinned,
-        }));
+        let mut pinned = Self {
+            inner: Box::pin(ImmovableLlvmModule {
+                codegen: None,
+                context,
+                _pin: std::marker::PhantomPinned,
+            }),
+            machine,
+        };
 
-        let context_ref = pinned.0.context.as_ref();
+        let context_ref = pinned.inner.context.as_ref();
         let real_type_str = "f64";
         let codegen = CodeGen::new(
             model,
@@ -107,27 +155,14 @@ impl CodegenModule for LlvmModule {
             threaded,
         )?;
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
-        unsafe { pinned.0.as_mut().get_unchecked_mut().codegen = Some(codegen) };
+        unsafe { pinned.inner.as_mut().get_unchecked_mut().codegen = Some(codegen) };
         Ok(pinned)
     }
 
     fn finish(self) -> Result<Vec<u8>> {
-        let triple = TargetTriple::create(self.0.triple.to_string().as_str());
-        let target = Target::from_triple(&triple).unwrap();
-        let machine = target
-            .create_target_machine(
-                &triple,
-                TargetMachine::get_host_cpu_name().to_string().as_str(),
-                TargetMachine::get_host_cpu_features().to_string().as_str(),
-                inkwell::OptimizationLevel::Aggressive,
-                inkwell::targets::RelocMode::PIC,
-                inkwell::targets::CodeModel::Default,
-            )
-            .unwrap();
-
         let module = self.codegen().module();
         //module.print_to_stderr();
-        let buffer = machine
+        let buffer = self.machine
             .write_to_memory_buffer(module, FileType::Object)
             .unwrap()
             .as_slice()
@@ -471,26 +506,12 @@ impl CodegenModule for LlvmModule {
         //pass_options.set_call_graph_profile(true);
         //pass_options.set_merge_functions(true);
 
-        let initialization_config = &InitializationConfig::default();
-        Target::initialize_all(initialization_config);
-        let triple = TargetTriple::create(self.0.triple.to_string().as_str());
-        let target = Target::from_triple(&triple).unwrap();
-        let machine = target
-            .create_target_machine(
-                &triple,
-                TargetMachine::get_host_cpu_name().to_string().as_str(),
-                TargetMachine::get_host_cpu_features().to_string().as_str(),
-                inkwell::OptimizationLevel::Default,
-                inkwell::targets::RelocMode::Default,
-                inkwell::targets::CodeModel::Default,
-            )
-            .unwrap();
-
         //let passes = "default<O2>";
         let passes = "annotation2metadata,forceattrs,inferattrs,coro-early,function<eager-inv>(lower-expect,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;no-switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,early-cse<>),openmp-opt,ipsccp,called-value-propagation,globalopt,function(mem2reg),function<eager-inv>(instcombine,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>),require<globals-aa>,function(invalidate<aa>),require<profile-summary>,cgscc(devirt<4>(inline<only-mandatory>,inline,function-attrs,openmp-opt-cgscc,function<eager-inv>(early-cse<memssa>,speculative-execution,jump-threading,correlated-propagation,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,instcombine,libcalls-shrinkwrap,tailcallelim,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,reassociate,require<opt-remark-emit>,loop-mssa(loop-instsimplify,loop-simplifycfg,licm<no-allowspeculation>,loop-rotate,licm<allowspeculation>,simple-loop-unswitch<no-nontrivial;trivial>),simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,instcombine,loop(loop-idiom,indvars,loop-deletion),vector-combine,mldst-motion<no-split-footer-bb>,gvn<>,sccp,bdce,instcombine,jump-threading,correlated-propagation,adce,memcpyopt,dse,loop-mssa(licm<allowspeculation>),coro-elide,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;hoist-common-insts;sink-common-insts>,instcombine),coro-split)),deadargelim,coro-cleanup,globalopt,globaldce,elim-avail-extern,rpo-function-attrs,recompute-globalsaa,function<eager-inv>(float2int,lower-constant-intrinsics,loop(loop-rotate,loop-deletion),loop-distribute,inject-tli-mappings,loop-load-elim,instcombine,simplifycfg<bonus-inst-threshold=1;forward-switch-cond;switch-range-to-icmp;switch-to-lookup;no-keep-loops;hoist-common-insts;sink-common-insts>,vector-combine,instcombine,transform-warning,instcombine,require<opt-remark-emit>,loop-mssa(licm<allowspeculation>),alignment-from-assumptions,loop-sink,instsimplify,div-rem-pairs,tailcallelim,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>),globaldce,constmerge,cg-profile,rel-lookup-table-converter,function(annotation-remarks),verify";
-        self.codegen_mut()
+        let (codegen, machine) = self.codegen_and_machine_mut();
+        codegen
             .module()
-            .run_passes(passes, &machine, pass_options)
+            .run_passes(passes, machine, pass_options)
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))
     }
 
@@ -513,25 +534,12 @@ impl CodegenModule for LlvmModule {
         //    .print_to_file("post_autodiff_optimisation.ll")
         //    .unwrap();
 
-        let initialization_config = &InitializationConfig::default();
-        Target::initialize_all(initialization_config);
-        let triple = TargetTriple::create(self.0.triple.to_string().as_str());
-        let target = Target::from_triple(&triple).unwrap();
-        let machine = target
-            .create_target_machine(
-                &triple,
-                TargetMachine::get_host_cpu_name().to_string().as_str(),
-                TargetMachine::get_host_cpu_features().to_string().as_str(),
-                inkwell::OptimizationLevel::Default,
-                inkwell::targets::RelocMode::Default,
-                inkwell::targets::CodeModel::Default,
-            )
-            .unwrap();
 
         let passes = "default<O3>";
-        self.codegen_mut()
+        let (codegen, machine) = self.codegen_and_machine_mut();
+        codegen
             .module()
-            .run_passes(passes, &machine, PassBuilderOptions::create())
+            .run_passes(passes, machine, PassBuilderOptions::create())
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))?;
 
         Ok(())

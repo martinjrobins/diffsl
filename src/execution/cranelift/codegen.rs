@@ -480,7 +480,8 @@ impl CodegenModule for CraneliftModule {
         Ok(())
     }
 
-    fn new(triple: Triple, model: &DiscreteModel, threaded: bool) -> Result<Self> {
+    fn new(triple: Option<Triple>, model: &DiscreteModel, threaded: bool) -> Result<Self> {
+        let triple = triple.unwrap_or(Triple::host());
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();

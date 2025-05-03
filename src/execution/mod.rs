@@ -3,6 +3,7 @@ pub mod cranelift;
 #[cfg(feature = "llvm")]
 pub mod llvm;
 
+pub mod mmap;
 pub mod compiler;
 pub mod functions;
 pub mod interface;

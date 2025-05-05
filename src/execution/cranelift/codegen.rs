@@ -873,7 +873,16 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
         let threaded = thread_dim > 1;
 
         let triple = triple.unwrap_or(Triple::host());
-        let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())?;
+        let mut flag_builder = settings::builder();
+        flag_builder.set("use_colocated_libcalls", "false").unwrap();
+        flag_builder.set("is_pic", "false").unwrap();
+        flag_builder.set("opt_level", "speed").unwrap();
+        let flags = settings::Flags::new(flag_builder);
+        let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
+            panic!("host machine is not supported: {}", msg);
+        });
+        let isa = isa_builder.finish(flags).unwrap();
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
         // add supported external rust functions
         for func in crate::execution::functions::FUNCTIONS.iter() {

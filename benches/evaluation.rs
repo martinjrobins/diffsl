@@ -1,15 +1,21 @@
 use diffsl::{
-    discretise::DiscreteModel, execution::module::CodegenModule, parser::parse_ds_string, Compiler,
-    CraneliftModule,
+    discretise::DiscreteModel,
+    execution::module::{CodegenModuleCompile, CodegenModuleJit},
+    parser::parse_ds_string,
+    Compiler,
 };
-use divan::Bencher;
 use ndarray::Array1;
 
 fn main() {
+    #[cfg(not(target_arch = "wasm32"))]
     divan::main();
 }
 
-fn setup<M: CodegenModule>(n: usize, f_text: &str, name: &str) -> Compiler {
+fn setup<M: CodegenModuleCompile + CodegenModuleJit>(
+    n: usize,
+    f_text: &str,
+    name: &str,
+) -> Compiler<M> {
     let u = vec![1.0; n];
     let full_text = format!(
         "
@@ -31,12 +37,12 @@ fn setup<M: CodegenModule>(n: usize, f_text: &str, name: &str) -> Compiler {
     );
     let model = parse_ds_string(&full_text).unwrap();
     let discrete_model = DiscreteModel::build(name, &model).unwrap();
-    Compiler::from_discrete_model::<M>(&discrete_model, Default::default()).unwrap()
+    Compiler::<M>::from_discrete_model(&discrete_model, Default::default()).unwrap()
 }
 
 #[cfg(feature = "llvm")]
 #[divan::bench(consts = [1, 10, 100, 1000])]
-fn add_scalar_diffsl_llvm<const N: usize>(bencher: Bencher) {
+fn add_scalar_diffsl_llvm<const N: usize>(bencher: divan::Bencher) {
     use diffsl::LlvmModule;
 
     let n = N;
@@ -53,10 +59,13 @@ fn add_scalar_diffsl_llvm<const N: usize>(bencher: Bencher) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[divan::bench(consts = [1, 10, 100, 1000])]
-fn add_scalar_diffsl_cranelift<const N: usize>(bencher: Bencher) {
+fn add_scalar_diffsl_cranelift<const N: usize>(bencher: divan::Bencher) {
+    use diffsl::CraneliftJitModule;
+
     let n = N;
-    let compiler = setup::<CraneliftModule>(n, "u_i + 1.0", "add_scalar");
+    let compiler = setup::<CraneliftJitModule>(n, "u_i + 1.0", "add_scalar");
     let mut data = compiler.get_new_data();
     compiler.set_inputs(&[], data.as_mut_slice());
     let mut u = vec![1.0; n];
@@ -69,8 +78,9 @@ fn add_scalar_diffsl_cranelift<const N: usize>(bencher: Bencher) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[divan::bench(consts = [1, 10, 100, 1000])]
-fn add_scalar_ndarray<const N: usize>(bencher: Bencher) {
+fn add_scalar_ndarray<const N: usize>(bencher: divan::Bencher) {
     let n = N;
     let u = Array1::from_shape_vec((n,), vec![1.0; n]).unwrap();
 

@@ -1,5 +1,4 @@
 #![allow(clippy::type_complexity)]
-use std::ffi::CString;
 pub const FUNCTIONS: &[(
     &str,
     extern "C" fn(f64) -> f64,
@@ -65,9 +64,9 @@ pub fn function_resolver(name: &str) -> Option<*const u8> {
 
 /// taken from https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/cranelift/jit/src/backend.rs#L636C1-L677C2
 /// Apache License 2.0, see https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/LICENSE#L1
-#[cfg(not(windows))]
+#[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32"),))]
 fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
-    let c_str = CString::new(name).unwrap();
+    let c_str = std::ffi::CString::new(name).unwrap();
     let c_str_ptr = c_str.as_ptr();
     let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_str_ptr) };
     if sym.is_null() {
@@ -77,9 +76,15 @@ fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn lookup_with_dlsym(_name: &str) -> Option<*const u8> {
+    // no-op, as we don't need to look up symbols in wasm
+    None
+}
+
 /// taken from https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/cranelift/jit/src/backend.rs#L636C1-L677C2
 /// Apache License 2.0, see https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/LICENSE#L1
-#[cfg(windows)]
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32"),))]
 fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
     use std::os::windows::io::RawHandle;
     use windows_sys::Win32::Foundation::HMODULE;
@@ -87,7 +92,7 @@ fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
 
     const UCRTBASE: &[u8] = b"ucrtbase.dll\0";
 
-    let c_str = CString::new(name).unwrap();
+    let c_str = std::ffi::CString::new(name).unwrap();
     let c_str_ptr = c_str.as_ptr();
 
     unsafe {

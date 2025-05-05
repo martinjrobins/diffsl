@@ -879,7 +879,7 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
         flag_builder.set("opt_level", "speed").unwrap();
         let flags = settings::Flags::new(flag_builder);
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
-            panic!("host machine is not supported: {}", msg);
+            panic!("host machine is not supported: {msg}");
         });
         let isa = isa_builder.finish(flags).unwrap();
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());

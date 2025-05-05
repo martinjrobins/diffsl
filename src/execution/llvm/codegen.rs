@@ -100,7 +100,7 @@ impl LlvmModule {
                 cpu.as_str(),
                 features.as_str(),
                 inkwell::OptimizationLevel::Aggressive,
-                inkwell::targets::RelocMode::PIC,
+                inkwell::targets::RelocMode::Default,
                 inkwell::targets::CodeModel::Default,
             )
             .unwrap();

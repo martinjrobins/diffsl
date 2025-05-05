@@ -1,9 +1,8 @@
 use anyhow::{anyhow, Result};
-use mmap_rs::MmapOptions;
 use std::collections::HashMap;
 
 use super::{
-    mmap::MappedSection,
+    mmap::{MappedSection, MmapOptions},
     module::{CodegenModule, CodegenModuleJit, CodegenModuleLink},
     relocations::{
         handle_jump_entry, handle_relocation, is_jump_table_entry, relocation_target_section,

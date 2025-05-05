@@ -1,29 +1,15 @@
 use core::panic;
 use std::{cmp::min, collections::HashMap, num::NonZero};
 
-use crate::{
-    discretise::DiscreteModel,
-    execution::interface::{
-        CalcOutFunc, GetDimsFunc, MassFunc, RhsFunc, SetIdFunc, SetInputsFunc, StopFunc, U0Func,
-    },
-    parser::parse_ds_string,
-};
-use super::mmap::{MappedSection, MmapOptions};
-use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
-
 use super::{
     interface::{
-        BarrierInitFunc, CalcOutGradFunc, CalcOutRevGradFunc, CalcOutSensGradFunc,
-        CalcOutSensRevGradFunc, GetConstantFunc, GetInputsFunc, GetTensorFunc, MassRevGradFunc,
-        RhsGradFunc, RhsRevGradFunc, RhsSensGradFunc, RhsSensRevGradFunc, SetConstantsFunc,
-        SetInputsGradFunc, SetInputsRevGradFunc, U0GradFunc, U0RevGradFunc,
+        JitFunctions, JitGetTensorFunctions, JitGradFunctions, JitGradRFunctions,
+        JitSensGradFunctions, JitSensRevGradFunctions,
     },
-    module::CodegenModule,
-    relocations::{
-        handle_jump_entry, handle_relocation, is_jump_table_entry, relocation_target_section,
-        symbol_offset, JumpTableEntry,
-    },
+    module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
 };
+use crate::{discretise::DiscreteModel, parser::parse_ds_string};
+
 use anyhow::{anyhow, Result};
 #[cfg(feature = "rayon")]
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -45,248 +31,7 @@ macro_rules! impl_from {
 impl_from!(*mut f64);
 impl_from!(*const f64);
 
-struct JitFunctions {
-    set_u0: U0Func,
-    rhs: RhsFunc,
-    mass: MassFunc,
-    calc_out: CalcOutFunc,
-    calc_stop: StopFunc,
-    set_id: SetIdFunc,
-    get_dims: GetDimsFunc,
-    set_inputs: SetInputsFunc,
-    get_inputs: GetInputsFunc,
-    #[allow(dead_code)]
-    barrier_init: Option<BarrierInitFunc>,
-    set_constants: SetConstantsFunc,
-}
-
-impl JitFunctions {
-    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
-        // check if all required symbols are present
-        let required_symbols = [
-            "set_u0",
-            "rhs",
-            "mass",
-            "calc_out",
-            "calc_stop",
-            "set_id",
-            "get_dims",
-            "set_inputs",
-            "get_inputs",
-            "set_constants",
-        ];
-        for symbol in &required_symbols {
-            if !symbol_map.contains_key(*symbol) {
-                return Err(anyhow!("Missing required symbol: {}", symbol));
-            }
-        }
-        let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(symbol_map["set_u0"]) };
-        let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(symbol_map["rhs"]) };
-        let mass = unsafe { std::mem::transmute::<*const u8, MassFunc>(symbol_map["mass"]) };
-        let calc_out =
-            unsafe { std::mem::transmute::<*const u8, CalcOutFunc>(symbol_map["calc_out"]) };
-        let calc_stop =
-            unsafe { std::mem::transmute::<*const u8, StopFunc>(symbol_map["calc_stop"]) };
-        let set_id = unsafe { std::mem::transmute::<*const u8, SetIdFunc>(symbol_map["set_id"]) };
-        let get_dims =
-            unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(symbol_map["get_dims"]) };
-        let set_inputs =
-            unsafe { std::mem::transmute::<*const u8, SetInputsFunc>(symbol_map["set_inputs"]) };
-        let get_inputs =
-            unsafe { std::mem::transmute::<*const u8, GetInputsFunc>(symbol_map["get_inputs"]) };
-        let barrier_init = symbol_map.get("barrier_init").map(|func_ptr| unsafe {
-            std::mem::transmute::<*const u8, BarrierInitFunc>(*func_ptr)
-        });
-        let set_constants = unsafe {
-            std::mem::transmute::<*const u8, SetConstantsFunc>(symbol_map["set_constants"])
-        };
-
-        Ok(Self {
-            set_u0,
-            rhs,
-            mass,
-            calc_out,
-            calc_stop,
-            set_id,
-            get_dims,
-            set_inputs,
-            get_inputs,
-            barrier_init,
-            set_constants,
-        })
-    }
-}
-
-struct JitGradFunctions {
-    set_u0_grad: U0GradFunc,
-    rhs_grad: RhsGradFunc,
-    calc_out_grad: CalcOutGradFunc,
-    set_inputs_grad: SetInputsGradFunc,
-}
-
-impl JitGradFunctions {
-    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
-        // check if all required symbols are present
-        let required_symbols = [
-            "set_u0_grad",
-            "rhs_grad",
-            "calc_out_grad",
-            "set_inputs_grad",
-        ];
-        for symbol in &required_symbols {
-            if !symbol_map.contains_key(*symbol) {
-                return Err(anyhow!("Missing required symbol: {}", symbol));
-            }
-        }
-        let set_u0_grad =
-            unsafe { std::mem::transmute::<*const u8, U0GradFunc>(symbol_map["set_u0_grad"]) };
-        let rhs_grad =
-            unsafe { std::mem::transmute::<*const u8, RhsGradFunc>(symbol_map["rhs_grad"]) };
-        let calc_out_grad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutGradFunc>(symbol_map["calc_out_grad"])
-        };
-        let set_inputs_grad = unsafe {
-            std::mem::transmute::<*const u8, SetInputsGradFunc>(symbol_map["set_inputs_grad"])
-        };
-
-        Ok(Self {
-            set_u0_grad,
-            rhs_grad,
-            calc_out_grad,
-            set_inputs_grad,
-        })
-    }
-}
-
-struct JitGradRFunctions {
-    set_u0_rgrad: U0RevGradFunc,
-    rhs_rgrad: RhsRevGradFunc,
-    mass_rgrad: MassRevGradFunc,
-    calc_out_rgrad: CalcOutRevGradFunc,
-    set_inputs_rgrad: SetInputsRevGradFunc,
-}
-
-impl JitGradRFunctions {
-    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
-        let required_symbols = [
-            "set_u0_rgrad",
-            "rhs_rgrad",
-            "mass_rgrad",
-            "calc_out_rgrad",
-            "set_inputs_rgrad",
-        ];
-        for symbol in &required_symbols {
-            if !symbol_map.contains_key(*symbol) {
-                return Err(anyhow!("Missing required symbol: {}", symbol));
-            }
-        }
-        let set_u0_rgrad =
-            unsafe { std::mem::transmute::<*const u8, U0RevGradFunc>(symbol_map["set_u0_rgrad"]) };
-        let rhs_rgrad =
-            unsafe { std::mem::transmute::<*const u8, RhsRevGradFunc>(symbol_map["rhs_rgrad"]) };
-        let mass_rgrad =
-            unsafe { std::mem::transmute::<*const u8, MassRevGradFunc>(symbol_map["mass_rgrad"]) };
-        let calc_out_rgrad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutRevGradFunc>(symbol_map["calc_out_rgrad"])
-        };
-        let set_inputs_rgrad = unsafe {
-            std::mem::transmute::<*const u8, SetInputsRevGradFunc>(symbol_map["set_inputs_rgrad"])
-        };
-
-        Ok(Self {
-            set_u0_rgrad,
-            rhs_rgrad,
-            mass_rgrad,
-            calc_out_rgrad,
-            set_inputs_rgrad,
-        })
-    }
-}
-
-struct JitSensGradFunctions {
-    rhs_sgrad: RhsSensGradFunc,
-    calc_out_sgrad: CalcOutSensGradFunc,
-}
-
-impl JitSensGradFunctions {
-    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
-        let required_symbols = ["rhs_sgrad", "calc_out_sgrad"];
-        for symbol in &required_symbols {
-            if !symbol_map.contains_key(*symbol) {
-                return Err(anyhow!("Missing required symbol: {}", symbol));
-            }
-        }
-        let rhs_sgrad =
-            unsafe { std::mem::transmute::<*const u8, RhsSensGradFunc>(symbol_map["rhs_sgrad"]) };
-        let calc_out_sgrad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutSensGradFunc>(symbol_map["calc_out_sgrad"])
-        };
-
-        Ok(Self {
-            rhs_sgrad,
-            calc_out_sgrad,
-        })
-    }
-}
-
-struct JitSensRevGradFunctions {
-    rhs_rgrad: RhsSensRevGradFunc,
-    calc_out_rgrad: CalcOutSensRevGradFunc,
-}
-
-impl JitSensRevGradFunctions {
-    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
-        let required_symbols = ["rhs_srgrad", "calc_out_srgrad"];
-        for symbol in &required_symbols {
-            if !symbol_map.contains_key(*symbol) {
-                return Err(anyhow!("Missing required symbol: {}", symbol));
-            }
-        }
-        let rhs_rgrad = unsafe {
-            std::mem::transmute::<*const u8, RhsSensRevGradFunc>(symbol_map["rhs_srgrad"])
-        };
-        let calc_out_rgrad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutSensRevGradFunc>(symbol_map["calc_out_srgrad"])
-        };
-
-        Ok(Self {
-            rhs_rgrad,
-            calc_out_rgrad,
-        })
-    }
-}
-
-struct JitGetTensorFunctions {
-    data_map: HashMap<String, GetTensorFunc>,
-    constant_map: HashMap<String, GetConstantFunc>,
-}
-
-impl JitGetTensorFunctions {
-    fn new(symbol_map: &HashMap<&str, *const u8>) -> Result<Self> {
-        let mut data_map = HashMap::new();
-        let mut constant_map = HashMap::new();
-        let data_prefix = "get_tensor_";
-        let constant_prefix = "get_constant_";
-        for (name, func_ptr) in symbol_map.iter() {
-            if name.starts_with(data_prefix) {
-                let func = unsafe { std::mem::transmute::<*const u8, GetTensorFunc>(*func_ptr) };
-                data_map.insert(name.strip_prefix(data_prefix).unwrap().to_string(), func);
-            } else if name.starts_with(constant_prefix) {
-                let func = unsafe { std::mem::transmute::<*const u8, GetConstantFunc>(*func_ptr) };
-                constant_map.insert(
-                    name.strip_prefix(constant_prefix).unwrap().to_string(),
-                    func,
-                );
-            }
-        }
-        Ok(Self {
-            data_map,
-            constant_map,
-        })
-    }
-}
-
-pub struct Compiler {
+pub struct Compiler<M: CodegenModule> {
     jit_functions: JitFunctions,
     jit_grad_functions: JitGradFunctions,
     jit_grad_r_functions: Option<JitGradRFunctions>,
@@ -305,7 +50,7 @@ pub struct Compiler {
     #[cfg(not(feature = "rayon"))]
     thread_pool: Option<()>,
     thread_lock: Option<std::sync::Mutex<()>>,
-    _mapped_sections: HashMap<String, MappedSection>,
+    _module: M,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -339,167 +84,12 @@ impl CompilerMode {
     }
 }
 
-impl Compiler {
-    pub fn from_discrete_str<M: CodegenModule>(code: &str, mode: CompilerMode) -> Result<Self> {
-        let uid = Id::<u32>::new();
-        let name = format!("diffsl_{uid}");
-        let model = parse_ds_string(code).map_err(|e| anyhow!(e.to_string()))?;
-        let model = DiscreteModel::build(name.as_str(), &model)
-            .map_err(|e| anyhow!(e.as_error_message(code)))?;
-        Self::from_discrete_model::<M>(&model, mode)
-    }
-
-    pub fn from_discrete_model<M: CodegenModule>(
-        model: &DiscreteModel,
+impl<M: CodegenModule> Compiler<M> {
+    pub fn new(
+        module: M,
+        symbol_map: HashMap<String, *const u8>,
         mode: CompilerMode,
     ) -> Result<Self> {
-        let module = M::from_discrete_model(model, mode, None)?;
-        let buffer = module.finish()?;
-        Self::from_object_file(buffer, mode)
-    }
-
-    pub fn from_object_file(buffer: Vec<u8>, mode: CompilerMode) -> Result<Self> {
-        let mut mapped_sections = HashMap::new();
-
-        let file = object::File::parse(buffer.as_slice())?;
-        let mut text_sec = None;
-        for section in file.sections() {
-            if let SectionKind::Text = section.kind() {
-                if text_sec.is_some() {
-                    return Err(anyhow!("Multiple .text sections found"));
-                }
-                text_sec = Some(section);
-            }
-        }
-
-        let text_sec = text_sec.ok_or_else(|| anyhow!("Could not find .text section"))?;
-        let min_page_size = MmapOptions::page_size();
-        let mut sections_to_map = HashMap::new();
-        sections_to_map.insert(
-            text_sec.name().expect("Could not get section name"),
-            text_sec.index(),
-        );
-
-        let jumptable_entry_size = std::mem::size_of::<JumpTableEntry>();
-
-        let mut jumptable_num_entries: usize = 0;
-        let sections_to_map = text_sec
-            .relocations()
-            .fold(sections_to_map, |mut acc, (_, rela)| {
-                if let Some(section) = relocation_target_section(&file, &rela) {
-                    if section.index() == text_sec.index() {
-                        // skip the text section
-                        return acc;
-                    }
-                    let section_name = section.name().expect("Could not get section name");
-                    acc.insert(section_name, section.index());
-                }
-                if is_jump_table_entry(&file, &rela) {
-                    // this is a jump table entry
-                    jumptable_num_entries += 1;
-                }
-                acc
-            });
-        let jumptable_size =
-            (jumptable_num_entries * jumptable_entry_size).div_ceil(min_page_size) * min_page_size;
-        let mapped_sizes = sections_to_map
-            .values()
-            .map(|section| {
-                let section = file
-                    .section_by_index(*section)
-                    .expect("Could not find section");
-                let section_size = section.size() as usize;
-                // round up to minimum page size
-                section_size.div_ceil(min_page_size) * min_page_size
-            })
-            .collect::<Vec<_>>();
-        let mut map =
-            MmapOptions::new(mapped_sizes.iter().sum::<usize>() + jumptable_size + min_page_size)
-                .unwrap()
-                .map()
-                .unwrap();
-        for ((name, section_id), size) in sections_to_map.iter().zip(mapped_sizes.iter()) {
-            let section = file
-                .section_by_index(*section_id)
-                .expect("Could not find section");
-            let mut section_map = map.split_to(*size).unwrap().make_mut().unwrap();
-            let section_data = section.data().expect("Could not get section data");
-            section_map.as_mut_slice()[..section_data.len()].copy_from_slice(section_data);
-            match section.kind() {
-                SectionKind::Data
-                | SectionKind::Text
-                | SectionKind::Common
-                | SectionKind::UninitializedData
-                | SectionKind::UninitializedTls => {
-                    // writable data needs to be writable
-                    mapped_sections.insert(name.to_string(), MappedSection::Mutable(section_map));
-                }
-                _ => {
-                    // everything else is immutable
-                    mapped_sections.insert(
-                        name.to_string(),
-                        MappedSection::Immutable(section_map.make_read_only().unwrap()),
-                    );
-                }
-            }
-        }
-        let mut jumptable_map = if jumptable_size > 0 {
-            Some(map.split_to(jumptable_size).unwrap().make_mut().unwrap())
-        } else {
-            None
-        };
-        let mut jumptable_idx = 0;
-        let mut jumptable = jumptable_map
-            .as_mut()
-            .map(|jumptable_map| JumpTableEntry::from_bytes(jumptable_map.as_mut_slice()));
-        for (offset, rela) in text_sec.relocations() {
-            let text_ptr = mapped_sections
-                .get_mut(text_sec.name().unwrap())
-                .unwrap()
-                .as_mut_ptr()
-                .unwrap();
-            let patch_ptr = unsafe { text_ptr.offset(offset as isize) };
-            if is_jump_table_entry(&file, &rela) {
-                let jumptable_entry = &mut jumptable.as_mut().unwrap()[jumptable_idx];
-                handle_jump_entry(&file, &rela, patch_ptr, jumptable_entry)?;
-                jumptable_idx += 1;
-            } else {
-                handle_relocation(&file, &rela, patch_ptr, &mapped_sections)?;
-            }
-        }
-        // make jumptable read only and executable and insert it into the mapped sections
-        if let Some(jumptable_map) = jumptable_map {
-            mapped_sections.insert(
-                "jumptable".to_string(),
-                MappedSection::Immutable(
-                    jumptable_map.make_read_only().unwrap().make_exec().unwrap(),
-                ),
-            );
-        }
-        // make text section immutable and executable
-        let mut text_map = mapped_sections.remove(text_sec.name().unwrap()).unwrap();
-        text_map = text_map.make_read_only().unwrap().make_exec().unwrap();
-        mapped_sections.insert(text_sec.name().unwrap().to_string(), text_map);
-        let text_sec = &mapped_sections[text_sec.name().unwrap()];
-        let mut symbol_map = HashMap::new();
-        for symbol in file.symbols() {
-            if let Ok(name) = symbol.name() {
-                if let Some(section_index) = symbol.section_index() {
-                    let section = file
-                        .section_by_index(section_index)
-                        .expect("Could not find section");
-                    if let SectionKind::Text = section.kind() {
-                        let offset = symbol_offset(&file, &symbol, &section)?;
-                        let func_ptr = unsafe { text_sec.as_ptr().offset(offset) };
-                        // for some reason on macOS the symbol name is prefixed with an underscore, remove it
-                        let name = name.strip_prefix("_").unwrap_or(name);
-                        symbol_map.insert(name, func_ptr);
-                        // skip text sections, they are already mapped
-                    }
-                }
-            }
-        }
-
         let jit_functions = JitFunctions::new(&symbol_map)?;
         let jit_grad_functions = JitGradFunctions::new(&symbol_map)?;
         let jit_get_tensor_functions = JitGetTensorFunctions::new(&symbol_map)?;
@@ -522,7 +112,7 @@ impl Compiler {
             has_mass: false,
             thread_pool: None,
             thread_lock: None,
-            _mapped_sections: mapped_sections,
+            _module: module,
         };
 
         let (
@@ -564,6 +154,27 @@ impl Compiler {
         // all done, can set constants now
         ret.set_constants();
         Ok(ret)
+    }
+
+    pub fn from_discrete_str(code: &str, mode: CompilerMode) -> Result<Self>
+    where
+        M: CodegenModuleCompile + CodegenModuleJit,
+    {
+        let uid = Id::<u32>::new();
+        let name = format!("diffsl_{uid}");
+        let model = parse_ds_string(code).map_err(|e| anyhow!(e.to_string()))?;
+        let model = DiscreteModel::build(name.as_str(), &model)
+            .map_err(|e| anyhow!(e.as_error_message(code)))?;
+        Self::from_discrete_model(&model, mode)
+    }
+
+    pub fn from_discrete_model(model: &DiscreteModel, mode: CompilerMode) -> Result<Self>
+    where
+        M: CodegenModuleCompile + CodegenModuleJit,
+    {
+        let mut module = M::from_discrete_model(model, mode, None)?;
+        let symbol_map = module.jit()?;
+        Self::new(module, symbol_map, mode)
     }
 
     pub fn supports_reverse_autodiff(&self) -> bool {
@@ -1252,16 +863,21 @@ impl Compiler {
 #[cfg(test)]
 mod tests {
     use crate::{
-        discretise::DiscreteModel, execution::module::CodegenModule, parser::parse_ds_string,
+        discretise::DiscreteModel,
+        execution::module::{
+            CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit,
+        },
+        parser::parse_ds_string,
         Compiler,
     };
     use approx::assert_relative_eq;
-    use target_lexicon::triple;
     use std::io::Write;
+    use target_lexicon::triple;
 
     use super::CompilerMode;
 
-    fn test_constants<T: CodegenModule>() {
+    #[allow(dead_code)]
+    fn test_constants<T: CodegenModuleCompile + CodegenModuleJit>() {
         let full_text = "
         in = [a]
         a { 1 }
@@ -1274,7 +890,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::from_discrete_model::<T>(&discrete_model, Default::default()).unwrap();
+            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         // b and b2 should already be set
         let mut data = compiler.get_new_data();
         let b = compiler.get_constants_data("b").unwrap();
@@ -1301,7 +917,7 @@ mod tests {
     #[cfg(feature = "cranelift")]
     #[test]
     fn test_constants_cranelift() {
-        test_constants::<crate::CraneliftModule>();
+        test_constants::<crate::CraneliftJitModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -1320,10 +936,11 @@ mod tests {
     #[cfg(feature = "cranelift")]
     #[test]
     fn test_from_discrete_str_cranelift() {
-        test_from_discrete_str_common::<crate::CraneliftModule>();
+        test_from_discrete_str_common::<crate::CraneliftJitModule>();
     }
 
-    fn test_from_discrete_str_common<T: CodegenModule>() {
+    #[allow(dead_code)]
+    fn test_from_discrete_str_common<T: CodegenModuleCompile + CodegenModuleJit>() {
         let text1 = "
         u { y = 1 }
         F { -y }
@@ -1336,7 +953,7 @@ mod tests {
         out { u }
         ";
         for text in [text2, text1] {
-            let compiler = Compiler::from_discrete_str::<T>(text, Default::default()).unwrap();
+            let compiler = Compiler::<T>::from_discrete_str(text, Default::default()).unwrap();
             let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
             assert_eq!(n_states, 1);
             assert_eq!(n_inputs, 0);
@@ -1357,7 +974,7 @@ mod tests {
     #[cfg(feature = "cranelift")]
     #[test]
     fn test_stop_cranelift() {
-        test_stop::<crate::CraneliftModule>();
+        test_stop::<crate::CraneliftJitModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -1366,7 +983,8 @@ mod tests {
         test_stop::<crate::LlvmModule>();
     }
 
-    fn test_stop<T: CodegenModule>() {
+    #[allow(dead_code)]
+    fn test_stop<T: CodegenModuleCompile + CodegenModuleJit>() {
         let full_text = "
         u_i {
             y = 1,
@@ -1390,7 +1008,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::from_discrete_model::<T>(&discrete_model, Default::default()).unwrap();
+            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut stop = vec![0.];
@@ -1402,7 +1020,8 @@ mod tests {
         assert_eq!(stop.len(), 1);
     }
 
-    fn test_out_depends_on_internal_tensor<T: CodegenModule>() {
+    #[allow(dead_code)]
+    fn test_out_depends_on_internal_tensor<T: CodegenModuleCompile + CodegenModuleJit>() {
         let full_text = "
         u_i { y = 1 }
         twoy_i { 2 * y }
@@ -1413,7 +1032,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::from_discrete_model::<T>(&discrete_model, Default::default()).unwrap();
+            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut data = compiler.get_new_data();
         // need this to set the constants
@@ -1435,7 +1054,7 @@ mod tests {
     #[cfg(feature = "cranelift")]
     #[test]
     fn test_out_depends_on_internal_tensor_cranelift() {
-        test_out_depends_on_internal_tensor::<crate::CraneliftModule>();
+        test_out_depends_on_internal_tensor::<crate::CraneliftJitModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -1470,56 +1089,44 @@ mod tests {
         let name = "$name";
         let discrete_model = DiscreteModel::build(name, &model).unwrap();
         env_logger::builder().is_test(true).try_init().unwrap();
-        let _compiler = Compiler::from_discrete_model::<crate::CraneliftModule>(
+        let _compiler = Compiler::<crate::CraneliftJitModule>::from_discrete_model(
             &discrete_model,
             Default::default(),
         )
         .unwrap();
     }
-    
-    fn write_to_wasm<T: CodegenModule>(
-        text: &str,
+
+    #[allow(dead_code)]
+    fn write_to_wasm<M: CodegenModuleCompile + CodegenModuleEmit>(
+        discrete_model: &DiscreteModel,
         filename: &str,
         mode: CompilerMode,
     ) {
-        let model = parse_ds_string(text).unwrap();
-        let discrete_model = match DiscreteModel::build("$name", &model) {
-            Ok(model) => model,
-            Err(e) => {
-                panic!("{}", e.as_error_message(text));
-            }
-        };
-        let module = T::from_discrete_model(&discrete_model, mode, Some(triple!("wasm32-unknown-unknown"))).unwrap();
-        let buffer = module.finish().unwrap();
+        let module = M::from_discrete_model(
+            discrete_model,
+            mode,
+            Some(triple!("wasm32-unknown-unknown")),
+        )
+        .unwrap();
+        let buffer = module.to_object().unwrap();
         let full_filename = format!("test_output/{filename}.wasm");
         let mut file = std::fs::File::create(full_filename.as_str()).unwrap();
         file.write_all(&buffer).unwrap();
     }
 
-    fn tensor_test_common<T: CodegenModule>(
-        text: &str,
+    #[allow(dead_code)]
+    fn tensor_test_common<T: CodegenModuleCompile + CodegenModuleJit>(
+        discrete_model: &DiscreteModel,
         tensor_name: &str,
         mode: CompilerMode,
     ) -> Vec<Vec<f64>> {
-        let full_text = format!(
-            "
-            {text}
-        "
-        );
-        let model = parse_ds_string(full_text.as_str()).unwrap();
-        let discrete_model = match DiscreteModel::build("$name", &model) {
-            Ok(model) => model,
-            Err(e) => {
-                panic!("{}", e.as_error_message(full_text.as_str()));
-            }
-        };
-        let compiler = Compiler::from_discrete_model::<T>(&discrete_model, mode).unwrap();
+        let compiler = Compiler::<T>::from_discrete_model(discrete_model, mode).unwrap();
         tensor_test_common_impl(compiler, tensor_name)
     }
-        
-    
-    fn tensor_test_common_impl(
-        compiler: Compiler,
+
+    #[allow(dead_code)]
+    fn tensor_test_common_impl<M: CodegenModule>(
+        compiler: Compiler<M>,
         tensor_name: &str,
     ) -> Vec<Vec<f64>> {
         let (n_states, n_inputs, n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
@@ -1745,20 +1352,29 @@ mod tests {
                     }}
                 ", $text);
 
+                let model = parse_ds_string(full_text.as_str()).unwrap();
+                #[allow(unused_variables)]
+                let discrete_model = match DiscreteModel::build("$name", &model) {
+                    Ok(model) => model,
+                    Err(e) => {
+                        panic!("{}", e.as_error_message(full_text.as_str()));
+                    }
+                };
+
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    write_to_wasm::<LlvmModule>(full_text.as_str(), concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
-                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    write_to_wasm::<LlvmModule>(&discrete_model, concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
 
                 #[cfg(feature = "cranelift")]
                 {
-                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
-                
+
                 #[cfg(target_arch = "wasm32")]
                 {
                     for filename in [
@@ -1769,9 +1385,9 @@ mod tests {
                         let mut buffer = Vec::new();
                         file.read_to_end(&mut buffer).unwrap();
                         let compiler = Compiler::from_object_file(
-                            buffer.as_slice(),
+                            buffer,
                             CompilerMode::SingleThreaded,
-                        );
+                        ).unwrap();
                         let results = tensor_test_common_impl(compiler, $tensor_name);
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     }
@@ -1790,13 +1406,16 @@ mod tests {
 
                 #[cfg(feature = "rayon")]
                 {
-                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
-                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    #[cfg(feature = "cranelift")]
+                    {
+                        let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    }
 
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     }
                 }
@@ -1915,12 +1534,21 @@ mod tests {
                     }}
                 ", $text);
 
+                let model = parse_ds_string(full_text.as_str()).unwrap();
+                #[allow(unused_variables)]
+                let discrete_model = match DiscreteModel::build("$name", &model) {
+                    Ok(model) => model,
+                    Err(e) => {
+                        panic!("{}", e.as_error_message(full_text.as_str()));
+                    }
+                };
+
                 #[cfg(feature = "rayon")]
                 {
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                         assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                         assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
@@ -1931,7 +1559,7 @@ mod tests {
 
                     #[cfg(feature = "cranelift")]
                     {
-                        let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     }
                 }
@@ -1939,8 +1567,8 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    write_to_wasm::<LlvmModule>(full_text.as_str(), concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
-                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    write_to_wasm::<LlvmModule>(&discrete_model, concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                     assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
@@ -1951,10 +1579,10 @@ mod tests {
 
                 #[cfg(feature = "cranelift")]
                 {
-                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                 }
-                
+
                 #[cfg(target_arch = "wasm32")]
                 {
                     for filename in [
@@ -1965,9 +1593,9 @@ mod tests {
                         let mut buffer = Vec::new();
                         file.read_to_end(&mut buffer).unwrap();
                         let compiler = Compiler::from_object_file(
-                            buffer.as_slice(),
+                            buffer,
                             CompilerMode::SingleThreaded,
-                        );
+                        ).unwrap();
                         let results = tensor_test_common_impl(compiler, $tensor_name);
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                         assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
@@ -2011,12 +1639,20 @@ mod tests {
                     {}
                     F_i {{ x_i, y_i, }}
                 ", $text);
+                let model = parse_ds_string(full_text.as_str()).unwrap();
+                #[allow(unused_variables)]
+                let discrete_model = match DiscreteModel::build("$name", &model) {
+                    Ok(model) => model,
+                    Err(e) => {
+                        panic!("{}", e.as_error_message(full_text.as_str()));
+                    }
+                };
 
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    write_to_wasm::<LlvmModule>(full_text.as_str(), concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
-                    let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    write_to_wasm::<LlvmModule>(&discrete_model, concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
@@ -2028,11 +1664,11 @@ mod tests {
 
                 #[cfg(feature = "cranelift")]
                 {
-                    let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                 }
-                
+
                 #[cfg(target_arch = "wasm32")]
                 {
                     for filename in [
@@ -2043,9 +1679,9 @@ mod tests {
                         let mut buffer = Vec::new();
                         file.read_to_end(&mut buffer).unwrap();
                         let compiler = Compiler::from_object_file(
-                            buffer.as_slice(),
+                            buffer,
                             CompilerMode::SingleThreaded,
-                        );
+                        ).unwrap();
                         let results = tensor_test_common_impl(compiler, $tensor_name);
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
@@ -2057,7 +1693,7 @@ mod tests {
                 {
                     #[cfg(feature = "cranelift")]
                     {
-                        let results = tensor_test_common::<crate::CraneliftModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     }
@@ -2067,7 +1703,7 @@ mod tests {
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(full_text.as_str(), $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                         assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
@@ -2094,7 +1730,7 @@ mod tests {
     #[cfg(feature = "cranelift")]
     #[test]
     fn test_repeated_grad_cranelift() {
-        test_repeated_grad_common::<crate::CraneliftModule>();
+        test_repeated_grad_common::<crate::CraneliftJitModule>();
     }
 
     #[cfg(feature = "llvm")]
@@ -2103,7 +1739,8 @@ mod tests {
         test_repeated_grad_common::<crate::LlvmModule>();
     }
 
-    fn test_repeated_grad_common<T: CodegenModule>() {
+    #[allow(dead_code)]
+    fn test_repeated_grad_common<T: CodegenModuleCompile + CodegenModuleJit>() {
         let full_text = "
             in = [p]
             p {
@@ -2136,7 +1773,7 @@ mod tests {
             }
         };
         let compiler =
-            Compiler::from_discrete_model::<T>(&discrete_model, Default::default()).unwrap();
+            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut du0 = vec![1.];
         let mut res = vec![0.];
@@ -2211,7 +1848,7 @@ mod tests {
 
         #[cfg(feature = "cranelift")]
         {
-            let compiler = Compiler::from_discrete_model::<crate::CraneliftModule>(
+            let compiler = Compiler::<crate::CraneliftJitModule>::from_discrete_model(
                 &discrete_model,
                 Default::default(),
             )
@@ -2262,11 +1899,12 @@ mod tests {
             out { y }
         ";
         let model = parse_ds_string(full_text).unwrap();
+        #[allow(unused_variables)]
         let discrete_model = DiscreteModel::build("test_inputs", &model).unwrap();
 
         #[cfg(feature = "cranelift")]
         {
-            let compiler = Compiler::from_discrete_model::<crate::CraneliftModule>(
+            let compiler = Compiler::<crate::CraneliftJitModule>::from_discrete_model(
                 &discrete_model,
                 Default::default(),
             )
@@ -2283,7 +1921,7 @@ mod tests {
 
         #[cfg(feature = "llvm")]
         {
-            let compiler = Compiler::from_discrete_model::<crate::LlvmModule>(
+            let compiler = Compiler::<crate::LlvmModule>::from_discrete_model(
                 &discrete_model,
                 Default::default(),
             )
@@ -2312,7 +1950,7 @@ mod tests {
         let discrete_model = DiscreteModel::build("test_mass", &model).unwrap();
 
         let compiler =
-            Compiler::from_discrete_model::<crate::LlvmModule>(&discrete_model, Default::default())
+            Compiler::<crate::LlvmModule>::from_discrete_model(&discrete_model, Default::default())
                 .unwrap();
         let mut data = compiler.get_new_data();
         let mut u0 = vec![0.0, 0.0, 0.0];

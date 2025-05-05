@@ -1,9 +1,9 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use mmap_rs::{Mmap, MmapMut};
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm::{Mmap, MmapMut, MmapOptions};
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use mmap_rs::{Mmap, MmapMut, MmapOptions};
 
 use anyhow::{anyhow, Result};
 

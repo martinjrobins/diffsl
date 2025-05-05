@@ -4,6 +4,7 @@ use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::{AsContextRef, Context};
+use inkwell::execution_engine::ExecutionEngine;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
@@ -17,6 +18,7 @@ use inkwell::values::{
 };
 use inkwell::{
     AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, GlobalVisibility, IntPredicate,
+    OptimizationLevel,
 };
 use llvm_sys::core::{
     LLVMBuildCall2, LLVMGetArgOperand, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
@@ -43,7 +45,10 @@ use crate::enzyme::{
     FreeTypeAnalysis, GradientUtils, IntList, LLVMOpaqueContext, CDIFFE_TYPE_DFT_CONSTANT,
     CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED,
 };
-use crate::execution::module::CodegenModule;
+use crate::execution::compiler::CompilerMode;
+use crate::execution::module::{
+    CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit,
+};
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 use lazy_static::lazy_static;
 use std::sync::Mutex;
@@ -69,40 +74,6 @@ pub struct LlvmModule {
 unsafe impl Sync for LlvmModule {}
 
 impl LlvmModule {
-    pub fn print(&self) {
-        self.codegen().module().print_to_stderr();
-    }
-    fn codegen_mut(&mut self) -> &mut CodeGen<'static> {
-        unsafe {
-            self.inner
-                .as_mut()
-                .get_unchecked_mut()
-                .codegen
-                .as_mut()
-                .unwrap()
-        }
-    }
-    fn codegen_and_machine_mut(&mut self) -> (&mut CodeGen<'static>, &TargetMachine) {
-        (
-        unsafe {
-            self.inner
-                .as_mut()
-                .get_unchecked_mut()
-                .codegen
-                .as_mut()
-                .unwrap()
-        },
-        &self.machine,
-        )
-    }
-
-    fn codegen(&self) -> &CodeGen<'static> {
-        self.inner.as_ref().get_ref().codegen.as_ref().unwrap()
-    }
-}
-
-impl CodegenModule for LlvmModule {
-    type FuncId = FunctionValue<'static>;
     fn new(triple: Option<Triple>, model: &DiscreteModel, threaded: bool) -> Result<Self> {
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
@@ -133,7 +104,7 @@ impl CodegenModule for LlvmModule {
                 inkwell::targets::CodeModel::Default,
             )
             .unwrap();
-        
+
         let context = AliasableBox::from_unique(Box::new(Context::create()));
         let mut pinned = Self {
             inner: Box::pin(ImmovableLlvmModule {
@@ -157,331 +128,6 @@ impl CodegenModule for LlvmModule {
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
         unsafe { pinned.inner.as_mut().get_unchecked_mut().codegen = Some(codegen) };
         Ok(pinned)
-    }
-
-    fn finish(self) -> Result<Vec<u8>> {
-        let module = self.codegen().module();
-        //module.print_to_stderr();
-        let buffer = self.machine
-            .write_to_memory_buffer(module, FileType::Object)
-            .unwrap()
-            .as_slice()
-            .to_vec();
-        Ok(buffer)
-    }
-
-    fn layout(&self) -> &DataLayout {
-        &self.codegen().layout
-    }
-
-    fn compile_set_u0(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_set_u0(model)
-    }
-
-    fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_set_constants(model)
-    }
-
-    fn compile_calc_out(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_calc_out(model, false)
-    }
-
-    fn compile_calc_out_full(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_calc_out(model, true)
-    }
-
-    fn compile_calc_stop(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_calc_stop(model)
-    }
-
-    fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        let ret = self.codegen_mut().compile_rhs(model, false);
-        ret
-    }
-
-    fn compile_rhs_full(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        let ret = self.codegen_mut().compile_rhs(model, true);
-        ret
-    }
-
-    fn compile_mass(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_mass(model)
-    }
-
-    fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_get_dims(model)
-    }
-
-    fn compile_get_tensor(&mut self, model: &DiscreteModel, name: &str) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_get_tensor(model, name)
-    }
-
-    fn compile_get_constant(&mut self, model: &DiscreteModel, name: &str) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_get_constant(model, name)
-    }
-
-    fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_inputs(model, false)
-    }
-
-    fn compile_get_inputs(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_inputs(model, true)
-    }
-
-    fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_set_id(model)
-    }
-
-    fn compile_set_u0_grad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::Forward,
-            "set_u0_grad",
-        )
-    }
-
-    fn supports_reverse_autodiff(&self) -> bool {
-        true
-    }
-
-    fn compile_set_u0_rgrad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::Reverse,
-            "set_u0_rgrad",
-        )
-    }
-
-    fn compile_rhs_grad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::Const,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::Forward,
-            "rhs_grad",
-        )
-    }
-
-    fn compile_mass_rgrad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::Const,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::Reverse,
-            "mass_rgrad",
-        )
-    }
-
-    fn compile_rhs_rgrad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::Const,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::Reverse,
-            "rhs_rgrad",
-        )
-    }
-
-    fn compile_calc_out_grad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::Const,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::Forward,
-            "calc_out_grad",
-        )
-    }
-
-    fn compile_calc_out_rgrad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::Const,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::Reverse,
-            "calc_out_rgrad",
-        )
-    }
-
-    fn compile_set_inputs_grad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-            ],
-            CompileMode::Forward,
-            "set_inputs_grad",
-        )
-    }
-
-    fn compile_set_inputs_rgrad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-            ],
-            CompileMode::Reverse,
-            "set_inputs_rgrad",
-        )
-    }
-
-    fn compile_rhs_sgrad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::ForwardSens,
-            "rhs_sgrad",
-        )
-    }
-
-    fn compile_calc_out_sgrad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::ForwardSens,
-            "calc_out_sgrad",
-        )
-    }
-
-    fn compile_calc_out_srgrad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::ReverseSens,
-            "calc_out_srgrad",
-        )
-    }
-
-    fn compile_rhs_srgrad(
-        &mut self,
-        func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        self.codegen_mut().compile_gradient(
-            *func_id,
-            &[
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
-            ],
-            CompileMode::ReverseSens,
-            "rhs_srgrad",
-        )
     }
 
     fn pre_autodiff_optimisation(&mut self) -> Result<()> {
@@ -534,7 +180,6 @@ impl CodegenModule for LlvmModule {
         //    .print_to_file("post_autodiff_optimisation.ll")
         //    .unwrap();
 
-
         let passes = "default<O3>";
         let (codegen, machine) = self.codegen_and_machine_mut();
         codegen
@@ -543,6 +188,288 @@ impl CodegenModule for LlvmModule {
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))?;
 
         Ok(())
+    }
+
+    pub fn print(&self) {
+        self.codegen().module().print_to_stderr();
+    }
+    fn codegen_mut(&mut self) -> &mut CodeGen<'static> {
+        unsafe {
+            self.inner
+                .as_mut()
+                .get_unchecked_mut()
+                .codegen
+                .as_mut()
+                .unwrap()
+        }
+    }
+    fn codegen_and_machine_mut(&mut self) -> (&mut CodeGen<'static>, &TargetMachine) {
+        (
+            unsafe {
+                self.inner
+                    .as_mut()
+                    .get_unchecked_mut()
+                    .codegen
+                    .as_mut()
+                    .unwrap()
+            },
+            &self.machine,
+        )
+    }
+
+    fn codegen(&self) -> &CodeGen<'static> {
+        self.inner.as_ref().get_ref().codegen.as_ref().unwrap()
+    }
+}
+
+impl CodegenModule for LlvmModule {}
+
+impl CodegenModuleCompile for LlvmModule {
+    fn from_discrete_model(
+        model: &DiscreteModel,
+        mode: CompilerMode,
+        triple: Option<Triple>,
+    ) -> Result<Self> {
+        let thread_dim = mode.thread_dim(model.state().nnz());
+        let threaded = thread_dim > 1;
+
+        let mut module = Self::new(triple, model, threaded)?;
+
+        let set_u0 = module.codegen_mut().compile_set_u0(model)?;
+        let _calc_stop = module.codegen_mut().compile_calc_stop(model)?;
+        let rhs = module.codegen_mut().compile_rhs(model, false)?;
+        let rhs_full = module.codegen_mut().compile_rhs(model, true)?;
+        let mass = module.codegen_mut().compile_mass(model)?;
+        let calc_out = module.codegen_mut().compile_calc_out(model, false)?;
+        let calc_out_full = module.codegen_mut().compile_calc_out(model, true)?;
+        let _set_id = module.codegen_mut().compile_set_id(model)?;
+        let _get_dims = module.codegen_mut().compile_get_dims(model)?;
+        let set_inputs = module.codegen_mut().compile_inputs(model, false)?;
+        let _get_inputs = module.codegen_mut().compile_inputs(model, true)?;
+        let _set_constants = module.codegen_mut().compile_set_constants(model)?;
+        let tensor_info = module
+            .codegen()
+            .layout
+            .tensors()
+            .map(|(name, is_constant)| (name.to_string(), is_constant))
+            .collect::<Vec<_>>();
+        for (tensor, is_constant) in tensor_info {
+            if is_constant {
+                module
+                    .codegen_mut()
+                    .compile_get_constant(model, tensor.as_str())?;
+            } else {
+                module
+                    .codegen_mut()
+                    .compile_get_tensor(model, tensor.as_str())?;
+            }
+        }
+
+        module.pre_autodiff_optimisation()?;
+
+        module.codegen_mut().compile_gradient(
+            set_u0,
+            &[
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Forward,
+            "set_u0_grad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            rhs,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Forward,
+            "rhs_grad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            calc_out,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Forward,
+            "calc_out_grad",
+        )?;
+        module.codegen_mut().compile_gradient(
+            set_inputs,
+            &[
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+            ],
+            CompileMode::Forward,
+            "set_inputs_grad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            set_u0,
+            &[
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
+            "set_u0_rgrad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            mass,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
+            "mass_rgrad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            rhs,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
+            "rhs_rgrad",
+        )?;
+        module.codegen_mut().compile_gradient(
+            calc_out,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
+            "calc_out_rgrad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            set_inputs,
+            &[
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+            ],
+            CompileMode::Reverse,
+            "set_inputs_rgrad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            rhs_full,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::ForwardSens,
+            "rhs_sgrad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            calc_out_full,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::ForwardSens,
+            "calc_out_sgrad",
+        )?;
+        module.codegen_mut().compile_gradient(
+            calc_out_full,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::ReverseSens,
+            "calc_out_srgrad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            rhs_full,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::ReverseSens,
+            "rhs_srgrad",
+        )?;
+
+        module.post_autodiff_optimisation()?;
+        Ok(module)
+    }
+}
+
+impl CodegenModuleEmit for LlvmModule {
+    fn to_object(self) -> Result<Vec<u8>> {
+        let module = self.codegen().module();
+        //module.print_to_stderr();
+        let buffer = self
+            .machine
+            .write_to_memory_buffer(module, FileType::Object)
+            .unwrap()
+            .as_slice()
+            .to_vec();
+        Ok(buffer)
+    }
+}
+impl CodegenModuleJit for LlvmModule {
+    fn jit(&mut self) -> Result<HashMap<String, *const u8>> {
+        let ee = self
+            .codegen()
+            .module()
+            .create_jit_execution_engine(OptimizationLevel::Aggressive)
+            .map_err(|e| anyhow!("Failed to create JIT execution engine: {:?}", e))?;
+
+        let module = self.codegen().module();
+        let mut symbols = HashMap::new();
+        for function in module.get_functions() {
+            let name = function.get_name().to_str().unwrap();
+            let address = ee.get_function_address(name);
+            if let Ok(address) = address {
+                symbols.insert(name.to_string(), address as *const u8);
+            }
+        }
+        Ok(symbols)
     }
 }
 
@@ -652,6 +579,7 @@ pub struct CodeGen<'ctx> {
     layout: DataLayout,
     globals: Globals<'ctx>,
     threaded: bool,
+    _ee: Option<ExecutionEngine<'ctx>>,
 }
 
 unsafe extern "C" fn fwd_handler(
@@ -734,6 +662,7 @@ impl<'ctx> CodeGen<'ctx> {
             int_ptr_type,
             globals,
             threaded,
+            _ee: None,
         };
         if threaded {
             ret.compile_barrier_init()?;

@@ -18,8 +18,7 @@ use object::{BinaryFormat, RelocationKind};
 
 use anyhow::{anyhow, Result};
 
-use super::{mmap::MappedSection, functions::function_resolver};
-
+use super::{functions::function_resolver, mmap::MappedSection};
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) struct JumpTableEntry;
@@ -36,7 +35,6 @@ impl JumpTableEntry {
         panic!("JumpTableEntry not supported on wasm32")
     }
 }
-
 
 /// https://blog.cloudflare.com/how-to-execute-an-object-file-part-3/
 #[cfg(target_arch = "x86_64")]

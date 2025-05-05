@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Ok, Result};
 use codegen::ir::{AtomicRmwOp, FuncRef, GlobalValue, StackSlot};
 use cranelift::prelude::*;
+use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, FuncOrDataId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::HashMap;
@@ -9,10 +10,13 @@ use target_lexicon::{Endianness, PointerWidth, Triple};
 
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
-use crate::execution::module::CodegenModule;
+use crate::execution::compiler::CompilerMode;
+use crate::execution::module::{
+    CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit,
+};
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 
-pub struct CraneliftModule {
+pub struct CraneliftModule<M: Module> {
     /// The function builder context, which is reused across multiple
     /// FunctionBuilder instances.
     builder_context: FunctionBuilderContext,
@@ -23,7 +27,7 @@ pub struct CraneliftModule {
     ctx: codegen::Context,
 
     /// The module, with the object backend.
-    module: ObjectModule,
+    module: M,
 
     layout: DataLayout,
 
@@ -39,7 +43,10 @@ pub struct CraneliftModule {
     threaded: bool,
 }
 
-impl CraneliftModule {
+pub type CraneliftJitModule = CraneliftModule<JITModule>;
+pub type CraneliftObjectModule = CraneliftModule<ObjectModule>;
+
+impl<M: Module> CraneliftModule<M> {
     fn declare_function(&mut self, name: &str) -> Result<FuncId> {
         // Next, declare the function to jit. Functions must be declared
         // before they can be called, or defined.
@@ -199,106 +206,11 @@ impl CraneliftModule {
 
         Ok(id)
     }
-}
-
-unsafe impl Sync for CraneliftModule {}
-
-impl CodegenModule for CraneliftModule {
-    type FuncId = FuncId;
-
-    fn finish(self) -> Result<Vec<u8>> {
-        self.module.finish().emit().map_err(|e| anyhow!(e))
-    }
-
-    fn compile_mass_rgrad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn compile_calc_out_rgrad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn compile_rhs_rgrad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn compile_set_inputs_rgrad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn compile_set_u0_rgrad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn compile_calc_out_full(&mut self, _model: &DiscreteModel) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn compile_calc_out_sgrad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn compile_calc_out_srgrad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn compile_rhs_full(&mut self, _model: &DiscreteModel) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn compile_rhs_sgrad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn compile_rhs_srgrad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        _model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
-        Err(anyhow!("not implemented"))
-    }
-
-    fn supports_reverse_autodiff(&self) -> bool {
-        false
-    }
-
     fn compile_calc_out_grad(
         &mut self,
-        _func_id: &Self::FuncId,
+        _func_id: &FuncId,
         model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
+    ) -> Result<FuncId> {
         let arg_types = &[
             self.real_type,
             self.real_ptr_type,
@@ -332,11 +244,7 @@ impl CodegenModule for CraneliftModule {
         self.declare_function("calc_out_grad")
     }
 
-    fn compile_rhs_grad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
+    fn compile_rhs_grad(&mut self, _func_id: &FuncId, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[
             self.real_type,
             self.real_ptr_type,
@@ -387,9 +295,9 @@ impl CodegenModule for CraneliftModule {
 
     fn compile_set_inputs_grad(
         &mut self,
-        _func_id: &Self::FuncId,
+        _func_id: &FuncId,
         model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
+    ) -> Result<FuncId> {
         let arg_types = &[
             self.real_ptr_type,
             self.real_ptr_type,
@@ -408,7 +316,7 @@ impl CodegenModule for CraneliftModule {
         self.declare_function("set_inputs_grad")
     }
 
-    fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<Self::FuncId> {
+    fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[self.int_type, self.int_type];
         let arg_names = &["threadId", "threadDim"];
         let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
@@ -427,11 +335,7 @@ impl CodegenModule for CraneliftModule {
         self.declare_function("set_constants")
     }
 
-    fn compile_set_u0_grad(
-        &mut self,
-        _func_id: &Self::FuncId,
-        model: &DiscreteModel,
-    ) -> Result<Self::FuncId> {
+    fn compile_set_u0_grad(&mut self, _func_id: &FuncId, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[
             self.real_ptr_type,
             self.real_ptr_type,
@@ -464,35 +368,7 @@ impl CodegenModule for CraneliftModule {
         self.declare_function("set_u0_grad")
     }
 
-    fn layout(&self) -> &DataLayout {
-        &self.layout
-    }
-
-    fn post_autodiff_optimisation(&mut self) -> Result<()> {
-        // Finalize the functions which we just defined, which resolves any
-        // outstanding relocations (patching in addresses, now that they're
-        // available).
-        //self.module.finalize_definitions()?;
-        Ok(())
-    }
-
-    fn pre_autodiff_optimisation(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    fn new(triple: Option<Triple>, model: &DiscreteModel, threaded: bool) -> Result<Self> {
-        let triple = triple.unwrap_or(Triple::host());
-        let mut flag_builder = settings::builder();
-        flag_builder.set("use_colocated_libcalls", "false").unwrap();
-        flag_builder.set("is_pic", "false").unwrap();
-        flag_builder.set("opt_level", "speed").unwrap();
-        let flags = settings::Flags::new(flag_builder);
-        let isa = isa::lookup(triple.clone())?.finish(flags)?;
-        let builder =
-            ObjectBuilder::new(isa, "diffsol", cranelift_module::default_libcall_names())?;
-
-        let mut module = ObjectModule::new(builder);
-
+    fn new(triple: Triple, model: &DiscreteModel, threaded: bool, mut module: M) -> Result<Self> {
         let ptr_type = match triple.pointer_width().unwrap() {
             PointerWidth::U16 => types::I16,
             PointerWidth::U32 => types::I32,
@@ -565,6 +441,33 @@ impl CodegenModule for CraneliftModule {
             ret.compile_barrier_init()?;
             ret.compile_barrier()?;
         }
+
+        let set_u0 = ret.compile_set_u0(model)?;
+        let _calc_stop = ret.compile_calc_stop(model)?;
+        let rhs = ret.compile_rhs(model)?;
+        let _mass = ret.compile_mass(model)?;
+        let calc_out = ret.compile_calc_out(model)?;
+        let _set_id = ret.compile_set_id(model)?;
+        let _get_dims = ret.compile_get_dims(model)?;
+        let set_inputs = ret.compile_set_inputs(model)?;
+        let _get_inputs = ret.compile_get_inputs(model)?;
+        let _set_constants = ret.compile_set_constants(model)?;
+        let tensor_info = ret
+            .layout
+            .tensors()
+            .map(|(name, is_constant)| (name.to_string(), is_constant))
+            .collect::<Vec<_>>();
+        for (tensor, is_constant) in tensor_info {
+            if is_constant {
+                ret.compile_get_constant(model, tensor.as_str())?;
+            } else {
+                ret.compile_get_tensor(model, tensor.as_str())?;
+            }
+        }
+        let _set_u0_grad = ret.compile_set_u0_grad(&set_u0, model)?;
+        let _rhs_grad = ret.compile_rhs_grad(&rhs, model)?;
+        let _calc_out_grad = ret.compile_calc_out_grad(&calc_out, model)?;
+        let _set_inputs_grad = ret.compile_set_inputs_grad(&set_inputs, model)?;
         Ok(ret)
     }
 
@@ -931,15 +834,98 @@ impl CodegenModule for CraneliftModule {
     }
 }
 
+unsafe impl<M: Module> Sync for CraneliftModule<M> {}
+
+impl<M: Module> CodegenModule for CraneliftModule<M> {}
+
+impl CodegenModuleCompile for CraneliftModule<ObjectModule> {
+    fn from_discrete_model(
+        model: &DiscreteModel,
+        mode: CompilerMode,
+        triple: Option<Triple>,
+    ) -> Result<Self> {
+        let thread_dim = mode.thread_dim(model.state().nnz());
+        let threaded = thread_dim > 1;
+
+        let triple = triple.unwrap_or(Triple::host());
+        let mut flag_builder = settings::builder();
+        flag_builder.set("use_colocated_libcalls", "false").unwrap();
+        flag_builder.set("is_pic", "false").unwrap();
+        flag_builder.set("opt_level", "speed").unwrap();
+        let flags = settings::Flags::new(flag_builder);
+        let isa = isa::lookup(triple.clone())?.finish(flags)?;
+        let builder =
+            ObjectBuilder::new(isa, "diffsol", cranelift_module::default_libcall_names())?;
+
+        let module = ObjectModule::new(builder);
+
+        Self::new(triple, model, threaded, module)
+    }
+}
+
+impl CodegenModuleCompile for CraneliftModule<JITModule> {
+    fn from_discrete_model(
+        model: &DiscreteModel,
+        mode: CompilerMode,
+        triple: Option<Triple>,
+    ) -> Result<Self> {
+        let thread_dim = mode.thread_dim(model.state().nnz());
+        let threaded = thread_dim > 1;
+
+        let triple = triple.unwrap_or(Triple::host());
+        let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())?;
+
+        // add supported external rust functions
+        for func in crate::execution::functions::FUNCTIONS.iter() {
+            builder.symbol(func.0, func.1 as *const u8);
+            builder.symbol(
+                CraneliftCodeGen::<JITModule>::get_function_name(func.0, true),
+                func.2 as *const u8,
+            );
+        }
+        for func in crate::execution::functions::TWO_ARG_FUNCTIONS.iter() {
+            builder.symbol(func.0, func.1 as *const u8);
+            builder.symbol(
+                CraneliftCodeGen::<JITModule>::get_function_name(func.0, true),
+                func.2 as *const u8,
+            );
+        }
+
+        let module = JITModule::new(builder);
+        Self::new(triple, model, threaded, module)
+    }
+}
+
+impl CodegenModuleEmit for CraneliftModule<ObjectModule> {
+    fn to_object(self) -> Result<Vec<u8>> {
+        self.module.finish().emit().map_err(|e| anyhow!(e))
+    }
+}
+
+impl CodegenModuleJit for CraneliftModule<JITModule> {
+    fn jit(&mut self) -> Result<HashMap<String, *const u8>> {
+        let mut result = HashMap::new();
+        self.module.finalize_definitions()?;
+        for (func, decl) in self.module.declarations().get_functions() {
+            if Linkage::Import == decl.linkage {
+                continue;
+            }
+            let addr = self.module.get_finalized_function(func);
+            result.insert(decl.name.as_ref().unwrap().clone(), addr);
+        }
+        Ok(result)
+    }
+}
+
 /// A collection of state used for translating from toy-language AST nodes
 /// into Cranelift IR.
-struct CraneliftCodeGen<'a> {
+struct CraneliftCodeGen<'a, M: Module> {
     int_type: types::Type,
     real_type: types::Type,
     real_ptr_type: types::Type,
     int_ptr_type: types::Type,
     builder: FunctionBuilder<'a>,
-    module: &'a mut ObjectModule,
+    module: &'a mut M,
     tensor_ptr: Option<Value>,
     variables: HashMap<String, Variable>,
     mem_flags: MemFlags,
@@ -950,7 +936,7 @@ struct CraneliftCodeGen<'a> {
     threaded: bool,
 }
 
-impl<'ctx> CraneliftCodeGen<'ctx> {
+impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
     fn fconst(&mut self, value: f64) -> Value {
         match self.real_type {
             types::F32 => self.builder.ins().f32const(value as f32),
@@ -2024,7 +2010,7 @@ impl<'ctx> CraneliftCodeGen<'ctx> {
     }
 
     pub fn new(
-        module: &'ctx mut CraneliftModule,
+        module: &'ctx mut CraneliftModule<M>,
         model: &DiscreteModel,
         arg_names: &[&str],
         arg_types: &[Type],

@@ -1,3 +1,6 @@
+use anyhow::{anyhow, Result};
+use std::collections::HashMap;
+
 type RealType = f64;
 type UIntType = u32;
 
@@ -184,3 +187,244 @@ pub type GetTensorFunc = unsafe extern "C" fn(
 );
 pub type GetConstantFunc =
     unsafe extern "C" fn(tensor_data: *mut *const RealType, tensor_size: *mut UIntType);
+
+pub(crate) struct JitFunctions {
+    pub(crate) set_u0: U0Func,
+    pub(crate) rhs: RhsFunc,
+    pub(crate) mass: MassFunc,
+    pub(crate) calc_out: CalcOutFunc,
+    pub(crate) calc_stop: StopFunc,
+    pub(crate) set_id: SetIdFunc,
+    pub(crate) get_dims: GetDimsFunc,
+    pub(crate) set_inputs: SetInputsFunc,
+    pub(crate) get_inputs: GetInputsFunc,
+    #[allow(dead_code)]
+    pub(crate) barrier_init: Option<BarrierInitFunc>,
+    pub(crate) set_constants: SetConstantsFunc,
+}
+
+impl JitFunctions {
+    pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
+        // check if all required symbols are present
+        let required_symbols = [
+            "set_u0",
+            "rhs",
+            "mass",
+            "calc_out",
+            "calc_stop",
+            "set_id",
+            "get_dims",
+            "set_inputs",
+            "get_inputs",
+            "set_constants",
+        ];
+        for symbol in &required_symbols {
+            if !symbol_map.contains_key(*symbol) {
+                return Err(anyhow!("Missing required symbol: {}", symbol));
+            }
+        }
+        let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(symbol_map["set_u0"]) };
+        let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(symbol_map["rhs"]) };
+        let mass = unsafe { std::mem::transmute::<*const u8, MassFunc>(symbol_map["mass"]) };
+        let calc_out =
+            unsafe { std::mem::transmute::<*const u8, CalcOutFunc>(symbol_map["calc_out"]) };
+        let calc_stop =
+            unsafe { std::mem::transmute::<*const u8, StopFunc>(symbol_map["calc_stop"]) };
+        let set_id = unsafe { std::mem::transmute::<*const u8, SetIdFunc>(symbol_map["set_id"]) };
+        let get_dims =
+            unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(symbol_map["get_dims"]) };
+        let set_inputs =
+            unsafe { std::mem::transmute::<*const u8, SetInputsFunc>(symbol_map["set_inputs"]) };
+        let get_inputs =
+            unsafe { std::mem::transmute::<*const u8, GetInputsFunc>(symbol_map["get_inputs"]) };
+        let barrier_init = symbol_map.get("barrier_init").map(|func_ptr| unsafe {
+            std::mem::transmute::<*const u8, BarrierInitFunc>(*func_ptr)
+        });
+        let set_constants = unsafe {
+            std::mem::transmute::<*const u8, SetConstantsFunc>(symbol_map["set_constants"])
+        };
+
+        Ok(Self {
+            set_u0,
+            rhs,
+            mass,
+            calc_out,
+            calc_stop,
+            set_id,
+            get_dims,
+            set_inputs,
+            get_inputs,
+            barrier_init,
+            set_constants,
+        })
+    }
+}
+
+pub(crate) struct JitGradFunctions {
+    pub(crate) set_u0_grad: U0GradFunc,
+    pub(crate) rhs_grad: RhsGradFunc,
+    pub(crate) calc_out_grad: CalcOutGradFunc,
+    pub(crate) set_inputs_grad: SetInputsGradFunc,
+}
+
+impl JitGradFunctions {
+    pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
+        // check if all required symbols are present
+        let required_symbols = [
+            "set_u0_grad",
+            "rhs_grad",
+            "calc_out_grad",
+            "set_inputs_grad",
+        ];
+        for symbol in &required_symbols {
+            if !symbol_map.contains_key(*symbol) {
+                return Err(anyhow!("Missing required symbol: {}", symbol));
+            }
+        }
+        let set_u0_grad =
+            unsafe { std::mem::transmute::<*const u8, U0GradFunc>(symbol_map["set_u0_grad"]) };
+        let rhs_grad =
+            unsafe { std::mem::transmute::<*const u8, RhsGradFunc>(symbol_map["rhs_grad"]) };
+        let calc_out_grad = unsafe {
+            std::mem::transmute::<*const u8, CalcOutGradFunc>(symbol_map["calc_out_grad"])
+        };
+        let set_inputs_grad = unsafe {
+            std::mem::transmute::<*const u8, SetInputsGradFunc>(symbol_map["set_inputs_grad"])
+        };
+
+        Ok(Self {
+            set_u0_grad,
+            rhs_grad,
+            calc_out_grad,
+            set_inputs_grad,
+        })
+    }
+}
+
+pub(crate) struct JitGradRFunctions {
+    pub(crate) set_u0_rgrad: U0RevGradFunc,
+    pub(crate) rhs_rgrad: RhsRevGradFunc,
+    pub(crate) mass_rgrad: MassRevGradFunc,
+    pub(crate) calc_out_rgrad: CalcOutRevGradFunc,
+    pub(crate) set_inputs_rgrad: SetInputsRevGradFunc,
+}
+
+impl JitGradRFunctions {
+    pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
+        let required_symbols = [
+            "set_u0_rgrad",
+            "rhs_rgrad",
+            "mass_rgrad",
+            "calc_out_rgrad",
+            "set_inputs_rgrad",
+        ];
+        for symbol in &required_symbols {
+            if !symbol_map.contains_key(*symbol) {
+                return Err(anyhow!("Missing required symbol: {}", symbol));
+            }
+        }
+        let set_u0_rgrad =
+            unsafe { std::mem::transmute::<*const u8, U0RevGradFunc>(symbol_map["set_u0_rgrad"]) };
+        let rhs_rgrad =
+            unsafe { std::mem::transmute::<*const u8, RhsRevGradFunc>(symbol_map["rhs_rgrad"]) };
+        let mass_rgrad =
+            unsafe { std::mem::transmute::<*const u8, MassRevGradFunc>(symbol_map["mass_rgrad"]) };
+        let calc_out_rgrad = unsafe {
+            std::mem::transmute::<*const u8, CalcOutRevGradFunc>(symbol_map["calc_out_rgrad"])
+        };
+        let set_inputs_rgrad = unsafe {
+            std::mem::transmute::<*const u8, SetInputsRevGradFunc>(symbol_map["set_inputs_rgrad"])
+        };
+
+        Ok(Self {
+            set_u0_rgrad,
+            rhs_rgrad,
+            mass_rgrad,
+            calc_out_rgrad,
+            set_inputs_rgrad,
+        })
+    }
+}
+
+pub(crate) struct JitSensGradFunctions {
+    pub(crate) rhs_sgrad: RhsSensGradFunc,
+    pub(crate) calc_out_sgrad: CalcOutSensGradFunc,
+}
+
+impl JitSensGradFunctions {
+    pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
+        let required_symbols = ["rhs_sgrad", "calc_out_sgrad"];
+        for symbol in &required_symbols {
+            if !symbol_map.contains_key(*symbol) {
+                return Err(anyhow!("Missing required symbol: {}", symbol));
+            }
+        }
+        let rhs_sgrad =
+            unsafe { std::mem::transmute::<*const u8, RhsSensGradFunc>(symbol_map["rhs_sgrad"]) };
+        let calc_out_sgrad = unsafe {
+            std::mem::transmute::<*const u8, CalcOutSensGradFunc>(symbol_map["calc_out_sgrad"])
+        };
+
+        Ok(Self {
+            rhs_sgrad,
+            calc_out_sgrad,
+        })
+    }
+}
+
+pub(crate) struct JitSensRevGradFunctions {
+    pub(crate) rhs_rgrad: RhsSensRevGradFunc,
+    pub(crate) calc_out_rgrad: CalcOutSensRevGradFunc,
+}
+
+impl JitSensRevGradFunctions {
+    pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
+        let required_symbols = ["rhs_srgrad", "calc_out_srgrad"];
+        for symbol in &required_symbols {
+            if !symbol_map.contains_key(*symbol) {
+                return Err(anyhow!("Missing required symbol: {}", symbol));
+            }
+        }
+        let rhs_rgrad = unsafe {
+            std::mem::transmute::<*const u8, RhsSensRevGradFunc>(symbol_map["rhs_srgrad"])
+        };
+        let calc_out_rgrad = unsafe {
+            std::mem::transmute::<*const u8, CalcOutSensRevGradFunc>(symbol_map["calc_out_srgrad"])
+        };
+
+        Ok(Self {
+            rhs_rgrad,
+            calc_out_rgrad,
+        })
+    }
+}
+
+pub(crate) struct JitGetTensorFunctions {
+    pub(crate) data_map: HashMap<String, GetTensorFunc>,
+    pub(crate) constant_map: HashMap<String, GetConstantFunc>,
+}
+
+impl JitGetTensorFunctions {
+    pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
+        let mut data_map = HashMap::new();
+        let mut constant_map = HashMap::new();
+        let data_prefix = "get_tensor_";
+        let constant_prefix = "get_constant_";
+        for (name, func_ptr) in symbol_map.iter() {
+            if name.starts_with(data_prefix) {
+                let func = unsafe { std::mem::transmute::<*const u8, GetTensorFunc>(*func_ptr) };
+                data_map.insert(name.strip_prefix(data_prefix).unwrap().to_string(), func);
+            } else if name.starts_with(constant_prefix) {
+                let func = unsafe { std::mem::transmute::<*const u8, GetConstantFunc>(*func_ptr) };
+                constant_map.insert(
+                    name.strip_prefix(constant_prefix).unwrap().to_string(),
+                    func,
+                );
+            }
+        }
+        Ok(Self {
+            data_map,
+            constant_map,
+        })
+    }
+}

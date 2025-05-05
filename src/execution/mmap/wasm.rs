@@ -11,7 +11,7 @@ impl MmapOptions {
     pub fn page_size() -> usize {
         64 * 1024
     }
-    
+
     pub fn new(size: usize) -> Result<Self> {
         // panic if size is not a multiple of the page size
         let page_size = Self::page_size();
@@ -20,7 +20,7 @@ impl MmapOptions {
         }
         Ok(Self { size })
     }
-    
+
     pub fn map(&self) -> Result<Mmap> {
         Mmap::new(self.size)
     }
@@ -35,7 +35,9 @@ impl Mmap {
     }
     pub fn new(size: usize) -> Result<Mmap> {
         let page_size = MmapOptions::page_size();
-        let ptr = unsafe { std::alloc::alloc(std::alloc::Layout::from_size_align(size, page_size).unwrap()) };
+        let ptr = unsafe {
+            std::alloc::alloc(std::alloc::Layout::from_size_align(size, page_size).unwrap())
+        };
         if ptr.is_null() {
             return Err(anyhow!("Failed to allocate memory"));
         }
@@ -76,7 +78,7 @@ impl MmapMut {
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         self.0
     }
-    
+
     pub fn make_read_only(self) -> Result<Mmap> {
         unsafe { Mmap::from_raw_parts(self.0.as_ptr(), self.0.len()) }
     }

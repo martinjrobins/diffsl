@@ -43,11 +43,11 @@ jobs:
             - toolchain: stable
               os: windows-latest
               llvm: ""
-              features: "rayon, cranelift"
+              features: "rayon cranelift"
             - toolchain: stable
               os: macos-latest
               llvm: ["16.0", "16-0"]
-              features: "rayon, cranelift"
+              features: "rayon cranelift"
             #- toolchain: stable
             #  os: ubuntu-24.04-arm
             #  llvm: ["16.0", "16-0"]
@@ -57,11 +57,11 @@ jobs:
             - toolchain: beta
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
-              features: "rayon, cranelift"
+              features: "rayon cranelift"
             - toolchain: nightly
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
-              features: "rayon, cranelift"
+              features: "rayon cranelift"
             - toolchain: stable
               os: ubuntu-latest
               llvm: ""
@@ -102,10 +102,10 @@ jobs:
         brew install llvm@16
     - name: Run tests (LLVM)
       if : matrix.llvm != ''
-      run: cargo test --verbose --features llvm${{ matrix.llvm[1] }} --features ${{ matrix.features }}
+      run: cargo test --verbose --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"
     - name: Run tests
       if : matrix.llvm == ''
-      run: cargo test --verbose --features cranelift
+      run: cargo test --verbose --features "${{ matrix.features }}"
     - name: Run Clippy (LLVM)
       if: matrix.toolchain == 'nightly'
       run: cargo clippy --verbose --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"

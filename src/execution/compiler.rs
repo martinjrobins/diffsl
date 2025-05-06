@@ -257,6 +257,7 @@ impl<M: CodegenModule> Compiler<M> {
         }
     }
 
+    #[cfg(feature = "rayon")]
     fn with_threading<F>(&self, f: F)
     where
         F: Fn(u32, u32) + Sync + Send,
@@ -278,7 +279,13 @@ impl<M: CodegenModule> Compiler<M> {
         } else {
             f(0, 1);
         }
-        #[cfg(not(feature = "rayon"))]
+    }
+
+    #[cfg(not(feature = "rayon"))]
+    fn with_threading<F>(&self, f: F)
+    where
+        F: Fn(u32, u32),
+    {
         f(0, 1);
     }
 
@@ -864,15 +871,11 @@ impl<M: CodegenModule> Compiler<M> {
 mod tests {
     use crate::{
         discretise::DiscreteModel,
-        execution::module::{
-            CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit,
-        },
+        execution::module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
         parser::parse_ds_string,
         Compiler,
     };
     use approx::assert_relative_eq;
-    use std::io::Write;
-    use target_lexicon::triple;
 
     use super::CompilerMode;
 
@@ -1094,24 +1097,6 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-    }
-
-    #[allow(dead_code)]
-    fn write_to_wasm<M: CodegenModuleCompile + CodegenModuleEmit>(
-        discrete_model: &DiscreteModel,
-        filename: &str,
-        mode: CompilerMode,
-    ) {
-        let module = M::from_discrete_model(
-            discrete_model,
-            mode,
-            Some(triple!("wasm32-unknown-unknown")),
-        )
-        .unwrap();
-        let buffer = module.to_object().unwrap();
-        let full_filename = format!("test_output/{filename}.wasm");
-        let mut file = std::fs::File::create(full_filename.as_str()).unwrap();
-        file.write_all(&buffer).unwrap();
     }
 
     #[allow(dead_code)]
@@ -1364,7 +1349,6 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    write_to_wasm::<LlvmModule>(&discrete_model, concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
                     let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
@@ -1567,7 +1551,6 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    write_to_wasm::<LlvmModule>(&discrete_model, concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
                     let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
@@ -1651,7 +1634,6 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    write_to_wasm::<LlvmModule>(&discrete_model, concat!(stringify!($name),"_llvm"), CompilerMode::SingleThreaded);
                     let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());

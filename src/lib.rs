@@ -25,8 +25,8 @@ extern crate inkwell_150 as inkwell;
 extern crate inkwell_160 as inkwell;
 #[cfg(feature = "inkwell-170")]
 extern crate inkwell_170 as inkwell;
-#[cfg(feature = "inkwell-180")]
-extern crate inkwell_180 as inkwell;
+#[cfg(feature = "inkwell-181")]
+extern crate inkwell_181 as inkwell;
 
 #[cfg(feature = "inkwell-150")]
 extern crate llvm_sys_150 as llvm_sys;
@@ -34,5 +34,5 @@ extern crate llvm_sys_150 as llvm_sys;
 extern crate llvm_sys_160 as llvm_sys;
 #[cfg(feature = "inkwell-170")]
 extern crate llvm_sys_170 as llvm_sys;
-#[cfg(feature = "inkwell-180")]
-extern crate llvm_sys_180 as llvm_sys;
+#[cfg(feature = "inkwell-181")]
+extern crate llvm_sys_181 as llvm_sys;

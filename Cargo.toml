@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "diffsl",
+  "diffsl", "diffsl-wasm",
 ]
 exclude = [
   "book",

@@ -15,21 +15,6 @@ use anyhow::{anyhow, Result};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use uid::Id;
 
-struct SendWrapper<T>(T);
-unsafe impl<T> Send for SendWrapper<T> {}
-
-macro_rules! impl_from {
-    ($ty:ty) => {
-        impl From<SendWrapper<$ty>> for $ty {
-            fn from(wrapper: SendWrapper<$ty>) -> $ty {
-                wrapper.0
-            }
-        }
-    };
-}
-
-impl_from!(*mut f64);
-impl_from!(*const f64);
 
 pub struct Compiler<M: CodegenModule> {
     jit_functions: JitFunctions,
@@ -257,11 +242,11 @@ impl<M: CodegenModule> Compiler<M> {
         }
     }
 
+    #[cfg(feature = "rayon")]
     fn with_threading<F>(&self, f: F)
     where
         F: Fn(u32, u32) + Sync + Send,
     {
-        #[cfg(feature = "rayon")]
         if let (Some(thread_pool), Some(thread_lock)) = (&self.thread_pool, &self.thread_lock) {
             let _lock = thread_lock.lock().unwrap();
             let dim = thread_pool.current_num_threads();
@@ -278,7 +263,13 @@ impl<M: CodegenModule> Compiler<M> {
         } else {
             f(0, 1);
         }
-        #[cfg(not(feature = "rayon"))]
+    }
+
+    #[cfg(not(feature = "rayon"))]
+    fn with_threading<F>(&self, f: F)
+    where
+        F: Fn(u32, u32),
+    {
         f(0, 1);
     }
 

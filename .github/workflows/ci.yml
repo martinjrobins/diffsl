@@ -37,13 +37,17 @@ jobs:
             - stable
           os:
             - ubuntu-latest
+          features:
+            - "cranelift, rayon"
           include:
             - toolchain: stable
               os: windows-latest
               llvm: ""
+              features: "cranelift, rayon"
             - toolchain: stable
               os: macos-latest
               llvm: ["16.0", "16-0"]
+              features: "cranelift, rayon"
             #- toolchain: stable
             #  os: ubuntu-24.04-arm
             #  llvm: ["16.0", "16-0"]
@@ -53,9 +57,23 @@ jobs:
             - toolchain: beta
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
+              features: "cranelift, rayon"
             - toolchain: nightly
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
+              features: "cranelift, rayon"
+            - toolchain: stable
+              os: ubuntu-latest
+              llvm: "" 
+              features: "cranelift, rayon"
+            - toolchain: stable
+              os: ubuntu-latest
+              llvm: "" 
+              features: "rayon"
+            - toolchain: stable
+              os: ubuntu-latest
+              llvm: "" 
+              features: ""
 
 
     steps:
@@ -67,7 +85,7 @@ jobs:
         path: |
           ${{ env.CARGO_HOME }}
           target
-        key: unit-test-${{ runner.os }}-${{ matrix.toolchain}}-${{ matrix.llvm }}
+        key: unit-test-${{ runner.os }}-${{ matrix.toolchain}}-${{ matrix.llvm }}-${{ matrix.features }}
     - name: Set up Rust
       run: rustup default ${{ matrix.toolchain }} && rustup update ${{ matrix.toolchain }} --no-self-update && rustup component add clippy rust-docs
     - name: Rust version
@@ -83,16 +101,16 @@ jobs:
         brew install llvm@16
     - name: Run tests (LLVM)
       if : matrix.llvm != ''
-      run: cargo test --verbose --features llvm${{ matrix.llvm[1] }} --features cranelift
+      run: cargo test --verbose --features llvm${{ matrix.llvm[1] }} --features ${{ matrix.features }}
     - name: Run tests
       if : matrix.llvm == ''
       run: cargo test --verbose --features cranelift
     - name: Run Clippy (LLVM)
       if: matrix.toolchain == 'nightly'
-      run: cargo clippy --verbose --features llvm${{ matrix.llvm[1] }} --features cranelift
+      run: cargo clippy --verbose --features llvm${{ matrix.llvm[1] }} ${{ matrix.features }}
     - name: Run Docs (LLVM)
       if: matrix.toolchain == 'nightly'
-      run: cargo rustdoc --features llvm${{ matrix.llvm[1] }} --features cranelift
+      run: cargo rustdoc --features llvm${{ matrix.llvm[1] }} ${{ matrix.features }}
   book:
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,19 @@
+[package]
+name = "diffsl-wasm"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2.100"
+diffsl = { version = "0.4.2", path = "../diffsl" }
+js-sys = "0.3.77"
+wasm-bindgen-futures = "0.4.50"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.50"

@@ -32,7 +32,7 @@ jobs:
             - ["15.0", "15-0"]
             - ["16.0", "16-0"]
             - ["17.0", "17-0"]
-            #- ["18.0", "18-0"] (next version of inkwell should support 18.1, then can be added here)
+            - ["18.1", "18-1"]
           toolchain:
             - stable
           os:

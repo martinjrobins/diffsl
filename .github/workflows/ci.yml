@@ -38,7 +38,7 @@ jobs:
           os:
             - ubuntu-latest
           features:
-            - "rayon, cranelift"
+            - "rayon cranelift"
           include:
             - toolchain: stable
               os: windows-latest

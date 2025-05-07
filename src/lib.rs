@@ -16,7 +16,9 @@ pub use execution::compiler::Compiler;
 pub use execution::cranelift::codegen::{CraneliftJitModule, CraneliftObjectModule};
 #[cfg(feature = "llvm")]
 pub use execution::llvm::codegen::LlvmModule;
-pub use execution::module::{CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit, CodegenModuleLink};
+pub use execution::module::{
+    CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit, CodegenModuleLink,
+};
 pub use execution::object::ObjectModule;
 
 #[cfg(feature = "inkwell-150")]

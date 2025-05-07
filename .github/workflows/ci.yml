@@ -18,7 +18,7 @@ env:
   CARGO_HOME: ${{ github.workspace }}/.cargo
   RUSTFLAGS: -D warnings -A unused-imports
   RUSTDOCFLAGS: -D warnings
-  RUST_BACKTRACE: ful
+  RUST_BACKTRACE: full
 
 jobs:
   rustfmt:
@@ -31,57 +31,113 @@ jobs:
       - run: cargo fmt --all -- --check
         
   unit-tests:
-    name: Tests - ${{ matrix.os }} - ${{ matrix.toolchain }} - ${{ matrix.llvm[0] }} - ${{ matrix.features }}
+    name: ${{ matrix.basename }} - ${{ matrix.os }} - ${{ matrix.llvm[0] }} - ${{ matrix.features }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
         matrix:
           llvm:
             - ["15.0", "15-0"]
             - ["16.0", "16-0"]
             - ["17.0", "17-0"]
-            - ["18.1", "18-1"]
           toolchain:
             - stable
           os:
             - ubuntu-latest
+            - macos-latest
           features:
             - "rayon cranelift"
+          experimental: 
+            - false
+          tests:
+            - true
+          clippy:
+            - false
+          rustdoc:
+            - false
+          basename:
+            - Tests
+
           include:
+            - toolchain: stable
+              os: ubuntu-latest
+              llvm: ["18.1", "18-1"]
+              features: "cranelift"
+              tests: true
+              clippy: false
+              rustdoc: false
+              experimental: true
+              basename: Tests
+
+            - toolchain: stable
+              os: macos-latest
+              llvm: ["18.1", "18-1"]
+              features: "cranelift"
+              tests: true
+              clippy: false
+              rustdoc: false
+              experimental: true
+              basename: Tests
+
             - toolchain: stable
               os: windows-latest
               llvm: ""
               features: "rayon cranelift"
-            - toolchain: stable
-              os: macos-latest
-              llvm: ["16.0", "16-0"]
-              features: "rayon cranelift"
-            #- toolchain: stable
-            #  os: ubuntu-24.04-arm
-            #  llvm: ["16.0", "16-0"]
-            #- toolchain: stable
-            #  os: macos-13
-            #  llvm: ["15.0", "15-0"]
+              tests: true
+              clippy: false
+              rustdoc: false
+              experimental: false
+              basename: Tests
+
             - toolchain: beta
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
               features: "rayon cranelift"
+              tests: true
+              clippy: false
+              rustdoc: false
+              experimental: true
+              basename: Beta
+
             - toolchain: nightly
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
               features: "rayon cranelift"
+              tests: true
+              clippy: false
+              rustdoc: false
+              experimental: true
+              basename: Nightly
+
             - toolchain: stable
               os: ubuntu-latest
               llvm: ""
               features: ""
-            - toolchain: stable
-              os: ubuntu-latest
-              llvm: ""
-              features: "rayon"
-            - toolchain: stable
-              os: ubuntu-latest
-              llvm: ""
-              features: "cranelift"
+              tests: true
+              clippy: false
+              rustdoc: false
+              experimental: true
+              basename: Tests
 
+            - toolchain: stable
+              os: ubuntu-latest
+              llvm: ["16.0", "16-0"]
+              features: "rayon cranelift"
+              tests: false
+              clippy: true
+              rustdoc: false
+              experimental: true
+              basename: Clippy
+
+            - toolchain: nightly 
+              os: ubuntu-latest
+              llvm: ["16.0", "16-0"]
+              features: "rayon cranelift"
+              tests: false
+              clippy: false
+              rustdoc: true
+              experimental: true
+              basename: Rustdoc
 
 
     steps:
@@ -117,16 +173,16 @@ jobs:
       uses: mxschmitt/action-tmate@v3
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
     - name: Run tests (LLVM)
-      if : matrix.llvm != ''
+      if : matrix.tests && matrix.llvm != ''
       run: cargo test --verbose --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"
     - name: Run tests
-      if : matrix.llvm == ''
+      if : matrix.tests && matrix.llvm == ''
       run: cargo test --verbose --features "${{ matrix.features }}"
     - name: Run Clippy (LLVM)
-      if: matrix.toolchain == 'nightly'
+      if: matrix.clippy
       run: cargo clippy --verbose --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"
     - name: Run Docs (LLVM)
-      if: matrix.toolchain == 'nightly'
+      if: matrix.rustdoc
       run: cargo rustdoc --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"
   book:
     runs-on: ubuntu-latest

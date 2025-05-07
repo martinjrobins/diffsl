@@ -134,7 +134,7 @@ jobs:
               llvm: ["16.0", "16-0"]
               features: "rayon cranelift"
               tests: false
-              clippy: true
+              clippy: false
               rustdoc: true
               experimental: true
               basename: Rustdoc

@@ -64,45 +64,70 @@ jobs:
               os: ubuntu-latest
               llvm: ["18.1", "18-1"]
               features: "cranelift"
+              tests: true
+              clippy: false
+              rustdoc: false
               experimental: true
+              basename: Tests
+
             - toolchain: stable
               os: windows-latest
               llvm: ""
               features: "rayon cranelift"
+              tests: true
+              clippy: false
+              rustdoc: false
+              experimental: false
+              basename: Tests
+
             - toolchain: beta
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
+              features: "rayon cranelift"
+              tests: true
+              clippy: false
+              rustdoc: false
               experimental: true
+              basename: Tests
+
             - toolchain: nightly
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
+              features: "rayon cranelift"
+              tests: true
+              clippy: false
+              rustdoc: false
+              experimental: true
+              basename: Tests
+
             - toolchain: stable
               os: ubuntu-latest
               llvm: ""
               features: ""
-            - toolchain: stable
-              os: ubuntu-latest
-              llvm: ""
-              features: "rayon"
-            - toolchain: stable
-              os: ubuntu-latest
-              llvm: ""
-              features: "cranelift"
+              tests: true
+              clippy: false
+              rustdoc: false
+              experimental: true
+              basename: Tests
+
             - toolchain: stable
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
               features: "rayon cranelift"
               tests: false
               clippy: true
-              basename: Clippy
+              rustdoc: false
               experimental: true
+              basename: Clippy
+
             - toolchain: nightly 
               os: ubuntu-latest
               llvm: ["16.0", "16-0"]
               features: "rayon cranelift"
               tests: false
-              experimental: true
+              clippy: true
               rustdoc: true
+              experimental: true
               basename: Rustdoc
 
 

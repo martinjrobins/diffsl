@@ -78,24 +78,10 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             }
         }
 
-        //expression = { sign? ~ term ~ (term_op ~ term)* }
+        //expression = { term ~ (term_op ~ term)* }
         Rule::expression => {
             let mut inner = pair.into_inner();
-            let sign = if inner.peek().unwrap().as_rule() == Rule::sign {
-                Some(parse_sign(inner.next().unwrap()))
-            } else {
-                None
-            };
-            let mut head_term =  match sign {
-                Some(s) => Ast {
-                    kind: AstKind::Monop(ast::Monop {
-                        op: s,
-                        child: Box::new(parse_value(inner.next().unwrap())),
-                    }),
-                    span,
-                },
-                None => parse_value(inner.next().unwrap())
-            };
+            let mut head_term = parse_value(inner.next().unwrap());
             while inner.peek().is_some() {
                 //term_op    = @{ "-"|"+" }
                 let term_op = parse_sign(inner.next().unwrap());
@@ -139,8 +125,25 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             head_factor
         }
 
-        // factor     = { call | name | real | integer | "(" ~ expression ~ ")" }
-        Rule::factor => parse_value(pair.into_inner().next().unwrap()),
+        // factor     = { sign? ~ (call | name | real | integer | "(" ~ expression ~ ")" ) }
+        Rule::factor => {
+            let mut inner = pair.into_inner();
+            let sign = if inner.peek().unwrap().as_rule() == Rule::sign {
+                Some(parse_sign(inner.next().unwrap()))
+            } else {
+                None
+            };
+            match sign {
+                Some(s) => Ast {
+                    kind: AstKind::Monop(ast::Monop {
+                        op: s,
+                        child: Box::new(parse_value(inner.next().unwrap())),
+                    }),
+                    span,
+                },
+                None => parse_value(inner.next().unwrap()),
+            }
+        }
 
 
         // name_ij    = { name ~ ("_" ~ name)? }

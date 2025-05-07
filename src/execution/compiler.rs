@@ -75,7 +75,8 @@ impl CompilerMode {
                 let thread_dim = std::env::var("RAYON_NUM_THREADS")
                     .unwrap_or_else(|_| num_cpus.to_string())
                     .parse::<usize>()
-                    .unwrap();
+                    .unwrap()
+                    .max(1);
                 let max_threads = (number_of_states / 10).max(1);
                 min(thread_dim, max_threads)
             }

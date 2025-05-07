@@ -5,6 +5,13 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: 'Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)'
+        required: false
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,7 +39,7 @@ jobs:
             - ["15.0", "15-0"]
             - ["16.0", "16-0"]
             - ["17.0", "17-0"]
-            #- ["18.0", "18-0"] (next version of inkwell should support 18.1, then can be added here)
+            - ["18.1", "18-1"]
           toolchain:
             - stable
           os:
@@ -86,7 +93,7 @@ jobs:
         path: |
           ${{ env.CARGO_HOME }}
           target
-        key: unit-test-${{ runner.os }}-${{ matrix.toolchain}}-${{ matrix.llvm }}-${{ matrix.features }}
+        key: unit-test-${{ runner.os }}-${{ matrix.toolchain}}-${{ matrix.llvm[0] }}-${{ matrix.features }}
     - name: Set up Rust
       run: rustup default ${{ matrix.toolchain }} && rustup update ${{ matrix.toolchain }} --no-self-update && rustup component add clippy rust-docs
     - name: Rust version
@@ -100,6 +107,15 @@ jobs:
       if : matrix.os == 'macos-13'
       run: 
         brew install llvm@16
+    - name: Install dependencies (for ubuntu-latest and LLVM 18.1)
+      if : matrix.llvm[0] == '18.1' && matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt update
+        wget http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
+        sudo apt install ./libtinfo5_6.3-2ubuntu0.1_amd64.deb
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v3
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
     - name: Run tests (LLVM)
       if : matrix.llvm != ''
       run: cargo test --verbose --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"

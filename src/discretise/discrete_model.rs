@@ -15,10 +15,10 @@ use crate::ast::StringSpan;
 use crate::continuous::ModelInfo;
 use crate::continuous::Variable;
 
+use super::ArcLayout;
 use super::Env;
 use super::Index;
 use super::Layout;
-use super::RcLayout;
 use super::Tensor;
 use super::TensorBlock;
 use super::ValidationError;
@@ -191,8 +191,8 @@ impl<'s> DiscreteModel<'s> {
                             name,
                             start.clone(),
                             array.indices().to_vec(),
-                            RcLayout::new(elmt_layout),
-                            RcLayout::new(expr_layout),
+                            ArcLayout::new(elmt_layout),
+                            ArcLayout::new(expr_layout),
                             *expr,
                         ));
 
@@ -219,7 +219,7 @@ impl<'s> DiscreteModel<'s> {
                     let tensor = Tensor::new(
                         array.name(),
                         elmts,
-                        RcLayout::new(layout),
+                        ArcLayout::new(layout),
                         array.indices().to_vec(),
                     );
                     //check that the number of indices matches the rank

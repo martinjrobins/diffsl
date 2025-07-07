@@ -22,7 +22,7 @@ use inkwell::{
 };
 use llvm_sys::core::{
     LLVMBuildCall2, LLVMGetArgOperand, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
-    LLVMGetInstructionParent, LLVMGetNamedFunction, LLVMGlobalGetValueType,
+    LLVMGetInstructionParent, LLVMGetNamedFunction, LLVMGlobalGetValueType, LLVMIsMultithreaded,
 };
 use llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
 use std::collections::HashMap;
@@ -71,6 +71,7 @@ pub struct LlvmModule {
     machine: TargetMachine,
 }
 
+unsafe impl Send for LlvmModule {}
 unsafe impl Sync for LlvmModule {}
 
 impl LlvmModule {
@@ -232,6 +233,11 @@ impl CodegenModuleCompile for LlvmModule {
     ) -> Result<Self> {
         let thread_dim = mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
+        if (unsafe { LLVMIsMultithreaded() } <= 0) {
+            return Err(anyhow!(
+                "LLVM is not compiled with multithreading support, but this codegen module requires it."
+            ));
+        }
 
         let mut module = Self::new(triple, model, threaded)?;
 

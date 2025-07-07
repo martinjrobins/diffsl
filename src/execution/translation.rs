@@ -2,7 +2,7 @@ use std::fmt;
 
 use ndarray::s;
 
-use crate::discretise::{Index, Layout, RcLayout};
+use crate::discretise::{ArcLayout, Index, Layout};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranslationFrom {
@@ -232,7 +232,12 @@ impl fmt::Display for Translation {
 }
 
 impl Translation {
-    pub fn new(source: &RcLayout, via: &RcLayout, target_start: &Index, target: &RcLayout) -> Self {
+    pub fn new(
+        source: &ArcLayout,
+        via: &ArcLayout,
+        target_start: &Index,
+        target: &ArcLayout,
+    ) -> Self {
         let source_layout = source;
         let target_layout = target;
         let via_layout = via;

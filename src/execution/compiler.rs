@@ -157,6 +157,14 @@ impl<M: CodegenModule> Compiler<M> {
         Ok(ret)
     }
 
+    pub fn from_codegen_module(mut module: M, mode: CompilerMode) -> Result<Self>
+    where
+        M: CodegenModuleJit,
+    {
+        let symbol_map = module.jit()?;
+        Self::new(module, symbol_map, mode)
+    }
+
     pub fn from_discrete_str(code: &str, mode: CompilerMode) -> Result<Self>
     where
         M: CodegenModuleCompile + CodegenModuleJit,
@@ -870,6 +878,11 @@ impl<M: CodegenModule> Compiler<M> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{Arc, Mutex},
+        thread,
+    };
+
     use crate::{
         discretise::DiscreteModel,
         execution::module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
@@ -1952,5 +1965,50 @@ mod tests {
             mv.as_mut_slice(),
         );
         assert_relative_eq!(v.as_slice(), vec![2.0, 3.0, 2.0].as_slice());
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_send_llvm() {
+        test_send::<crate::LlvmModule>();
+    }
+
+    #[cfg(feature = "cranelift")]
+    #[test]
+    fn test_send_cranelift() {
+        test_send::<crate::CraneliftJitModule>();
+    }
+
+    fn test_send<M: CodegenModuleCompile + CodegenModuleJit + Send + 'static>() {
+        let full_text = "
+            u { y = 1 }
+            F { -y }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("test_sens_sync", &model).unwrap();
+
+        let compiler = Arc::new(Mutex::new(
+            Compiler::<M>::from_discrete_model(&discrete_model, Default::default()).unwrap(),
+        ));
+
+        let compiler_clone = Arc::clone(&compiler);
+        let handle = thread::spawn(move || {
+            let mut data = compiler_clone.lock().unwrap().get_new_data();
+            let mut u0 = vec![0.0];
+            compiler_clone
+                .lock()
+                .unwrap()
+                .set_u0(u0.as_mut_slice(), data.as_mut_slice());
+            let mut res = vec![0.0];
+            compiler_clone.lock().unwrap().rhs(
+                0.0,
+                u0.as_slice(),
+                data.as_mut_slice(),
+                res.as_mut_slice(),
+            );
+            assert_relative_eq!(res.as_slice(), vec![-1.0].as_slice());
+        });
+
+        handle.join().unwrap();
     }
 }

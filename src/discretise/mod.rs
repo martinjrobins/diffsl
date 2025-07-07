@@ -8,7 +8,7 @@ pub mod env;
 pub use env::Env;
 
 pub mod layout;
-pub use layout::{Layout, LayoutKind, RcLayout};
+pub use layout::{ArcLayout, Layout, LayoutKind};
 
 pub mod shape;
 pub use shape::{broadcast_shapes, can_broadcast_to, Shape};

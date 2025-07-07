@@ -1979,7 +1979,7 @@ mod tests {
         test_send::<crate::CraneliftJitModule>();
     }
 
-    fn test_send<M: CodegenModuleCompile + CodegenModuleJit + Send + 'static>() {
+    fn test_send<M: CodegenModuleCompile + CodegenModuleJit>() {
         let full_text = "
             u { y = 1 }
             F { -y }

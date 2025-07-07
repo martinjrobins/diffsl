@@ -15,22 +15,6 @@ use anyhow::{anyhow, Result};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use uid::Id;
 
-struct SendWrapper<T>(T);
-unsafe impl<T> Send for SendWrapper<T> {}
-
-macro_rules! impl_from {
-    ($ty:ty) => {
-        impl From<SendWrapper<$ty>> for $ty {
-            fn from(wrapper: SendWrapper<$ty>) -> $ty {
-                wrapper.0
-            }
-        }
-    };
-}
-
-impl_from!(*mut f64);
-impl_from!(*const f64);
-
 pub struct Compiler<M: CodegenModule> {
     jit_functions: JitFunctions,
     jit_grad_functions: JitGradFunctions,

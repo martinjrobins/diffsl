@@ -15,10 +15,10 @@ use crate::ast::StringSpan;
 use crate::continuous::ModelInfo;
 use crate::continuous::Variable;
 
+use super::ArcLayout;
 use super::Env;
 use super::Index;
 use super::Layout;
-use super::RcLayout;
 use super::Tensor;
 use super::TensorBlock;
 use super::ValidationError;
@@ -191,8 +191,8 @@ impl<'s> DiscreteModel<'s> {
                             name,
                             start.clone(),
                             array.indices().to_vec(),
-                            RcLayout::new(elmt_layout),
-                            RcLayout::new(expr_layout),
+                            ArcLayout::new(elmt_layout),
+                            ArcLayout::new(expr_layout),
                             *expr,
                         ));
 
@@ -219,7 +219,7 @@ impl<'s> DiscreteModel<'s> {
                     let tensor = Tensor::new(
                         array.name(),
                         elmts,
-                        RcLayout::new(layout),
+                        ArcLayout::new(layout),
                         array.indices().to_vec(),
                     );
                     //check that the number of indices matches the rank
@@ -702,26 +702,26 @@ impl<'s> DiscreteModel<'s> {
         }
     }
 
-    pub fn inputs(&self) -> &[Tensor] {
+    pub fn inputs(&self) -> &[Tensor<'_>] {
         self.inputs.as_ref()
     }
 
-    pub fn constant_defns(&self) -> &[Tensor] {
+    pub fn constant_defns(&self) -> &[Tensor<'_>] {
         self.constant_defns.as_ref()
     }
 
-    pub fn input_dep_defns(&self) -> &[Tensor] {
+    pub fn input_dep_defns(&self) -> &[Tensor<'_>] {
         self.input_dep_defns.as_ref()
     }
 
-    pub fn time_dep_defns(&self) -> &[Tensor] {
+    pub fn time_dep_defns(&self) -> &[Tensor<'_>] {
         self.time_dep_defns.as_ref()
     }
-    pub fn state_dep_defns(&self) -> &[Tensor] {
+    pub fn state_dep_defns(&self) -> &[Tensor<'_>] {
         self.state_dep_defns.as_ref()
     }
 
-    pub fn dstate_dep_defns(&self) -> &[Tensor] {
+    pub fn dstate_dep_defns(&self) -> &[Tensor<'_>] {
         self.dstate_dep_defns.as_ref()
     }
 

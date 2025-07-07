@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::discretise::{DiscreteModel, Layout, RcLayout, Tensor};
+use crate::discretise::{ArcLayout, DiscreteModel, Layout, Tensor};
 
 use super::Translation;
 
@@ -17,12 +17,12 @@ pub struct DataLayout {
     is_constant_map: HashMap<String, bool>,
     data_index_map: HashMap<String, usize>,
     data_length_map: HashMap<String, usize>,
-    layout_index_map: HashMap<RcLayout, usize>,
-    translate_index_map: HashMap<(RcLayout, RcLayout), usize>,
+    layout_index_map: HashMap<ArcLayout, usize>,
+    translate_index_map: HashMap<(ArcLayout, ArcLayout), usize>,
     data: Vec<f64>,
     constants: Vec<f64>,
     indices: Vec<i32>,
-    layout_map: HashMap<String, RcLayout>,
+    layout_map: HashMap<String, ArcLayout>,
 }
 
 impl DataLayout {
@@ -112,7 +112,7 @@ impl DataLayout {
         }
 
         // add layout info for "t"
-        let t_layout = RcLayout::new(Layout::new_scalar());
+        let t_layout = ArcLayout::new(Layout::new_scalar());
         layout_map.insert("t".to_string(), t_layout);
 
         // todo: could we just calculate constants now?
@@ -137,7 +137,7 @@ impl DataLayout {
     }
 
     // get the layout of a tensor by name
-    pub fn get_layout(&self, name: &str) -> Option<&RcLayout> {
+    pub fn get_layout(&self, name: &str) -> Option<&ArcLayout> {
         self.layout_map.get(name)
     }
 
@@ -178,11 +178,11 @@ impl DataLayout {
         self.data_length_map.get(name).copied()
     }
 
-    pub fn get_layout_index(&self, layout: &RcLayout) -> Option<usize> {
+    pub fn get_layout_index(&self, layout: &ArcLayout) -> Option<usize> {
         self.layout_index_map.get(layout).copied()
     }
 
-    pub fn get_translation_index(&self, from: &RcLayout, to: &RcLayout) -> Option<usize> {
+    pub fn get_translation_index(&self, from: &ArcLayout, to: &ArcLayout) -> Option<usize> {
         self.translate_index_map
             .get(&(from.clone(), to.clone()))
             .copied()

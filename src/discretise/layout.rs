@@ -1,7 +1,13 @@
 use anyhow::{anyhow, Result};
 use itertools::Itertools;
 use ndarray::s;
-use std::{convert::AsRef, fmt, hash::Hash, hash::Hasher, ops::Deref, rc::Rc};
+use std::{
+    convert::AsRef,
+    fmt,
+    hash::{Hash, Hasher},
+    ops::Deref,
+    sync::Arc,
+};
 
 use super::{broadcast_shapes, shape::Shape, tensor::Index, TensorBlock};
 
@@ -709,38 +715,38 @@ impl Layout {
     }
 }
 
-// RcLayout is a wrapper for Rc<Layout> that implements Hash and PartialEq based on ptr equality
+// ArcLayout is a wrapper for Arc<Layout> that implements Hash and PartialEq based on ptr equality
 #[derive(Debug)]
-pub struct RcLayout(Rc<Layout>);
-impl Hash for RcLayout {
+pub struct ArcLayout(Arc<Layout>);
+impl Hash for ArcLayout {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Rc::as_ptr(&self.0).hash(state);
+        Arc::as_ptr(&self.0).hash(state);
     }
 }
-impl PartialEq for RcLayout {
+impl PartialEq for ArcLayout {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
-impl Clone for RcLayout {
+impl Clone for ArcLayout {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
-impl Eq for RcLayout {}
-impl Deref for RcLayout {
+impl Eq for ArcLayout {}
+impl Deref for ArcLayout {
     type Target = Layout;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
-impl AsRef<Layout> for RcLayout {
+impl AsRef<Layout> for ArcLayout {
     fn as_ref(&self) -> &Layout {
         &self.0
     }
 }
-impl RcLayout {
+impl ArcLayout {
     pub fn new(layout: Layout) -> Self {
-        Self(Rc::new(layout))
+        Self(Arc::new(layout))
     }
 }

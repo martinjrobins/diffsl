@@ -22,7 +22,7 @@ use inkwell::{
 };
 use llvm_sys::core::{
     LLVMBuildCall2, LLVMGetArgOperand, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
-    LLVMGetInstructionParent, LLVMGetNamedFunction, LLVMGlobalGetValueType,
+    LLVMGetInstructionParent, LLVMGetNamedFunction, LLVMGlobalGetValueType, LLVMIsMultithreaded,
 };
 use llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
 use std::collections::HashMap;
@@ -71,6 +71,7 @@ pub struct LlvmModule {
     machine: TargetMachine,
 }
 
+unsafe impl Send for LlvmModule {}
 unsafe impl Sync for LlvmModule {}
 
 impl LlvmModule {
@@ -232,6 +233,11 @@ impl CodegenModuleCompile for LlvmModule {
     ) -> Result<Self> {
         let thread_dim = mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
+        if (unsafe { LLVMIsMultithreaded() } <= 0) {
+            return Err(anyhow!(
+                "LLVM is not compiled with multithreading support, but this codegen module requires it."
+            ));
+        }
 
         let mut module = Self::new(triple, model, threaded)?;
 
@@ -679,7 +685,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         name: &str,
         value: PrintValue<'ctx>,
-    ) -> Result<CallSiteValue> {
+    ) -> Result<CallSiteValue<'_>> {
         let void_type = self.context.void_type();
         // int printf(const char *format, ...)
         let printf_type = void_type.fn_type(&[self.int_ptr_type.into()], true);
@@ -1662,10 +1668,10 @@ impl<'ctx> CodeGen<'ctx> {
                 _ => self.jit_compile_sparse_block(name, elmt, &translation),
             }
         } else {
-            return Err(anyhow!(
+            Err(anyhow!(
                 "unsupported block layout: {:?}",
                 elmt.expr_layout()
-            ));
+            ))
         }
     }
 

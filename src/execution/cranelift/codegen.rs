@@ -6,6 +6,7 @@ use cranelift_module::{DataDescription, DataId, FuncId, FuncOrDataId, Linkage, M
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::HashMap;
 use std::iter::zip;
+use std::sync::{Mutex, MutexGuard};
 use target_lexicon::{Endianness, PointerWidth, Triple};
 
 use crate::ast::{Ast, AstKind};
@@ -27,7 +28,7 @@ pub struct CraneliftModule<M: Module> {
     ctx: codegen::Context,
 
     /// The module, with the object backend.
-    module: M,
+    module: Mutex<M>,
 
     layout: DataLayout,
 
@@ -54,9 +55,8 @@ impl<M: Module> CraneliftModule<M> {
         // TODO: This may be an area where the API should be streamlined; should
         // we have a version of `declare_function` that automatically declares
         // the function?
-        let id = self
-            .module
-            .declare_function(name, Linkage::Export, &self.ctx.func.signature)?;
+        let mut module = self.module.lock().unwrap();
+        let id = module.declare_function(name, Linkage::Export, &self.ctx.func.signature)?;
 
         //println!("Declared function: {} -------------------------------------------------------------------------------------", name);
         //println!("IR:\n{}", self.ctx.func);
@@ -66,25 +66,24 @@ impl<M: Module> CraneliftModule<M> {
         // cannot finish relocations until all functions to be called are
         // defined. For this toy demo for now, we'll just finalize the
         // function below.
-        self.module.define_function(id, &mut self.ctx)?;
+        module.define_function(id, &mut self.ctx)?;
 
         // Now that compilation is finished, we can clear out the context state.
-        self.module.clear_context(&mut self.ctx);
+        module.clear_context(&mut self.ctx);
 
         Ok(id)
     }
 
     fn compile_barrier_init(&mut self) -> Result<FuncId> {
-        let module = self;
-        module.ctx.func.signature.params.clear();
-        module.ctx.func.signature.returns.clear();
+        self.ctx.func.signature.params.clear();
+        self.ctx.func.signature.returns.clear();
 
         // Create the builder to build a function.
-        let mut builder = FunctionBuilder::new(&mut module.ctx.func, &mut module.builder_context);
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
 
-        let thread_counter = module
-            .module
-            .declare_data_in_func(module.thread_counter.unwrap(), builder.func);
+        let mut module = self.module.lock().unwrap();
+        let thread_counter =
+            module.declare_data_in_func(self.thread_counter.unwrap(), builder.func);
 
         let entry_block = builder.create_block();
 
@@ -95,10 +94,10 @@ impl<M: Module> CraneliftModule<M> {
         // load the total thread count
         let thread_counter = builder
             .ins()
-            .global_value(module.int_ptr_type, thread_counter);
+            .global_value(self.int_ptr_type, thread_counter);
 
         // zero the barrier counter
-        let zero = builder.ins().iconst(module.int_type, 0);
+        let zero = builder.ins().iconst(self.int_type, 0);
         builder
             .ins()
             .store(MemFlags::new(), zero, thread_counter, 0);
@@ -107,36 +106,32 @@ impl<M: Module> CraneliftModule<M> {
         builder.finalize();
 
         let name = "barrier_init";
-        let id =
-            module
-                .module
-                .declare_function(name, Linkage::Export, &module.ctx.func.signature)?;
+        let id = module.declare_function(name, Linkage::Export, &self.ctx.func.signature)?;
         //println!("Declared function: {} -------------------------------------------------------------------------------------", name);
         //println!("IR:\n{}", module.ctx.func);
 
-        module.module.define_function(id, &mut module.ctx)?;
-        module.module.clear_context(&mut module.ctx);
+        module.define_function(id, &mut self.ctx)?;
+        module.clear_context(&mut self.ctx);
 
         Ok(id)
     }
 
     fn compile_barrier(&mut self) -> Result<FuncId> {
-        let module = self;
-        module.ctx.func.signature.params.clear();
-        module.ctx.func.signature.returns.clear();
+        self.ctx.func.signature.params.clear();
+        self.ctx.func.signature.returns.clear();
 
         // arg is the number of threads
-        let arg_types = &[module.int_type];
+        let arg_types = &[self.int_type];
         for ty in arg_types {
-            module.ctx.func.signature.params.push(AbiParam::new(*ty));
+            self.ctx.func.signature.params.push(AbiParam::new(*ty));
         }
 
         // Create the builder to build a function.
-        let mut builder = FunctionBuilder::new(&mut module.ctx.func, &mut module.builder_context);
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
 
-        let thread_counter = module
-            .module
-            .declare_data_in_func(module.thread_counter.unwrap(), builder.func);
+        let mut module = self.module.lock().unwrap();
+        let thread_counter =
+            module.declare_data_in_func(self.thread_counter.unwrap(), builder.func);
 
         let entry_block = builder.create_block();
         let wait_loop_block = builder.create_block();
@@ -152,12 +147,12 @@ impl<M: Module> CraneliftModule<M> {
         // load the total thread count
         let thread_counter = builder
             .ins()
-            .global_value(module.int_ptr_type, thread_counter);
+            .global_value(self.int_ptr_type, thread_counter);
 
         // Atomically increment the barrier counter
-        let one = builder.ins().iconst(module.int_type, 1);
+        let one = builder.ins().iconst(self.int_type, 1);
         builder.ins().atomic_rmw(
-            module.int_type,
+            self.int_type,
             MemFlags::new(),
             AtomicRmwOp::Add,
             thread_counter,
@@ -171,7 +166,7 @@ impl<M: Module> CraneliftModule<M> {
         let current_value =
             builder
                 .ins()
-                .atomic_load(module.int_type, MemFlags::new(), thread_counter);
+                .atomic_load(self.int_type, MemFlags::new(), thread_counter);
 
         let all_threads_done = builder.ins().icmp(
             IntCC::UnsignedGreaterThanOrEqual,
@@ -194,15 +189,12 @@ impl<M: Module> CraneliftModule<M> {
         builder.finalize();
 
         let name = "barrier";
-        let id =
-            module
-                .module
-                .declare_function(name, Linkage::Export, &module.ctx.func.signature)?;
+        let id = module.declare_function(name, Linkage::Export, &self.ctx.func.signature)?;
         //println!("Declared function: {} -------------------------------------------------------------------------------------", name);
-        //println!("IR:\n{}", module.ctx.func);
+        //println!("IR:\n{}", self.ctx.func);
 
-        module.module.define_function(id, &mut module.ctx)?;
-        module.module.clear_context(&mut module.ctx);
+        module.define_function(id, &mut self.ctx)?;
+        module.clear_context(&mut self.ctx);
 
         Ok(id)
     }
@@ -233,13 +225,15 @@ impl<M: Module> CraneliftModule<M> {
             "threadId",
             "threadDim",
         ];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        if let Some(out) = model.out() {
-            codegen.jit_compile_tensor(out, None, true)?;
+            if let Some(out) = model.out() {
+                codegen.jit_compile_tensor(out, None, true)?;
+            }
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
 
         self.declare_function("calc_out_grad")
     }
@@ -267,29 +261,31 @@ impl<M: Module> CraneliftModule<M> {
             "threadId",
             "threadDim",
         ];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        // calculate time dependant definitions
-        let mut nbarrier = 0;
-        for tensor in model.time_dep_defns() {
-            codegen.jit_compile_tensor(tensor, None, true)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
+            // calculate time dependant definitions
+            let mut nbarrier = 0;
+            for tensor in model.time_dep_defns() {
+                codegen.jit_compile_tensor(tensor, None, true)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+
+            // TODO: could split state dep defns into before and after F
+            for a in model.state_dep_defns() {
+                codegen.jit_compile_tensor(a, None, true)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+
+            // F
+            let res = *codegen.variables.get("drr").unwrap();
+            codegen.jit_compile_tensor(model.rhs(), Some(res), true)?;
+
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-
-        // TODO: could split state dep defns into before and after F
-        for a in model.state_dep_defns() {
-            codegen.jit_compile_tensor(a, None, true)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
-        }
-
-        // F
-        let res = *codegen.variables.get("drr").unwrap();
-        codegen.jit_compile_tensor(model.rhs(), Some(res), true)?;
-
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
         self.declare_function("rhs_grad")
     }
 
@@ -305,32 +301,36 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
         ];
         let arg_names = &["inputs", "dinputs", "data", "ddata"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let base_data_ptr = codegen.variables.get("ddata").unwrap();
-        let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
-        codegen.jit_compile_inputs(model, base_data_ptr, true, false);
+            let base_data_ptr = codegen.variables.get("ddata").unwrap();
+            let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
+            codegen.jit_compile_inputs(model, base_data_ptr, true, false);
 
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
+        }
         self.declare_function("set_inputs_grad")
     }
 
     fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[self.int_type, self.int_type];
         let arg_names = &["threadId", "threadDim"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let mut nbarrier = 0;
-        #[allow(clippy::explicit_counter_loop)]
-        for a in model.constant_defns() {
-            codegen.jit_compile_tensor(a, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
+            let mut nbarrier = 0;
+            #[allow(clippy::explicit_counter_loop)]
+            for a in model.constant_defns() {
+                codegen.jit_compile_tensor(a, None, false)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+            // Emit the return instruction.
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-        // Emit the return instruction.
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
 
         self.declare_function("set_constants")
     }
@@ -345,25 +345,27 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
         ];
         let arg_names = &["u0", "du0", "data", "ddata", "threadId", "threadDim"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let mut nbarrier = 0;
-        #[allow(clippy::explicit_counter_loop)]
-        for a in model.input_dep_defns() {
-            codegen.jit_compile_tensor(a, None, true)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
+            let mut nbarrier = 0;
+            #[allow(clippy::explicit_counter_loop)]
+            for a in model.input_dep_defns() {
+                codegen.jit_compile_tensor(a, None, true)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+
+            codegen.jit_compile_tensor(
+                model.state(),
+                Some(*codegen.variables.get("du0").unwrap()),
+                true,
+            )?;
+
+            // Emit the return instruction.
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-
-        codegen.jit_compile_tensor(
-            model.state(),
-            Some(*codegen.variables.get("du0").unwrap()),
-            true,
-        )?;
-
-        // Emit the return instruction.
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
 
         self.declare_function("set_u0_grad")
     }
@@ -426,7 +428,7 @@ impl<M: Module> CraneliftModule<M> {
         let mut ret = Self {
             builder_context: FunctionBuilderContext::new(),
             ctx: module.make_context(),
-            module,
+            module: Mutex::new(module),
             indices_id,
             constants_id,
             int_type,
@@ -479,25 +481,27 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
         ];
         let arg_names = &["u0", "data", "threadId", "threadDim"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let mut nbarrier = 0;
-        #[allow(clippy::explicit_counter_loop)]
-        for a in model.input_dep_defns() {
-            codegen.jit_compile_tensor(a, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
+            let mut nbarrier = 0;
+            #[allow(clippy::explicit_counter_loop)]
+            for a in model.input_dep_defns() {
+                codegen.jit_compile_tensor(a, None, false)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+
+            codegen.jit_compile_tensor(
+                model.state(),
+                Some(*codegen.variables.get("u0").unwrap()),
+                false,
+            )?;
+
+            // Emit the return instruction.
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-
-        codegen.jit_compile_tensor(
-            model.state(),
-            Some(*codegen.variables.get("u0").unwrap()),
-            false,
-        )?;
-
-        // Emit the return instruction.
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
 
         self.declare_function("set_u0")
     }
@@ -512,28 +516,30 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
         ];
         let arg_names = &["t", "u", "data", "out", "threadId", "threadDim"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        if let Some(out) = model.out() {
-            // calculate time dependant definitions
-            let mut nbarrier = 0;
-            for tensor in model.time_dep_defns() {
-                codegen.jit_compile_tensor(tensor, None, false)?;
-                codegen.jit_compile_call_barrier(nbarrier);
-                nbarrier += 1;
+            if let Some(out) = model.out() {
+                // calculate time dependant definitions
+                let mut nbarrier = 0;
+                for tensor in model.time_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                // calculate state dependant definitions
+                for a in model.state_dep_defns() {
+                    codegen.jit_compile_tensor(a, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                codegen.jit_compile_tensor(out, None, false)?;
             }
-
-            // calculate state dependant definitions
-            for a in model.state_dep_defns() {
-                codegen.jit_compile_tensor(a, None, false)?;
-                codegen.jit_compile_call_barrier(nbarrier);
-                nbarrier += 1;
-            }
-
-            codegen.jit_compile_tensor(out, None, false)?;
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
 
         self.declare_function("calc_out")
     }
@@ -548,29 +554,31 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
         ];
         let arg_names = &["t", "u", "data", "root", "threadId", "threadDim"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        if let Some(stop) = model.stop() {
-            // calculate time dependant definitions
-            let mut nbarrier = 0;
-            for tensor in model.time_dep_defns() {
-                codegen.jit_compile_tensor(tensor, None, false)?;
-                codegen.jit_compile_call_barrier(nbarrier);
-                nbarrier += 1;
+            if let Some(stop) = model.stop() {
+                // calculate time dependant definitions
+                let mut nbarrier = 0;
+                for tensor in model.time_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                // calculate state dependant definitions
+                for a in model.state_dep_defns() {
+                    codegen.jit_compile_tensor(a, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                let root = *codegen.variables.get("root").unwrap();
+                codegen.jit_compile_tensor(stop, Some(root), false)?;
             }
-
-            // calculate state dependant definitions
-            for a in model.state_dep_defns() {
-                codegen.jit_compile_tensor(a, None, false)?;
-                codegen.jit_compile_call_barrier(nbarrier);
-                nbarrier += 1;
-            }
-
-            let root = *codegen.variables.get("root").unwrap();
-            codegen.jit_compile_tensor(stop, Some(root), false)?;
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
         self.declare_function("calc_stop")
     }
 
@@ -584,29 +592,31 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
         ];
         let arg_names = &["t", "u", "data", "rr", "threadId", "threadDim"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        // calculate time dependant definitions
-        let mut nbarrier = 0;
-        for tensor in model.time_dep_defns() {
-            codegen.jit_compile_tensor(tensor, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
+            // calculate time dependant definitions
+            let mut nbarrier = 0;
+            for tensor in model.time_dep_defns() {
+                codegen.jit_compile_tensor(tensor, None, false)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+
+            // TODO: could split state dep defns into before and after F
+            for a in model.state_dep_defns() {
+                codegen.jit_compile_tensor(a, None, false)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+
+            // F
+            let res = *codegen.variables.get("rr").unwrap();
+            codegen.jit_compile_tensor(model.rhs(), Some(res), false)?;
+
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-
-        // TODO: could split state dep defns into before and after F
-        for a in model.state_dep_defns() {
-            codegen.jit_compile_tensor(a, None, false)?;
-            codegen.jit_compile_call_barrier(nbarrier);
-            nbarrier += 1;
-        }
-
-        // F
-        let res = *codegen.variables.get("rr").unwrap();
-        codegen.jit_compile_tensor(model.rhs(), Some(res), false)?;
-
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
         self.declare_function("rhs")
     }
 
@@ -620,32 +630,34 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
         ];
         let arg_names = &["t", "dudt", "data", "rr", "threadId", "threadDim"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        // only put code in this function if we have a state_dot and lhs
-        if model.state_dot().is_some() && model.lhs().is_some() {
-            // calculate time dependant definitions
-            let mut nbarrier = 0;
-            for tensor in model.time_dep_defns() {
-                codegen.jit_compile_tensor(tensor, None, false)?;
-                codegen.jit_compile_call_barrier(nbarrier);
-                nbarrier += 1;
+            // only put code in this function if we have a state_dot and lhs
+            if model.state_dot().is_some() && model.lhs().is_some() {
+                // calculate time dependant definitions
+                let mut nbarrier = 0;
+                for tensor in model.time_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                for a in model.dstate_dep_defns() {
+                    codegen.jit_compile_tensor(a, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                // mass
+                let lhs = model.lhs().unwrap();
+                let res = codegen.variables.get("rr").unwrap();
+                codegen.jit_compile_tensor(lhs, Some(*res), false)?;
             }
 
-            for a in model.dstate_dep_defns() {
-                codegen.jit_compile_tensor(a, None, false)?;
-                codegen.jit_compile_call_barrier(nbarrier);
-                nbarrier += 1;
-            }
-
-            // mass
-            let lhs = model.lhs().unwrap();
-            let res = codegen.variables.get("rr").unwrap();
-            codegen.jit_compile_tensor(lhs, Some(*res), false)?;
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
         self.declare_function("mass")
     }
 
@@ -659,184 +671,198 @@ impl<M: Module> CraneliftModule<M> {
             self.int_ptr_type,
         ];
         let arg_names = &["states", "inputs", "outputs", "data", "stop", "has_mass"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let number_of_states = i64::try_from(model.state().nnz()).unwrap();
-        let number_of_inputs =
-            i64::try_from(model.inputs().iter().fold(0, |acc, x| acc + x.nnz())).unwrap();
-        let number_of_outputs = match model.out() {
-            Some(out) => i64::try_from(out.nnz()).unwrap(),
-            None => 0,
-        };
-        let number_of_stop = if let Some(stop) = model.stop() {
-            i64::try_from(stop.nnz()).unwrap()
-        } else {
-            0
-        };
-        let has_mass = match model.lhs().is_some() {
-            true => 1,
-            false => 0,
-        };
-        let data_len = i64::try_from(codegen.layout.data().len()).unwrap();
+            let number_of_states = i64::try_from(model.state().nnz()).unwrap();
+            let number_of_inputs =
+                i64::try_from(model.inputs().iter().fold(0, |acc, x| acc + x.nnz())).unwrap();
+            let number_of_outputs = match model.out() {
+                Some(out) => i64::try_from(out.nnz()).unwrap(),
+                None => 0,
+            };
+            let number_of_stop = if let Some(stop) = model.stop() {
+                i64::try_from(stop.nnz()).unwrap()
+            } else {
+                0
+            };
+            let has_mass = match model.lhs().is_some() {
+                true => 1,
+                false => 0,
+            };
+            let data_len = i64::try_from(codegen.layout.data().len()).unwrap();
 
-        for (val, name) in [
-            (number_of_states, "states"),
-            (number_of_inputs, "inputs"),
-            (number_of_outputs, "outputs"),
-            (data_len, "data"),
-            (number_of_stop, "stop"),
-            (has_mass, "has_mass"),
-        ] {
-            let val = codegen.builder.ins().iconst(codegen.int_type, val);
-            let ptr = codegen.variables.get(name).unwrap();
-            let ptr = codegen.builder.use_var(*ptr);
-            codegen.builder.ins().store(codegen.mem_flags, val, ptr, 0);
+            for (val, name) in [
+                (number_of_states, "states"),
+                (number_of_inputs, "inputs"),
+                (number_of_outputs, "outputs"),
+                (data_len, "data"),
+                (number_of_stop, "stop"),
+                (has_mass, "has_mass"),
+            ] {
+                let val = codegen.builder.ins().iconst(codegen.int_type, val);
+                let ptr = codegen.variables.get(name).unwrap();
+                let ptr = codegen.builder.use_var(*ptr);
+                codegen.builder.ins().store(codegen.mem_flags, val, ptr, 0);
+            }
+
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
         self.declare_function("get_dims")
     }
 
     fn compile_get_tensor(&mut self, model: &DiscreteModel, name: &str) -> Result<FuncId> {
         let arg_types = &[self.real_ptr_type, self.real_ptr_type, self.int_ptr_type];
         let arg_names = &["data", "tensor_data", "tensor_size"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let tensor_ptr = codegen.variables.get(name).unwrap();
-        let tensor_ptr = codegen.builder.use_var(*tensor_ptr);
+            let tensor_ptr = codegen.variables.get(name).unwrap();
+            let tensor_ptr = codegen.builder.use_var(*tensor_ptr);
 
-        let tensor_size = i64::try_from(codegen.layout.get_layout(name).unwrap().nnz()).unwrap();
-        let tensor_size = codegen.builder.ins().iconst(codegen.int_type, tensor_size);
+            let tensor_size =
+                i64::try_from(codegen.layout.get_layout(name).unwrap().nnz()).unwrap();
+            let tensor_size = codegen.builder.ins().iconst(codegen.int_type, tensor_size);
 
-        for (val, name) in [(tensor_ptr, "tensor_data"), (tensor_size, "tensor_size")] {
-            let ptr = codegen.variables.get(name).unwrap();
-            let ptr = codegen.builder.use_var(*ptr);
-            codegen.builder.ins().store(codegen.mem_flags, val, ptr, 0);
+            for (val, name) in [(tensor_ptr, "tensor_data"), (tensor_size, "tensor_size")] {
+                let ptr = codegen.variables.get(name).unwrap();
+                let ptr = codegen.builder.use_var(*ptr);
+                codegen.builder.ins().store(codegen.mem_flags, val, ptr, 0);
+            }
+
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
         self.declare_function(format!("get_tensor_{name}").as_str())
     }
 
     fn compile_get_constant(&mut self, model: &DiscreteModel, name: &str) -> Result<FuncId> {
         let arg_types = &[self.real_ptr_type, self.int_ptr_type];
         let arg_names = &["tensor_data", "tensor_size"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let tensor_ptr = codegen.variables.get(name).unwrap();
-        let tensor_ptr = codegen.builder.use_var(*tensor_ptr);
+            let tensor_ptr = codegen.variables.get(name).unwrap();
+            let tensor_ptr = codegen.builder.use_var(*tensor_ptr);
 
-        let tensor_size = i64::try_from(codegen.layout.get_layout(name).unwrap().nnz()).unwrap();
-        let tensor_size = codegen.builder.ins().iconst(codegen.int_type, tensor_size);
+            let tensor_size =
+                i64::try_from(codegen.layout.get_layout(name).unwrap().nnz()).unwrap();
+            let tensor_size = codegen.builder.ins().iconst(codegen.int_type, tensor_size);
 
-        for (val, name) in [(tensor_ptr, "tensor_data"), (tensor_size, "tensor_size")] {
-            let ptr = codegen.variables.get(name).unwrap();
-            let ptr = codegen.builder.use_var(*ptr);
-            codegen.builder.ins().store(codegen.mem_flags, val, ptr, 0);
+            for (val, name) in [(tensor_ptr, "tensor_data"), (tensor_size, "tensor_size")] {
+                let ptr = codegen.variables.get(name).unwrap();
+                let ptr = codegen.builder.use_var(*ptr);
+                codegen.builder.ins().store(codegen.mem_flags, val, ptr, 0);
+            }
+
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
         self.declare_function(format!("get_constant_{name}").as_str())
     }
 
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[self.real_ptr_type, self.real_ptr_type];
         let arg_names = &["inputs", "data"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let base_data_ptr = codegen.variables.get("data").unwrap();
-        let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
-        codegen.jit_compile_inputs(model, base_data_ptr, false, false);
+            let base_data_ptr = codegen.variables.get("data").unwrap();
+            let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
+            codegen.jit_compile_inputs(model, base_data_ptr, false, false);
 
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
+        }
         self.declare_function("set_inputs")
     }
 
     fn compile_get_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[self.real_ptr_type, self.real_ptr_type];
         let arg_names = &["inputs", "data"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let base_data_ptr = codegen.variables.get("data").unwrap();
-        let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
-        codegen.jit_compile_inputs(model, base_data_ptr, false, true);
+            let base_data_ptr = codegen.variables.get("data").unwrap();
+            let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
+            codegen.jit_compile_inputs(model, base_data_ptr, false, true);
 
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
+        }
         self.declare_function("get_inputs")
     }
 
     fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<FuncId> {
         let arg_types = &[self.real_ptr_type];
         let arg_names = &["id"];
-        let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-        let mut id_index = 0usize;
-        for (blk, is_algebraic) in zip(model.state().elmts(), model.is_algebraic()) {
-            // loop thru the elements of this state blk and set the corresponding elements of id
-            let id_start_index = codegen
-                .builder
-                .ins()
-                .iconst(codegen.int_type, i64::try_from(id_index).unwrap());
-            let blk_start_index = codegen.builder.ins().iconst(codegen.int_type, 0);
+            let mut id_index = 0usize;
+            for (blk, is_algebraic) in zip(model.state().elmts(), model.is_algebraic()) {
+                // loop thru the elements of this state blk and set the corresponding elements of id
+                let id_start_index = codegen
+                    .builder
+                    .ins()
+                    .iconst(codegen.int_type, i64::try_from(id_index).unwrap());
+                let blk_start_index = codegen.builder.ins().iconst(codegen.int_type, 0);
 
-            let blk_block = codegen.builder.create_block();
-            let curr_blk_index = codegen
-                .builder
-                .append_block_param(blk_block, codegen.int_type);
-            codegen.builder.ins().jump(blk_block, &[blk_start_index]);
+                let blk_block = codegen.builder.create_block();
+                let curr_blk_index = codegen
+                    .builder
+                    .append_block_param(blk_block, codegen.int_type);
+                codegen.builder.ins().jump(blk_block, &[blk_start_index]);
 
-            codegen.builder.switch_to_block(blk_block);
+                codegen.builder.switch_to_block(blk_block);
 
-            // loop body - copy value from inputs to data
-            let input_id_ptr = codegen.variables.get("id").unwrap();
-            let input_id_ptr = codegen.builder.use_var(*input_id_ptr);
-            let curr_id_index = codegen.builder.ins().iadd(id_start_index, curr_blk_index);
-            let indexed_id_ptr =
-                codegen.ptr_add_offset(codegen.real_type, input_id_ptr, curr_id_index);
+                // loop body - copy value from inputs to data
+                let input_id_ptr = codegen.variables.get("id").unwrap();
+                let input_id_ptr = codegen.builder.use_var(*input_id_ptr);
+                let curr_id_index = codegen.builder.ins().iadd(id_start_index, curr_blk_index);
+                let indexed_id_ptr =
+                    codegen.ptr_add_offset(codegen.real_type, input_id_ptr, curr_id_index);
 
-            let is_algebraic_float = if *is_algebraic { 0.0 } else { 1.0 };
-            let is_algebraic_value = codegen.fconst(is_algebraic_float);
-            codegen
-                .builder
-                .ins()
-                .store(codegen.mem_flags, is_algebraic_value, indexed_id_ptr, 0);
+                let is_algebraic_float = if *is_algebraic { 0.0 } else { 1.0 };
+                let is_algebraic_value = codegen.fconst(is_algebraic_float);
+                codegen.builder.ins().store(
+                    codegen.mem_flags,
+                    is_algebraic_value,
+                    indexed_id_ptr,
+                    0,
+                );
 
-            // increment loop index
-            let one = codegen.builder.ins().iconst(codegen.int_type, 1);
-            let next_index = codegen.builder.ins().iadd(curr_blk_index, one);
+                // increment loop index
+                let one = codegen.builder.ins().iconst(codegen.int_type, 1);
+                let next_index = codegen.builder.ins().iadd(curr_blk_index, one);
 
-            let loop_while = codegen.builder.ins().icmp_imm(
-                IntCC::UnsignedLessThan,
-                next_index,
-                i64::try_from(blk.nnz()).unwrap(),
-            );
-            let post_block = codegen.builder.create_block();
-            codegen
-                .builder
-                .ins()
-                .brif(loop_while, blk_block, &[next_index], post_block, &[]);
-            codegen.builder.seal_block(blk_block);
-            codegen.builder.seal_block(post_block);
-            codegen.builder.switch_to_block(post_block);
+                let loop_while = codegen.builder.ins().icmp_imm(
+                    IntCC::UnsignedLessThan,
+                    next_index,
+                    i64::try_from(blk.nnz()).unwrap(),
+                );
+                let post_block = codegen.builder.create_block();
+                codegen
+                    .builder
+                    .ins()
+                    .brif(loop_while, blk_block, &[next_index], post_block, &[]);
+                codegen.builder.seal_block(blk_block);
+                codegen.builder.seal_block(post_block);
+                codegen.builder.switch_to_block(post_block);
 
-            // get ready for next blk
-            id_index += blk.nnz();
+                // get ready for next blk
+                id_index += blk.nnz();
+            }
+
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
         }
-
-        codegen.builder.ins().return_(&[]);
-        codegen.builder.finalize();
         self.declare_function("set_id")
     }
 }
 
-unsafe impl<M: Module> Sync for CraneliftModule<M> {}
-
-impl<M: Module> CodegenModule for CraneliftModule<M> {}
+impl<M: Module + Send + 'static> CodegenModule for CraneliftModule<M> {}
 
 impl CodegenModuleCompile for CraneliftModule<ObjectModule> {
     fn from_discrete_model(
@@ -907,19 +933,21 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
 
 impl CodegenModuleEmit for CraneliftModule<ObjectModule> {
     fn to_object(self) -> Result<Vec<u8>> {
-        self.module.finish().emit().map_err(|e| anyhow!(e))
+        let module = Mutex::into_inner(self.module).unwrap();
+        module.finish().emit().map_err(|e| anyhow!(e))
     }
 }
 
 impl CodegenModuleJit for CraneliftModule<JITModule> {
     fn jit(&mut self) -> Result<HashMap<String, *const u8>> {
         let mut result = HashMap::new();
-        self.module.finalize_definitions()?;
-        for (func, decl) in self.module.declarations().get_functions() {
+        let mut module = self.module.lock().unwrap();
+        module.finalize_definitions()?;
+        for (func, decl) in module.declarations().get_functions() {
             if Linkage::Import == decl.linkage {
                 continue;
             }
-            let addr = self.module.get_finalized_function(func);
+            let addr = module.get_finalized_function(func);
             result.insert(decl.name.as_ref().unwrap().clone(), addr);
         }
         Ok(result)
@@ -934,7 +962,7 @@ struct CraneliftCodeGen<'a, M: Module> {
     real_ptr_type: types::Type,
     int_ptr_type: types::Type,
     builder: FunctionBuilder<'a>,
-    module: &'a mut M,
+    module: MutexGuard<'a, M>,
     tensor_ptr: Option<Value>,
     variables: HashMap<String, Variable>,
     mem_flags: MemFlags,
@@ -1260,10 +1288,10 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                 _ => self.jit_compile_sparse_block(name, elmt, &translation, is_tangent),
             }
         } else {
-            return Err(anyhow!(
+            Err(anyhow!(
                 "unsupported block layout: {:?}",
                 elmt.expr_layout()
-            ));
+            ))
         }
     }
 
@@ -1391,6 +1419,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             self.builder.ins().jump(block, &[curr_index_start]);
             self.builder.switch_to_block(block);
 
+            #[allow(clippy::unnecessary_unwrap)]
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
                 let fzero = self.fconst(0.0);
                 self.builder
@@ -1419,15 +1448,15 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         };
         let float_value = self.jit_compile_expr(name, expr, indices.as_slice(), elmt, None)?;
 
-        if contract_sum.is_some() {
-            let contract_sum_value =
-                self.builder
-                    .ins()
-                    .stack_load(self.real_type, contract_sum.unwrap(), 0);
+        if let Some(contract_sum) = contract_sum {
+            let contract_sum_value = self
+                .builder
+                .ins()
+                .stack_load(self.real_type, contract_sum, 0);
             let new_contract_sum_value = self.builder.ins().fadd(contract_sum_value, float_value);
             self.builder
                 .ins()
-                .stack_store(new_contract_sum_value, contract_sum.unwrap(), 0);
+                .stack_store(new_contract_sum_value, contract_sum, 0);
         } else {
             let expr_index = indices
                 .iter()
@@ -1449,6 +1478,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         // unwind the nested loops
         for i in (0..expr_rank).rev() {
             // update and store contract sum
+            #[allow(clippy::unnecessary_unwrap)]
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
                 let contract_strides = contract_strides.as_ref().unwrap();
                 let elmt_index = indices
@@ -2036,10 +2066,14 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
 
         let indices = module
             .module
+            .lock()
+            .unwrap()
             .declare_data_in_func(module.indices_id, builder.func);
 
         let constants = module
             .module
+            .lock()
+            .unwrap()
             .declare_data_in_func(module.constants_id, builder.func);
 
         // Create the entry block, to start emitting code in.
@@ -2065,7 +2099,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             real_ptr_type: module.real_ptr_type,
             int_ptr_type: module.int_ptr_type,
             builder,
-            module: &mut module.module,
+            module: module.module.lock().unwrap(),
             tensor_ptr: None,
             indices,
             constants,

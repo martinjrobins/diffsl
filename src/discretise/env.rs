@@ -5,12 +5,12 @@ use ndarray::s;
 use crate::ast::{self, Ast, AstKind, StringSpan};
 
 use super::{
-    can_broadcast_to, layout::RcLayout, Layout, LayoutKind, Shape, Tensor, TensorBlock,
+    can_broadcast_to, layout::ArcLayout, Layout, LayoutKind, Shape, Tensor, TensorBlock,
     ValidationError, ValidationErrors,
 };
 
 pub struct EnvVar {
-    layout: RcLayout,
+    layout: ArcLayout,
     is_time_dependent: bool,
     is_state_dependent: bool,
     is_dstatedt_dependent: bool,
@@ -57,7 +57,7 @@ impl Env {
         vars.insert(
             "t".to_string(),
             EnvVar {
-                layout: RcLayout::new(Layout::new_scalar()),
+                layout: ArcLayout::new(Layout::new_scalar()),
                 is_time_dependent: true,
                 is_state_dependent: false,
                 is_dstatedt_dependent: false,

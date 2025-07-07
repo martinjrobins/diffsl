@@ -315,25 +315,25 @@ pub enum AstKind<'a> {
 }
 
 impl<'a> AstKind<'a> {
-    pub fn as_tensor(&self) -> Option<&Tensor> {
+    pub fn as_tensor(&self) -> Option<&Tensor<'_>> {
         match self {
             AstKind::Tensor(m) => Some(m),
             _ => None,
         }
     }
-    pub fn as_assignment(&self) -> Option<&Assignment> {
+    pub fn as_assignment(&self) -> Option<&Assignment<'_>> {
         match self {
             AstKind::Assignment(m) => Some(m),
             _ => None,
         }
     }
-    pub fn as_model(&self) -> Option<&Model> {
+    pub fn as_model(&self) -> Option<&Model<'_>> {
         match self {
             AstKind::Model(m) => Some(m),
             _ => None,
         }
     }
-    pub fn as_ds_model(&self) -> Option<&DsModel> {
+    pub fn as_ds_model(&self) -> Option<&DsModel<'_>> {
         match self {
             AstKind::DsModel(m) => Some(m),
             _ => None,
@@ -345,7 +345,7 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
-    pub fn as_domain(&self) -> Option<&Domain> {
+    pub fn as_domain(&self) -> Option<&Domain<'_>> {
         match self {
             AstKind::Domain(m) => Some(m),
             _ => None,
@@ -357,31 +357,31 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
-    pub fn as_call_arg(&self) -> Option<&CallArg> {
+    pub fn as_call_arg(&self) -> Option<&CallArg<'_>> {
         match self {
             AstKind::CallArg(m) => Some(m),
             _ => None,
         }
     }
-    pub fn as_named_gradient(&self) -> Option<&NamedGradient> {
+    pub fn as_named_gradient(&self) -> Option<&NamedGradient<'_>> {
         match self {
             AstKind::NamedGradient(m) => Some(m),
             _ => None,
         }
     }
-    pub fn as_name(&self) -> Option<&Name> {
+    pub fn as_name(&self) -> Option<&Name<'_>> {
         match self {
             AstKind::Name(n) => Some(n),
             _ => None,
         }
     }
-    pub fn as_array(&self) -> Option<&Tensor> {
+    pub fn as_array(&self) -> Option<&Tensor<'_>> {
         match self {
             AstKind::Tensor(a) => Some(a),
             _ => None,
         }
     }
-    pub fn as_vector(&self) -> Option<&Vector> {
+    pub fn as_vector(&self) -> Option<&Vector<'_>> {
         match self {
             AstKind::Vector(a) => Some(a),
             _ => None,
@@ -401,13 +401,13 @@ impl<'a> AstKind<'a> {
             _ => None,
         }
     }
-    pub fn as_indice(&self) -> Option<&Indice> {
+    pub fn as_indice(&self) -> Option<&Indice<'_>> {
         match self {
             AstKind::Indice(a) => Some(a),
             _ => None,
         }
     }
-    pub fn as_tensor_elmt(&self) -> Option<&TensorElmt> {
+    pub fn as_tensor_elmt(&self) -> Option<&TensorElmt<'_>> {
         match self {
             AstKind::TensorElmt(a) => Some(a),
             _ => None,

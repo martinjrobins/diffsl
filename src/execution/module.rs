@@ -7,11 +7,7 @@ use crate::discretise::DiscreteModel;
 
 use super::compiler::CompilerMode;
 
-#[cfg(feature = "rayon")]
-pub trait CodegenModule: Sized + Sync {}
-
-#[cfg(not(feature = "rayon"))]
-pub trait CodegenModule: Sized {}
+pub trait CodegenModule: Sized + Send + Sync + 'static {}
 
 pub trait CodegenModuleCompile: CodegenModule {
     fn from_discrete_model(

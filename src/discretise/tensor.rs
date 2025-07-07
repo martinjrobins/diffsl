@@ -4,7 +4,7 @@ use ndarray::Array1;
 
 use crate::ast::Ast;
 
-use super::{Layout, RcLayout, Shape};
+use super::{ArcLayout, Layout, Shape};
 
 pub type Index = Array1<i64>;
 
@@ -14,8 +14,8 @@ pub struct TensorBlock<'s> {
     name: Option<String>,
     start: Index,
     indices: Vec<char>,
-    layout: RcLayout,
-    expr_layout: RcLayout,
+    layout: ArcLayout,
+    expr_layout: ArcLayout,
     expr: Ast<'s>,
     tangent_expr: Ast<'s>,
 }
@@ -25,8 +25,8 @@ impl<'s> TensorBlock<'s> {
         name: Option<String>,
         start: Index,
         indices: Vec<char>,
-        layout: RcLayout,
-        expr_layout: RcLayout,
+        layout: ArcLayout,
+        expr_layout: ArcLayout,
         expr: Ast<'s>,
     ) -> Self {
         Self {
@@ -40,7 +40,7 @@ impl<'s> TensorBlock<'s> {
         }
     }
     pub fn new_dense_vector(name: Option<String>, start: i64, shape: usize, expr: Ast<'s>) -> Self {
-        let layout = RcLayout::new(Layout::dense(Shape::from_vec(vec![shape])));
+        let layout = ArcLayout::new(Layout::dense(Shape::from_vec(vec![shape])));
         Self {
             name,
             start: Index::from_vec(vec![start]),
@@ -84,11 +84,11 @@ impl<'s> TensorBlock<'s> {
         self.layout.is_diagonal()
     }
 
-    pub fn layout(&self) -> &RcLayout {
+    pub fn layout(&self) -> &ArcLayout {
         &self.layout
     }
 
-    pub fn expr_layout(&self) -> &RcLayout {
+    pub fn expr_layout(&self) -> &ArcLayout {
         &self.expr_layout
     }
 
@@ -130,7 +130,7 @@ impl fmt::Display for TensorBlock<'_> {
 pub struct Tensor<'s> {
     name: &'s str,
     elmts: Vec<TensorBlock<'s>>,
-    layout: RcLayout,
+    layout: ArcLayout,
     indices: Vec<char>,
 }
 
@@ -140,7 +140,7 @@ impl<'s> Tensor<'s> {
             name,
             elmts: Vec::new(),
             indices: Vec::new(),
-            layout: RcLayout::new(Layout::dense(Shape::zeros(0))),
+            layout: ArcLayout::new(Layout::dense(Shape::zeros(0))),
         }
     }
 
@@ -159,7 +159,7 @@ impl<'s> Tensor<'s> {
     pub fn new(
         name: &'s str,
         elmts: Vec<TensorBlock<'s>>,
-        layout: RcLayout,
+        layout: ArcLayout,
         indices: Vec<char>,
     ) -> Self {
         Self {
@@ -172,10 +172,10 @@ impl<'s> Tensor<'s> {
 
     pub fn new_no_layout(name: &'s str, elmts: Vec<TensorBlock<'s>>, indices: Vec<char>) -> Self {
         if elmts.is_empty() {
-            Tensor::new("out", vec![], RcLayout::new(Layout::new_empty(0)), vec![])
+            Tensor::new("out", vec![], ArcLayout::new(Layout::new_empty(0)), vec![])
         } else {
             let layout = Layout::concatenate(elmts.as_slice(), indices.len()).unwrap();
-            Tensor::new(name, elmts, RcLayout::new(layout), indices)
+            Tensor::new(name, elmts, ArcLayout::new(layout), indices)
         }
     }
 
@@ -199,7 +199,7 @@ impl<'s> Tensor<'s> {
         self.indices.as_ref()
     }
 
-    pub fn layout_ptr(&self) -> &RcLayout {
+    pub fn layout_ptr(&self) -> &ArcLayout {
         &self.layout
     }
 

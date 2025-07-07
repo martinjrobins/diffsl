@@ -27,7 +27,7 @@ fn parse_sign(pair: Pair<Rule>) -> char {
 
 //name       = @{ 'a'..'z' ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
 //domain_name = @{ 'A'..'Z' ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
-fn parse_name(pair: Pair<Rule>) -> &str {
+fn parse_name(pair: Pair<'_, Rule>) -> &str {
     pair.as_str()
 }
 
@@ -274,7 +274,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
     }
 }
 
-pub fn parse_string(text: &str) -> Result<ast::DsModel, Box<Error<Rule>>> {
+pub fn parse_string(text: &str) -> Result<ast::DsModel<'_>, Box<Error<Rule>>> {
     let main = DsParser::parse(Rule::main, text)?.next().unwrap();
     let model = parse_value(main.into_inner().next().unwrap())
         .kind

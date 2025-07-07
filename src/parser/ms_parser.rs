@@ -27,7 +27,7 @@ fn parse_sign(pair: Pair<Rule>) -> char {
 
 //name       = @{ 'a'..'z' ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
 //domain_name = @{ 'A'..'Z' ~ ('a'..'z' | 'A'..'Z' | '0'..'9')* }
-fn parse_name(pair: Pair<Rule>) -> &str {
+fn parse_name(pair: Pair<'_, Rule>) -> &str {
     pair.as_str()
 }
 
@@ -287,7 +287,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
     }
 }
 
-pub fn parse_string(text: &str) -> Result<Vec<Ast>, Box<Error<Rule>>> {
+pub fn parse_string(text: &str) -> Result<Vec<Ast<'_>>, Box<Error<Rule>>> {
     let main = MsParser::parse(Rule::main, text)?.next().unwrap();
     let ast_nodes = main
         .into_inner()

@@ -1960,6 +1960,7 @@ mod tests {
         test_send_sync::<crate::CraneliftJitModule>();
     }
 
+    #[allow(dead_code)]
     fn test_send_sync<M: CodegenModuleCompile + CodegenModuleJit>() {
         let full_text = "
             u { y = 1 }

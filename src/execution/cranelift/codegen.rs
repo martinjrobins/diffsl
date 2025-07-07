@@ -1288,10 +1288,10 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                 _ => self.jit_compile_sparse_block(name, elmt, &translation, is_tangent),
             }
         } else {
-            return Err(anyhow!(
+            Err(anyhow!(
                 "unsupported block layout: {:?}",
                 elmt.expr_layout()
-            ));
+            ))
         }
     }
 
@@ -1419,6 +1419,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             self.builder.ins().jump(block, &[curr_index_start]);
             self.builder.switch_to_block(block);
 
+            #[allow(clippy::unnecessary_unwrap)]
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
                 let fzero = self.fconst(0.0);
                 self.builder
@@ -1447,15 +1448,15 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         };
         let float_value = self.jit_compile_expr(name, expr, indices.as_slice(), elmt, None)?;
 
-        if contract_sum.is_some() {
-            let contract_sum_value =
-                self.builder
-                    .ins()
-                    .stack_load(self.real_type, contract_sum.unwrap(), 0);
+        if let Some(contract_sum) = contract_sum {
+            let contract_sum_value = self
+                .builder
+                .ins()
+                .stack_load(self.real_type, contract_sum, 0);
             let new_contract_sum_value = self.builder.ins().fadd(contract_sum_value, float_value);
             self.builder
                 .ins()
-                .stack_store(new_contract_sum_value, contract_sum.unwrap(), 0);
+                .stack_store(new_contract_sum_value, contract_sum, 0);
         } else {
             let expr_index = indices
                 .iter()
@@ -1477,6 +1478,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         // unwind the nested loops
         for i in (0..expr_rank).rev() {
             // update and store contract sum
+            #[allow(clippy::unnecessary_unwrap)]
             if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
                 let contract_strides = contract_strides.as_ref().unwrap();
                 let elmt_index = indices

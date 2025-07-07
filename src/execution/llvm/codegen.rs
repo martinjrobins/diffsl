@@ -685,7 +685,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         name: &str,
         value: PrintValue<'ctx>,
-    ) -> Result<CallSiteValue> {
+    ) -> Result<CallSiteValue<'_>> {
         let void_type = self.context.void_type();
         // int printf(const char *format, ...)
         let printf_type = void_type.fn_type(&[self.int_ptr_type.into()], true);
@@ -1668,10 +1668,10 @@ impl<'ctx> CodeGen<'ctx> {
                 _ => self.jit_compile_sparse_block(name, elmt, &translation),
             }
         } else {
-            return Err(anyhow!(
+            Err(anyhow!(
                 "unsupported block layout: {:?}",
                 elmt.expr_layout()
-            ));
+            ))
         }
     }
 

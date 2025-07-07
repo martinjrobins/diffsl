@@ -702,26 +702,26 @@ impl<'s> DiscreteModel<'s> {
         }
     }
 
-    pub fn inputs(&self) -> &[Tensor] {
+    pub fn inputs(&self) -> &[Tensor<'_>] {
         self.inputs.as_ref()
     }
 
-    pub fn constant_defns(&self) -> &[Tensor] {
+    pub fn constant_defns(&self) -> &[Tensor<'_>] {
         self.constant_defns.as_ref()
     }
 
-    pub fn input_dep_defns(&self) -> &[Tensor] {
+    pub fn input_dep_defns(&self) -> &[Tensor<'_>] {
         self.input_dep_defns.as_ref()
     }
 
-    pub fn time_dep_defns(&self) -> &[Tensor] {
+    pub fn time_dep_defns(&self) -> &[Tensor<'_>] {
         self.time_dep_defns.as_ref()
     }
-    pub fn state_dep_defns(&self) -> &[Tensor] {
+    pub fn state_dep_defns(&self) -> &[Tensor<'_>] {
         self.state_dep_defns.as_ref()
     }
 
-    pub fn dstate_dep_defns(&self) -> &[Tensor] {
+    pub fn dstate_dep_defns(&self) -> &[Tensor<'_>] {
         self.dstate_dep_defns.as_ref()
     }
 

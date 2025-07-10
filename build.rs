@@ -14,10 +14,9 @@ mod enzyme {
                 "-Wno-comment -Wno-deprecated-declarations",
             )
             .build();
-        let dst_disp = dst.display();
-        let lib_dir = format!("{dst_disp}/lib");
+        let out_dir = dst.display().to_string();
         let inc_dir = "Enzyme/enzyme".to_string();
-        (lib_dir, inc_dir)
+        (out_dir, inc_dir)
     }
 
     fn enzyme_bindings(inc_dirs: &[String]) -> Result<Bindings, BindgenError> {
@@ -64,7 +63,7 @@ mod enzyme {
             + "include";
 
         // compile enzyme
-        let (libdir, incdir) = compile_enzyme(llvm_lib_dir.clone());
+        let (outdir, incdir) = compile_enzyme(llvm_lib_dir.clone());
         let libnames = [format!("EnzymeStatic-{llvm_version}")];
 
         // bind enzyme api
@@ -75,7 +74,10 @@ mod enzyme {
             .write_to_file(bindings_rs)
             .expect("Couldn't write file bindings.rs!");
 
-        println!("cargo:rustc-link-search=native={libdir}");
+        for libname in ["lib", "lib64", "lib32"] {
+            let libdir = format!("{outdir}/{libname}");
+            println!("cargo:rustc-link-search=native={libdir}");
+        }
         println!("cargo:rustc-link-search=native={llvm_lib_dir}");
         // add homebrew lib dir if on macos, needed for zstd libraries
         if cfg!(target_os = "macos") {

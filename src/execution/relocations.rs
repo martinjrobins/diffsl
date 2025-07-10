@@ -20,19 +20,19 @@ use anyhow::{anyhow, Result};
 
 use super::{functions::function_resolver, mmap::MappedSection};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub(crate) struct JumpTableEntry;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 impl JumpTableEntry {
     fn new(_addr: *const u8) -> Self {
-        panic!("JumpTableEntry not supported on wasm32")
+        panic!("JumpTableEntry not supported on this architecture")
     }
     fn jump_ptr(&self) -> *const u8 {
-        panic!("JumpTableEntry not supported on wasm32")
+        panic!("JumpTableEntry not supported on this architecture")
     }
     pub(crate) fn from_bytes(_bytes: &mut [u8]) -> &mut [Self] {
-        panic!("JumpTableEntry not supported on wasm32")
+        panic!("JumpTableEntry not supported on this architecture")
     }
 }
 

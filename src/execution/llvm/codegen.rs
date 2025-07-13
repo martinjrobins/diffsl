@@ -400,6 +400,18 @@ impl CodegenModuleCompile for LlvmModule {
         )?;
 
         module.codegen_mut().compile_gradient(
+            set_u0,
+            &[
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::ForwardSens,
+            "set_u0_sgrad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
             calc_out_full,
             &[
                 CompileGradientArgType::Const,

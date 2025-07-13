@@ -91,6 +91,14 @@ pub type U0Func = unsafe extern "C" fn(
     thread_id: UIntType,
     thread_dim: UIntType,
 );
+pub type U0SensGradFunc = unsafe extern "C" fn(
+    u: *const RealType,
+    du: *mut RealType,
+    data: *const RealType,
+    ddata: *mut RealType,
+    thread_id: UIntType,
+    thread_dim: UIntType,
+);
 pub type U0GradFunc = unsafe extern "C" fn(
     u: *const RealType,
     du: *mut RealType,
@@ -347,13 +355,14 @@ impl JitGradRFunctions {
 }
 
 pub(crate) struct JitSensGradFunctions {
+    pub(crate) set_u0_sgrad: U0SensGradFunc,
     pub(crate) rhs_sgrad: RhsSensGradFunc,
     pub(crate) calc_out_sgrad: CalcOutSensGradFunc,
 }
 
 impl JitSensGradFunctions {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
-        let required_symbols = ["rhs_sgrad", "calc_out_sgrad"];
+        let required_symbols = ["rhs_sgrad", "calc_out_sgrad", "set_u0_sgrad"];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
@@ -364,10 +373,13 @@ impl JitSensGradFunctions {
         let calc_out_sgrad = unsafe {
             std::mem::transmute::<*const u8, CalcOutSensGradFunc>(symbol_map["calc_out_sgrad"])
         };
+        let set_u0_sgrad =
+            unsafe { std::mem::transmute::<*const u8, U0SensGradFunc>(symbol_map["set_u0_sgrad"]) };
 
         Ok(Self {
             rhs_sgrad,
             calc_out_sgrad,
+            set_u0_sgrad,
         })
     }
 }

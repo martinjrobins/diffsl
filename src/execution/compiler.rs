@@ -333,6 +333,27 @@ impl<M: CodegenModule> Compiler<M> {
         });
     }
 
+    pub fn set_u0_sgrad(&self, yy: &[f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_sens_grad_functions
+                .as_ref()
+                .expect("module does not support sens autograd")
+                .set_u0_sgrad)(
+                yy.as_ptr(),
+                dyy.as_ptr() as *mut f64,
+                data.as_ptr(),
+                ddata.as_ptr() as *mut f64,
+                i,
+                dim,
+            );
+        });
+    }
+
     pub fn set_u0_rgrad(&self, yy: &[f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -798,7 +819,7 @@ impl<M: CodegenModule> Compiler<M> {
         &self,
         inputs: &[f64],
         dinputs: &[f64],
-        data: &mut [f64],
+        data: &[f64],
         ddata: &mut [f64],
     ) {
         self.check_inputs_len(inputs, "inputs");
@@ -809,7 +830,7 @@ impl<M: CodegenModule> Compiler<M> {
             (self.jit_grad_functions.set_inputs_grad)(
                 inputs.as_ptr(),
                 dinputs.as_ptr(),
-                data.as_mut_ptr(),
+                data.as_ptr(),
                 ddata.as_mut_ptr(),
             )
         };
@@ -1984,5 +2005,47 @@ mod tests {
         });
 
         handle.join().unwrap();
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_u0_sgrad_llvm() {
+        test_u0_sgrad::<crate::LlvmModule>();
+    }
+
+    #[allow(dead_code)]
+    fn test_u0_sgrad<M: CodegenModuleCompile + CodegenModuleJit>() {
+        let full_text = "
+            in = [a]
+            a { 1.0 }
+            u { 2 * a * a }
+            F { -u }
+            ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("test_u0_sgrad", &model).unwrap();
+        let compiler =
+            Compiler::<M>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let mut data = compiler.get_new_data();
+        let mut ddata = compiler.get_new_data();
+        let a = vec![0.6];
+        let da = vec![1.0];
+        compiler.set_inputs(a.as_slice(), data.as_mut_slice());
+        compiler.set_inputs_grad(
+            a.as_slice(),
+            da.as_slice(),
+            data.as_slice(),
+            ddata.as_mut_slice(),
+        );
+        let mut u0 = vec![0.0];
+        let mut du0 = vec![0.0];
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        compiler.set_u0_sgrad(
+            u0.as_mut_slice(),
+            du0.as_mut_slice(),
+            data.as_slice(),
+            ddata.as_mut_slice(),
+        );
+        assert_relative_eq!(u0.as_slice(), vec![2.0 * a[0] * a[0]].as_slice());
+        assert_relative_eq!(du0.as_slice(), vec![4.0 * a[0] * da[0]].as_slice());
     }
 }

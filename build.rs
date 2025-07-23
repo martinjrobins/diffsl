@@ -2,30 +2,114 @@
 mod enzyme {
     use bindgen::{BindgenError, Bindings, Builder};
     use regex::Regex;
-    use std::{env, path::PathBuf, process::Command};
+    use std::{env, io::{self, stdout}, path::PathBuf, process::Command};
+    use std::io::Write;
 
     fn get_llvm_static_libs(llvm_lib_dir: String) -> Vec<String> {
+        // get all the static libraries from the LLVM lib dir
+        //let llvm_lib_dir = llvm_lib_dir.trim_end_matches('/'); // ensure no trailing slash
+        //if !std::path::Path::new(&llvm_lib_dir).exists() {
+        //    panic!("LLVM lib directory does not exist: {llvm_lib_dir}");
+        //}
+        //let mut libs = Vec::new();
+        //for entry in std::fs::read_dir(llvm_lib_dir).expect("Could not read LLVM lib directory") {
+        //    let entry = entry.expect("Could not read entry in LLVM lib directory");
+        //    if entry.path().extension().is_some_and(|ext| ext == "a" || ext == "lib") {
+        //        // only include static libraries
+        //        libs.push(entry.file_name().to_string_lossy().into_owned());
+        //    }
+        //}
+        //// remove the prefix "lib" and suffix ".a" or ".lib" from the library names
+        //libs
+        //    .into_iter()
+        //    .map(|lib| lib.replace("lib", "").replace(".a", "").replace(".lib", ""))
+        //    .collect::<Vec<_>>()
         let llvm_cmake_dir = format!("{llvm_lib_dir}/cmake/llvm");
         // read LLVMConfig.cmake file and extract LLVM_AVAILABLE_LIBS from the line
         // that starts with set(LLVM_AVAILABLE_LIBS and ends with )
-        let reg = Regex::new(r#"set\(LLVM_AVAILABLE_LIBS\s+([^)]+)\)"#).unwrap();
+        //let reg = Regex::new(r#"set\(LLVM_AVAILABLE_LIBS\s+([^)]+)\)"#).unwrap();
 
-        let file = std::fs::read_to_string(format!("{llvm_cmake_dir}/LLVMConfig.cmake"))
-            .expect("Could not read LLVMConfig.cmake file");
-        let search_result = reg
-            .captures(&file)
-            .and_then(|cap| cap.get(1))
-            .map_or_else(
-                || {
-                    panic!("Could not find LLVM_AVAILABLE_LIBS in LLVMConfig.cmake file");
-                },
-                |m| m.as_str(),
-            );
-        search_result 
-            .split(";")
-            .map(|s| s.to_string())
-            .collect()
+        //let file = std::fs::read_to_string(format!("{llvm_cmake_dir}/LLVMConfig.cmake"))
+        //    .expect("Could not read LLVMConfig.cmake file");
+        //let search_result = reg
+        //    .captures(&file)
+        //    .and_then(|cap| cap.get(1))
+        //    .map_or_else(
+        //        || {
+        //            panic!("Could not find LLVM_AVAILABLE_LIBS in LLVMConfig.cmake file");
+        //        },
+        //        |m| m.as_str(),
+        //    );
+        //search_result 
+        //    .split(";")
+        //    .filter(|s| s.starts_with("LLVM") && s != &"LLVM")
+        //    .map(|s| s.to_string())
+        //    .collect()
+        let output = Command::new("cmake")
+            .arg(format!("-DCMAKE_PREFIX_PATH={llvm_lib_dir}"))
+            .arg(".")
+            .output()
+            .expect("Failed to run cmake command");
+        io::stdout().write_all(&output.stdout).unwrap();
+        if !output.status.success() {
+            io::stderr().write_all(&output.stderr).unwrap();
+            panic!("CMake command failed");
+        }
+        let output = String::from_utf8(output.stdout).unwrap();
+        // extract pattern _START_<libs> _END_ from the output
+        let re = Regex::new(r"_START_(.*?)_END_").unwrap();
+        let caps = re.captures(&output).expect("Could not find _START_ and _END_ in output");
+        let libs_str = caps.get(1).expect("Could not find libs in output").as_str();
+        // split the libs_str by semicolon and trim
+        libs_str.split(";").map(|s| s.trim().to_string()).collect()
     }
+
+    // taken from https://gitlab.com/taricorp/llvm-sys.rs/-/blob/main/build.rs
+    // MIT License
+    fn target_env_is(name: &str) -> bool {
+        match env::var_os("CARGO_CFG_TARGET_ENV") {
+            Some(s) => s == name,
+            None => false,
+        }
+    }
+
+    // taken from https://gitlab.com/taricorp/llvm-sys.rs/-/blob/main/build.rs
+    // MIT License
+    fn target_os_is(name: &str) -> bool {
+        match env::var_os("CARGO_CFG_TARGET_OS") {
+            Some(s) => s == name,
+            None => false,
+        }
+    }
+
+    // taken from https://gitlab.com/taricorp/llvm-sys.rs/-/blob/main/build.rs
+    // MIT License
+    /// Get the library that must be linked for C++, if any.
+    fn get_system_libcpp() -> Option<&'static str> {
+        if let Some(libcpp) = option_env!("LLVM_SYS_LIBCPP") {
+            // Use the library defined by the caller, if provided.
+            Some(libcpp)
+        } else if target_env_is("msvc") {
+            // MSVC doesn't need an explicit one.
+            None
+        } else if target_os_is("macos") {
+            // On OS X 10.9 and later, LLVM's libc++ is the default. On earlier
+            // releases GCC's libstdc++ is default. Unfortunately we can't
+            // reasonably detect which one we need (on older ones libc++ is
+            // available and can be selected with -stdlib=lib++), so assume the
+            // latest, at the cost of breaking the build on older OS releases
+            // when LLVM was built against libstdc++.
+            Some("c++")
+        } else if target_os_is("freebsd") || target_os_is("openbsd") {
+            Some("c++")
+        } else {
+            // Otherwise assume GCC's libstdc++.
+            // This assumption is probably wrong on some platforms, but it can be
+            // always overwritten through `LLVM_SYS_LIBCPP` variable.
+            Some("stdc++")
+        }
+    }
+
 
     fn compile_enzyme(llvm_lib_dir: String) -> (String, String) {
         let llvm_cmake_dir = format!("{llvm_lib_dir}/cmake/llvm");
@@ -117,9 +201,7 @@ mod enzyme {
         } else {
             vec![]
         };
-        for lib in llvm_libs {
-            println!("cargo:rustc-link-lib=static={lib}");
-        }
+        
 
         for libname in ["lib", "lib64", "lib32"] {
             let libdir = format!("{outdir}/{libname}");
@@ -132,8 +214,15 @@ mod enzyme {
         for libname in libnames.iter() {
             println!("cargo:rustc-link-lib={libname}");
         }
-        println!("cargo:rustc-link-lib=LLVMDemangle");
+        for lib in llvm_libs {
+            println!("cargo:rustc-link-lib=static={lib}");
+        }
+        if let Some(libcpp) = get_system_libcpp() {
+            println!("cargo:rustc-link-lib=dylib={libcpp}");
+        }
+        //println!("cargo:rustc-link-lib=LLVMDemangle");
         println!("cargo:rerun-if-changed=wrapper.h");
+
     }
 }
 

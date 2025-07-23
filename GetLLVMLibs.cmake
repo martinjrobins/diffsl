@@ -1,2 +1,0 @@
-include(${LLVM_CONFIG_DIR}/LLVMConfig.cmake)
-message(STATUS "LLVM_AVAILABLE_LIBS: ${LLVM_AVAILABLE_LIBS}")

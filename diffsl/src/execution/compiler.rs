@@ -141,6 +141,10 @@ impl<M: CodegenModule> Compiler<M> {
         Ok(ret)
     }
 
+    pub fn module(&self) -> &M {
+        &self._module
+    }
+
     pub fn from_codegen_module(mut module: M, mode: CompilerMode) -> Result<Self>
     where
         M: CodegenModuleJit,

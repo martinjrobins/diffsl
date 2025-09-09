@@ -226,7 +226,7 @@ impl LlvmModule {
     }
 
     pub fn compile(&self, standalone: bool, wasm: bool, out: &str) -> Result<()> {
-        let clang_name = find_executable(&["clang", "clang-14"])?;
+        let clang_name = find_executable(&["clang-15", "clang-16", "clang-17", "clang-18", "clang"])?;
         let object_filename = format!("{out}.o");
         let bitcodefilename = format!("{out}.bc");
 
@@ -237,6 +237,7 @@ impl LlvmModule {
 
         let mut command = Command::new(clang_name);
         command
+            .arg("-opaque-pointers")
             .arg(bitcodefilename.as_str())
             .arg("-c")
             .arg("-o")
@@ -250,8 +251,7 @@ impl LlvmModule {
 
         if let Some(code) = output.status.code() {
             if code != 0 {
-                println!("{}", String::from_utf8_lossy(&output.stderr));
-                return Err(anyhow!("{} returned error code {}", clang_name, code));
+                return Err(anyhow!("{} returned error code {}.\nstdout was {}.\nstderr was {}", clang_name, code, String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)));
             }
         }
 
@@ -3686,5 +3686,48 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn module(&self) -> &Module<'ctx> {
         &self.module
+    }
+}
+
+mod tests {
+    use super::*;
+
+    #[cfg(all(feature = "compile_test", feature = "llvm"))]
+    #[test]
+    fn test_compile() -> Result<()> {
+        use crate::Compiler;
+
+        let text = String::from(
+            "
+            in = [r, k]
+            r { 1 }
+            k { 1 }
+            u_i {
+                y = 1,
+                z = 0,
+            }
+            dudt_i {
+                dydt = 0,
+                dzdt = 0,
+            }
+            M_i {
+                dydt,
+                0,
+            }
+            F_i {
+                (r * y) * (1 - (y / k)),
+                (2 * y) - z,
+            }
+            out_i {
+                y,
+                z,
+            }
+        ",
+        );
+        let filename = String::from("test_output/test_compile");
+        let compiler = Compiler::<LlvmModule>::from_discrete_str(text.as_str(), CompilerMode::SingleThreaded)?;
+        compiler.module().compile(true, true, filename.as_str())?;
+        
+        Ok(())
     }
 }

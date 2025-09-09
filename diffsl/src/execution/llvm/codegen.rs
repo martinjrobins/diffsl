@@ -3690,8 +3690,6 @@ impl<'ctx> CodeGen<'ctx> {
 }
 
 mod tests {
-    use super::*;
-
     #[cfg(all(feature = "compile_test", feature = "llvm"))]
     #[test]
     fn test_compile() -> Result<()> {

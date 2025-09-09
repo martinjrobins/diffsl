@@ -28,7 +28,9 @@ use llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::iter::zip;
+use std::path::Path;
 use std::pin::Pin;
+use std::process::Command;
 use target_lexicon::Triple;
 
 type RealType = f64;
@@ -50,6 +52,7 @@ use crate::execution::module::{
     CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit,
 };
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
+use crate::utils::{find_executable, find_runtime_path};
 use lazy_static::lazy_static;
 use std::sync::Mutex;
 
@@ -220,6 +223,137 @@ impl LlvmModule {
 
     fn codegen(&self) -> &CodeGen<'static> {
         self.inner.as_ref().get_ref().codegen.as_ref().unwrap()
+    }
+
+    pub fn compile(&self, standalone: bool, wasm: bool, out: &str) -> Result<()> {
+        let clang_name = find_executable(&["clang", "clang-14"])?;
+        let object_filename = format!("{out}.o");
+        let bitcodefilename = format!("{out}.bc");
+
+        // generate the bitcode file
+        self.codegen()
+            .module()
+            .write_bitcode_to_path(Path::new(bitcodefilename.as_str()));
+
+        let mut command = Command::new(clang_name);
+        command
+            .arg(bitcodefilename.as_str())
+            .arg("-c")
+            .arg("-o")
+            .arg(object_filename.as_str());
+
+        if wasm {
+            command.arg("-target").arg("wasm32-unknown-emscripten");
+        }
+
+        let output = command.output().unwrap();
+
+        if let Some(code) = output.status.code() {
+            if code != 0 {
+                println!("{}", String::from_utf8_lossy(&output.stderr));
+                return Err(anyhow!("{} returned error code {}", clang_name, code));
+            }
+        }
+
+        // link the object file and our runtime library
+        let mut command = if wasm {
+            let command_name = find_executable(&["emcc"])?;
+            let exported_functions = vec![
+                "Vector_destroy",
+                "Vector_create",
+                "Vector_create_with_capacity",
+                "Vector_push",
+                "Options_destroy",
+                "Options_create",
+                "Sundials_destroy",
+                "Sundials_create",
+                "Sundials_init",
+                "Sundials_solve",
+            ];
+            let mut linked_files = vec![
+                "libdiffeq_runtime_lib.a",
+                "libsundials_idas.a",
+                "libsundials_sunlinsolklu.a",
+                "libklu.a",
+                "libamd.a",
+                "libcolamd.a",
+                "libbtf.a",
+                "libsuitesparseconfig.a",
+                "libsundials_sunmatrixsparse.a",
+                "libargparse.a",
+            ];
+            if standalone {
+                linked_files.push("libdiffeq_runtime.a");
+            }
+            let linked_files = linked_files;
+            let runtime_path = find_runtime_path(&linked_files)?;
+            let mut command = Command::new(command_name);
+            command.arg("-o").arg(out).arg(object_filename.as_str());
+            for file in linked_files {
+                command.arg(Path::new(runtime_path.as_str()).join(file));
+            }
+            if !standalone {
+                let exported_functions = exported_functions
+                    .into_iter()
+                    .map(|s| format!("_{s}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                command
+                    .arg("-s")
+                    .arg(format!("EXPORTED_FUNCTIONS={exported_functions}"));
+                command.arg("--no-entry");
+            }
+            command
+        } else {
+            let mut command = Command::new(clang_name);
+            command.arg("-o").arg(out).arg(object_filename.as_str());
+            if standalone {
+                command.arg("-ldiffeq_runtime");
+            } else {
+                command.arg("-ldiffeq_runtime_lib");
+            }
+            command
+        };
+
+        let output = command.output();
+
+        let output = match output {
+            Ok(output) => output,
+            Err(e) => {
+                let args = command
+                    .get_args()
+                    .map(|s| s.to_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!(
+                    "{} {}",
+                    command.get_program().to_os_string().to_str().unwrap(),
+                    args
+                );
+                return Err(anyhow!("Error linking in runtime: {}", e));
+            }
+        };
+
+        if let Some(code) = output.status.code() {
+            if code != 0 {
+                let args = command
+                    .get_args()
+                    .map(|s| s.to_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!(
+                    "{} {}",
+                    command.get_program().to_os_string().to_str().unwrap(),
+                    args
+                );
+                println!("{}", String::from_utf8_lossy(&output.stderr));
+                return Err(anyhow!(
+                    "Error linking in runtime, returned error code {}",
+                    code
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

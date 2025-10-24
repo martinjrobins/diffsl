@@ -183,7 +183,7 @@ jobs:
       run: cargo clippy --verbose --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"
     - name: Run Docs (LLVM)
       if: matrix.rustdoc
-      run: cargo rustdoc --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"
+      run: cargo rustdoc -p diffsl --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"
   book:
     runs-on: ubuntu-latest
     steps:

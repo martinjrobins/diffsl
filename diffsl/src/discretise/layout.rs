@@ -275,6 +275,7 @@ impl Layout {
             let mut n_dense_axes = None;
             for layout in layouts.iter() {
                 if any_diagonal && layout.is_diagonal() || any_sparse && layout.is_sparse() {
+                    #[allow(clippy::unnecessary_unwrap)]
                     if n_dense_axes.is_none() {
                         n_dense_axes = Some(layout.n_dense_axes);
                     } else if layout.n_dense_axes != n_dense_axes.unwrap() {
@@ -317,6 +318,7 @@ impl Layout {
         for _i in 0..layouts.len() {
             let layout = layouts.pop().unwrap();
             if layout.is_sparse() {
+                #[allow(clippy::unnecessary_unwrap)]
                 if indices.is_none() {
                     indices = Some(layout.indices);
                 } else if layout.indices.len() != indices.as_ref().unwrap().len()

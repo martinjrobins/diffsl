@@ -3690,10 +3690,10 @@ impl<'ctx> CodeGen<'ctx> {
 }
 
 mod tests {
-    #[cfg(all(feature = "compile_test", feature = "llvm"))]
+    #[cfg(all(feature = "llvm", feature = "compile_test"))]
     #[test]
-    fn test_compile() -> Result<()> {
-        use crate::Compiler;
+    fn test_compile() -> anyhow::Result<()> {
+        use crate::{execution::compiler::CompilerMode, Compiler, LlvmModule};
 
         let text = String::from(
             "

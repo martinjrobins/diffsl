@@ -16,3 +16,16 @@ llvm18-1 = ["diffsl/llvm18-1"]
 [dependencies]
 axum = "0.8.6"
 diffsl = { path = "../diffsl", features = [] }
+serde = { version = "1.0.214", features = ["derive"] }
+tokio = { version = "1.41.0", features = ["full"] }
+anyhow = "1.0.92"
+hyper = "1.5.0"
+tower-http = { version = "0.6.1", features = ["cors", "trace"] }
+tracing-subscriber = "0.3.18"
+tracing = "0.1.37"
+target-lexicon = "0.13"
+
+[dev-dependencies]
+tower = { version = "0.5.1", features = ["util"] }
+http-body-util = "0.1.2"
+axum-macros = "0.5.0"

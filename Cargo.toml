@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "diffsl",
-  "diffsl-wasm",
 ]
 default-members = [
   "diffsl",

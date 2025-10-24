@@ -187,6 +187,7 @@ pub type SetInputsRevGradFunc = unsafe extern "C" fn(
     data: *const RealType,
     ddata: *mut RealType,
 );
+/// set each equation as a differential (1) or algebraic (0) equation
 pub type SetIdFunc = unsafe extern "C" fn(id: *mut RealType);
 pub type GetTensorFunc = unsafe extern "C" fn(
     data: *const RealType,

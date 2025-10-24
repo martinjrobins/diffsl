@@ -59,7 +59,7 @@ fn add_scalar_diffsl_llvm<const N: usize>(bencher: divan::Bencher) {
     });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "cranelift"))]
 #[divan::bench(consts = [1, 10, 100, 1000])]
 fn add_scalar_diffsl_cranelift<const N: usize>(bencher: divan::Bencher) {
     use diffsl::CraneliftJitModule;

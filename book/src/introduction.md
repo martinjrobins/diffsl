@@ -13,7 +13,7 @@ allows the user to specify the state vector \\( \mathbf{u} \\) and the RHS funct
 Optionally, the user can also define the derivative of the state vector \\( \mathrm{d}\mathbf{u}/\mathrm{d}t \\)
 and the mass matrix \\( M \\) as a function of \\( \mathrm{d}\mathbf{u}/\mathrm{d}t \\) (note that this function should be linear!).
 
-The user is also free to define an an arbitrary number of intermediate
+The user is also free to define an arbitrary number of intermediate
 scalars and vectors of the users that are required to calculate \\( F \\) and \\( M \\).
 
 ## A Simple Example

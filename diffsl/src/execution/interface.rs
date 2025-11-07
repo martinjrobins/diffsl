@@ -84,12 +84,8 @@ pub type MassRevGradFunc<T> = unsafe extern "C" fn(
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type U0Func<T> = unsafe extern "C" fn(
-    u: *mut T,
-    data: *mut T,
-    thread_id: UIntType,
-    thread_dim: UIntType,
-);
+pub type U0Func<T> =
+    unsafe extern "C" fn(u: *mut T, data: *mut T, thread_id: UIntType, thread_dim: UIntType);
 pub type U0SensGradFunc<T> = unsafe extern "C" fn(
     u: *const T,
     du: *mut T,
@@ -174,24 +170,13 @@ pub type GetDimsFunc = unsafe extern "C" fn(
 );
 pub type SetInputsFunc<T> = unsafe extern "C" fn(inputs: *const T, data: *mut T);
 pub type GetInputsFunc<T> = unsafe extern "C" fn(inputs: *mut T, data: *const T);
-pub type SetInputsGradFunc<T> = unsafe extern "C" fn(
-    inputs: *const T,
-    dinputs: *const T,
-    data: *const T,
-    ddata: *mut T,
-);
-pub type SetInputsRevGradFunc<T> = unsafe extern "C" fn(
-    inputs: *const T,
-    dinputs: *mut T,
-    data: *const T,
-    ddata: *mut T,
-);
+pub type SetInputsGradFunc<T> =
+    unsafe extern "C" fn(inputs: *const T, dinputs: *const T, data: *const T, ddata: *mut T);
+pub type SetInputsRevGradFunc<T> =
+    unsafe extern "C" fn(inputs: *const T, dinputs: *mut T, data: *const T, ddata: *mut T);
 pub type SetIdFunc<T> = unsafe extern "C" fn(id: *mut T);
-pub type GetTensorFunc<T> = unsafe extern "C" fn(
-    data: *const T,
-    tensor_data: *mut *mut T,
-    tensor_size: *mut UIntType,
-);
+pub type GetTensorFunc<T> =
+    unsafe extern "C" fn(data: *const T, tensor_data: *mut *mut T, tensor_size: *mut UIntType);
 pub type GetConstantFunc<T> =
     unsafe extern "C" fn(tensor_data: *mut *const T, tensor_size: *mut UIntType);
 
@@ -237,7 +222,8 @@ impl<T> JitFunctions<T> {
             unsafe { std::mem::transmute::<*const u8, CalcOutFunc<T>>(symbol_map["calc_out"]) };
         let calc_stop =
             unsafe { std::mem::transmute::<*const u8, StopFunc<T>>(symbol_map["calc_stop"]) };
-        let set_id = unsafe { std::mem::transmute::<*const u8, SetIdFunc<T>>(symbol_map["set_id"]) };
+        let set_id =
+            unsafe { std::mem::transmute::<*const u8, SetIdFunc<T>>(symbol_map["set_id"]) };
         let get_dims =
             unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(symbol_map["get_dims"]) };
         let set_inputs =
@@ -330,17 +316,21 @@ impl<T> JitGradRFunctions<T> {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
             }
         }
-        let set_u0_rgrad =
-            unsafe { std::mem::transmute::<*const u8, U0RevGradFunc<T>>(symbol_map["set_u0_rgrad"]) };
+        let set_u0_rgrad = unsafe {
+            std::mem::transmute::<*const u8, U0RevGradFunc<T>>(symbol_map["set_u0_rgrad"])
+        };
         let rhs_rgrad =
             unsafe { std::mem::transmute::<*const u8, RhsRevGradFunc<T>>(symbol_map["rhs_rgrad"]) };
-        let mass_rgrad =
-            unsafe { std::mem::transmute::<*const u8, MassRevGradFunc<T>>(symbol_map["mass_rgrad"]) };
+        let mass_rgrad = unsafe {
+            std::mem::transmute::<*const u8, MassRevGradFunc<T>>(symbol_map["mass_rgrad"])
+        };
         let calc_out_rgrad = unsafe {
             std::mem::transmute::<*const u8, CalcOutRevGradFunc<T>>(symbol_map["calc_out_rgrad"])
         };
         let set_inputs_rgrad = unsafe {
-            std::mem::transmute::<*const u8, SetInputsRevGradFunc<T>>(symbol_map["set_inputs_rgrad"])
+            std::mem::transmute::<*const u8, SetInputsRevGradFunc<T>>(
+                symbol_map["set_inputs_rgrad"],
+            )
         };
 
         Ok(Self {
@@ -367,13 +357,15 @@ impl<T> JitSensGradFunctions<T> {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
             }
         }
-        let rhs_sgrad =
-            unsafe { std::mem::transmute::<*const u8, RhsSensGradFunc<T>>(symbol_map["rhs_sgrad"]) };
+        let rhs_sgrad = unsafe {
+            std::mem::transmute::<*const u8, RhsSensGradFunc<T>>(symbol_map["rhs_sgrad"])
+        };
         let calc_out_sgrad = unsafe {
             std::mem::transmute::<*const u8, CalcOutSensGradFunc<T>>(symbol_map["calc_out_sgrad"])
         };
-        let set_u0_sgrad =
-            unsafe { std::mem::transmute::<*const u8, U0SensGradFunc<T>>(symbol_map["set_u0_sgrad"]) };
+        let set_u0_sgrad = unsafe {
+            std::mem::transmute::<*const u8, U0SensGradFunc<T>>(symbol_map["set_u0_sgrad"])
+        };
 
         Ok(Self {
             rhs_sgrad,
@@ -400,7 +392,9 @@ impl<T> JitSensRevGradFunctions<T> {
             std::mem::transmute::<*const u8, RhsSensRevGradFunc<T>>(symbol_map["rhs_srgrad"])
         };
         let calc_out_rgrad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutSensRevGradFunc<T>>(symbol_map["calc_out_srgrad"])
+            std::mem::transmute::<*const u8, CalcOutSensRevGradFunc<T>>(
+                symbol_map["calc_out_srgrad"],
+            )
         };
 
         Ok(Self {
@@ -426,7 +420,8 @@ impl<T> JitGetTensorFunctions<T> {
                 let func = unsafe { std::mem::transmute::<*const u8, GetTensorFunc<T>>(*func_ptr) };
                 data_map.insert(name.strip_prefix(data_prefix).unwrap().to_string(), func);
             } else if name.starts_with(constant_prefix) {
-                let func = unsafe { std::mem::transmute::<*const u8, GetConstantFunc<T>>(*func_ptr) };
+                let func =
+                    unsafe { std::mem::transmute::<*const u8, GetConstantFunc<T>>(*func_ptr) };
                 constant_map.insert(
                     name.strip_prefix(constant_prefix).unwrap().to_string(),
                     func,

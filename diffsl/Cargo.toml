@@ -82,5 +82,8 @@ debug = true
 opt-level = 3
 debug = false
 
+[dev-dependencies]
+paste = "1.0.15"
+
 [package.metadata.docs.rs]
 features = ["llvm15-0"]

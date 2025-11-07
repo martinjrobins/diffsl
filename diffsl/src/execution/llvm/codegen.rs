@@ -31,13 +31,11 @@ use std::iter::zip;
 use std::pin::Pin;
 use target_lexicon::Triple;
 
-type RealType = f64;
-
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
 use crate::enzyme::{
-    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Integer,
-    CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode,
+    CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Float,
+    CConcreteType_DT_Integer, CConcreteType_DT_Pointer, CDerivativeMode_DEM_ForwardMode,
     CDerivativeMode_DEM_ReverseModeCombined, CFnTypeInfo, CreateEnzymeLogic, CreateTypeAnalysis,
     DiffeGradientUtils, EnzymeCreateForwardDiff, EnzymeCreatePrimalAndGradient, EnzymeFreeTypeTree,
     EnzymeGradientUtilsNewFromOriginal, EnzymeLogicRef, EnzymeMergeTypeTree, EnzymeNewTypeTreeCT,
@@ -49,6 +47,7 @@ use crate::execution::compiler::CompilerMode;
 use crate::execution::module::{
     CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit,
 };
+use crate::execution::scalar::RealType;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 use lazy_static::lazy_static;
 use std::sync::Mutex;
@@ -75,7 +74,12 @@ unsafe impl Send for LlvmModule {}
 unsafe impl Sync for LlvmModule {}
 
 impl LlvmModule {
-    fn new(triple: Option<Triple>, model: &DiscreteModel, threaded: bool) -> Result<Self> {
+    fn new(
+        triple: Option<Triple>,
+        model: &DiscreteModel,
+        threaded: bool,
+        real_type: RealType,
+    ) -> Result<Self> {
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
         let host_triple = Triple::host();
@@ -117,13 +121,16 @@ impl LlvmModule {
         };
 
         let context_ref = pinned.inner.context.as_ref();
-        let real_type_str = "f64";
+        let real_type_llvm = match real_type {
+            RealType::F32 => context_ref.f32_type(),
+            RealType::F64 => context_ref.f64_type(),
+        };
         let codegen = CodeGen::new(
             model,
             context_ref,
-            context_ref.f64_type(),
+            real_type,
+            real_type_llvm,
             context_ref.i32_type(),
-            real_type_str,
             threaded,
         )?;
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
@@ -230,6 +237,7 @@ impl CodegenModuleCompile for LlvmModule {
         model: &DiscreteModel,
         mode: CompilerMode,
         triple: Option<Triple>,
+        real_type: RealType,
     ) -> Result<Self> {
         let thread_dim = mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
@@ -239,7 +247,7 @@ impl CodegenModuleCompile for LlvmModule {
             ));
         }
 
-        let mut module = Self::new(triple, model, threaded)?;
+        let mut module = Self::new(triple, model, threaded, real_type)?;
 
         let set_u0 = module.codegen_mut().compile_set_u0(model)?;
         let _calc_stop = module.codegen_mut().compile_calc_stop(model)?;
@@ -589,9 +597,9 @@ pub struct CodeGen<'ctx> {
     functions: HashMap<String, FunctionValue<'ctx>>,
     fn_value_opt: Option<FunctionValue<'ctx>>,
     tensor_ptr_opt: Option<PointerValue<'ctx>>,
+    diffsl_real_type: RealType,
     real_type: FloatType<'ctx>,
     real_ptr_type: PointerType<'ctx>,
-    real_type_str: String,
     int_type: IntType<'ctx>,
     int_ptr_type: PointerType<'ctx>,
     layout: DataLayout,
@@ -653,9 +661,9 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn new(
         model: &DiscreteModel,
         context: &'ctx inkwell::context::Context,
+        diffsl_real_type: RealType,
         real_type: FloatType<'ctx>,
         int_type: IntType<'ctx>,
-        real_type_str: &str,
         threaded: bool,
     ) -> Result<Self> {
         let builder = context.create_builder();
@@ -670,12 +678,12 @@ impl<'ctx> CodeGen<'ctx> {
             builder,
             real_type,
             real_ptr_type,
-            real_type_str: real_type_str.to_owned(),
             variables: HashMap::new(),
             functions: HashMap::new(),
             fn_value_opt: None,
             tensor_ptr_opt: None,
             layout,
+            diffsl_real_type,
             int_type,
             int_ptr_type,
             globals,
@@ -1309,7 +1317,8 @@ impl<'ctx> CodeGen<'ctx> {
                             "abs" => "fabs",
                             _ => name,
                         };
-                        let llvm_name = format!("llvm.{}.{}", intrinsic_name, self.real_type_str);
+                        let llvm_name =
+                            format!("llvm.{}.{}", intrinsic_name, self.diffsl_real_type.as_str());
                         let intrinsic = Intrinsic::find(&llvm_name).unwrap();
                         let ret_type = self.real_type;
 
@@ -2979,14 +2988,11 @@ impl<'ctx> CodeGen<'ctx> {
             // we'll probably only get double or pointers to doubles, so let assume this for now
             // todo: perhaps refactor this into a recursive function, might be overkill
             let concrete_type = match arg.get_type() {
-                BasicTypeEnum::PointerType(_) => CConcreteType_DT_Pointer,
-                BasicTypeEnum::FloatType(t) => {
-                    if t == self.context.f64_type() {
-                        CConcreteType_DT_Double
-                    } else {
-                        panic!("unsupported type")
-                    }
-                }
+                BasicTypeEnum::PointerType(_t) => CConcreteType_DT_Pointer,
+                BasicTypeEnum::FloatType(_t) => match self.diffsl_real_type {
+                    RealType::F32 => CConcreteType_DT_Float,
+                    RealType::F64 => CConcreteType_DT_Double,
+                },
                 BasicTypeEnum::IntType(_) => CConcreteType_DT_Integer,
                 _ => panic!("unsupported type"),
             };
@@ -2998,10 +3004,12 @@ impl<'ctx> CodeGen<'ctx> {
             };
             unsafe { EnzymeTypeTreeOnlyEq(new_tree, -1) };
 
-            // pointer to double
+            // pointer to real type
             if concrete_type == CConcreteType_DT_Pointer {
-                // assume the pointer is to a double
-                let inner_concrete_type = CConcreteType_DT_Double;
+                let inner_concrete_type = match self.diffsl_real_type {
+                    RealType::F32 => CConcreteType_DT_Float,
+                    RealType::F64 => CConcreteType_DT_Double,
+                };
                 let inner_new_tree = unsafe {
                     EnzymeNewTypeTreeCT(
                         inner_concrete_type,
@@ -3508,11 +3516,7 @@ impl<'ctx> CodeGen<'ctx> {
                 curr_id_index,
                 name,
             );
-            let is_algebraic_float = if *is_algebraic {
-                0.0 as RealType
-            } else {
-                1.0 as RealType
-            };
+            let is_algebraic_float = if *is_algebraic { 0.0 } else { 1.0 };
             let is_algebraic_value = self.real_type.const_float(is_algebraic_float);
             self.builder.build_store(id_ptr, is_algebraic_value)?;
 

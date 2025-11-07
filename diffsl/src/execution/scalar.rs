@@ -18,7 +18,7 @@ impl RealType {
 }
 
 pub trait Scalar:
-    Copy + FromPrimitive + Debug + num_traits::Signed + AbsDiffEq<Epsilon: Clone> + 'static
+    Copy + FromPrimitive + Debug + num_traits::Signed + AbsDiffEq<Epsilon: Clone> + Sync + 'static
 {
     fn as_real_type() -> RealType;
 }

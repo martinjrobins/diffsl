@@ -1575,7 +1575,9 @@ mod tests {
 
                     #[cfg(feature = "cranelift")]
                     {
-                        let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<crate::CraneliftJitModule, f32>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        let results = tensor_test_common::<crate::CraneliftJitModule, f64>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     }
                 }

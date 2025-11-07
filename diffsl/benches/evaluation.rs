@@ -15,7 +15,7 @@ fn setup<M: CodegenModuleCompile + CodegenModuleJit>(
     n: usize,
     f_text: &str,
     name: &str,
-) -> Compiler<M> {
+) -> Compiler<M, f64> {
     let u = vec![1.0; n];
     let full_text = format!(
         "
@@ -37,7 +37,7 @@ fn setup<M: CodegenModuleCompile + CodegenModuleJit>(
     );
     let model = parse_ds_string(&full_text).unwrap();
     let discrete_model = DiscreteModel::build(name, &model).unwrap();
-    Compiler::<M>::from_discrete_model(&discrete_model, Default::default()).unwrap()
+    Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap()
 }
 
 #[cfg(feature = "llvm")]

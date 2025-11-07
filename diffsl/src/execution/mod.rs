@@ -10,6 +10,7 @@ pub mod interface;
 pub mod mmap;
 pub mod module;
 pub mod relocations;
+pub mod scalar;
 //pub mod serialize;
 
 pub mod data_layout;

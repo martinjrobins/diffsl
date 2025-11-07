@@ -8,20 +8,20 @@ use super::{
     },
     module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
 };
-use crate::{discretise::DiscreteModel, parser::parse_ds_string};
+use crate::{discretise::DiscreteModel, execution::scalar::Scalar, parser::parse_ds_string};
 
 use anyhow::{anyhow, Result};
 #[cfg(feature = "rayon")]
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use uid::Id;
 
-pub struct Compiler<M: CodegenModule> {
-    jit_functions: JitFunctions,
-    jit_grad_functions: JitGradFunctions,
-    jit_grad_r_functions: Option<JitGradRFunctions>,
-    jit_sens_grad_functions: Option<JitSensGradFunctions>,
-    jit_sens_rev_grad_functions: Option<JitSensRevGradFunctions>,
-    jit_get_tensor_functions: JitGetTensorFunctions,
+pub struct Compiler<M: CodegenModule, T: Scalar> {
+    jit_functions: JitFunctions<T>,
+    jit_grad_functions: JitGradFunctions<T>,
+    jit_grad_r_functions: Option<JitGradRFunctions<T>>,
+    jit_sens_grad_functions: Option<JitSensGradFunctions<T>>,
+    jit_sens_rev_grad_functions: Option<JitSensRevGradFunctions<T>>,
+    jit_get_tensor_functions: JitGetTensorFunctions<T>,
 
     number_of_states: usize,
     number_of_parameters: usize,
@@ -69,18 +69,18 @@ impl CompilerMode {
     }
 }
 
-impl<M: CodegenModule> Compiler<M> {
+impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     pub fn new(
         module: M,
         symbol_map: HashMap<String, *const u8>,
         mode: CompilerMode,
     ) -> Result<Self> {
-        let jit_functions = JitFunctions::new(&symbol_map)?;
-        let jit_grad_functions = JitGradFunctions::new(&symbol_map)?;
-        let jit_get_tensor_functions = JitGetTensorFunctions::new(&symbol_map)?;
-        let jit_grad_r_functions = JitGradRFunctions::new(&symbol_map).ok();
-        let jit_sens_grad_functions = JitSensGradFunctions::new(&symbol_map).ok();
-        let jit_sens_rev_grad_functions = JitSensRevGradFunctions::new(&symbol_map).ok();
+        let jit_functions = JitFunctions::<T>::new(&symbol_map)?;
+        let jit_grad_functions = JitGradFunctions::<T>::new(&symbol_map)?;
+        let jit_get_tensor_functions = JitGetTensorFunctions::<T>::new(&symbol_map)?;
+        let jit_grad_r_functions = JitGradRFunctions::<T>::new(&symbol_map).ok();
+        let jit_sens_grad_functions = JitSensGradFunctions::<T>::new(&symbol_map).ok();
+        let jit_sens_rev_grad_functions = JitSensRevGradFunctions::<T>::new(&symbol_map).ok();
 
         let mut ret = Self {
             jit_functions,
@@ -182,14 +182,14 @@ impl<M: CodegenModule> Compiler<M> {
             .collect()
     }
 
-    pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
+    pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [T]) -> Option<&'a [T]> {
         if let Some(get_func) = self.jit_get_tensor_functions.data_map.get(name) {
-            let mut tensor_data: *mut f64 = std::ptr::null_mut();
+            let mut tensor_data: *mut T= std::ptr::null_mut();
             let mut tensor_size: u32 = 0;
             unsafe {
                 (get_func)(
                     data.as_ptr(),
-                    &mut tensor_data as *mut *mut f64,
+                    &mut tensor_data as *mut *mut T,
                     &mut tensor_size as *mut u32,
                 )
             };
@@ -209,13 +209,13 @@ impl<M: CodegenModule> Compiler<M> {
             .collect()
     }
 
-    pub fn get_constants_data(&self, name: &str) -> Option<&[f64]> {
+    pub fn get_constants_data(&self, name: &str) -> Option<&[T]> {
         if let Some(get_func) = self.jit_get_tensor_functions.constant_map.get(name) {
-            let mut tensor_data: *const f64 = std::ptr::null_mut();
+            let mut tensor_data: *const T= std::ptr::null_mut();
             let mut tensor_size: u32 = 0;
             unsafe {
                 (get_func)(
-                    &mut tensor_data as *mut *const f64,
+                    &mut tensor_data as *mut *const T,
                     &mut tensor_size as *mut u32,
                 )
             };
@@ -230,15 +230,15 @@ impl<M: CodegenModule> Compiler<M> {
     pub fn get_tensor_data_mut<'a>(
         &self,
         name: &str,
-        data: &'a mut [f64],
-    ) -> Option<&'a mut [f64]> {
+        data: &'a mut [T],
+    ) -> Option<&'a mut [T]> {
         if let Some(get_func) = self.jit_get_tensor_functions.data_map.get(name) {
-            let mut tensor_data: *mut f64 = std::ptr::null_mut();
+            let mut tensor_data: *mut T= std::ptr::null_mut();
             let mut tensor_size: u32 = 0;
             unsafe {
                 (get_func)(
                     data.as_ptr(),
-                    &mut tensor_data as *mut *mut f64,
+                    &mut tensor_data as *mut *mut T,
                     &mut tensor_size as *mut u32,
                 )
             };
@@ -282,7 +282,7 @@ impl<M: CodegenModule> Compiler<M> {
         f(0, 1);
     }
 
-    fn check_arg_len(&self, arg: &[f64], expected_len: usize, name: &str) {
+    fn check_arg_len(&self, arg: &[T], expected_len: usize, name: &str) {
         if arg.len() != expected_len {
             panic!(
                 "Expected arg {} has len {}, got {}",
@@ -293,23 +293,23 @@ impl<M: CodegenModule> Compiler<M> {
         }
     }
 
-    fn check_state_len(&self, state: &[f64], name: &str) {
+    fn check_state_len(&self, state: &[T], name: &str) {
         self.check_arg_len(state, self.number_of_states, name);
     }
 
-    fn check_stop_len(&self, stop: &[f64], name: &str) {
+    fn check_stop_len(&self, stop: &[T], name: &str) {
         self.check_arg_len(stop, self.number_of_stop, name);
     }
 
-    fn check_data_len(&self, data: &[f64], name: &str) {
+    fn check_data_len(&self, data: &[T], name: &str) {
         self.check_arg_len(data, self.data_len(), name);
     }
 
-    fn check_out_len(&self, out: &[f64], name: &str) {
+    fn check_out_len(&self, out: &[T], name: &str) {
         self.check_arg_len(out, self.number_of_outputs, name);
     }
 
-    fn check_inputs_len(&self, inputs: &[f64], name: &str) {
+    fn check_inputs_len(&self, inputs: &[T], name: &str) {
         if inputs.len() != self.number_of_parameters {
             panic!(
                 "Expected arg {} has len {}, got {}",
@@ -326,14 +326,14 @@ impl<M: CodegenModule> Compiler<M> {
         });
     }
 
-    pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) {
+    pub fn set_u0(&self, yy: &mut [T], data: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.with_threading(|i, dim| unsafe {
-            (self.jit_functions.set_u0)(yy.as_ptr() as *mut f64, data.as_ptr() as *mut f64, i, dim);
+            (self.jit_functions.set_u0)(yy.as_ptr() as *mut T, data.as_ptr() as *mut T, i, dim);
         });
     }
 
-    pub fn set_u0_sgrad(&self, yy: &[f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
+    pub fn set_u0_sgrad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
@@ -345,16 +345,16 @@ impl<M: CodegenModule> Compiler<M> {
                 .expect("module does not support sens autograd")
                 .set_u0_sgrad)(
                 yy.as_ptr(),
-                dyy.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut T,
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 i,
                 dim,
             );
         });
     }
 
-    pub fn set_u0_rgrad(&self, yy: &[f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
+    pub fn set_u0_rgrad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
@@ -366,16 +366,16 @@ impl<M: CodegenModule> Compiler<M> {
                 .expect("module does not support reverse autograd")
                 .set_u0_rgrad)(
                 yy.as_ptr(),
-                dyy.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut T,
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 i,
                 dim,
             );
         });
     }
 
-    pub fn set_u0_grad(&self, yy: &[f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
+    pub fn set_u0_grad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
@@ -384,9 +384,9 @@ impl<M: CodegenModule> Compiler<M> {
             unsafe {
                 (self.jit_grad_functions.set_u0_grad)(
                     yy.as_ptr(),
-                    dyy.as_ptr() as *mut f64,
+                    dyy.as_ptr() as *mut T,
                     data.as_ptr(),
-                    ddata.as_ptr() as *mut f64,
+                    ddata.as_ptr() as *mut T,
                     i,
                     dim,
                 )
@@ -394,7 +394,7 @@ impl<M: CodegenModule> Compiler<M> {
         })
     }
 
-    pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) {
+    pub fn calc_stop(&self, t: T, yy: &[T], data: &mut [T], stop: &mut [T]) {
         if self.number_of_stop == 0 {
             panic!("Model does not have a stop function");
         }
@@ -405,15 +405,15 @@ impl<M: CodegenModule> Compiler<M> {
             (self.jit_functions.calc_stop)(
                 t,
                 yy.as_ptr(),
-                data.as_ptr() as *mut f64,
-                stop.as_ptr() as *mut f64,
+                data.as_ptr() as *mut T,
+                stop.as_ptr() as *mut T,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn rhs(&self, t: f64, yy: &[f64], data: &mut [f64], rr: &mut [f64]) {
+    pub fn rhs(&self, t: T, yy: &[T], data: &mut [T], rr: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
         self.check_data_len(data, "data");
@@ -421,8 +421,8 @@ impl<M: CodegenModule> Compiler<M> {
             (self.jit_functions.rhs)(
                 t,
                 yy.as_ptr(),
-                data.as_ptr() as *mut f64,
-                rr.as_ptr() as *mut f64,
+                data.as_ptr() as *mut T,
+                rr.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -433,7 +433,7 @@ impl<M: CodegenModule> Compiler<M> {
         self.has_mass
     }
 
-    pub fn mass(&self, t: f64, v: &[f64], data: &mut [f64], mv: &mut [f64]) {
+    pub fn mass(&self, t: T, v: &[T], data: &mut [T], mv: &mut [T]) {
         if !self.has_mass {
             panic!("Model does not have a mass function");
         }
@@ -444,8 +444,8 @@ impl<M: CodegenModule> Compiler<M> {
             (self.jit_functions.mass)(
                 t,
                 v.as_ptr(),
-                data.as_ptr() as *mut f64,
-                mv.as_ptr() as *mut f64,
+                data.as_ptr() as *mut T,
+                mv.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -456,20 +456,20 @@ impl<M: CodegenModule> Compiler<M> {
         self.data_size
     }
 
-    pub fn get_new_data(&self) -> Vec<f64> {
-        vec![0.; self.data_len()]
+    pub fn get_new_data(&self) -> Vec<T> {
+        vec![T::zero(); self.data_len()]
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn rhs_grad(
         &self,
-        t: f64,
-        yy: &[f64],
-        dyy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        rr: &[f64],
-        drr: &mut [f64],
+        t: T,
+        yy: &[T],
+        dyy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        rr: &[T],
+        drr: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -483,9 +483,9 @@ impl<M: CodegenModule> Compiler<M> {
                 yy.as_ptr(),
                 dyy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
-                drr.as_ptr() as *mut f64,
+                drr.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -495,13 +495,13 @@ impl<M: CodegenModule> Compiler<M> {
     #[allow(clippy::too_many_arguments)]
     pub fn rhs_rgrad(
         &self,
-        t: f64,
-        yy: &[f64],
-        dyy: &mut [f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        rr: &[f64],
-        drr: &mut [f64],
+        t: T,
+        yy: &[T],
+        dyy: &mut [T],
+        data: &[T],
+        ddata: &mut [T],
+        rr: &[T],
+        drr: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -517,11 +517,11 @@ impl<M: CodegenModule> Compiler<M> {
                 .rhs_rgrad)(
                 t,
                 yy.as_ptr(),
-                dyy.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut T,
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
-                drr.as_ptr() as *mut f64,
+                drr.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -530,11 +530,11 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn mass_rgrad(
         &self,
-        t: f64,
-        dv: &mut [f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        dmv: &mut [f64],
+        t: T,
+        dv: &mut [T],
+        data: &[T],
+        ddata: &mut [T],
+        dmv: &mut [T],
     ) {
         self.check_state_len(dv, "dv");
         self.check_state_len(dmv, "dmv");
@@ -548,11 +548,11 @@ impl<M: CodegenModule> Compiler<M> {
                 .mass_rgrad)(
                 t,
                 std::ptr::null(),
-                dv.as_ptr() as *mut f64,
+                dv.as_ptr() as *mut T,
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 std::ptr::null(),
-                dmv.as_ptr() as *mut f64,
+                dmv.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -561,12 +561,12 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn rhs_sgrad(
         &self,
-        t: f64,
-        yy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        rr: &[f64],
-        drr: &mut [f64],
+        t: T,
+        yy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        rr: &[T],
+        drr: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
@@ -582,9 +582,9 @@ impl<M: CodegenModule> Compiler<M> {
                 t,
                 yy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
-                drr.as_ptr() as *mut f64,
+                drr.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -593,12 +593,12 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn rhs_srgrad(
         &self,
-        t: f64,
-        yy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        rr: &[f64],
-        drr: &mut [f64],
+        t: T,
+        yy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        rr: &[T],
+        drr: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
@@ -614,16 +614,16 @@ impl<M: CodegenModule> Compiler<M> {
                 t,
                 yy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
-                drr.as_ptr() as *mut f64,
+                drr.as_ptr() as *mut T,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn calc_out(&self, t: f64, yy: &[f64], data: &mut [f64], out: &mut [f64]) {
+    pub fn calc_out(&self, t: T, yy: &[T], data: &mut [T], out: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
         self.check_out_len(out, "out");
@@ -631,8 +631,8 @@ impl<M: CodegenModule> Compiler<M> {
             (self.jit_functions.calc_out)(
                 t,
                 yy.as_ptr(),
-                data.as_ptr() as *mut f64,
-                out.as_ptr() as *mut f64,
+                data.as_ptr() as *mut T,
+                out.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -642,13 +642,13 @@ impl<M: CodegenModule> Compiler<M> {
     #[allow(clippy::too_many_arguments)]
     pub fn calc_out_grad(
         &self,
-        t: f64,
-        yy: &[f64],
-        dyy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        out: &[f64],
-        dout: &mut [f64],
+        t: T,
+        yy: &[T],
+        dyy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        out: &[T],
+        dout: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -662,9 +662,9 @@ impl<M: CodegenModule> Compiler<M> {
                 yy.as_ptr(),
                 dyy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 out.as_ptr(),
-                dout.as_ptr() as *mut f64,
+                dout.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -674,13 +674,13 @@ impl<M: CodegenModule> Compiler<M> {
     #[allow(clippy::too_many_arguments)]
     pub fn calc_out_rgrad(
         &self,
-        t: f64,
-        yy: &[f64],
-        dyy: &mut [f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        out: &[f64],
-        dout: &mut [f64],
+        t: T,
+        yy: &[T],
+        dyy: &mut [T],
+        data: &[T],
+        ddata: &mut [T],
+        out: &[T],
+        dout: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -696,11 +696,11 @@ impl<M: CodegenModule> Compiler<M> {
                 .calc_out_rgrad)(
                 t,
                 yy.as_ptr(),
-                dyy.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut T,
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 out.as_ptr(),
-                dout.as_ptr() as *mut f64,
+                dout.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -709,12 +709,12 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn calc_out_sgrad(
         &self,
-        t: f64,
-        yy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        out: &[f64],
-        dout: &mut [f64],
+        t: T,
+        yy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        out: &[T],
+        dout: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
@@ -730,9 +730,9 @@ impl<M: CodegenModule> Compiler<M> {
                 t,
                 yy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 out.as_ptr(),
-                dout.as_ptr() as *mut f64,
+                dout.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -741,12 +741,12 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn calc_out_srgrad(
         &self,
-        t: f64,
-        yy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        out: &[f64],
-        dout: &mut [f64],
+        t: T,
+        yy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        out: &[T],
+        dout: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
@@ -762,9 +762,9 @@ impl<M: CodegenModule> Compiler<M> {
                 t,
                 yy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 out.as_ptr(),
-                dout.as_ptr() as *mut f64,
+                dout.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -803,13 +803,13 @@ impl<M: CodegenModule> Compiler<M> {
         )
     }
 
-    pub fn set_inputs(&self, inputs: &[f64], data: &mut [f64]) {
+    pub fn set_inputs(&self, inputs: &[T], data: &mut [T]) {
         self.check_inputs_len(inputs, "inputs");
         self.check_data_len(data, "data");
         unsafe { (self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr()) };
     }
 
-    pub fn get_inputs(&self, inputs: &mut [f64], data: &[f64]) {
+    pub fn get_inputs(&self, inputs: &mut [T], data: &[T]) {
         self.check_inputs_len(inputs, "inputs");
         self.check_data_len(data, "data");
         unsafe { (self.jit_functions.get_inputs)(inputs.as_mut_ptr(), data.as_ptr()) };
@@ -817,10 +817,10 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn set_inputs_grad(
         &self,
-        inputs: &[f64],
-        dinputs: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
+        inputs: &[T],
+        dinputs: &[T],
+        data: &[T],
+        ddata: &mut [T],
     ) {
         self.check_inputs_len(inputs, "inputs");
         self.check_inputs_len(dinputs, "dinputs");
@@ -838,10 +838,10 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn set_inputs_rgrad(
         &self,
-        inputs: &[f64],
-        dinputs: &mut [f64],
-        data: &[f64],
-        ddata: &mut [f64],
+        inputs: &[T],
+        dinputs: &mut [T],
+        data: &[T],
+        ddata: &mut [T],
     ) {
         self.check_inputs_len(inputs, "inputs");
         self.check_inputs_len(dinputs, "dinputs");
@@ -861,7 +861,7 @@ impl<M: CodegenModule> Compiler<M> {
         };
     }
 
-    pub fn set_id(&self, id: &mut [f64]) {
+    pub fn set_id(&self, id: &mut [T]) {
         let (n_states, _, _, _, _, _) = self.get_dims();
         if n_states != id.len() {
             panic!("Expected {} states, got {}", n_states, id.len());
@@ -886,10 +886,7 @@ mod tests {
     use std::{sync::Arc, thread};
 
     use crate::{
-        discretise::DiscreteModel,
-        execution::module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
-        parser::parse_ds_string,
-        Compiler,
+        Compiler, discretise::DiscreteModel, execution::{module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit}}, parser::parse_ds_string
     };
     use approx::assert_relative_eq;
 
@@ -909,7 +906,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::<T, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         // b and b2 should already be set
         let mut data = compiler.get_new_data();
         let b = compiler.get_constants_data("b").unwrap();
@@ -972,7 +969,7 @@ mod tests {
         out { u }
         ";
         for text in [text2, text1] {
-            let compiler = Compiler::<T>::from_discrete_str(text, Default::default()).unwrap();
+            let compiler = Compiler::<T, f64>::from_discrete_str(text, Default::default()).unwrap();
             let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
             assert_eq!(n_states, 1);
             assert_eq!(n_inputs, 0);
@@ -1027,7 +1024,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::<T, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut res = vec![0.];
         let mut stop = vec![0.];
@@ -1051,7 +1048,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::<T, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut data = compiler.get_new_data();
         // need this to set the constants
@@ -1121,13 +1118,13 @@ mod tests {
         tensor_name: &str,
         mode: CompilerMode,
     ) -> Vec<Vec<f64>> {
-        let compiler = Compiler::<T>::from_discrete_model(discrete_model, mode).unwrap();
+        let compiler = Compiler::<T, f64>::from_discrete_model(discrete_model, mode).unwrap();
         tensor_test_common_impl(compiler, tensor_name)
     }
 
     #[allow(dead_code)]
     fn tensor_test_common_impl<M: CodegenModule>(
-        compiler: Compiler<M>,
+        compiler: Compiler<M, f64>,
         tensor_name: &str,
     ) -> Vec<Vec<f64>> {
         let (n_states, n_inputs, n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
@@ -1771,7 +1768,7 @@ mod tests {
             }
         };
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::<T, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut u0 = vec![1.];
         let mut du0 = vec![1.];
         let mut res = vec![0.];
@@ -1919,7 +1916,7 @@ mod tests {
 
         #[cfg(feature = "llvm")]
         {
-            let compiler = Compiler::<crate::LlvmModule>::from_discrete_model(
+            let compiler = Compiler::<crate::LlvmModule, f64>::from_discrete_model(
                 &discrete_model,
                 Default::default(),
             )
@@ -1948,7 +1945,7 @@ mod tests {
         let discrete_model = DiscreteModel::build("test_mass", &model).unwrap();
 
         let compiler =
-            Compiler::<crate::LlvmModule>::from_discrete_model(&discrete_model, Default::default())
+            Compiler::<crate::LlvmModule, f64>::from_discrete_model(&discrete_model, Default::default())
                 .unwrap();
         let mut data = compiler.get_new_data();
         let mut u0 = vec![0.0, 0.0, 0.0];
@@ -1991,7 +1988,7 @@ mod tests {
         let discrete_model = DiscreteModel::build("test_sens_sync", &model).unwrap();
 
         let compiler = Arc::new(
-            Compiler::<M>::from_discrete_model(&discrete_model, Default::default()).unwrap(),
+            Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap(),
         );
 
         let compiler_clone = Arc::clone(&compiler);
@@ -2024,7 +2021,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("test_u0_sgrad", &model).unwrap();
         let compiler =
-            Compiler::<M>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut data = compiler.get_new_data();
         let mut ddata = compiler.get_new_data();
         let a = vec![0.6];

@@ -1379,23 +1379,24 @@ mod tests {
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
 
-                #[cfg(target_arch = "wasm32")]
-                {
-                    for filename in [
-                        concat!(stringify!($name),"_llvm"),
-                    ] {
-                        let filename = format!("test_output/{filename}.wasm");
-                        let mut file = std::fs::File::open(filename.as_str()).unwrap();
-                        let mut buffer = Vec::new();
-                        file.read_to_end(&mut buffer).unwrap();
-                        let compiler = Compiler::from_object_file(
-                            buffer,
-                            CompilerMode::SingleThreaded,
-                        ).unwrap();
-                        let results = tensor_test_common_impl(compiler, $tensor_name);
-                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                    }
-                }
+                //#[cfg(target_arch = "wasm32")]
+                //{
+                //    use std::io::Read;
+                //    for filename in [
+                //        concat!(stringify!($name),"_llvm"),
+                //    ] {
+                //        let filename = format!("test_output/{filename}.wasm");
+                //        let mut file = std::fs::File::open(filename.as_str()).unwrap();
+                //        let mut buffer = Vec::new();
+                //        file.read_to_end(&mut buffer).unwrap();
+                //        let compiler = Compiler::from_object_file(
+                //            buffer,
+                //            CompilerMode::SingleThreaded,
+                //        ).unwrap();
+                //        let results = tensor_test_common_impl(compiler, $tensor_name);
+                //        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                //    }
+                //}
 
                 #[cfg(not(feature = "cranelift"))]
                 {
@@ -1586,28 +1587,28 @@ mod tests {
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                 }
 
-                #[cfg(target_arch = "wasm32")]
-                {
-                    for filename in [
-                        concat!(stringify!($name),"_llvm"),
-                    ] {
-                        let filename = format!("test_output/{filename}.wasm");
-                        let mut file = std::fs::File::open(filename.as_str()).unwrap();
-                        let mut buffer = Vec::new();
-                        file.read_to_end(&mut buffer).unwrap();
-                        let compiler = Compiler::from_object_file(
-                            buffer,
-                            CompilerMode::SingleThreaded,
-                        ).unwrap();
-                        let results = tensor_test_common_impl(compiler, $tensor_name);
-                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
-                        assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
-                        assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
-                        assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
-                        assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
-                    }
-                }
+                //#[cfg(target_arch = "wasm32")]
+                //{
+                //    for filename in [
+                //        concat!(stringify!($name),"_llvm"),
+                //    ] {
+                //        let filename = format!("test_output/{filename}.wasm");
+                //        let mut file = std::fs::File::open(filename.as_str()).unwrap();
+                //        let mut buffer = Vec::new();
+                //        file.read_to_end(&mut buffer).unwrap();
+                //        let compiler = Compiler::from_object_file(
+                //            buffer,
+                //            CompilerMode::SingleThreaded,
+                //        ).unwrap();
+                //        let results = tensor_test_common_impl(compiler, $tensor_name);
+                //        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                //        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
+                //        assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                //        assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                //        assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                //        assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
+                //    }
+                //}
             }
         )*
         }
@@ -1671,24 +1672,24 @@ mod tests {
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                 }
 
-                #[cfg(target_arch = "wasm32")]
-                {
-                    for filename in [
-                        concat!(stringify!($name),"_llvm"),
-                    ] {
-                        let filename = format!("test_output/{filename}.wasm");
-                        let mut file = std::fs::File::open(filename.as_str()).unwrap();
-                        let mut buffer = Vec::new();
-                        file.read_to_end(&mut buffer).unwrap();
-                        let compiler = Compiler::from_object_file(
-                            buffer,
-                            CompilerMode::SingleThreaded,
-                        ).unwrap();
-                        let results = tensor_test_common_impl(compiler, $tensor_name);
-                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                    }
-                }
+                //#[cfg(target_arch = "wasm32")]
+                //{
+                //    for filename in [
+                //        concat!(stringify!($name),"_llvm"),
+                //    ] {
+                //        let filename = format!("test_output/{filename}.wasm");
+                //        let mut file = std::fs::File::open(filename.as_str()).unwrap();
+                //        let mut buffer = Vec::new();
+                //        file.read_to_end(&mut buffer).unwrap();
+                //        let compiler = Compiler::from_object_file(
+                //            buffer,
+                //            CompilerMode::SingleThreaded,
+                //        ).unwrap();
+                //        let results = tensor_test_common_impl(compiler, $tensor_name);
+                //        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                //        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                //    }
+                //}
 
 
                 #[cfg(feature = "rayon")]

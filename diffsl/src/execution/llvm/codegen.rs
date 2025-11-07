@@ -2736,6 +2736,7 @@ impl<'ctx> CodeGen<'ctx> {
             "calc_out"
         };
         let function = self.module.add_function(function_name, fn_type, None);
+        function.add_attribute(AttributeLoc::Function, self.context.create_string_attribute("wasm-export-name", function_name));
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -2905,6 +2906,7 @@ impl<'ctx> CodeGen<'ctx> {
         let fn_arg_names = &["t", "u", "data", "rr", "thread_id", "thread_dim"];
         let function_name = if include_constants { "rhs_full" } else { "rhs" };
         let function = self.module.add_function(function_name, fn_type, None);
+        function.add_attribute(AttributeLoc::Function, self.context.create_string_attribute("wasm-export-name", function_name));
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");

@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
-type RealType = f64;
-type UIntType = u32;
+pub type RealType = f64;
+pub type UIntType = u32;
 
 pub type BarrierInitFunc = unsafe extern "C" fn();
 

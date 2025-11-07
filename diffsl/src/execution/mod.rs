@@ -11,6 +11,8 @@ pub mod mmap;
 pub mod module;
 pub mod relocations;
 //pub mod serialize;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 pub mod data_layout;
 pub use data_layout::DataLayout;

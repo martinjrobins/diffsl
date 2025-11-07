@@ -12,6 +12,7 @@ exclude = ["Enzyme/enzyme/benchmarks"]
 
 [features]
 default = []
+wasm = ["js-sys", "wasm-bindgen", "wasm-bindgen-futures"]
 compile_test = []
 llvm15-0 = ["inkwell-150", "llvm-sys-150", "llvm", "enzyme"]
 llvm16-0 = ["inkwell-160", "llvm-sys-160", "llvm", "enzyme"]
@@ -52,6 +53,9 @@ lazy_static = "1.5.0"
 serde = "1.0.219"
 object = "0.36.7"
 libc = "0.2.172"
+js-sys = { version = "0.3.81", optional = true }
+wasm-bindgen = { version = "0.2.104", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mmap-rs = "0.6.1"
@@ -66,9 +70,14 @@ features = [
 bindgen = { version = "0.71.1", optional = true }
 cmake = { version = "0.1.54", optional = true }
 
+[dev-dependencies]
+wasm-bindgen-test = { version = "0.3.0" }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 divan = "0.1.21"
 env_logger = "0.11.8"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 
 [[bench]]
 name = "evaluation"

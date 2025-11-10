@@ -824,7 +824,10 @@ impl<M: Module> CraneliftModule<M> {
                 let curr_blk_index = codegen
                     .builder
                     .append_block_param(blk_block, codegen.int_type);
-                codegen.builder.ins().jump(blk_block, &[blk_start_index.into()]);
+                codegen
+                    .builder
+                    .ins()
+                    .jump(blk_block, &[blk_start_index.into()]);
 
                 codegen.builder.switch_to_block(blk_block);
 
@@ -854,10 +857,13 @@ impl<M: Module> CraneliftModule<M> {
                     i64::try_from(blk.nnz()).unwrap(),
                 );
                 let post_block = codegen.builder.create_block();
-                codegen
-                    .builder
-                    .ins()
-                    .brif(loop_while, blk_block, &[next_index.into()], post_block, &[]);
+                codegen.builder.ins().brif(
+                    loop_while,
+                    blk_block,
+                    &[next_index.into()],
+                    post_block,
+                    &[],
+                );
                 codegen.builder.seal_block(blk_block);
                 codegen.builder.seal_block(post_block);
                 codegen.builder.switch_to_block(post_block);
@@ -1628,7 +1634,9 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         let expr_index = self
             .builder
             .append_block_param(contract_block, self.int_type);
-        self.builder.ins().jump(contract_block, &[start_contract.into()]);
+        self.builder
+            .ins()
+            .jump(contract_block, &[start_contract.into()]);
         self.builder.switch_to_block(contract_block);
 
         // loop body - load index from layout
@@ -1714,9 +1722,13 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             thread_end.unwrap_or(final_contract_index),
         );
         let post_block = exit_block.unwrap_or(self.builder.create_block());
-        self.builder
-            .ins()
-            .brif(loop_while, block, &[next_contract_index.into()], post_block, &[]);
+        self.builder.ins().brif(
+            loop_while,
+            block,
+            &[next_contract_index.into()],
+            post_block,
+            &[],
+        );
         self.builder.seal_block(block);
         self.builder.switch_to_block(post_block);
         self.builder.seal_block(post_block);
@@ -1928,7 +1940,9 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                 let bcast_index = self.builder.append_block_param(bcast_block, self.int_type);
 
                 // setup loop block
-                self.builder.ins().jump(bcast_block, &[bcast_start_index.into()]);
+                self.builder
+                    .ins()
+                    .jump(bcast_block, &[bcast_start_index.into()]);
                 self.builder.switch_to_block(bcast_block);
 
                 // store value at index = expr_index * broadcast_len + bcast_index
@@ -2276,9 +2290,13 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                 i64::try_from(input.nnz()).unwrap(),
             );
             let post_block = self.builder.create_block();
-            self.builder
-                .ins()
-                .brif(loop_while, input_block, &[next_index.into()], post_block, &[]);
+            self.builder.ins().brif(
+                loop_while,
+                input_block,
+                &[next_index.into()],
+                post_block,
+                &[],
+            );
             self.builder.seal_block(input_block);
             self.builder.seal_block(post_block);
             self.builder.switch_to_block(post_block);

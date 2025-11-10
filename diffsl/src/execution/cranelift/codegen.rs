@@ -824,7 +824,7 @@ impl<M: Module> CraneliftModule<M> {
                 let curr_blk_index = codegen
                     .builder
                     .append_block_param(blk_block, codegen.int_type);
-                codegen.builder.ins().jump(blk_block, &[blk_start_index]);
+                codegen.builder.ins().jump(blk_block, &[blk_start_index.into()]);
 
                 codegen.builder.switch_to_block(blk_block);
 
@@ -857,7 +857,7 @@ impl<M: Module> CraneliftModule<M> {
                 codegen
                     .builder
                     .ins()
-                    .brif(loop_while, blk_block, &[next_index], post_block, &[]);
+                    .brif(loop_while, blk_block, &[next_index.into()], post_block, &[]);
                 codegen.builder.seal_block(blk_block);
                 codegen.builder.seal_block(post_block);
                 codegen.builder.switch_to_block(post_block);
@@ -1429,7 +1429,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             } else {
                 zero
             };
-            self.builder.ins().jump(block, &[curr_index_start]);
+            self.builder.ins().jump(block, &[curr_index_start.into()]);
             self.builder.switch_to_block(block);
 
             #[allow(clippy::unnecessary_unwrap)]
@@ -1525,7 +1525,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
 
             self.builder
                 .ins()
-                .brif(loop_cond, blocks[i], &[next_index], block, &[]);
+                .brif(loop_cond, blocks[i], &[next_index.into()], block, &[]);
             self.builder.seal_block(blocks[i]);
             self.builder.seal_block(block);
             self.builder.switch_to_block(block);
@@ -1584,7 +1584,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         let contract_index = self.builder.append_block_param(block, self.int_type);
         self.builder
             .ins()
-            .jump(block, &[thread_start.unwrap_or(zero)]);
+            .jump(block, &[thread_start.unwrap_or(zero).into()]);
         self.builder.switch_to_block(block);
 
         // start and end indices stored next to each other in the indices array
@@ -1628,7 +1628,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         let expr_index = self
             .builder
             .append_block_param(contract_block, self.int_type);
-        self.builder.ins().jump(contract_block, &[start_contract]);
+        self.builder.ins().jump(contract_block, &[start_contract.into()]);
         self.builder.switch_to_block(contract_block);
 
         // loop body - load index from layout
@@ -1686,7 +1686,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         self.builder.ins().brif(
             loop_while,
             contract_block,
-            &[next_elmt_index],
+            &[next_elmt_index.into()],
             post_contract_block,
             &[],
         );
@@ -1716,7 +1716,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         let post_block = exit_block.unwrap_or(self.builder.create_block());
         self.builder
             .ins()
-            .brif(loop_while, block, &[next_contract_index], post_block, &[]);
+            .brif(loop_while, block, &[next_contract_index.into()], post_block, &[]);
         self.builder.seal_block(block);
         self.builder.switch_to_block(post_block);
         self.builder.seal_block(post_block);
@@ -1756,7 +1756,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         let curr_index = self.builder.append_block_param(block, int_type);
         self.builder
             .ins()
-            .jump(block, &[thread_start.unwrap_or(zero)]);
+            .jump(block, &[thread_start.unwrap_or(zero).into()]);
         self.builder.switch_to_block(block);
 
         // loop body - load index from layout
@@ -1821,7 +1821,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
 
         self.builder
             .ins()
-            .brif(loop_while, block, &[next_index], post_block, &[]);
+            .brif(loop_while, block, &[next_index.into()], post_block, &[]);
         self.builder.seal_block(block);
         self.builder.switch_to_block(post_block);
         self.builder.seal_block(post_block);
@@ -1858,7 +1858,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         let curr_index = self.builder.append_block_param(block, int_type);
         self.builder
             .ins()
-            .jump(block, &[thread_start.unwrap_or(zero)]);
+            .jump(block, &[thread_start.unwrap_or(zero).into()]);
         self.builder.switch_to_block(block);
 
         // loop body - index is just the same for each element
@@ -1894,7 +1894,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         let post_block = exit_block.unwrap_or(self.builder.create_block());
         self.builder
             .ins()
-            .brif(loop_while, block, &[next_index], post_block, &[]);
+            .brif(loop_while, block, &[next_index.into()], post_block, &[]);
         self.builder.seal_block(block);
         self.builder.switch_to_block(post_block);
         self.builder.seal_block(post_block);
@@ -1928,7 +1928,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                 let bcast_index = self.builder.append_block_param(bcast_block, self.int_type);
 
                 // setup loop block
-                self.builder.ins().jump(bcast_block, &[bcast_start_index]);
+                self.builder.ins().jump(bcast_block, &[bcast_start_index.into()]);
                 self.builder.switch_to_block(bcast_block);
 
                 // store value at index = expr_index * broadcast_len + bcast_index
@@ -1947,7 +1947,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                 self.builder.ins().brif(
                     bcast_cond,
                     bcast_block,
-                    &[bcast_next_index],
+                    &[bcast_next_index.into()],
                     post_bcast_block,
                     &[],
                 );
@@ -2020,14 +2020,14 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
     }
 
     fn declare_variable(&mut self, ty: types::Type, name: &str, val: Value) -> Variable {
-        let index = self.variables.len();
-        let var = Variable::new(index);
         if !self.variables.contains_key(name) {
-            self.variables.insert(name.into(), var);
-            self.builder.declare_var(var, ty);
+            let var = self.builder.declare_var(ty);
             self.builder.def_var(var, val);
+            self.variables.insert(name.into(), var);
+            var
+        } else {
+            *self.variables.get(name).unwrap()
         }
-        var
     }
 
     fn get_tangent_tensor_name(&self, name: &str) -> String {
@@ -2237,7 +2237,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
 
             let input_block = self.builder.create_block();
             let curr_input_index = self.builder.append_block_param(input_block, self.int_type);
-            self.builder.ins().jump(input_block, &[start_index]);
+            self.builder.ins().jump(input_block, &[start_index.into()]);
             self.builder.switch_to_block(input_block);
 
             // loop body - copy value from inputs to data
@@ -2278,7 +2278,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             let post_block = self.builder.create_block();
             self.builder
                 .ins()
-                .brif(loop_while, input_block, &[next_index], post_block, &[]);
+                .brif(loop_while, input_block, &[next_index.into()], post_block, &[]);
             self.builder.seal_block(input_block);
             self.builder.seal_block(post_block);
             self.builder.switch_to_block(post_block);

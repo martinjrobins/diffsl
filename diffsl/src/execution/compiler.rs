@@ -1564,7 +1564,15 @@ mod tests {
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<LlvmModule, f32>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
+                        assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                        assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
+
+                        let results = tensor_test_common::<LlvmModule, f64>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                         assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                         assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());

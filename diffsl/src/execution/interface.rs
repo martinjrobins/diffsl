@@ -1,167 +1,162 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
-type RealType = f64;
 type UIntType = u32;
 
 pub type BarrierInitFunc = unsafe extern "C" fn();
 
 pub type SetConstantsFunc = unsafe extern "C" fn(thread_id: UIntType, thread_dim: UIntType);
 
-pub type StopFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *mut RealType,
-    root: *mut RealType,
+pub type StopFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *mut T,
+    root: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type RhsFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *mut RealType,
-    rr: *mut RealType,
+pub type RhsFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *mut T,
+    rr: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type RhsGradFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    du: *const RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-    rr: *const RealType,
-    drr: *mut RealType,
+pub type RhsGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    du: *const T,
+    data: *const T,
+    ddata: *mut T,
+    rr: *const T,
+    drr: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type RhsRevGradFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    du: *mut RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-    rr: *const RealType,
-    drr: *mut RealType,
+pub type RhsRevGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    du: *mut T,
+    data: *const T,
+    ddata: *mut T,
+    rr: *const T,
+    drr: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type RhsSensGradFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-    rr: *const RealType,
-    drr: *mut RealType,
+pub type RhsSensGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *const T,
+    ddata: *mut T,
+    rr: *const T,
+    drr: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type RhsSensRevGradFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-    rr: *const RealType,
-    drr: *mut RealType,
+pub type RhsSensRevGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *const T,
+    ddata: *mut T,
+    rr: *const T,
+    drr: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type MassFunc = unsafe extern "C" fn(
-    time: RealType,
-    v: *const RealType,
-    data: *mut RealType,
-    mv: *mut RealType,
+pub type MassFunc<T> = unsafe extern "C" fn(
+    time: T,
+    v: *const T,
+    data: *mut T,
+    mv: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type MassRevGradFunc = unsafe extern "C" fn(
-    time: RealType,
-    v: *const RealType,
-    dv: *mut RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-    mv: *const RealType,
-    dmv: *mut RealType,
+pub type MassRevGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    v: *const T,
+    dv: *mut T,
+    data: *const T,
+    ddata: *mut T,
+    mv: *const T,
+    dmv: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type U0Func = unsafe extern "C" fn(
-    u: *mut RealType,
-    data: *mut RealType,
+pub type U0Func<T> =
+    unsafe extern "C" fn(u: *mut T, data: *mut T, thread_id: UIntType, thread_dim: UIntType);
+pub type U0SensGradFunc<T> = unsafe extern "C" fn(
+    u: *const T,
+    du: *mut T,
+    data: *const T,
+    ddata: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type U0SensGradFunc = unsafe extern "C" fn(
-    u: *const RealType,
-    du: *mut RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
+pub type U0GradFunc<T> = unsafe extern "C" fn(
+    u: *const T,
+    du: *mut T,
+    data: *const T,
+    ddata: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type U0GradFunc = unsafe extern "C" fn(
-    u: *const RealType,
-    du: *mut RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
+pub type U0RevGradFunc<T> = unsafe extern "C" fn(
+    u: *const T,
+    du: *mut T,
+    data: *const T,
+    ddata: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type U0RevGradFunc = unsafe extern "C" fn(
-    u: *const RealType,
-    du: *mut RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
+pub type CalcOutFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *mut T,
+    out: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type CalcOutFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *mut RealType,
-    out: *mut RealType,
+pub type CalcOutGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    du: *const T,
+    data: *const T,
+    ddata: *mut T,
+    out: *const T,
+    dout: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type CalcOutGradFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    du: *const RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-    out: *const RealType,
-    dout: *mut RealType,
+pub type CalcOutRevGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    du: *mut T,
+    data: *const T,
+    ddata: *mut T,
+    out: *const T,
+    dout: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type CalcOutRevGradFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    du: *mut RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-    out: *const RealType,
-    dout: *mut RealType,
+pub type CalcOutSensGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *const T,
+    ddata: *mut T,
+    out: *const T,
+    dout: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
-pub type CalcOutSensGradFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-    out: *const RealType,
-    dout: *mut RealType,
-    thread_id: UIntType,
-    thread_dim: UIntType,
-);
-pub type CalcOutSensRevGradFunc = unsafe extern "C" fn(
-    time: RealType,
-    u: *const RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-    out: *const RealType,
-    dout: *mut RealType,
+pub type CalcOutSensRevGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *const T,
+    ddata: *mut T,
+    out: *const T,
+    dout: *mut T,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -173,45 +168,34 @@ pub type GetDimsFunc = unsafe extern "C" fn(
     stop: *mut UIntType,
     has_mass: *mut UIntType,
 );
-pub type SetInputsFunc = unsafe extern "C" fn(inputs: *const RealType, data: *mut RealType);
-pub type GetInputsFunc = unsafe extern "C" fn(inputs: *mut RealType, data: *const RealType);
-pub type SetInputsGradFunc = unsafe extern "C" fn(
-    inputs: *const RealType,
-    dinputs: *const RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-);
-pub type SetInputsRevGradFunc = unsafe extern "C" fn(
-    inputs: *const RealType,
-    dinputs: *mut RealType,
-    data: *const RealType,
-    ddata: *mut RealType,
-);
-pub type SetIdFunc = unsafe extern "C" fn(id: *mut RealType);
-pub type GetTensorFunc = unsafe extern "C" fn(
-    data: *const RealType,
-    tensor_data: *mut *mut RealType,
-    tensor_size: *mut UIntType,
-);
-pub type GetConstantFunc =
-    unsafe extern "C" fn(tensor_data: *mut *const RealType, tensor_size: *mut UIntType);
+pub type SetInputsFunc<T> = unsafe extern "C" fn(inputs: *const T, data: *mut T);
+pub type GetInputsFunc<T> = unsafe extern "C" fn(inputs: *mut T, data: *const T);
+pub type SetInputsGradFunc<T> =
+    unsafe extern "C" fn(inputs: *const T, dinputs: *const T, data: *const T, ddata: *mut T);
+pub type SetInputsRevGradFunc<T> =
+    unsafe extern "C" fn(inputs: *const T, dinputs: *mut T, data: *const T, ddata: *mut T);
+pub type SetIdFunc<T> = unsafe extern "C" fn(id: *mut T);
+pub type GetTensorFunc<T> =
+    unsafe extern "C" fn(data: *const T, tensor_data: *mut *mut T, tensor_size: *mut UIntType);
+pub type GetConstantFunc<T> =
+    unsafe extern "C" fn(tensor_data: *mut *const T, tensor_size: *mut UIntType);
 
-pub(crate) struct JitFunctions {
-    pub(crate) set_u0: U0Func,
-    pub(crate) rhs: RhsFunc,
-    pub(crate) mass: MassFunc,
-    pub(crate) calc_out: CalcOutFunc,
-    pub(crate) calc_stop: StopFunc,
-    pub(crate) set_id: SetIdFunc,
+pub(crate) struct JitFunctions<T> {
+    pub(crate) set_u0: U0Func<T>,
+    pub(crate) rhs: RhsFunc<T>,
+    pub(crate) mass: MassFunc<T>,
+    pub(crate) calc_out: CalcOutFunc<T>,
+    pub(crate) calc_stop: StopFunc<T>,
+    pub(crate) set_id: SetIdFunc<T>,
     pub(crate) get_dims: GetDimsFunc,
-    pub(crate) set_inputs: SetInputsFunc,
-    pub(crate) get_inputs: GetInputsFunc,
+    pub(crate) set_inputs: SetInputsFunc<T>,
+    pub(crate) get_inputs: GetInputsFunc<T>,
     #[allow(dead_code)]
     pub(crate) barrier_init: Option<BarrierInitFunc>,
     pub(crate) set_constants: SetConstantsFunc,
 }
 
-impl JitFunctions {
+impl<T> JitFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
         // check if all required symbols are present
         let required_symbols = [
@@ -231,20 +215,21 @@ impl JitFunctions {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
             }
         }
-        let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func>(symbol_map["set_u0"]) };
-        let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc>(symbol_map["rhs"]) };
-        let mass = unsafe { std::mem::transmute::<*const u8, MassFunc>(symbol_map["mass"]) };
+        let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func<T>>(symbol_map["set_u0"]) };
+        let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc<T>>(symbol_map["rhs"]) };
+        let mass = unsafe { std::mem::transmute::<*const u8, MassFunc<T>>(symbol_map["mass"]) };
         let calc_out =
-            unsafe { std::mem::transmute::<*const u8, CalcOutFunc>(symbol_map["calc_out"]) };
+            unsafe { std::mem::transmute::<*const u8, CalcOutFunc<T>>(symbol_map["calc_out"]) };
         let calc_stop =
-            unsafe { std::mem::transmute::<*const u8, StopFunc>(symbol_map["calc_stop"]) };
-        let set_id = unsafe { std::mem::transmute::<*const u8, SetIdFunc>(symbol_map["set_id"]) };
+            unsafe { std::mem::transmute::<*const u8, StopFunc<T>>(symbol_map["calc_stop"]) };
+        let set_id =
+            unsafe { std::mem::transmute::<*const u8, SetIdFunc<T>>(symbol_map["set_id"]) };
         let get_dims =
             unsafe { std::mem::transmute::<*const u8, GetDimsFunc>(symbol_map["get_dims"]) };
         let set_inputs =
-            unsafe { std::mem::transmute::<*const u8, SetInputsFunc>(symbol_map["set_inputs"]) };
+            unsafe { std::mem::transmute::<*const u8, SetInputsFunc<T>>(symbol_map["set_inputs"]) };
         let get_inputs =
-            unsafe { std::mem::transmute::<*const u8, GetInputsFunc>(symbol_map["get_inputs"]) };
+            unsafe { std::mem::transmute::<*const u8, GetInputsFunc<T>>(symbol_map["get_inputs"]) };
         let barrier_init = symbol_map.get("barrier_init").map(|func_ptr| unsafe {
             std::mem::transmute::<*const u8, BarrierInitFunc>(*func_ptr)
         });
@@ -268,14 +253,14 @@ impl JitFunctions {
     }
 }
 
-pub(crate) struct JitGradFunctions {
-    pub(crate) set_u0_grad: U0GradFunc,
-    pub(crate) rhs_grad: RhsGradFunc,
-    pub(crate) calc_out_grad: CalcOutGradFunc,
-    pub(crate) set_inputs_grad: SetInputsGradFunc,
+pub(crate) struct JitGradFunctions<T> {
+    pub(crate) set_u0_grad: U0GradFunc<T>,
+    pub(crate) rhs_grad: RhsGradFunc<T>,
+    pub(crate) calc_out_grad: CalcOutGradFunc<T>,
+    pub(crate) set_inputs_grad: SetInputsGradFunc<T>,
 }
 
-impl JitGradFunctions {
+impl<T> JitGradFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
         // check if all required symbols are present
         let required_symbols = [
@@ -290,14 +275,14 @@ impl JitGradFunctions {
             }
         }
         let set_u0_grad =
-            unsafe { std::mem::transmute::<*const u8, U0GradFunc>(symbol_map["set_u0_grad"]) };
+            unsafe { std::mem::transmute::<*const u8, U0GradFunc<T>>(symbol_map["set_u0_grad"]) };
         let rhs_grad =
-            unsafe { std::mem::transmute::<*const u8, RhsGradFunc>(symbol_map["rhs_grad"]) };
+            unsafe { std::mem::transmute::<*const u8, RhsGradFunc<T>>(symbol_map["rhs_grad"]) };
         let calc_out_grad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutGradFunc>(symbol_map["calc_out_grad"])
+            std::mem::transmute::<*const u8, CalcOutGradFunc<T>>(symbol_map["calc_out_grad"])
         };
         let set_inputs_grad = unsafe {
-            std::mem::transmute::<*const u8, SetInputsGradFunc>(symbol_map["set_inputs_grad"])
+            std::mem::transmute::<*const u8, SetInputsGradFunc<T>>(symbol_map["set_inputs_grad"])
         };
 
         Ok(Self {
@@ -309,15 +294,15 @@ impl JitGradFunctions {
     }
 }
 
-pub(crate) struct JitGradRFunctions {
-    pub(crate) set_u0_rgrad: U0RevGradFunc,
-    pub(crate) rhs_rgrad: RhsRevGradFunc,
-    pub(crate) mass_rgrad: MassRevGradFunc,
-    pub(crate) calc_out_rgrad: CalcOutRevGradFunc,
-    pub(crate) set_inputs_rgrad: SetInputsRevGradFunc,
+pub(crate) struct JitGradRFunctions<T> {
+    pub(crate) set_u0_rgrad: U0RevGradFunc<T>,
+    pub(crate) rhs_rgrad: RhsRevGradFunc<T>,
+    pub(crate) mass_rgrad: MassRevGradFunc<T>,
+    pub(crate) calc_out_rgrad: CalcOutRevGradFunc<T>,
+    pub(crate) set_inputs_rgrad: SetInputsRevGradFunc<T>,
 }
 
-impl JitGradRFunctions {
+impl<T> JitGradRFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
         let required_symbols = [
             "set_u0_rgrad",
@@ -331,17 +316,21 @@ impl JitGradRFunctions {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
             }
         }
-        let set_u0_rgrad =
-            unsafe { std::mem::transmute::<*const u8, U0RevGradFunc>(symbol_map["set_u0_rgrad"]) };
+        let set_u0_rgrad = unsafe {
+            std::mem::transmute::<*const u8, U0RevGradFunc<T>>(symbol_map["set_u0_rgrad"])
+        };
         let rhs_rgrad =
-            unsafe { std::mem::transmute::<*const u8, RhsRevGradFunc>(symbol_map["rhs_rgrad"]) };
-        let mass_rgrad =
-            unsafe { std::mem::transmute::<*const u8, MassRevGradFunc>(symbol_map["mass_rgrad"]) };
+            unsafe { std::mem::transmute::<*const u8, RhsRevGradFunc<T>>(symbol_map["rhs_rgrad"]) };
+        let mass_rgrad = unsafe {
+            std::mem::transmute::<*const u8, MassRevGradFunc<T>>(symbol_map["mass_rgrad"])
+        };
         let calc_out_rgrad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutRevGradFunc>(symbol_map["calc_out_rgrad"])
+            std::mem::transmute::<*const u8, CalcOutRevGradFunc<T>>(symbol_map["calc_out_rgrad"])
         };
         let set_inputs_rgrad = unsafe {
-            std::mem::transmute::<*const u8, SetInputsRevGradFunc>(symbol_map["set_inputs_rgrad"])
+            std::mem::transmute::<*const u8, SetInputsRevGradFunc<T>>(
+                symbol_map["set_inputs_rgrad"],
+            )
         };
 
         Ok(Self {
@@ -354,13 +343,13 @@ impl JitGradRFunctions {
     }
 }
 
-pub(crate) struct JitSensGradFunctions {
-    pub(crate) set_u0_sgrad: U0SensGradFunc,
-    pub(crate) rhs_sgrad: RhsSensGradFunc,
-    pub(crate) calc_out_sgrad: CalcOutSensGradFunc,
+pub(crate) struct JitSensGradFunctions<T> {
+    pub(crate) set_u0_sgrad: U0SensGradFunc<T>,
+    pub(crate) rhs_sgrad: RhsSensGradFunc<T>,
+    pub(crate) calc_out_sgrad: CalcOutSensGradFunc<T>,
 }
 
-impl JitSensGradFunctions {
+impl<T> JitSensGradFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
         let required_symbols = ["rhs_sgrad", "calc_out_sgrad", "set_u0_sgrad"];
         for symbol in &required_symbols {
@@ -368,13 +357,15 @@ impl JitSensGradFunctions {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
             }
         }
-        let rhs_sgrad =
-            unsafe { std::mem::transmute::<*const u8, RhsSensGradFunc>(symbol_map["rhs_sgrad"]) };
-        let calc_out_sgrad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutSensGradFunc>(symbol_map["calc_out_sgrad"])
+        let rhs_sgrad = unsafe {
+            std::mem::transmute::<*const u8, RhsSensGradFunc<T>>(symbol_map["rhs_sgrad"])
         };
-        let set_u0_sgrad =
-            unsafe { std::mem::transmute::<*const u8, U0SensGradFunc>(symbol_map["set_u0_sgrad"]) };
+        let calc_out_sgrad = unsafe {
+            std::mem::transmute::<*const u8, CalcOutSensGradFunc<T>>(symbol_map["calc_out_sgrad"])
+        };
+        let set_u0_sgrad = unsafe {
+            std::mem::transmute::<*const u8, U0SensGradFunc<T>>(symbol_map["set_u0_sgrad"])
+        };
 
         Ok(Self {
             rhs_sgrad,
@@ -384,12 +375,12 @@ impl JitSensGradFunctions {
     }
 }
 
-pub(crate) struct JitSensRevGradFunctions {
-    pub(crate) rhs_rgrad: RhsSensRevGradFunc,
-    pub(crate) calc_out_rgrad: CalcOutSensRevGradFunc,
+pub(crate) struct JitSensRevGradFunctions<T> {
+    pub(crate) rhs_rgrad: RhsSensRevGradFunc<T>,
+    pub(crate) calc_out_rgrad: CalcOutSensRevGradFunc<T>,
 }
 
-impl JitSensRevGradFunctions {
+impl<T> JitSensRevGradFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
         let required_symbols = ["rhs_srgrad", "calc_out_srgrad"];
         for symbol in &required_symbols {
@@ -398,10 +389,12 @@ impl JitSensRevGradFunctions {
             }
         }
         let rhs_rgrad = unsafe {
-            std::mem::transmute::<*const u8, RhsSensRevGradFunc>(symbol_map["rhs_srgrad"])
+            std::mem::transmute::<*const u8, RhsSensRevGradFunc<T>>(symbol_map["rhs_srgrad"])
         };
         let calc_out_rgrad = unsafe {
-            std::mem::transmute::<*const u8, CalcOutSensRevGradFunc>(symbol_map["calc_out_srgrad"])
+            std::mem::transmute::<*const u8, CalcOutSensRevGradFunc<T>>(
+                symbol_map["calc_out_srgrad"],
+            )
         };
 
         Ok(Self {
@@ -411,12 +404,12 @@ impl JitSensRevGradFunctions {
     }
 }
 
-pub(crate) struct JitGetTensorFunctions {
-    pub(crate) data_map: HashMap<String, GetTensorFunc>,
-    pub(crate) constant_map: HashMap<String, GetConstantFunc>,
+pub(crate) struct JitGetTensorFunctions<T> {
+    pub(crate) data_map: HashMap<String, GetTensorFunc<T>>,
+    pub(crate) constant_map: HashMap<String, GetConstantFunc<T>>,
 }
 
-impl JitGetTensorFunctions {
+impl<T> JitGetTensorFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
         let mut data_map = HashMap::new();
         let mut constant_map = HashMap::new();
@@ -424,10 +417,11 @@ impl JitGetTensorFunctions {
         let constant_prefix = "get_constant_";
         for (name, func_ptr) in symbol_map.iter() {
             if name.starts_with(data_prefix) {
-                let func = unsafe { std::mem::transmute::<*const u8, GetTensorFunc>(*func_ptr) };
+                let func = unsafe { std::mem::transmute::<*const u8, GetTensorFunc<T>>(*func_ptr) };
                 data_map.insert(name.strip_prefix(data_prefix).unwrap().to_string(), func);
             } else if name.starts_with(constant_prefix) {
-                let func = unsafe { std::mem::transmute::<*const u8, GetConstantFunc>(*func_ptr) };
+                let func =
+                    unsafe { std::mem::transmute::<*const u8, GetConstantFunc<T>>(*func_ptr) };
                 constant_map.insert(
                     name.strip_prefix(constant_prefix).unwrap().to_string(),
                     func,

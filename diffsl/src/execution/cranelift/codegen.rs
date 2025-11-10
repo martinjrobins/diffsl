@@ -15,6 +15,7 @@ use crate::execution::compiler::CompilerMode;
 use crate::execution::module::{
     CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit,
 };
+use crate::execution::scalar::RealType;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 
 pub struct CraneliftModule<M: Module> {
@@ -370,7 +371,13 @@ impl<M: Module> CraneliftModule<M> {
         self.declare_function("set_u0_grad")
     }
 
-    fn new(triple: Triple, model: &DiscreteModel, threaded: bool, mut module: M) -> Result<Self> {
+    fn new(
+        triple: Triple,
+        model: &DiscreteModel,
+        threaded: bool,
+        mut module: M,
+        real_type: RealType,
+    ) -> Result<Self> {
         let ptr_type = match triple.pointer_width().unwrap() {
             PointerWidth::U16 => types::I16,
             PointerWidth::U32 => types::I32,
@@ -381,9 +388,13 @@ impl<M: Module> CraneliftModule<M> {
 
         // define constant global data
         let int_type = types::I32;
-        let real_type = types::F64;
+        let real_type_cranelift = match real_type {
+            RealType::F32 => types::F32,
+            RealType::F64 => types::F64,
+        };
         let mut data_description = DataDescription::new();
-        data_description.define_zeroinit(layout.constants().len() * (real_type.bytes() as usize));
+        data_description
+            .define_zeroinit(layout.constants().len() * (real_type_cranelift.bytes() as usize));
         let constants_id = module.declare_data("constants", Linkage::Local, true, false)?;
         module.define_data(constants_id, &data_description)?;
 
@@ -432,7 +443,7 @@ impl<M: Module> CraneliftModule<M> {
             indices_id,
             constants_id,
             int_type,
-            real_type,
+            real_type: real_type_cranelift,
             real_ptr_type: ptr_type,
             int_ptr_type: ptr_type,
             layout,
@@ -869,6 +880,7 @@ impl CodegenModuleCompile for CraneliftModule<ObjectModule> {
         model: &DiscreteModel,
         mode: CompilerMode,
         triple: Option<Triple>,
+        real_type: RealType,
     ) -> Result<Self> {
         let thread_dim = mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
@@ -885,7 +897,7 @@ impl CodegenModuleCompile for CraneliftModule<ObjectModule> {
 
         let module = ObjectModule::new(builder);
 
-        Self::new(triple, model, threaded, module)
+        Self::new(triple, model, threaded, module, real_type)
     }
 }
 
@@ -894,6 +906,7 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
         model: &DiscreteModel,
         mode: CompilerMode,
         triple: Option<Triple>,
+        real_type: RealType,
     ) -> Result<Self> {
         let thread_dim = mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
@@ -927,7 +940,7 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
         }
 
         let module = JITModule::new(builder);
-        Self::new(triple, model, threaded, module)
+        Self::new(triple, model, threaded, module, real_type)
     }
 }
 

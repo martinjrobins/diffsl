@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use target_lexicon::Triple;
 
-use crate::discretise::DiscreteModel;
+use crate::{discretise::DiscreteModel, execution::scalar::RealType};
 
 use super::compiler::CompilerMode;
 
@@ -14,6 +14,7 @@ pub trait CodegenModuleCompile: CodegenModule {
         model: &DiscreteModel,
         mode: CompilerMode,
         triple: Option<Triple>,
+        real_type: RealType,
     ) -> Result<Self>;
 }
 

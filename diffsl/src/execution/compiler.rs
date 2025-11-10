@@ -8,20 +8,20 @@ use super::{
     },
     module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
 };
-use crate::{discretise::DiscreteModel, parser::parse_ds_string};
+use crate::{discretise::DiscreteModel, execution::scalar::Scalar, parser::parse_ds_string};
 
 use anyhow::{anyhow, Result};
 #[cfg(feature = "rayon")]
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use uid::Id;
 
-pub struct Compiler<M: CodegenModule> {
-    jit_functions: JitFunctions,
-    jit_grad_functions: JitGradFunctions,
-    jit_grad_r_functions: Option<JitGradRFunctions>,
-    jit_sens_grad_functions: Option<JitSensGradFunctions>,
-    jit_sens_rev_grad_functions: Option<JitSensRevGradFunctions>,
-    jit_get_tensor_functions: JitGetTensorFunctions,
+pub struct Compiler<M: CodegenModule, T: Scalar> {
+    jit_functions: JitFunctions<T>,
+    jit_grad_functions: JitGradFunctions<T>,
+    jit_grad_r_functions: Option<JitGradRFunctions<T>>,
+    jit_sens_grad_functions: Option<JitSensGradFunctions<T>>,
+    jit_sens_rev_grad_functions: Option<JitSensRevGradFunctions<T>>,
+    jit_get_tensor_functions: JitGetTensorFunctions<T>,
 
     number_of_states: usize,
     number_of_parameters: usize,
@@ -69,18 +69,18 @@ impl CompilerMode {
     }
 }
 
-impl<M: CodegenModule> Compiler<M> {
+impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     pub fn new(
         module: M,
         symbol_map: HashMap<String, *const u8>,
         mode: CompilerMode,
     ) -> Result<Self> {
-        let jit_functions = JitFunctions::new(&symbol_map)?;
-        let jit_grad_functions = JitGradFunctions::new(&symbol_map)?;
-        let jit_get_tensor_functions = JitGetTensorFunctions::new(&symbol_map)?;
-        let jit_grad_r_functions = JitGradRFunctions::new(&symbol_map).ok();
-        let jit_sens_grad_functions = JitSensGradFunctions::new(&symbol_map).ok();
-        let jit_sens_rev_grad_functions = JitSensRevGradFunctions::new(&symbol_map).ok();
+        let jit_functions = JitFunctions::<T>::new(&symbol_map)?;
+        let jit_grad_functions = JitGradFunctions::<T>::new(&symbol_map)?;
+        let jit_get_tensor_functions = JitGetTensorFunctions::<T>::new(&symbol_map)?;
+        let jit_grad_r_functions = JitGradRFunctions::<T>::new(&symbol_map).ok();
+        let jit_sens_grad_functions = JitSensGradFunctions::<T>::new(&symbol_map).ok();
+        let jit_sens_rev_grad_functions = JitSensRevGradFunctions::<T>::new(&symbol_map).ok();
 
         let mut ret = Self {
             jit_functions,
@@ -165,7 +165,7 @@ impl<M: CodegenModule> Compiler<M> {
     where
         M: CodegenModuleCompile + CodegenModuleJit,
     {
-        let mut module = M::from_discrete_model(model, mode, None)?;
+        let mut module = M::from_discrete_model(model, mode, None, T::as_real_type())?;
         let symbol_map = module.jit()?;
         Self::new(module, symbol_map, mode)
     }
@@ -182,14 +182,14 @@ impl<M: CodegenModule> Compiler<M> {
             .collect()
     }
 
-    pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [f64]) -> Option<&'a [f64]> {
+    pub fn get_tensor_data<'a>(&self, name: &str, data: &'a [T]) -> Option<&'a [T]> {
         if let Some(get_func) = self.jit_get_tensor_functions.data_map.get(name) {
-            let mut tensor_data: *mut f64 = std::ptr::null_mut();
+            let mut tensor_data: *mut T = std::ptr::null_mut();
             let mut tensor_size: u32 = 0;
             unsafe {
                 (get_func)(
                     data.as_ptr(),
-                    &mut tensor_data as *mut *mut f64,
+                    &mut tensor_data as *mut *mut T,
                     &mut tensor_size as *mut u32,
                 )
             };
@@ -209,13 +209,13 @@ impl<M: CodegenModule> Compiler<M> {
             .collect()
     }
 
-    pub fn get_constants_data(&self, name: &str) -> Option<&[f64]> {
+    pub fn get_constants_data(&self, name: &str) -> Option<&[T]> {
         if let Some(get_func) = self.jit_get_tensor_functions.constant_map.get(name) {
-            let mut tensor_data: *const f64 = std::ptr::null_mut();
+            let mut tensor_data: *const T = std::ptr::null_mut();
             let mut tensor_size: u32 = 0;
             unsafe {
                 (get_func)(
-                    &mut tensor_data as *mut *const f64,
+                    &mut tensor_data as *mut *const T,
                     &mut tensor_size as *mut u32,
                 )
             };
@@ -227,18 +227,14 @@ impl<M: CodegenModule> Compiler<M> {
         }
     }
 
-    pub fn get_tensor_data_mut<'a>(
-        &self,
-        name: &str,
-        data: &'a mut [f64],
-    ) -> Option<&'a mut [f64]> {
+    pub fn get_tensor_data_mut<'a>(&self, name: &str, data: &'a mut [T]) -> Option<&'a mut [T]> {
         if let Some(get_func) = self.jit_get_tensor_functions.data_map.get(name) {
-            let mut tensor_data: *mut f64 = std::ptr::null_mut();
+            let mut tensor_data: *mut T = std::ptr::null_mut();
             let mut tensor_size: u32 = 0;
             unsafe {
                 (get_func)(
                     data.as_ptr(),
-                    &mut tensor_data as *mut *mut f64,
+                    &mut tensor_data as *mut *mut T,
                     &mut tensor_size as *mut u32,
                 )
             };
@@ -282,7 +278,7 @@ impl<M: CodegenModule> Compiler<M> {
         f(0, 1);
     }
 
-    fn check_arg_len(&self, arg: &[f64], expected_len: usize, name: &str) {
+    fn check_arg_len(&self, arg: &[T], expected_len: usize, name: &str) {
         if arg.len() != expected_len {
             panic!(
                 "Expected arg {} has len {}, got {}",
@@ -293,23 +289,23 @@ impl<M: CodegenModule> Compiler<M> {
         }
     }
 
-    fn check_state_len(&self, state: &[f64], name: &str) {
+    fn check_state_len(&self, state: &[T], name: &str) {
         self.check_arg_len(state, self.number_of_states, name);
     }
 
-    fn check_stop_len(&self, stop: &[f64], name: &str) {
+    fn check_stop_len(&self, stop: &[T], name: &str) {
         self.check_arg_len(stop, self.number_of_stop, name);
     }
 
-    fn check_data_len(&self, data: &[f64], name: &str) {
+    fn check_data_len(&self, data: &[T], name: &str) {
         self.check_arg_len(data, self.data_len(), name);
     }
 
-    fn check_out_len(&self, out: &[f64], name: &str) {
+    fn check_out_len(&self, out: &[T], name: &str) {
         self.check_arg_len(out, self.number_of_outputs, name);
     }
 
-    fn check_inputs_len(&self, inputs: &[f64], name: &str) {
+    fn check_inputs_len(&self, inputs: &[T], name: &str) {
         if inputs.len() != self.number_of_parameters {
             panic!(
                 "Expected arg {} has len {}, got {}",
@@ -326,14 +322,14 @@ impl<M: CodegenModule> Compiler<M> {
         });
     }
 
-    pub fn set_u0(&self, yy: &mut [f64], data: &mut [f64]) {
+    pub fn set_u0(&self, yy: &mut [T], data: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.with_threading(|i, dim| unsafe {
-            (self.jit_functions.set_u0)(yy.as_ptr() as *mut f64, data.as_ptr() as *mut f64, i, dim);
+            (self.jit_functions.set_u0)(yy.as_ptr() as *mut T, data.as_ptr() as *mut T, i, dim);
         });
     }
 
-    pub fn set_u0_sgrad(&self, yy: &[f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
+    pub fn set_u0_sgrad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
@@ -345,16 +341,16 @@ impl<M: CodegenModule> Compiler<M> {
                 .expect("module does not support sens autograd")
                 .set_u0_sgrad)(
                 yy.as_ptr(),
-                dyy.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut T,
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 i,
                 dim,
             );
         });
     }
 
-    pub fn set_u0_rgrad(&self, yy: &[f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
+    pub fn set_u0_rgrad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
@@ -366,16 +362,16 @@ impl<M: CodegenModule> Compiler<M> {
                 .expect("module does not support reverse autograd")
                 .set_u0_rgrad)(
                 yy.as_ptr(),
-                dyy.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut T,
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 i,
                 dim,
             );
         });
     }
 
-    pub fn set_u0_grad(&self, yy: &[f64], dyy: &mut [f64], data: &[f64], ddata: &mut [f64]) {
+    pub fn set_u0_grad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
@@ -384,9 +380,9 @@ impl<M: CodegenModule> Compiler<M> {
             unsafe {
                 (self.jit_grad_functions.set_u0_grad)(
                     yy.as_ptr(),
-                    dyy.as_ptr() as *mut f64,
+                    dyy.as_ptr() as *mut T,
                     data.as_ptr(),
-                    ddata.as_ptr() as *mut f64,
+                    ddata.as_ptr() as *mut T,
                     i,
                     dim,
                 )
@@ -394,7 +390,7 @@ impl<M: CodegenModule> Compiler<M> {
         })
     }
 
-    pub fn calc_stop(&self, t: f64, yy: &[f64], data: &mut [f64], stop: &mut [f64]) {
+    pub fn calc_stop(&self, t: T, yy: &[T], data: &mut [T], stop: &mut [T]) {
         if self.number_of_stop == 0 {
             panic!("Model does not have a stop function");
         }
@@ -405,15 +401,15 @@ impl<M: CodegenModule> Compiler<M> {
             (self.jit_functions.calc_stop)(
                 t,
                 yy.as_ptr(),
-                data.as_ptr() as *mut f64,
-                stop.as_ptr() as *mut f64,
+                data.as_ptr() as *mut T,
+                stop.as_ptr() as *mut T,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn rhs(&self, t: f64, yy: &[f64], data: &mut [f64], rr: &mut [f64]) {
+    pub fn rhs(&self, t: T, yy: &[T], data: &mut [T], rr: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
         self.check_data_len(data, "data");
@@ -421,8 +417,8 @@ impl<M: CodegenModule> Compiler<M> {
             (self.jit_functions.rhs)(
                 t,
                 yy.as_ptr(),
-                data.as_ptr() as *mut f64,
-                rr.as_ptr() as *mut f64,
+                data.as_ptr() as *mut T,
+                rr.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -433,7 +429,7 @@ impl<M: CodegenModule> Compiler<M> {
         self.has_mass
     }
 
-    pub fn mass(&self, t: f64, v: &[f64], data: &mut [f64], mv: &mut [f64]) {
+    pub fn mass(&self, t: T, v: &[T], data: &mut [T], mv: &mut [T]) {
         if !self.has_mass {
             panic!("Model does not have a mass function");
         }
@@ -444,8 +440,8 @@ impl<M: CodegenModule> Compiler<M> {
             (self.jit_functions.mass)(
                 t,
                 v.as_ptr(),
-                data.as_ptr() as *mut f64,
-                mv.as_ptr() as *mut f64,
+                data.as_ptr() as *mut T,
+                mv.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -456,20 +452,20 @@ impl<M: CodegenModule> Compiler<M> {
         self.data_size
     }
 
-    pub fn get_new_data(&self) -> Vec<f64> {
-        vec![0.; self.data_len()]
+    pub fn get_new_data(&self) -> Vec<T> {
+        vec![T::zero(); self.data_len()]
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn rhs_grad(
         &self,
-        t: f64,
-        yy: &[f64],
-        dyy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        rr: &[f64],
-        drr: &mut [f64],
+        t: T,
+        yy: &[T],
+        dyy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        rr: &[T],
+        drr: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -483,9 +479,9 @@ impl<M: CodegenModule> Compiler<M> {
                 yy.as_ptr(),
                 dyy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
-                drr.as_ptr() as *mut f64,
+                drr.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -495,13 +491,13 @@ impl<M: CodegenModule> Compiler<M> {
     #[allow(clippy::too_many_arguments)]
     pub fn rhs_rgrad(
         &self,
-        t: f64,
-        yy: &[f64],
-        dyy: &mut [f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        rr: &[f64],
-        drr: &mut [f64],
+        t: T,
+        yy: &[T],
+        dyy: &mut [T],
+        data: &[T],
+        ddata: &mut [T],
+        rr: &[T],
+        drr: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -517,25 +513,18 @@ impl<M: CodegenModule> Compiler<M> {
                 .rhs_rgrad)(
                 t,
                 yy.as_ptr(),
-                dyy.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut T,
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
-                drr.as_ptr() as *mut f64,
+                drr.as_ptr() as *mut T,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn mass_rgrad(
-        &self,
-        t: f64,
-        dv: &mut [f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        dmv: &mut [f64],
-    ) {
+    pub fn mass_rgrad(&self, t: T, dv: &mut [T], data: &[T], ddata: &mut [T], dmv: &mut [T]) {
         self.check_state_len(dv, "dv");
         self.check_state_len(dmv, "dmv");
         self.check_data_len(data, "data");
@@ -548,26 +537,18 @@ impl<M: CodegenModule> Compiler<M> {
                 .mass_rgrad)(
                 t,
                 std::ptr::null(),
-                dv.as_ptr() as *mut f64,
+                dv.as_ptr() as *mut T,
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 std::ptr::null(),
-                dmv.as_ptr() as *mut f64,
+                dmv.as_ptr() as *mut T,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn rhs_sgrad(
-        &self,
-        t: f64,
-        yy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        rr: &[f64],
-        drr: &mut [f64],
-    ) {
+    pub fn rhs_sgrad(&self, t: T, yy: &[T], data: &[T], ddata: &mut [T], rr: &[T], drr: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
         self.check_state_len(drr, "drr");
@@ -582,24 +563,16 @@ impl<M: CodegenModule> Compiler<M> {
                 t,
                 yy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
-                drr.as_ptr() as *mut f64,
+                drr.as_ptr() as *mut T,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn rhs_srgrad(
-        &self,
-        t: f64,
-        yy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        rr: &[f64],
-        drr: &mut [f64],
-    ) {
+    pub fn rhs_srgrad(&self, t: T, yy: &[T], data: &[T], ddata: &mut [T], rr: &[T], drr: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
         self.check_state_len(drr, "drr");
@@ -614,16 +587,16 @@ impl<M: CodegenModule> Compiler<M> {
                 t,
                 yy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
-                drr.as_ptr() as *mut f64,
+                drr.as_ptr() as *mut T,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn calc_out(&self, t: f64, yy: &[f64], data: &mut [f64], out: &mut [f64]) {
+    pub fn calc_out(&self, t: T, yy: &[T], data: &mut [T], out: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
         self.check_out_len(out, "out");
@@ -631,8 +604,8 @@ impl<M: CodegenModule> Compiler<M> {
             (self.jit_functions.calc_out)(
                 t,
                 yy.as_ptr(),
-                data.as_ptr() as *mut f64,
-                out.as_ptr() as *mut f64,
+                data.as_ptr() as *mut T,
+                out.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -642,13 +615,13 @@ impl<M: CodegenModule> Compiler<M> {
     #[allow(clippy::too_many_arguments)]
     pub fn calc_out_grad(
         &self,
-        t: f64,
-        yy: &[f64],
-        dyy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        out: &[f64],
-        dout: &mut [f64],
+        t: T,
+        yy: &[T],
+        dyy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        out: &[T],
+        dout: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -662,9 +635,9 @@ impl<M: CodegenModule> Compiler<M> {
                 yy.as_ptr(),
                 dyy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 out.as_ptr(),
-                dout.as_ptr() as *mut f64,
+                dout.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -674,13 +647,13 @@ impl<M: CodegenModule> Compiler<M> {
     #[allow(clippy::too_many_arguments)]
     pub fn calc_out_rgrad(
         &self,
-        t: f64,
-        yy: &[f64],
-        dyy: &mut [f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        out: &[f64],
-        dout: &mut [f64],
+        t: T,
+        yy: &[T],
+        dyy: &mut [T],
+        data: &[T],
+        ddata: &mut [T],
+        out: &[T],
+        dout: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -696,11 +669,11 @@ impl<M: CodegenModule> Compiler<M> {
                 .calc_out_rgrad)(
                 t,
                 yy.as_ptr(),
-                dyy.as_ptr() as *mut f64,
+                dyy.as_ptr() as *mut T,
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 out.as_ptr(),
-                dout.as_ptr() as *mut f64,
+                dout.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -709,12 +682,12 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn calc_out_sgrad(
         &self,
-        t: f64,
-        yy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        out: &[f64],
-        dout: &mut [f64],
+        t: T,
+        yy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        out: &[T],
+        dout: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
@@ -730,9 +703,9 @@ impl<M: CodegenModule> Compiler<M> {
                 t,
                 yy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 out.as_ptr(),
-                dout.as_ptr() as *mut f64,
+                dout.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -741,12 +714,12 @@ impl<M: CodegenModule> Compiler<M> {
 
     pub fn calc_out_srgrad(
         &self,
-        t: f64,
-        yy: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-        out: &[f64],
-        dout: &mut [f64],
+        t: T,
+        yy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        out: &[T],
+        dout: &mut [T],
     ) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
@@ -762,9 +735,9 @@ impl<M: CodegenModule> Compiler<M> {
                 t,
                 yy.as_ptr(),
                 data.as_ptr(),
-                ddata.as_ptr() as *mut f64,
+                ddata.as_ptr() as *mut T,
                 out.as_ptr(),
-                dout.as_ptr() as *mut f64,
+                dout.as_ptr() as *mut T,
                 i,
                 dim,
             )
@@ -803,25 +776,19 @@ impl<M: CodegenModule> Compiler<M> {
         )
     }
 
-    pub fn set_inputs(&self, inputs: &[f64], data: &mut [f64]) {
+    pub fn set_inputs(&self, inputs: &[T], data: &mut [T]) {
         self.check_inputs_len(inputs, "inputs");
         self.check_data_len(data, "data");
         unsafe { (self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr()) };
     }
 
-    pub fn get_inputs(&self, inputs: &mut [f64], data: &[f64]) {
+    pub fn get_inputs(&self, inputs: &mut [T], data: &[T]) {
         self.check_inputs_len(inputs, "inputs");
         self.check_data_len(data, "data");
         unsafe { (self.jit_functions.get_inputs)(inputs.as_mut_ptr(), data.as_ptr()) };
     }
 
-    pub fn set_inputs_grad(
-        &self,
-        inputs: &[f64],
-        dinputs: &[f64],
-        data: &[f64],
-        ddata: &mut [f64],
-    ) {
+    pub fn set_inputs_grad(&self, inputs: &[T], dinputs: &[T], data: &[T], ddata: &mut [T]) {
         self.check_inputs_len(inputs, "inputs");
         self.check_inputs_len(dinputs, "dinputs");
         self.check_data_len(data, "data");
@@ -836,13 +803,7 @@ impl<M: CodegenModule> Compiler<M> {
         };
     }
 
-    pub fn set_inputs_rgrad(
-        &self,
-        inputs: &[f64],
-        dinputs: &mut [f64],
-        data: &[f64],
-        ddata: &mut [f64],
-    ) {
+    pub fn set_inputs_rgrad(&self, inputs: &[T], dinputs: &mut [T], data: &[T], ddata: &mut [T]) {
         self.check_inputs_len(inputs, "inputs");
         self.check_inputs_len(dinputs, "dinputs");
         self.check_data_len(data, "data");
@@ -861,7 +822,7 @@ impl<M: CodegenModule> Compiler<M> {
         };
     }
 
-    pub fn set_id(&self, id: &mut [f64]) {
+    pub fn set_id(&self, id: &mut [T]) {
         let (n_states, _, _, _, _, _) = self.get_dims();
         if n_states != id.len() {
             panic!("Expected {} states, got {}", n_states, id.len());
@@ -887,16 +848,55 @@ mod tests {
 
     use crate::{
         discretise::DiscreteModel,
-        execution::module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
+        execution::{
+            module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
+            scalar::Scalar,
+        },
         parser::parse_ds_string,
         Compiler,
     };
-    use approx::assert_relative_eq;
+    use approx::{assert_relative_eq, RelativeEq};
 
     use super::CompilerMode;
+    use paste::paste;
+
+    /// Macro to generate test functions for all combinations of backend (cranelift/llvm) and scalar type (f32/f64)
+    ///
+    /// Usage: `generate_tests!(test_name, generic_test_function);`
+    ///
+    /// This will generate 4 test functions:
+    /// - {test_name}_cranelift_f64
+    /// - {test_name}_cranelift_f32
+    /// - {test_name}_llvm_f64
+    /// - {test_name}_llvm_f32
+    ///
+    /// Example:
+    /// ```
+    /// fn my_test<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar>() { ... }
+    /// generate_tests!(my_test);
+    /// ```
+    macro_rules! generate_tests {
+        ($test_fn:ident) => {
+            generate_tests!(@impl $test_fn, cranelift_f64, crate::CraneliftJitModule, f64, "cranelift");
+            generate_tests!(@impl $test_fn, cranelift_f32, crate::CraneliftJitModule, f32, "cranelift");
+            generate_tests!(@impl $test_fn, llvm_f64, crate::LlvmModule, f64, "llvm");
+            generate_tests!(@impl $test_fn, llvm_f32, crate::LlvmModule, f32, "llvm");
+        };
+        (@impl $test_fn:ident, $variant:ident, $module:ty, $scalar:ty, $feature:literal) => {
+            paste! {
+                #[cfg(feature = $feature)]
+                #[test]
+                fn [<$test_fn _ $variant>]() {
+                    $test_fn::<$module, $scalar>();
+                }
+            }
+        };
+    }
+
+    generate_tests!(test_constants);
 
     #[allow(dead_code)]
-    fn test_constants<T: CodegenModuleCompile + CodegenModuleJit>() {
+    fn test_constants<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>() {
         let full_text = "
         in = [a]
         a { 1 }
@@ -909,57 +909,37 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         // b and b2 should already be set
         let mut data = compiler.get_new_data();
         let b = compiler.get_constants_data("b").unwrap();
         let b2 = compiler.get_constants_data("b2").unwrap();
-        assert_relative_eq!(b[0], 2.);
-        assert_relative_eq!(b2[0], 4.);
+        assert_relative_eq!(b[0], T::from_f64(2.0).unwrap());
+        assert_relative_eq!(b2[0], T::from_f64(4.0).unwrap());
         // a and a2 should not be set (be 0)
         let a = compiler.get_tensor_data("a", &data).unwrap();
         let a2 = compiler.get_tensor_data("a2", &data).unwrap();
-        assert_relative_eq!(a[0], 0.);
-        assert_relative_eq!(a2[0], 0.);
+        assert_relative_eq!(a[0], T::zero());
+        assert_relative_eq!(a2[0], T::zero());
         // set the inputs and u0
-        let inputs = vec![1.];
+        let inputs = vec![T::one()];
         compiler.set_inputs(&inputs, data.as_mut_slice());
-        let mut u0 = vec![0.];
+        let mut u0 = vec![T::zero()];
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         // now a and a2 should be set
         let a = compiler.get_tensor_data("a", &data).unwrap();
         let a2 = compiler.get_tensor_data("a2", &data).unwrap();
-        assert_relative_eq!(a[0], 1.);
-        assert_relative_eq!(a2[0], 1.);
+        assert_relative_eq!(a[0], T::one());
+        assert_relative_eq!(a2[0], T::one());
     }
 
-    #[cfg(feature = "cranelift")]
-    #[test]
-    fn test_constants_cranelift() {
-        test_constants::<crate::CraneliftJitModule>();
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn test_constants_llvm() {
-        test_constants::<crate::LlvmModule>();
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn test_from_discrete_str_llvm() {
-        use crate::execution::llvm::codegen::LlvmModule;
-        test_from_discrete_str_common::<LlvmModule>();
-    }
-
-    #[cfg(feature = "cranelift")]
-    #[test]
-    fn test_from_discrete_str_cranelift() {
-        test_from_discrete_str_common::<crate::CraneliftJitModule>();
-    }
+    generate_tests!(test_from_discrete_str_common);
 
     #[allow(dead_code)]
-    fn test_from_discrete_str_common<T: CodegenModuleCompile + CodegenModuleJit>() {
+    fn test_from_discrete_str_common<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq,
+    >() {
         let text1 = "
         u { y = 1 }
         F { -y }
@@ -972,7 +952,7 @@ mod tests {
         out { u }
         ";
         for text in [text2, text1] {
-            let compiler = Compiler::<T>::from_discrete_str(text, Default::default()).unwrap();
+            let compiler = Compiler::<M, T>::from_discrete_str(text, Default::default()).unwrap();
             let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
             assert_eq!(n_states, 1);
             assert_eq!(n_inputs, 0);
@@ -980,30 +960,25 @@ mod tests {
             assert_eq!(n_stop, 0);
             assert!(!has_mass);
 
-            let mut u0 = vec![0.];
-            let mut res = vec![0.];
+            let mut u0 = vec![T::zero()];
+            let mut res = vec![T::zero()];
             let mut data = compiler.get_new_data();
             compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
-            assert_relative_eq!(u0.as_slice(), vec![1.].as_slice());
-            compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
-            assert_relative_eq!(res.as_slice(), vec![-1.].as_slice());
+            assert_relative_eq!(u0.as_slice(), vec![T::one()].as_slice());
+            compiler.rhs(
+                T::zero(),
+                u0.as_slice(),
+                data.as_mut_slice(),
+                res.as_mut_slice(),
+            );
+            assert_relative_eq!(res.as_slice(), vec![-T::one()].as_slice());
         }
     }
 
-    #[cfg(feature = "cranelift")]
-    #[test]
-    fn test_stop_cranelift() {
-        test_stop::<crate::CraneliftJitModule>();
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn test_stop_llvm() {
-        test_stop::<crate::LlvmModule>();
-    }
+    generate_tests!(test_stop);
 
     #[allow(dead_code)]
-    fn test_stop<T: CodegenModuleCompile + CodegenModuleJit>() {
+    fn test_stop<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>() {
         let full_text = "
         u_i {
             y = 1,
@@ -1027,20 +1002,35 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
-        let mut u0 = vec![1.];
-        let mut res = vec![0.];
-        let mut stop = vec![0.];
+            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let mut u0 = vec![T::one()];
+        let mut res = vec![T::zero()];
+        let mut stop = vec![T::zero()];
         let mut data = compiler.get_new_data();
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
-        compiler.calc_stop(0., u0.as_slice(), data.as_mut_slice(), stop.as_mut_slice());
-        assert_relative_eq!(stop[0], 0.5);
+        compiler.rhs(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            res.as_mut_slice(),
+        );
+        compiler.calc_stop(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            stop.as_mut_slice(),
+        );
+        assert_relative_eq!(stop[0], T::from_f64(0.5).unwrap());
         assert_eq!(stop.len(), 1);
     }
 
+    generate_tests!(test_out_depends_on_internal_tensor);
+
     #[allow(dead_code)]
-    fn test_out_depends_on_internal_tensor<T: CodegenModuleCompile + CodegenModuleJit>() {
+    fn test_out_depends_on_internal_tensor<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq,
+    >() {
         let full_text = "
         u_i { y = 1 }
         twoy_i { 2 * y }
@@ -1051,35 +1041,43 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
-        let mut u0 = vec![1.];
+            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let mut u0 = vec![T::one()];
         let mut data = compiler.get_new_data();
         // need this to set the constants
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
-        let mut out = vec![0.];
-        compiler.calc_out(0., u0.as_slice(), data.as_mut_slice(), out.as_mut_slice());
-        assert_relative_eq!(out[0], 2.);
-        u0[0] = 2.;
-        compiler.calc_out(0., u0.as_slice(), data.as_mut_slice(), out.as_mut_slice());
-        assert_relative_eq!(out[0], 4.);
-        let mut stop = vec![0.];
-        compiler.calc_stop(0., u0.as_slice(), data.as_mut_slice(), stop.as_mut_slice());
-        assert_relative_eq!(stop[0], 3.5);
-        u0[0] = 0.5;
-        compiler.calc_stop(0., u0.as_slice(), data.as_mut_slice(), stop.as_mut_slice());
-        assert_relative_eq!(stop[0], 0.5);
-    }
-
-    #[cfg(feature = "cranelift")]
-    #[test]
-    fn test_out_depends_on_internal_tensor_cranelift() {
-        test_out_depends_on_internal_tensor::<crate::CraneliftJitModule>();
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn test_out_depends_on_internal_tensor_llvm() {
-        test_out_depends_on_internal_tensor::<crate::LlvmModule>();
+        let mut out = vec![T::zero()];
+        compiler.calc_out(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            out.as_mut_slice(),
+        );
+        assert_relative_eq!(out[0], T::from_f64(2.).unwrap());
+        u0[0] = T::from_f64(2.).unwrap();
+        compiler.calc_out(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            out.as_mut_slice(),
+        );
+        assert_relative_eq!(out[0], T::from_f64(4.).unwrap());
+        let mut stop = vec![T::zero()];
+        compiler.calc_stop(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            stop.as_mut_slice(),
+        );
+        assert_relative_eq!(stop[0], T::from_f64(3.5).unwrap());
+        u0[0] = T::from_f64(0.5).unwrap();
+        compiler.calc_stop(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            stop.as_mut_slice(),
+        );
+        assert_relative_eq!(stop[0], T::from_f64(0.5).unwrap());
     }
 
     #[cfg(feature = "cranelift")]
@@ -1108,7 +1106,7 @@ mod tests {
         let name = "$name";
         let discrete_model = DiscreteModel::build(name, &model).unwrap();
         env_logger::builder().is_test(true).try_init().unwrap();
-        let _compiler = Compiler::<crate::CraneliftJitModule>::from_discrete_model(
+        let _compiler = Compiler::<crate::CraneliftJitModule, f64>::from_discrete_model(
             &discrete_model,
             Default::default(),
         )
@@ -1116,31 +1114,41 @@ mod tests {
     }
 
     #[allow(dead_code)]
-    fn tensor_test_common<T: CodegenModuleCompile + CodegenModuleJit>(
+    fn tensor_test_common<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>(
         discrete_model: &DiscreteModel,
         tensor_name: &str,
         mode: CompilerMode,
     ) -> Vec<Vec<f64>> {
-        let compiler = Compiler::<T>::from_discrete_model(discrete_model, mode).unwrap();
+        let compiler = Compiler::<M, f64>::from_discrete_model(discrete_model, mode).unwrap();
         tensor_test_common_impl(compiler, tensor_name)
     }
 
     #[allow(dead_code)]
-    fn tensor_test_common_impl<M: CodegenModule>(
-        compiler: Compiler<M>,
+    fn tensor_test_common_impl<M: CodegenModule, T: Scalar + RelativeEq>(
+        compiler: Compiler<M, T>,
         tensor_name: &str,
-    ) -> Vec<Vec<f64>> {
+    ) -> Vec<Vec<T>> {
         let (n_states, n_inputs, n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
-        let mut u0 = vec![1.; n_states];
-        let mut res = vec![0.; n_states];
+        let mut u0 = vec![T::one(); n_states];
+        let mut res = vec![T::zero(); n_states];
         let mut data = compiler.get_new_data();
         let mut results = Vec::new();
-        let inputs = vec![1.; n_inputs];
-        let mut out = vec![0.; n_outputs];
+        let inputs = vec![T::one(); n_inputs];
+        let mut out = vec![T::zero(); n_outputs];
         compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
-        compiler.calc_out(0., u0.as_slice(), data.as_mut_slice(), out.as_mut_slice());
+        compiler.rhs(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            res.as_mut_slice(),
+        );
+        compiler.calc_out(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            out.as_mut_slice(),
+        );
         let (tensor_len, tensor_is_constant) =
             if let Some(tensor_data) = compiler.get_tensor_data(tensor_name, data.as_slice()) {
                 results.push(tensor_data.to_vec());
@@ -1158,12 +1166,12 @@ mod tests {
             };
 
         // forward mode
-        let mut dinputs = vec![0.; n_inputs];
-        dinputs.fill(1.);
+        let mut dinputs = vec![T::zero(); n_inputs];
+        dinputs.fill(T::one());
         let mut ddata = compiler.get_new_data();
-        let mut du0 = vec![0.; n_states];
-        let mut dres = vec![0.; n_states];
-        let mut dout = vec![0.; n_outputs];
+        let mut du0 = vec![T::zero(); n_states];
+        let mut dres = vec![T::zero(); n_states];
+        let mut dout = vec![T::zero(); n_outputs];
         compiler.set_inputs_grad(
             inputs.as_slice(),
             dinputs.as_slice(),
@@ -1177,7 +1185,7 @@ mod tests {
             ddata.as_mut_slice(),
         );
         compiler.rhs_grad(
-            0.,
+            T::zero(),
             u0.as_slice(),
             du0.as_slice(),
             data.as_mut_slice(),
@@ -1186,7 +1194,7 @@ mod tests {
             dres.as_mut_slice(),
         );
         compiler.calc_out_grad(
-            0.,
+            T::zero(),
             u0.as_slice(),
             du0.as_slice(),
             data.as_mut_slice(),
@@ -1197,7 +1205,7 @@ mod tests {
         if let Some(tensor_data) = compiler.get_tensor_data(tensor_name, ddata.as_slice()) {
             results.push(tensor_data.to_vec());
         } else {
-            results.push(vec![0.; tensor_len]);
+            results.push(vec![T::zero(); tensor_len]);
         }
         // reverse-mode
         if compiler.supports_reverse_autodiff() && !tensor_is_constant {
@@ -1205,16 +1213,16 @@ mod tests {
             let dtensor = compiler
                 .get_tensor_data_mut(tensor_name, ddata.as_mut_slice())
                 .unwrap();
-            dtensor.fill(1.);
+            dtensor.fill(T::one());
 
-            let mut du0 = vec![0.; n_states];
-            let mut dres = vec![0.; n_states];
-            let mut dinputs = vec![0.; n_inputs];
-            let mut dout = vec![0.; n_outputs];
+            let mut du0 = vec![T::zero(); n_states];
+            let mut dres = vec![T::zero(); n_states];
+            let mut dinputs = vec![T::zero(); n_inputs];
+            let mut dout = vec![T::zero(); n_outputs];
 
             // reverse pass (already done the forward pass)
             compiler.calc_out_rgrad(
-                0.,
+                T::zero(),
                 u0.as_slice(),
                 du0.as_mut_slice(),
                 data.as_slice(),
@@ -1223,7 +1231,7 @@ mod tests {
                 dout.as_mut_slice(),
             );
             compiler.rhs_rgrad(
-                0.,
+                T::zero(),
                 u0.as_slice(),
                 du0.as_mut_slice(),
                 data.as_slice(),
@@ -1242,11 +1250,11 @@ mod tests {
 
             // forward mode sens (rhs)
             let mut ddata = compiler.get_new_data();
-            let mut dres = vec![0.; n_states];
-            let dinputs = vec![1.; n_inputs];
+            let mut dres = vec![T::zero(); n_states];
+            let dinputs = vec![T::one(); n_inputs];
             compiler.set_inputs(dinputs.as_slice(), ddata.as_mut_slice());
             compiler.rhs_sgrad(
-                0.,
+                T::zero(),
                 u0.as_slice(),
                 data.as_slice(),
                 ddata.as_mut_slice(),
@@ -1262,10 +1270,10 @@ mod tests {
 
             // forward mode sens (calc_out)
             let mut ddata = compiler.get_new_data();
-            let dinputs = vec![1.; n_inputs];
+            let dinputs = vec![T::one(); n_inputs];
             compiler.set_inputs(dinputs.as_slice(), ddata.as_mut_slice());
             compiler.calc_out_sgrad(
-                0.,
+                T::zero(),
                 u0.as_slice(),
                 data.as_slice(),
                 ddata.as_mut_slice(),
@@ -1284,11 +1292,11 @@ mod tests {
             let dtensor = compiler
                 .get_tensor_data_mut(tensor_name, ddata.as_mut_slice())
                 .unwrap();
-            dtensor.fill(1.);
-            let mut dres = vec![0.; n_states];
-            let mut dinputs = vec![0.; n_inputs];
+            dtensor.fill(T::one());
+            let mut dres = vec![T::zero(); n_states];
+            let mut dinputs = vec![T::zero(); n_inputs];
             compiler.rhs_srgrad(
-                0.,
+                T::zero(),
                 u0.as_slice(),
                 data.as_slice(),
                 ddata.as_mut_slice(),
@@ -1308,10 +1316,10 @@ mod tests {
             let dtensor = compiler
                 .get_tensor_data_mut(tensor_name, ddata.as_mut_slice())
                 .unwrap();
-            dtensor.fill(1.);
-            let mut dinputs = vec![0.; n_inputs];
+            dtensor.fill(T::one());
+            let mut dinputs = vec![T::zero(); n_inputs];
             compiler.calc_out_srgrad(
-                0.,
+                T::zero(),
                 u0.as_slice(),
                 data.as_slice(),
                 ddata.as_mut_slice(),
@@ -1326,11 +1334,11 @@ mod tests {
             );
             results.push(dinputs.to_vec());
         } else {
-            results.push(vec![0.; n_inputs]);
-            results.push(vec![0.; tensor_len]);
-            results.push(vec![0.; tensor_len]);
-            results.push(vec![0.; n_inputs]);
-            results.push(vec![0.; n_inputs]);
+            results.push(vec![T::zero(); n_inputs]);
+            results.push(vec![T::zero(); tensor_len]);
+            results.push(vec![T::zero(); tensor_len]);
+            results.push(vec![T::zero(); n_inputs]);
+            results.push(vec![T::zero(); n_inputs]);
         }
         results
     }
@@ -1365,13 +1373,17 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<LlvmModule, f32>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    let results = tensor_test_common::<LlvmModule, f64>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
 
                 #[cfg(feature = "cranelift")]
                 {
-                    let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<crate::CraneliftJitModule, f32>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    let results = tensor_test_common::<crate::CraneliftJitModule, f64>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
 
@@ -1408,14 +1420,18 @@ mod tests {
                 {
                     #[cfg(feature = "cranelift")]
                     {
-                        let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<crate::CraneliftJitModule, f32>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                        let results = tensor_test_common::<crate::CraneliftJitModule, f64>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     }
 
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<LlvmModule, f32>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                        let results = tensor_test_common::<LlvmModule, f64>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     }
                 }
@@ -1548,7 +1564,15 @@ mod tests {
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<LlvmModule, f32>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
+                        assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                        assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
+
+                        let results = tensor_test_common::<LlvmModule, f64>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                         assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                         assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
@@ -1559,7 +1583,9 @@ mod tests {
 
                     #[cfg(feature = "cranelift")]
                     {
-                        let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<crate::CraneliftJitModule, f32>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        let results = tensor_test_common::<crate::CraneliftJitModule, f64>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     }
                 }
@@ -1567,7 +1593,15 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<LlvmModule, f32>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
+                    assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                    assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                    assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                    assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
+
+                    let results = tensor_test_common::<LlvmModule, f64>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
                     assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
@@ -1578,7 +1612,9 @@ mod tests {
 
                 #[cfg(feature = "cranelift")]
                 {
-                    let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<crate::CraneliftJitModule, f32>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    let results = tensor_test_common::<crate::CraneliftJitModule, f64>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                 }
 
@@ -1650,7 +1686,16 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<LlvmModule, f32>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                    assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
+                    assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                    //assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                    assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                    //assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
+
+                    let results = tensor_test_common::<LlvmModule, f64>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
@@ -1662,7 +1707,12 @@ mod tests {
 
                 #[cfg(feature = "cranelift")]
                 {
-                    let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<crate::CraneliftJitModule, f32>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                    assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+
+
+                    let results = tensor_test_common::<crate::CraneliftJitModule, f64>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                 }
@@ -1691,7 +1741,10 @@ mod tests {
                 {
                     #[cfg(feature = "cranelift")]
                     {
-                        let results = tensor_test_common::<crate::CraneliftJitModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<crate::CraneliftJitModule, f32>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        let results = tensor_test_common::<crate::CraneliftJitModule, f64>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                     }
@@ -1701,7 +1754,16 @@ mod tests {
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<LlvmModule, f32>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
+                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
+                        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
+                        assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
+                        //assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
+                        assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
+                        //assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
+
+                        let results = tensor_test_common::<LlvmModule, f64>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                         assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                         assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
@@ -1725,20 +1787,13 @@ mod tests {
         big_state_tridiag2: "b_ij { (0..100, 0..100): p + 2.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![7.; 100]; vec![700.] ; vec![1.; 100]; vec![100.],
     }
 
-    #[cfg(feature = "cranelift")]
-    #[test]
-    fn test_repeated_grad_cranelift() {
-        test_repeated_grad_common::<crate::CraneliftJitModule>();
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn test_repeated_grad_llvm() {
-        test_repeated_grad_common::<crate::LlvmModule>();
-    }
+    generate_tests!(test_repeated_grad_common);
 
     #[allow(dead_code)]
-    fn test_repeated_grad_common<T: CodegenModuleCompile + CodegenModuleJit>() {
+    fn test_repeated_grad_common<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq,
+    >() {
         let full_text = "
             in = [p]
             p {
@@ -1771,21 +1826,26 @@ mod tests {
             }
         };
         let compiler =
-            Compiler::<T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
-        let mut u0 = vec![1.];
-        let mut du0 = vec![1.];
-        let mut res = vec![0.];
-        let mut dres = vec![0.];
+            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let mut u0 = vec![T::one()];
+        let mut du0 = vec![T::one()];
+        let mut res = vec![T::zero()];
+        let mut dres = vec![T::zero()];
         let mut data = compiler.get_new_data();
         let mut ddata = compiler.get_new_data();
         let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
-        let inputs = vec![2.; n_inputs];
+        let inputs = vec![T::from_f64(2.).unwrap(); n_inputs];
         compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
-        compiler.rhs(0., u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+        compiler.rhs(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            res.as_mut_slice(),
+        );
 
         for _i in 0..3 {
-            let dinputs = vec![1.; n_inputs];
+            let dinputs = vec![T::one(); n_inputs];
             compiler.set_inputs_grad(
                 inputs.as_slice(),
                 dinputs.as_slice(),
@@ -1799,7 +1859,7 @@ mod tests {
                 ddata.as_mut_slice(),
             );
             compiler.rhs_grad(
-                0.,
+                T::zero(),
                 u0.as_slice(),
                 du0.as_slice(),
                 data.as_mut_slice(),
@@ -1807,7 +1867,7 @@ mod tests {
                 res.as_mut_slice(),
                 dres.as_mut_slice(),
             );
-            assert_relative_eq!(dres.as_slice(), vec![8.].as_slice());
+            assert_relative_eq!(dres.as_slice(), vec![T::from_f64(8.).unwrap()].as_slice());
         }
     }
 
@@ -1846,7 +1906,7 @@ mod tests {
 
         #[cfg(feature = "cranelift")]
         {
-            let compiler = Compiler::<crate::CraneliftJitModule>::from_discrete_model(
+            let compiler = Compiler::<crate::CraneliftJitModule, f64>::from_discrete_model(
                 &discrete_model,
                 Default::default(),
             )
@@ -1902,7 +1962,7 @@ mod tests {
 
         #[cfg(feature = "cranelift")]
         {
-            let compiler = Compiler::<crate::CraneliftJitModule>::from_discrete_model(
+            let compiler = Compiler::<crate::CraneliftJitModule, f64>::from_discrete_model(
                 &discrete_model,
                 Default::default(),
             )
@@ -1919,7 +1979,7 @@ mod tests {
 
         #[cfg(feature = "llvm")]
         {
-            let compiler = Compiler::<crate::LlvmModule>::from_discrete_model(
+            let compiler = Compiler::<crate::LlvmModule, f64>::from_discrete_model(
                 &discrete_model,
                 Default::default(),
             )
@@ -1947,9 +2007,11 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("test_mass", &model).unwrap();
 
-        let compiler =
-            Compiler::<crate::LlvmModule>::from_discrete_model(&discrete_model, Default::default())
-                .unwrap();
+        let compiler = Compiler::<crate::LlvmModule, f64>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+        )
+        .unwrap();
         let mut data = compiler.get_new_data();
         let mut u0 = vec![0.0, 0.0, 0.0];
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
@@ -1969,20 +2031,10 @@ mod tests {
         assert_relative_eq!(v.as_slice(), vec![2.0, 3.0, 2.0].as_slice());
     }
 
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn test_send_sync_llvm() {
-        test_send_sync::<crate::LlvmModule>();
-    }
-
-    #[cfg(feature = "cranelift")]
-    #[test]
-    fn test_send_sync_cranelift() {
-        test_send_sync::<crate::CraneliftJitModule>();
-    }
+    generate_tests!(test_send_sync);
 
     #[allow(dead_code)]
-    fn test_send_sync<M: CodegenModuleCompile + CodegenModuleJit>() {
+    fn test_send_sync<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>() {
         let full_text = "
             u { y = 1 }
             F { -y }
@@ -1991,17 +2043,22 @@ mod tests {
         let discrete_model = DiscreteModel::build("test_sens_sync", &model).unwrap();
 
         let compiler = Arc::new(
-            Compiler::<M>::from_discrete_model(&discrete_model, Default::default()).unwrap(),
+            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap(),
         );
 
         let compiler_clone = Arc::clone(&compiler);
         let handle = thread::spawn(move || {
             let mut data = compiler_clone.get_new_data();
-            let mut u0 = vec![0.0];
+            let mut u0 = vec![T::zero()];
             compiler_clone.set_u0(u0.as_mut_slice(), data.as_mut_slice());
-            let mut res = vec![0.0];
-            compiler_clone.rhs(0.0, u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
-            assert_relative_eq!(res.as_slice(), vec![-1.0].as_slice());
+            let mut res = vec![T::zero()];
+            compiler_clone.rhs(
+                T::zero(),
+                u0.as_slice(),
+                data.as_mut_slice(),
+                res.as_mut_slice(),
+            );
+            assert_relative_eq!(res.as_slice(), vec![-T::one()].as_slice());
         });
 
         handle.join().unwrap();
@@ -2010,11 +2067,12 @@ mod tests {
     #[cfg(feature = "llvm")]
     #[test]
     fn test_u0_sgrad_llvm() {
-        test_u0_sgrad::<crate::LlvmModule>();
+        test_u0_sgrad::<crate::LlvmModule, f32>();
+        test_u0_sgrad::<crate::LlvmModule, f64>();
     }
 
     #[allow(dead_code)]
-    fn test_u0_sgrad<M: CodegenModuleCompile + CodegenModuleJit>() {
+    fn test_u0_sgrad<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>() {
         let full_text = "
             in = [a]
             a { 1.0 }
@@ -2024,11 +2082,11 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("test_u0_sgrad", &model).unwrap();
         let compiler =
-            Compiler::<M>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
         let mut data = compiler.get_new_data();
         let mut ddata = compiler.get_new_data();
-        let a = vec![0.6];
-        let da = vec![1.0];
+        let a = vec![T::from_f64(0.6).unwrap()];
+        let da = vec![T::one()];
         compiler.set_inputs(a.as_slice(), data.as_mut_slice());
         compiler.set_inputs_grad(
             a.as_slice(),
@@ -2036,8 +2094,8 @@ mod tests {
             data.as_slice(),
             ddata.as_mut_slice(),
         );
-        let mut u0 = vec![0.0];
-        let mut du0 = vec![0.0];
+        let mut u0 = vec![T::zero()];
+        let mut du0 = vec![T::zero()];
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         compiler.set_u0_sgrad(
             u0.as_mut_slice(),
@@ -2045,7 +2103,13 @@ mod tests {
             data.as_slice(),
             ddata.as_mut_slice(),
         );
-        assert_relative_eq!(u0.as_slice(), vec![2.0 * a[0] * a[0]].as_slice());
-        assert_relative_eq!(du0.as_slice(), vec![4.0 * a[0] * da[0]].as_slice());
+        assert_relative_eq!(
+            u0.as_slice(),
+            vec![T::from_f64(2.0).unwrap() * a[0] * a[0]].as_slice()
+        );
+        assert_relative_eq!(
+            du0.as_slice(),
+            vec![T::from_f64(4.0).unwrap() * a[0] * da[0]].as_slice()
+        );
     }
 }

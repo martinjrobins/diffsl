@@ -35,7 +35,7 @@ v_a { u_a + w_a }
 
 For higher-dimensional tensors, the order of the indices in the expression relative to the output tensor is important.
 
-For example, we can use the indices to define a translation of a matrix. Here we define a new matrix \\( C \\) that is the sum of \\( A \\) and \\( B^T \\)$,
+For example, we can use the indices to define a translation of a matrix. Here we define a new matrix \\( C \\) that is the sum of \\( A \\) and \\( B^T \\),
 where \\( B^T \\) is the transpose of \\( B \\)
 
 ```

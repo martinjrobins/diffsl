@@ -40,6 +40,10 @@ jobs:
             - ["15.0", "15-0"]
             - ["16.0", "16-0"]
             - ["17.0", "17-0"]
+            - ["18.1", "18-1"]
+            - ["19.1", "19-1"]
+            - ["20.1", "20-1"]
+            - ["21.1", "21-1"]
           toolchain:
             - stable
           os:
@@ -59,26 +63,6 @@ jobs:
             - Tests
 
           include:
-            - toolchain: stable
-              os: ubuntu-latest
-              llvm: ["18.1", "18-1"]
-              features: "cranelift"
-              tests: true
-              clippy: false
-              rustdoc: false
-              experimental: true
-              basename: Tests
-
-            - toolchain: stable
-              os: macos-latest
-              llvm: ["18.1", "18-1"]
-              features: "cranelift"
-              tests: true
-              clippy: false
-              rustdoc: false
-              experimental: true
-              basename: Tests
-
             - toolchain: stable
               os: windows-latest
               llvm: ""

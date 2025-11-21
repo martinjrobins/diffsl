@@ -1360,8 +1360,7 @@ impl<'ctx> CodeGen<'ctx> {
                             .build_float_add(
                                 exp_negx
                                     .try_as_basic_value()
-                                    .left()
-                                    .unwrap()
+                                    .unwrap_basic()
                                     .into_float_value(),
                                 one,
                                 name,
@@ -1412,8 +1411,7 @@ impl<'ctx> CodeGen<'ctx> {
                             )
                             .unwrap()
                             .try_as_basic_value()
-                            .left()
-                            .unwrap()
+                            .unwrap_basic()
                             .into_float_value();
                         let x_plus_sqrt_one_plus_x_squared = self
                             .builder
@@ -1431,8 +1429,7 @@ impl<'ctx> CodeGen<'ctx> {
                             )
                             .unwrap()
                             .try_as_basic_value()
-                            .left()
-                            .unwrap()
+                            .unwrap_basic()
                             .into_float_value();
                         self.builder.build_return(Some(&result)).ok();
                         self.builder.position_at_end(current_block);
@@ -1506,11 +1503,10 @@ impl<'ctx> CodeGen<'ctx> {
                         let expx_minus_exp_negx = self
                             .builder
                             .build_float_sub(
-                                expx.try_as_basic_value().left().unwrap().into_float_value(),
+                                expx.try_as_basic_value().unwrap_basic().into_float_value(),
                                 exp_negx
                                     .try_as_basic_value()
-                                    .left()
-                                    .unwrap()
+                                    .unwrap_basic()
                                     .into_float_value(),
                                 name,
                             )
@@ -1518,11 +1514,10 @@ impl<'ctx> CodeGen<'ctx> {
                         let expx_plus_exp_negx = self
                             .builder
                             .build_float_add(
-                                expx.try_as_basic_value().left().unwrap().into_float_value(),
+                                expx.try_as_basic_value().unwrap_basic().into_float_value(),
                                 exp_negx
                                     .try_as_basic_value()
-                                    .left()
-                                    .unwrap()
+                                    .unwrap_basic()
                                     .into_float_value(),
                                 name,
                             )
@@ -2415,8 +2410,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .builder
                         .build_call(function, args.as_slice(), name)?
                         .try_as_basic_value()
-                        .left()
-                        .unwrap()
+                        .unwrap_basic()
                         .into_float_value();
                     Ok(ret_value)
                 }

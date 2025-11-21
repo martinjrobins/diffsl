@@ -37,12 +37,12 @@ jobs:
     strategy:
         matrix:
           llvm:
-            - ["15.0", "15-0"]
-            - ["16.0", "16-0"]
-            - ["17.0", "17-0"]
-            - ["18.1", "18-1"]
-            - ["19.1", "19-1"]
-            - ["20.1", "20-1"]
+            - ["15.0", "15-0", "150"]
+            - ["16.0", "16-0", "160"]
+            - ["17.0", "17-0", "170"]
+            - ["18.1", "18-1", "181"]
+            - ["19.1", "19-1", "191"]
+            - ["20.1", "20-1", "201"]
           toolchain:
             - stable
           os:
@@ -74,7 +74,7 @@ jobs:
 
             - toolchain: beta
               os: ubuntu-latest
-              llvm: ["16.0", "16-0"]
+              llvm: ["16.0", "16-0", "160"]
               features: "rayon cranelift"
               tests: true
               clippy: false
@@ -84,7 +84,7 @@ jobs:
 
             - toolchain: nightly
               os: ubuntu-latest
-              llvm: ["16.0", "16-0"]
+              llvm: ["16.0", "16-0", "160"]
               features: "rayon cranelift"
               tests: true
               clippy: false
@@ -104,7 +104,7 @@ jobs:
 
             - toolchain: stable
               os: ubuntu-latest
-              llvm: ["16.0", "16-0"]
+              llvm: ["16.0", "16-0", "160"]
               features: "rayon cranelift"
               tests: false
               clippy: true
@@ -114,7 +114,7 @@ jobs:
 
             - toolchain: nightly 
               os: ubuntu-latest
-              llvm: ["16.0", "16-0"]
+              llvm: ["16.0", "16-0", "160"]
               features: "rayon cranelift"
               tests: false
               clippy: false
@@ -142,6 +142,8 @@ jobs:
       if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm')
       with:
         version: ${{ matrix.llvm[0] }}
+    - name: Set LLVM_SYS_XXX_DIR env
+      run: echo "LLVM_SYS_${{ matrix.llvm[2] }}_DIR=$LLVM_DIR" >> $GITHUB_ENV
     - name: Install LLVM 16 (macos-13)
       if : matrix.os == 'macos-13'
       run: 

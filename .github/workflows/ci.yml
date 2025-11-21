@@ -143,7 +143,7 @@ jobs:
       with:
         version: ${{ matrix.llvm[0] }}
     - name: Set LLVM_SYS_XXX_DIR env
-      run: echo "LLVM_SYS_${{ matrix.llvm[2] }}_DIR=$LLVM_DIR" >> $GITHUB_ENV
+      run: echo "LLVM_SYS_${{ matrix.llvm[2] }}_DIR=${LLVM_PATH}" >> $GITHUB_ENV
     - name: Install LLVM 16 (macos-13)
       if : matrix.os == 'macos-13'
       run: 

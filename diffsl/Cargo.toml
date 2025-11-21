@@ -42,9 +42,9 @@ inkwell-201 = { package = "inkwell", version = "0.7.1", features = ["llvm20-1"],
 inkwell-211 = { package = "inkwell", version = "0.7.1", features = ["llvm21-1"], optional = true }
 llvm-sys-150 = { package = "llvm-sys", version = "150.2.1", optional = true }
 llvm-sys-160 = { package = "llvm-sys", version = "160.2.1", optional = true }
-llvm-sys-170 = { package = "llvm-sys", version = "170.2.0", optional = true }
-llvm-sys-181 = { package = "llvm-sys", version = "181.2.0", optional = true }
-llvm-sys-191 = { package = "llvm-sys", version = "191.0.0", optional = true }
+llvm-sys-170 = { package = "llvm-sys", version = "170.4.0", optional = true }
+llvm-sys-181 = { package = "llvm-sys", version = "181.3.0", optional = true }
+llvm-sys-191 = { package = "llvm-sys", version = "191.1.0", optional = true }
 llvm-sys-201 = { package = "llvm-sys", version = "201.0.0", optional = true }
 llvm-sys-211 = { package = "llvm-sys", version = "211.0.0", optional = true }
 inkwell_internals = { version = "0.11.0", optional = true }

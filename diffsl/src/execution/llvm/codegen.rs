@@ -3092,12 +3092,14 @@ impl<'ctx> CodeGen<'ctx> {
                     CDerivativeMode_DEM_ForwardMode, // return value, dret_used, top_level which was 1
                     1,                               // free memory
                     0,                               // runtime activity
+                    0,                               // strong zero
                     1,                               // vector mode width
-                    std::ptr::null_mut(),
-                    fn_type_info, // additional_arg, type info (return + args)
-                    args_uncacheable.as_mut_ptr(),
-                    args_uncacheable.len(), // uncacheable arguments
-                    std::ptr::null_mut(),   // write augmented function to this
+                    std::ptr::null_mut(),            // additional argument
+                    fn_type_info,                    // additional_arg, type info (return + args)
+                    1,                               // subsequent calls may write
+                    args_uncacheable.as_mut_ptr(),   // overwritten args
+                    args_uncacheable.len(),          // overwritten args length
+                    std::ptr::null_mut(),            // write augmented function to this
                 )
             },
             CompileMode::Reverse | CompileMode::ReverseSens => {
@@ -3115,15 +3117,17 @@ impl<'ctx> CodeGen<'ctx> {
                         diff_ret as u8,
                         CDerivativeMode_DEM_ReverseModeCombined,
                         0,
+                        0, // strong zero
                         1,
                         1,
                         std::ptr::null_mut(),
-                        0,
+                        0, // force annonymous tape
                         fn_type_info,
+                        0, // subsequent calls may write
                         args_uncacheable.as_mut_ptr(),
                         args_uncacheable.len(),
                         std::ptr::null_mut(),
-                        if self.threaded { 1 } else { 0 },
+                        if self.threaded { 1 } else { 0 }, // atomic add
                     )
                 };
                 if self.threaded {

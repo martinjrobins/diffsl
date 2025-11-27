@@ -49,7 +49,7 @@ jobs:
           features:
             - "rayon cranelift"
           experimental: 
-            - false
+            - true
           tests:
             - true
           clippy:

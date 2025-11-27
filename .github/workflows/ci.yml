@@ -181,15 +181,15 @@ jobs:
         sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
-        sudo ./llvm.sh ${{ matrix.llvm-version[3] }}
+        sudo ./llvm.sh ${{ matrix.llvm[3] }}
         sudo apt-get update
-        sudo apt install --no-install-recommends -y libllvm${{ matrix.llvm-version[3] }} \
-                                                    llvm-${{ matrix.llvm-version[3] }} \
-                                                    llvm-${{ matrix.llvm-version[3] }}-dev \
-                                                    llvm-${{ matrix.llvm-version[3] }}-runtime \
-                                                    libpolly-${{ matrix.llvm-version[3] }}-dev
-        sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-${{ matrix.llvm-version[3] }} 10
-        echo "LLVM_PATH=/usr/lib/llvm-${{ matrix.llvm-version[3] }}" >> $GITHUB_ENV
+        sudo apt install --no-install-recommends -y libllvm${{ matrix.llvm[3] }} \
+                                                    llvm-${{ matrix.llvm[3] }} \
+                                                    llvm-${{ matrix.llvm[3] }}-dev \
+                                                    llvm-${{ matrix.llvm[3] }}-runtime \
+                                                    libpolly-${{ matrix.llvm[3] }}-dev
+        sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-${{ matrix.llvm[3] }} 10
+        echo "LLVM_PATH=/usr/lib/llvm-${{ matrix.llvm[3] }}" >> $GITHUB_ENV
     - name: Install LLVM and Clang (LLVM < 19.1)
       uses: KyleMayes/install-llvm-action@v2
       if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] < '19.1')

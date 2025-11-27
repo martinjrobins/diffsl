@@ -180,8 +180,12 @@ jobs:
       if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm')
       with:
         version: ${{ matrix.llvm[0] }}
-    - name: Set LLVM_SYS_XXX_DIR env
-      run: echo "LLVM_SYS_${{ matrix.llvm[2] }}_DIR=${LLVM_PATH}" >> $GITHUB_ENV
+    - name: Set LLVM_SYS_XXX_DIR and CC, CXX environment variables
+      if : matrix.llvm != ''
+      run: |
+        echo "LLVM_SYS_${{ matrix.llvm[2] }}_DIR=${LLVM_PATH}" >> $GITHUB_ENV
+        echo "CC=${LLVM_PATH}/bin/clang" >> $GITHUB_ENV
+        echo "CXX=${LLVM_PATH}/bin/clang++" >> $GITHUB_ENV
     - name: Install LLVM 16 (macos-13)
       if : matrix.os == 'macos-13'
       run: 

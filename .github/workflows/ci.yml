@@ -64,7 +64,7 @@ jobs:
             - toolchain: stable
               os: ubuntu-latest
               llvm: ["18.1", "18-1", "181"]
-              features: "cranelift"
+              features: "rayon cranelift"
               tests: true
               clippy: false
               rustdoc: false
@@ -74,7 +74,7 @@ jobs:
             - toolchain: stable
               os: macos-latest
               llvm: ["18.1", "18-1", "181"]
-              features: "cranelift"
+              features: "rayon cranelift"
               tests: true
               clippy: false
               rustdoc: false

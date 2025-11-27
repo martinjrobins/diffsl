@@ -40,12 +40,13 @@ jobs:
             - ["15.0", "15-0", "150"]
             - ["16.0", "16-0", "160"]
             - ["17.0", "17-0", "170"]
+            - ["19.1", "19-1", "191", "19"]
             - ["20.1", "20-1", "201", "20"]
           toolchain:
             - stable
           os:
             - ubuntu-latest
-            - macos-latest
+            # - macos-latest
           features:
             - "rayon cranelift"
           experimental: 
@@ -58,7 +59,7 @@ jobs:
             - false
           basename:
             - Tests
-
+            
           include:
             - toolchain: stable
               os: ubuntu-latest
@@ -73,26 +74,6 @@ jobs:
             - toolchain: stable
               os: macos-latest
               llvm: ["18.1", "18-1", "181"]
-              features: "cranelift"
-              tests: true
-              clippy: false
-              rustdoc: false
-              experimental: true
-              basename: Tests
-
-            - toolchain: stable
-              os: ubuntu-latest
-              llvm: ["19.1", "19-1", "191", "19"]
-              features: "cranelift"
-              tests: true
-              clippy: false
-              rustdoc: false
-              experimental: true
-              basename: Tests
-
-            - toolchain: stable
-              os: macos-latest
-              llvm: ["19.1", "19-1", "191", "19"]
               features: "cranelift"
               tests: true
               clippy: false
@@ -176,7 +157,7 @@ jobs:
     - name: Rust version
       run: rustc -Vv
     - name: Install LLVM and Clang (LLVM >= 19.1)
-      if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] >= '19.1')
+      if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest'|| matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] >= '19.1')
       run: |
         sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
         wget https://apt.llvm.org/llvm.sh

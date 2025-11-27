@@ -16,6 +16,9 @@ llvm15-0 = ["inkwell-150", "llvm-sys-150", "llvm", "enzyme"]
 llvm16-0 = ["inkwell-160", "llvm-sys-160", "llvm", "enzyme"]
 llvm17-0 = ["inkwell-170", "llvm-sys-170", "llvm", "enzyme"]
 llvm18-1 = ["inkwell-181", "llvm-sys-181", "llvm", "enzyme"]
+llvm19-1 = ["inkwell-191", "llvm-sys-191", "llvm", "enzyme"]
+llvm20-1 = ["inkwell-201", "llvm-sys-201", "llvm", "enzyme"]
+llvm21-1 = ["inkwell-211", "llvm-sys-211", "llvm", "enzyme"]
 enzyme = ["bindgen", "cmake"]
 llvm = []
 cranelift = ["dep:cranelift", "dep:cranelift-module", "dep:cranelift-object", "dep:cranelift-jit", "dep:cranelift-native"]
@@ -30,14 +33,20 @@ pest = "2.8"
 pest_derive = "2.8"
 itertools = "0.14.0"
 uid = "0.1.8"
-inkwell-150 = { package = "inkwell", version = "0.6.0", features = ["llvm15-0"], optional = true }
-inkwell-160 = { package = "inkwell", version = "0.6.0", features = ["llvm16-0"], optional = true }
-inkwell-170 = { package = "inkwell", version = "0.6.0", features = ["llvm17-0"], optional = true }
-inkwell-181 = { package = "inkwell", version = "0.6.0", features = ["llvm18-1"], optional = true }
+inkwell-150 = { package = "inkwell", version = "0.7.1", features = ["llvm15-0"], optional = true }
+inkwell-160 = { package = "inkwell", version = "0.7.1", features = ["llvm16-0"], optional = true }
+inkwell-170 = { package = "inkwell", version = "0.7.1", features = ["llvm17-0"], optional = true }
+inkwell-181 = { package = "inkwell", version = "0.7.1", features = ["llvm18-1"], optional = true }
+inkwell-191 = { package = "inkwell", version = "0.7.1", features = ["llvm19-1"], optional = true }
+inkwell-201 = { package = "inkwell", version = "0.7.1", features = ["llvm20-1"], optional = true }
+inkwell-211 = { package = "inkwell", version = "0.7.1", features = ["llvm21-1"], optional = true }
 llvm-sys-150 = { package = "llvm-sys", version = "150.2.1", optional = true }
 llvm-sys-160 = { package = "llvm-sys", version = "160.2.1", optional = true }
-llvm-sys-170 = { package = "llvm-sys", version = "170.2.0", optional = true }
-llvm-sys-181 = { package = "llvm-sys", version = "181.2.0", optional = true }
+llvm-sys-170 = { package = "llvm-sys", version = "170.4.0", optional = true }
+llvm-sys-181 = { package = "llvm-sys", version = "181.3.0", optional = true }
+llvm-sys-191 = { package = "llvm-sys", version = "191.1.0", optional = true }
+llvm-sys-201 = { package = "llvm-sys", version = "201.0.0", optional = true }
+llvm-sys-211 = { package = "llvm-sys", version = "211.0.0", optional = true }
 inkwell_internals = { version = "0.11.0", optional = true }
 cranelift = { version = "0.125", optional = true}
 cranelift-module = { version = "0.125", optional = true}

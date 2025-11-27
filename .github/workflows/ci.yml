@@ -40,7 +40,7 @@ jobs:
             - ["15.0", "15-0", "150"]
             - ["16.0", "16-0", "160"]
             - ["17.0", "17-0", "170"]
-            - ["20.1", "20-1", "201"]
+            - ["20.1", "20-1", "201", "20"]
           toolchain:
             - stable
           os:
@@ -49,7 +49,7 @@ jobs:
           features:
             - "rayon cranelift"
           experimental: 
-            - true
+            - false
           tests:
             - true
           clippy:
@@ -82,7 +82,7 @@ jobs:
 
             - toolchain: stable
               os: ubuntu-latest
-              llvm: ["19.1", "19-1", "191"]
+              llvm: ["19.1", "19-1", "191", "19"]
               features: "cranelift"
               tests: true
               clippy: false
@@ -92,7 +92,7 @@ jobs:
 
             - toolchain: stable
               os: macos-latest
-              llvm: ["19.1", "19-1", "191"]
+              llvm: ["19.1", "19-1", "191", "19"]
               features: "cranelift"
               tests: true
               clippy: false
@@ -175,17 +175,30 @@ jobs:
       run: rustup default ${{ matrix.toolchain }} && rustup update ${{ matrix.toolchain }} --no-self-update && rustup component add clippy rust-docs
     - name: Rust version
       run: rustc -Vv
-    - name: Install LLVM and Clang
+    - name: Install LLVM and Clang (LLVM >= 19.1)
+      if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] >= '19.1')
+      run: |
+        sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh ${{ matrix.llvm-version[3] }}
+        sudo apt-get update
+        sudo apt install --no-install-recommends -y libllvm${{ matrix.llvm-version[3] }} \
+                                                    llvm-${{ matrix.llvm-version[3] }} \
+                                                    llvm-${{ matrix.llvm-version[3] }}-dev \
+                                                    llvm-${{ matrix.llvm-version[3] }}-runtime \
+                                                    libpolly-${{ matrix.llvm-version[3] }}-dev
+        sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-${{ matrix.llvm-version[3] }} 10
+        echo "LLVM_PATH=/usr/lib/llvm-${{ matrix.llvm-version[3] }}" >> $GITHUB_ENV
+    - name: Install LLVM and Clang (LLVM < 19.1)
       uses: KyleMayes/install-llvm-action@v2
-      if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm')
+      if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] < '19.1')
       with:
         version: ${{ matrix.llvm[0] }}
     - name: Set LLVM_SYS_XXX_DIR and CC, CXX environment variables
       if : matrix.llvm != ''
       run: |
         echo "LLVM_SYS_${{ matrix.llvm[2] }}_DIR=${LLVM_PATH}" >> $GITHUB_ENV
-        echo "CC=${LLVM_PATH}/bin/clang" >> $GITHUB_ENV
-        echo "CXX=${LLVM_PATH}/bin/clang++" >> $GITHUB_ENV
     - name: Install LLVM 16 (macos-13)
       if : matrix.os == 'macos-13'
       run: 

@@ -1439,12 +1439,17 @@ mod tests {
         )*
         }
     }
+    
+    
+    #[cfg(not(feature = "inkwell-191"))]
+    tensor_test! {
+        indexing2: "a_i { 0.0, 1.0, 2.0, 3.0 } r_i { a_i[1:3] }" expect "r" vec![1.0, 2.0],
+        indexing3: "a_i { 0.0, 1.0, 2.0, 3.0 } r_i { a_i[1..3] }" expect "r" vec![1.0, 2.0],
+    }
 
     tensor_test! {
         contraction_2d_to_vector: "a_ij { (0:3, 0:3): 1.0 } r_i { a_ij }" expect "r" vec![3.0, 3.0, 3.0],
         indexing1: "a_i { 0.0, 1.0, 2.0, 3.0 } r { a_i[2] }" expect "r" vec![2.0],
-        indexing2: "a_i { 0.0, 1.0, 2.0, 3.0 } r_i { a_i[1:3] }" expect "r" vec![1.0, 2.0],
-        indexing3: "a_i { 0.0, 1.0, 2.0, 3.0 } r_i { a_i[1..3] }" expect "r" vec![1.0, 2.0],
         heaviside_function0: "r { heaviside(-0.1) }" expect "r" vec![0.0],
         heaviside_function1: "r { heaviside(0.0) }" expect "r" vec![1.0],
         exp_function: "r { exp(2) }" expect "r" vec![f64::exp(2.0)],

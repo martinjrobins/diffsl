@@ -1440,7 +1440,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "inkwell-191"))]
+    #[cfg(not(any(feature = "inkwell-191", feature = "inkwell-181")))]
     tensor_test! {
         indexing2: "a_i { 0.0, 1.0, 2.0, 3.0 } r_i { a_i[1:3] }" expect "r" vec![1.0, 2.0],
         indexing3: "a_i { 0.0, 1.0, 2.0, 3.0 } r_i { a_i[1..3] }" expect "r" vec![1.0, 2.0],

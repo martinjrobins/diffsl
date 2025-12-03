@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-89eca9b2.js";
+            window.path_to_searchindex_js = "searchindex-5f4161ac.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e1e43fd6.js"></script>
@@ -346,12 +346,8 @@ The rule used is that any indices that do not appear in the output tensor will b
 <p>For example, the following defines a new vector \( \mathbf{v} \) that is the sum of the rows of a matrix \( A \):</p>
 <pre><code>v_i { A_ij }
 </code></pre>
-<p>Another example, the following will define a new scalar \( s \) that is the sum of the element-wise product of two vectors \( \mathbf{u} \) and \( \mathbf{v} \) (i.e. an inner product):</p>
-<pre><code>u_i { 1.0, 2.0 }
-v_i { 3.0, 4.0 }
-s { u_i * v_i }
-</code></pre>
-<p>Here the <code>i</code> index is summed over, so the scalar <code>s</code> is the sum of the element-wise product of the two vectors <code>u</code> and <code>v</code>.</p>
+<p>The above expression sums over the <code>j</code> index of the matrix <code>A</code>, resulting in a vector <code>v</code> where each element <code>v_i</code> is the sum of the elements in the <code>i</code>-th row of <code>A</code>.
+At the moment only 2d to 1d contractions are supported in order to enable matrix-vector multiplication, please open an issue if you need more general contraction support.</p>
 <p>We can also define a matrix-vector multiplication, the following will define a new vector \( \mathbf{v} \) that is
 the result of a matrix-vector multiplication of a matrix \( A \) and a vector \( \mathbf{u} \):</p>
 <pre><code>v_i { A_ij * u_j }
@@ -364,6 +360,16 @@ To illustrate this further, lets manually break this matrix-vector multiplicatio
 v_i { M_ij }
 </code></pre>
 <p>The first step calculates the element-wise product of <code>A</code> and <code>u</code> using broadcasting into the 2D tensor <code>M</code>, and the second step uses a contraction to sum over the <code>j</code> index to form the output vector <code>v</code>.</p>
+<h2 id="indexing"><a class="header" href="#indexing">Indexing</a></h2>
+<p>Indexing a 1D dense tensor (vector) is supported using square brackets. You can use either single indexing to extract a single element, or range indexing to extract a sub-vector.</p>
+<p>For example, to extract the third element of a vector \( \mathbf{a} \) and assign it to a scalar \( r \), you can write:</p>
+<pre><code>a_i { 0.0, 1.0, 2.0, 3.0 }
+r { a_i[2] }
+</code></pre>
+<p>To extract a sub-vector containing the second and third elements of \( \mathbf{a} \) and assign it to a new vector \( \mathbf{r} \), you can write:</p>
+<pre><code>a_i { 0.0, 1.0, 2.0, 3.0 }
+r_i { a_i[1:3] }
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="defining-a-system-of-odes"><a class="header" href="#defining-a-system-of-odes">Defining a system of ODEs</a></h1>
 <p>The primary goal of the DiffSL language is to define a system of ODEs in the following form:</p>

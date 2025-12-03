@@ -8,10 +8,11 @@ tensor_elmt = { indices? ~ (assignment | expression) }
 assignment = { name ~ "=" ~ expression }
 expression = { term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }
-factor     = { sign? ~ ( call | real | integer | name_ij | "(" ~ expression ~ ")" ) }
+factor     = { sign? ~ ( call | real | integer | name_ij_index | name_ij | "(" ~ expression ~ ")" ) }
 call       = { name ~ "(" ~ call_arg ~ ("," ~ call_arg )* ~ ")" }
 call_arg   = { expression }
 name_ij    = ${ name ~ ("_" ~ name)? }
+name_ij_index = ${ name_ij ~ "[" ~ indice ~ "]" }
 range_sep  = @{ ".." | ":" }
 sign       = @{ ("-"|"+") }
 term_op    = @{ "-"|"+" }

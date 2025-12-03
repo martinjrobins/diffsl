@@ -173,6 +173,7 @@ impl Env {
         ast: &Ast,
         rhs_indices: &[char],
         lhs_indices: &[char],
+        indice: Option<&Ast>,
     ) -> Option<Layout> {
         let var = self.get(name);
         if var.is_none() {
@@ -202,14 +203,25 @@ impl Env {
             permutation[i] = match lhs_indices.iter().position(|&x| x == rhs_indices[i]) {
                 Some(pos) => pos,
                 None => {
-                    self.errs.push(ValidationError::new(
-                        format!(
-                            "cannot find index {} in lhs indices {:?} ",
-                            rhs_indices[i], lhs_indices
-                        ),
-                        ast.span,
-                    ));
-                    return None;
+                    // if we are indexing a single element then we can allow for missing indices
+                    let mut allow_missing = false;
+                    if let Some(indice) = indice {
+                        let indice = indice.kind.as_indice().unwrap();
+                        if indice.sep.is_none() || indice.last.is_none() {
+                            allow_missing = true;
+                        }
+                    };
+                    if !allow_missing {
+                        self.errs.push(ValidationError::new(
+                            format!(
+                                "cannot find index {} in lhs indices {:?} ",
+                                rhs_indices[i], lhs_indices
+                            ),
+                            ast.span,
+                        ));
+                        return None;
+                    }
+                    0
                 }
             }
         }
@@ -221,6 +233,52 @@ impl Env {
                 return None;
             }
         };
+
+        if let Some(indice) = indice {
+            let indice = indice.kind.as_indice().unwrap();
+            // we'll only support indexing dense 1D variables for now
+            if layout_permuted.rank() != 1 || layout_permuted.kind() != &LayoutKind::Dense {
+                self.errs.push(ValidationError::new(
+                    format!(
+                        "can only index dense 1D variables. Variable {} has layout {}",
+                        name, layout_permuted
+                    ),
+                    ast.span,
+                ));
+                return None;
+            }
+
+            // a separator without a last value is an error
+            if indice.sep.is_some() && indice.last.is_none() {
+                self.errs.push(ValidationError::new(
+                    "range indice must have an end value".to_string(),
+                    ast.span,
+                ));
+                return None;
+            }
+
+            // if the indice is a single integer then the resulting layout is a scalar
+            if indice.sep.is_none() {
+                return Some(Layout::new_scalar());
+            } else {
+                // if the indice is a range then the resulting layout is a dense layout with shape given by the range
+                let first = indice.first.kind.as_integer().unwrap();
+                let last = indice.last.as_ref().unwrap().kind.as_integer().unwrap();
+                // make sure the range is valid
+                if last < first {
+                    self.errs.push(ValidationError::new(
+                        format!(
+                            "invalid range indice: start {} is greater than end {}",
+                            first, last
+                        ),
+                        ast.span,
+                    ));
+                    return None;
+                }
+                let dim = usize::try_from(last - first).unwrap();
+                return Some(Layout::new_dense(Shape::from(vec![dim])));
+            }
+        }
 
         Some(layout_permuted)
     }
@@ -258,7 +316,13 @@ impl Env {
             AstKind::Number(_) => Some(Layout::new_scalar()),
             AstKind::Integer(_) => Some(Layout::new_scalar()),
             AstKind::Domain(d) => Some(Layout::new_dense(Shape::zeros(1) + d.dim)),
-            AstKind::Name(name) => self.get_layout_name(name.name, ast, &name.indices, indices),
+            AstKind::Name(name) => self.get_layout_name(
+                name.name,
+                ast,
+                &name.indices,
+                indices,
+                name.indice.as_ref().map(|i| i.as_ref()),
+            ),
             _ => panic!("unrecognised ast node {:#?}", ast.kind),
         }
     }
@@ -278,12 +342,13 @@ impl Env {
             }
         }
 
-        // TODO: for now we will only support one additional index
-        if new_indices.len() > indices.len() + 1 {
+        // TODO: for now we will only support contractions from 2d to 1d
+        if new_indices.len() > indices.len() && (new_indices.len() != 2 || indices.len() != 1) {
             self.errs.push(ValidationError::new(
                 format!(
-                    "cannot index tensor element with more than one additional index. Found {} indices",
-                    new_indices.len() - indices.len()
+                    "contraction only supported from 2D to 1D tensors. Got {}D to {}D",
+                    new_indices.len(),
+                    indices.len()
                 ),
                 elmt.expr.span,
             ));

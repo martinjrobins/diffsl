@@ -91,9 +91,10 @@ impl TranslationFrom {
         let is_contraction = source.rank() > target.rank();
 
         if source.is_dense() && is_contraction {
+            let neg_contract_by = source.rank() - contract_by;
             Self::DenseContraction {
                 contract_by,
-                contract_len: source.shape().slice(s![contract_by..]).iter().product(),
+                contract_len: source.shape().slice(s![neg_contract_by..]).iter().product(),
             }
         } else if source.is_diagonal() && is_contraction {
             Self::DiagonalContraction { contract_by }
@@ -245,7 +246,12 @@ impl Translation {
         let to = TranslationTo::new(target_start, via_layout, target_layout);
         assert_eq!(
             from.nnz_after_translate(source_layout),
-            to.nnz_after_translate()
+            to.nnz_after_translate(),
+            "nnz after translate mismatch, from {} to {}, translating from {:?} to {:?}",
+            from.nnz_after_translate(source_layout),
+            to.nnz_after_translate(),
+            from,
+            to
         );
         Self {
             source: from,
@@ -340,6 +346,7 @@ mod tests {
     }
 
     translation_test! {
+        contract_2d_to_1d: "A_ij { (0:2, 0:2): 1 } r_i { y = A_ij }" expect "y" = "Translation(DenseContraction(1, 2), Contiguous(0, 2))",
         elementwise_scalar: "r { y = 2}" expect "y" = "Translation(ElementWise, Contiguous(0, 1))",
         elementwise_vector: "r_i { 1, y = 2}" expect "y" = "Translation(Broadcast(1, 1), Contiguous(1, 2))",
         elementwise_vector2: "a_i { 1, 2 } r_i { 1, y = a_i}" expect "y" = "Translation(ElementWise, Contiguous(1, 3))",

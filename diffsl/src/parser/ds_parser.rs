@@ -41,6 +41,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
         Rule::name => Ast {
             kind: AstKind::Name(ast::Name {
                 name: pair.as_str(),
+                indice: None,
                 indices: vec![],
                 is_tangent: false,
             }),
@@ -151,6 +152,20 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             }
         }
 
+        // name_ij_index = ${ name_ij ~ "[" ~ indice ~ "]" }
+        Rule::name_ij_index => {
+            let mut inner = pair.into_inner();
+            let mut name_ij = parse_value(inner.next().unwrap());
+            let indice = Box::new(parse_value(inner.next().unwrap()));
+            match &mut name_ij.kind {
+                AstKind::Name(ref mut n) => {
+                    n.indice = Some(indice);
+                }
+                _ => unreachable!(),
+            }
+            name_ij
+        }
+
         // name_ij    = { name ~ ("_" ~ name)? }
         Rule::name_ij => {
             let mut inner = pair.into_inner();
@@ -165,6 +180,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
                 kind: AstKind::Name(ast::Name {
                     name,
                     indices,
+                    indice: None,
                     is_tangent: false,
                 }),
                 span,
@@ -200,6 +216,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
                 AstKind::Name(ast::Name {
                     name,
                     indices,
+                    indice: None,
                     is_tangent: false,
                 }) => (name, indices),
                 _ => unreachable!(),

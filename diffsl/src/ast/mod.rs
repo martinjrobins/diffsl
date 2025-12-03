@@ -72,6 +72,7 @@ pub struct RateEquation<'a> {
 pub struct Name<'a> {
     pub name: &'a str,
     pub indices: Vec<char>,
+    pub indice: Option<Box<Ast<'a>>>,
     pub is_tangent: bool,
 }
 
@@ -86,6 +87,9 @@ impl fmt::Display for Name<'_> {
             for idx in self.indices.iter() {
                 write!(f, "{idx}")?;
             }
+        }
+        if let Some(ref indice) = self.indice {
+            write!(f, "[{}]", indice)?;
         }
         Ok(())
     }
@@ -461,6 +465,7 @@ impl<'a> AstKind<'a> {
         AstKind::Name(Name {
             name,
             indices,
+            indice: None,
             is_tangent: false,
         })
     }
@@ -468,6 +473,7 @@ impl<'a> AstKind<'a> {
         AstKind::Name(Name {
             name,
             indices: Vec::new(),
+            indice: None,
             is_tangent: false,
         })
     }
@@ -475,6 +481,7 @@ impl<'a> AstKind<'a> {
         AstKind::Name(Name {
             name,
             indices,
+            indice: None,
             is_tangent: true,
         })
     }
@@ -624,6 +631,7 @@ impl<'a> Ast<'a> {
             kind: AstKind::Name(Name {
                 name,
                 indices,
+                indice: None,
                 is_tangent,
             }),
             span: None,
@@ -728,6 +736,7 @@ impl<'a> Ast<'a> {
                     AstKind::Name(Name {
                         name: name.name,
                         indices: name.indices.clone(),
+                        indice: name.indice.clone(),
                         is_tangent: name.is_tangent,
                     })
                 }
@@ -802,6 +811,7 @@ impl<'a> Ast<'a> {
             AstKind::Name(Name {
                 name: found_name,
                 indices: _,
+                indice: _,
                 is_tangent: _,
             }) => {
                 deps.insert(found_name);
@@ -875,6 +885,13 @@ impl<'a> Ast<'a> {
                 arg.expression.collect_indices(indices);
             }
             AstKind::Name(found_name) => {
+                // if the name is indexed by a single indice, don't add that index to the list
+                if let Some(indice) = &found_name.indice {
+                    let indice = indice.as_ref().kind.as_indice().unwrap();
+                    if indice.sep.is_none() || indice.last.is_none() {
+                        return;
+                    }
+                }
                 indices.extend(found_name.indices.iter().cloned());
             }
             AstKind::Index(index) => {

@@ -1112,7 +1112,23 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                             .iter()
                             .position(|x| x == c)
                             .unwrap_or(elmt.indices().len());
-                        iname_index.push(index[pi]);
+                        // if we are indexing, add the start indice to index[pi]
+                        if let Some(indice) =
+                            iname.indice.as_ref().map(|i| i.kind.as_indice().unwrap())
+                        {
+                            let start = indice.first.as_ref().kind.as_integer().unwrap();
+                            let start_intval = self.builder.ins().iconst(self.int_type, start);
+                            // if we are indexing a single element, the index may be out of bounds
+                            let index_pi = if pi >= index.len() {
+                                self.builder.ins().iconst(self.int_type, 0)
+                            } else {
+                                index[pi]
+                            };
+                            let index_pi = self.builder.ins().iadd(start_intval, index_pi);
+                            iname_index.push(index_pi);
+                        } else {
+                            iname_index.push(index[pi]);
+                        }
                         no_transform = no_transform && pi == i;
                     }
                     // calculate the element index using iname_index and the shape of the tensor

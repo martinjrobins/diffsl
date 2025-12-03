@@ -92,3 +92,20 @@ v_i { M_ij }
 The first step calculates the element-wise product of `A` and `u` using broadcasting into the 2D tensor `M`, and the second step uses a contraction to sum over the `j` index to form the output vector `v`.
 
 
+## Indexing
+
+Indexing a 1D dense tensor (vector) is supported using square brackets. You can use either single indexing to extract a single element, or range indexing to extract a sub-vector.
+
+For example, to extract the third element of a vector \\( \mathbf{a} \\) and assign it to a scalar \\( r \\), you can write:
+
+```
+a_i { 0.0, 1.0, 2.0, 3.0 }
+r { a_i[2] }
+```
+
+To extract a sub-vector containing the second and third elements of \\( \mathbf{a} \\) and assign it to a new vector \\( \mathbf{r} \\), you can write:
+
+```
+a_i { 0.0, 1.0, 2.0, 3.0 }
+r_i { a_i[1:3] }
+```

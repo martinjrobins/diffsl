@@ -69,15 +69,8 @@ For example, the following defines a new vector \\( \mathbf{v} \\) that is the s
 v_i { A_ij }
 ```
 
-Another example, the following will define a new scalar \\( s \\) that is the sum of the element-wise product of two vectors \\( \mathbf{u} \\) and \\( \mathbf{v} \\) (i.e. an inner product):
-
-```
-u_i { 1.0, 2.0 }
-v_i { 3.0, 4.0 }
-s { u_i * v_i }
-```
-
-Here the `i` index is summed over, so the scalar `s` is the sum of the element-wise product of the two vectors `u` and `v`.
+The above expression sums over the `j` index of the matrix `A`, resulting in a vector `v` where each element `v_i` is the sum of the elements in the `i`-th row of `A`.
+At the moment only 2d to 1d contractions are supported in order to enable matrix-vector multiplication, please open an issue if you need more general contraction support.
 
 We can also define a matrix-vector multiplication, the following will define a new vector \\( \mathbf{v} \\) that is
 the result of a matrix-vector multiplication of a matrix \\( A \\) and a vector \\( \mathbf{u} \\):

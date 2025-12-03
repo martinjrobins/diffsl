@@ -151,8 +151,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
                 None => parse_value(inner.next().unwrap()),
             }
         }
-        
-        
+
         // name_ij_index = ${ name_ij ~ "[" ~ indice ~ "]" }
         Rule::name_ij_index => {
             let mut inner = pair.into_inner();

@@ -233,7 +233,7 @@ impl Env {
                 return None;
             }
         };
-        
+
         if let Some(indice) = indice {
             let indice = indice.kind.as_indice().unwrap();
             // we'll only support indexing dense 1D variables for now
@@ -247,7 +247,7 @@ impl Env {
                 ));
                 return None;
             }
-            
+
             // a separator without a last value is an error
             if indice.sep.is_some() && indice.last.is_none() {
                 self.errs.push(ValidationError::new(
@@ -316,7 +316,13 @@ impl Env {
             AstKind::Number(_) => Some(Layout::new_scalar()),
             AstKind::Integer(_) => Some(Layout::new_scalar()),
             AstKind::Domain(d) => Some(Layout::new_dense(Shape::zeros(1) + d.dim)),
-            AstKind::Name(name) => self.get_layout_name(name.name, ast, &name.indices, indices, name.indice.as_ref().map(|i| i.as_ref())),
+            AstKind::Name(name) => self.get_layout_name(
+                name.name,
+                ast,
+                &name.indices,
+                indices,
+                name.indice.as_ref().map(|i| i.as_ref()),
+            ),
             _ => panic!("unrecognised ast node {:#?}", ast.kind),
         }
     }
@@ -336,12 +342,13 @@ impl Env {
             }
         }
 
-        // TODO: for now we will only support one additional index
-        if new_indices.len() > indices.len() + 1 {
+        // TODO: for now we will only support contractions from 2d to 1d
+        if new_indices.len() > indices.len() && (new_indices.len() != 2 || indices.len() != 1) {
             self.errs.push(ValidationError::new(
                 format!(
-                    "cannot index tensor element with more than one additional index. Found {} indices",
-                    new_indices.len() - indices.len()
+                    "contraction only supported from 2D to 1D tensors. Got {}D to {}D",
+                    new_indices.len(),
+                    indices.len()
                 ),
                 elmt.expr.span,
             ));

@@ -2435,7 +2435,27 @@ impl<'ctx> CodeGen<'ctx> {
                             .iter()
                             .position(|x| x == c)
                             .unwrap_or(elmt.indices().len());
-                        iname_index.push(index[pi]);
+                        // if we are indexing, add the start indice to index[pi]
+                        if let Some(indice) =
+                            iname.indice.as_ref().map(|i| i.kind.as_indice().unwrap())
+                        {
+                            let start = indice.first.as_ref().kind.as_integer().unwrap();
+                            let start_intval = self
+                                .context
+                                .i32_type()
+                                .const_int(start.try_into().unwrap(), false);
+                            // if we are indexing a single element, the index may be out of bounds
+                            let index_pi = if pi >= index.len() {
+                                self.context.i32_type().const_int(0, false)
+                            } else {
+                                index[pi]
+                            };
+                            let index_pi =
+                                self.builder.build_int_add(index_pi, start_intval, name)?;
+                            iname_index.push(index_pi);
+                        } else {
+                            iname_index.push(index[pi]);
+                        }
                         no_transform = no_transform && pi == i;
                     }
                     // calculate the element index using iname_index and the shape of the tensor
@@ -2456,6 +2476,7 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                         Some(iname_elmt_index)
                     } else {
+                        // zero if we are not indexing, otherwise use the start value of indice
                         let zero = self.context.i32_type().const_int(0, false);
                         Some(zero)
                     }

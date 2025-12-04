@@ -1210,9 +1210,11 @@ mod tests {
         error_index3: "A_i { 0.0, 1.0, 2.0 } B_i { (0:1): A_i[1:3] }" errors ["cannot broadcast expression shape [2] to tensor element shape [1]",],
         error_index4: "A { 1.0 } B { A[0] }" errors ["can only index dense 1D variables",],
         error_contract_1d_to_scalar: "A_i { 1.0, 2.0 } B { A_i }" errors ["contraction only supported from 2D to 1D tensors. Got 1D to 0D",],
+        error_broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_i }" errors ["cannot broadcast shapes: [3, 2], [2]",],
     );
 
     tensor_tests!(
+        broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_j }" expect "c" = "c_ij (3,2) { (0,0)(3,2): A_ij + b_j (3,2) }",
         contract_2d_to_1d: "A_ij { (0:3, 0:3): 1.0 } B_i { A_ij }" expect "B" = "B_i (3) { (0)(3): A_ij (3, 3) }",
         index: "A_i { 0.0, 1.0, 2.0 } B { A_i[1] }" expect "B" = "B { (): A_i[1] }",
         index2: "A_i { 0.0, 1.0, 2.0 } B_i { A_i[1:3] }" expect "B" = "B_i(2) { (0)(2):A_i[1:3](2) }",

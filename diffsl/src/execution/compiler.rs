@@ -1527,6 +1527,10 @@ mod tests {
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![1., 6.],
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![5., 11.],
         sparse_matrix_vect_multiply_zero_row: "A_ij { (0, 1): 2 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" vec![4.],
+        broadcast_vector1: "a_i { 1, 2 } b_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } c_ij { b_ij * a_j }" expect "c" vec![1., 4., 3., 8.],
+        broadcast_vector2: "a_i { 1, 2 } b_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } c_ij { a_j * b_ij }" expect "c" vec![1., 4., 3., 8.],
+        broadcast_vector3: "a_i { 1, 2 } b_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } c_ij { b_ij * a_i }" expect "c" vec![1., 2., 6., 8.],
+        broadcast_vector4: "a_i { 1, 2 } b_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } c_ij { a_i * b_ij }" expect "c" vec![1., 2., 6., 8.],
         bidiagonal: "A_ij { (0..3, 0..3): 1, (1..3, 0..2): 2 }" expect "A" vec![1., 2., 1., 2., 1.],
     }
 

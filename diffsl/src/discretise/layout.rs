@@ -206,9 +206,9 @@ impl Layout {
             .indices
             .iter()
             .map(|i| {
-                let mut new_i = i.slice(s![..new_rank]).to_owned();
-                for (ai, &p) in permutation.iter().enumerate() {
-                    new_i[ai] = i[p];
+                let mut new_i = Index::zeros(new_rank);
+                for (pi, &p) in permutation.iter().enumerate() {
+                    new_i[p] = i[pi];
                 }
                 new_i
             })

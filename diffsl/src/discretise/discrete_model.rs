@@ -1211,6 +1211,7 @@ mod tests {
         error_index4: "A { 1.0 } B { A[0] }" errors ["can only index dense 1D variables",],
         error_contract_1d_to_scalar: "A_i { 1.0, 2.0 } B { A_i }" errors ["contraction only supported from 2D to 1D tensors. Got 1D to 0D",],
         error_broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_i }" errors ["cannot broadcast shapes: [3, 2], [2]",],
+        mat_mul_sparse_vec: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { (1): 1 } b_i { A_ij * x_j }" errors ["cannot broadcast layouts with different sparsity patterns",],
     );
 
     tensor_tests!(
@@ -1235,6 +1236,8 @@ mod tests {
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2i, 2i) }",
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2, 2) }",
         sparse_matrix_vect_multiply_zero_row: "A_ij { (0, 0): 1, (0, 1): 2 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (1) { (0)(1): A_ij * x_j (1, 2) }",
+        mat_mul_sparse_vec_out: "A_ij { (1, 0): 2, (1, 1): 3 } x_i { (0:2): 1 } b_i { A_ij * x_j }" expect "b" = "b_i (2s) { (0)(2s): A_ij * x_j (2s, 2s) }",
+
     );
 
     #[test]

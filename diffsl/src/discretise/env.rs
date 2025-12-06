@@ -237,7 +237,10 @@ impl Env {
         if let Some(indice) = indice {
             let indice = indice.kind.as_indice().unwrap();
             // we'll only support indexing dense 1D variables for now
-            if layout_permuted.rank() != 1 || layout_permuted.kind() != &LayoutKind::Dense {
+            // a dense 1d variable could be a column vector with shape (n, 1) or a row vector with shape (n)
+            // or an nd array with shape (1, 1, ..., n, 1)
+            let is_one_d = layout_permuted.shape().iter().filter(|&&d| d != 1).count() == 1;
+            if !is_one_d || layout_permuted.kind() != &LayoutKind::Dense {
                 self.errs.push(ValidationError::new(
                     format!(
                         "can only index dense 1D variables. Variable {} has layout {}",

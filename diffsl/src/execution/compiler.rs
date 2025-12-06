@@ -1444,6 +1444,7 @@ mod tests {
     tensor_test! {
         indexing2: "a_i { 0.0, 1.0, 2.0, 3.0 } r_i { a_i[1:3] }" expect "r" vec![1.0, 2.0],
         indexing3: "a_i { 0.0, 1.0, 2.0, 3.0 } r_i { a_i[1..3] }" expect "r" vec![1.0, 2.0],
+        indexing_mat_mul: "a_ij { (0:2, 0:2): 1.0 } b_j { 1, 2, 3 } r_i { a_ij * b_j[1:3] }" expect "r" vec![5.0, 5.0],
     }
 
     tensor_test! {

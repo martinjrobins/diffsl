@@ -1219,6 +1219,7 @@ mod tests {
         contract_2d_to_1d: "A_ij { (0:3, 0:3): 1.0 } B_i { A_ij }" expect "B" = "B_i (3) { (0)(3): A_ij (3, 3) }",
         index: "A_i { 0.0, 1.0, 2.0 } B { A_i[1] }" expect "B" = "B { (): A_i[1] }",
         index2: "A_i { 0.0, 1.0, 2.0 } B_i { A_i[1:3] }" expect "B" = "B_i(2) { (0)(2):A_i[1:3](2) }",
+        index3: "A_ij { (0:2, 0:2): 1 } g_i { 0, 1, 2 } b_i { A_ij * g_j[0:2] }" expect "b" = "b_i (2) { (0)(2): A_ij * g_j[0:2] (2, 2) }",
         prefix_minus: "A { 1.0 / -2.0 }" expect "A" = "A { (): 1 / (-2) }",
         time: "A_i { t }" expect "A" = "A_i (1) { (0)(1):  t }",
         named_blk: "A_i { (0:3): y = 1, 2 }" expect "A" = "A_i (4) { (0)(3): y = 1, (3)(1): 2 }",

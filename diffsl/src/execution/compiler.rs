@@ -1448,6 +1448,7 @@ mod tests {
     }
 
     tensor_test! {
+        col_vec: "a_ij { (0, 0): 1, (1, 0): 2 } b_i { (0:2): a_ij }" expect "b" vec![1.0, 2.0],
         contraction_2d_to_vector: "a_ij { (0:3, 0:3): 1.0 } r_i { a_ij }" expect "r" vec![3.0, 3.0, 3.0],
         indexing1: "a_i { 0.0, 1.0, 2.0, 3.0 } r { a_i[2] }" expect "r" vec![2.0],
         heaviside_function0: "r { heaviside(-0.1) }" expect "r" vec![0.0],

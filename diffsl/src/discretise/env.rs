@@ -108,7 +108,8 @@ impl Env {
                     || match var {
                         "u" => self.vars[dep].is_state_dependent(),
                         "dudt" => self.vars[dep].is_dstatedt_dependent(),
-                        _ => false,
+                        // must be an input
+                        _ => self.vars[dep].is_input_dependent(),
                     }
             })
         })

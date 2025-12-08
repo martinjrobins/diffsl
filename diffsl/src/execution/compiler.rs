@@ -1886,6 +1886,22 @@ mod tests {
     }
 
     #[test]
+    fn test_constant_and_input_deps() {
+        let code = "
+            in = [k]
+            k { 1, } l { k } m { l }
+            u { 1 }
+            F { u }
+        ";
+        let model = parse_ds_string(code).unwrap();
+        let discrete_model = DiscreteModel::build("test_constant_and_input_deps", &model).unwrap();
+        assert!(discrete_model
+            .input_dep_defns()
+            .iter()
+            .any(|defn| defn.name() == "m"));
+    }
+
+    #[test]
     fn test_additional_functions() {
         let full_text = "
             in = [k]

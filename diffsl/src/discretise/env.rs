@@ -359,7 +359,7 @@ impl Env {
         }
 
         let expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
-        
+
         // broadcast the expression layout to the tensor rank
         // (tensor rank given by the number of indices)
         // if we have an additional index then we contract the last dimension of the expression layout to get the final layout

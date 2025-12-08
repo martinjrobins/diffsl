@@ -266,6 +266,7 @@ impl Env {
                 return Some(Layout::new_scalar());
             } else {
                 // if the indice is a range then the resulting layout is a dense layout with shape given by the range
+                // along the only non-unit dimension of the variable
                 let first = indice.first.kind.as_integer().unwrap();
                 let last = indice.last.as_ref().unwrap().kind.as_integer().unwrap();
                 // make sure the range is valid
@@ -280,7 +281,10 @@ impl Env {
                     return None;
                 }
                 let dim = usize::try_from(last - first).unwrap();
-                return Some(Layout::new_dense(Shape::from(vec![dim])));
+                let shape = layout_permuted
+                    .shape()
+                    .map(|&d| if d != 1 { dim } else { 1 });
+                return Some(Layout::new_dense(Shape::from(shape)));
             }
         }
 

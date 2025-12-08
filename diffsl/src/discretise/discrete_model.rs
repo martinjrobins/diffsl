@@ -1215,6 +1215,7 @@ mod tests {
     );
 
     tensor_tests!(
+        col_vec: "a_ij { (0, 0): 1, (1, 0): 2 } b_i { (0:2): a_ij }" expect "b" = "b_i (2) { (0)(2): a_ij (2, 1) }",
         broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_j }" expect "c" = "c_ij (3,2) { (0,0)(3,2): A_ij + b_j (3,2) }",
         contract_2d_to_1d: "A_ij { (0:3, 0:3): 1.0 } B_i { A_ij }" expect "B" = "B_i (3) { (0)(3): A_ij (3, 3) }",
         index: "A_i { 0.0, 1.0, 2.0 } B { A_i[1] }" expect "B" = "B { (): A_i[1] }",

@@ -360,23 +360,26 @@ impl Env {
 
         let expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
 
+        // broadcast the expression layout to the tensor rank
+        // (tensor rank given by the number of indices)
+        // if we have an additional index then we contract the last dimension of the expression layout to get the final layout
+        let expr_layout_to_rank = if new_indices.len() > indices.len() {
+            match expr_layout.contract_last_axis() {
+                Ok(layout) => layout,
+                Err(e) => {
+                    self.errs
+                        .push(ValidationError::new(format!("{e}"), elmt.expr.span));
+                    return None;
+                }
+            }
+        } else {
+            expr_layout.to_rank(indices.len()).unwrap()
+        };
+
         // calculate the shape of the tensor element.
         let elmt_layout = if elmt.indices.is_none() {
-            // If there are no indices then blk layout is the same as the expression, but broadcast to the tensor rank
-            // (tensor rank given by the number of indices)
-            // if we have an additional index then we contract the last dimension of the expression layout to get the final layout
-            if new_indices.len() > indices.len() {
-                match expr_layout.contract_last_axis() {
-                    Ok(layout) => layout,
-                    Err(e) => {
-                        self.errs
-                            .push(ValidationError::new(format!("{e}"), elmt.expr.span));
-                        return None;
-                    }
-                }
-            } else {
-                expr_layout.to_rank(indices.len()).unwrap()
-            }
+            // If there are no indicies then the layout is the same as the expression layout
+            expr_layout_to_rank
         } else {
             // If there are indicies then the rank is determined by the number of indices, and the
             // shape is determined by the ranges of the indices
@@ -404,8 +407,8 @@ impl Env {
 
             // we will use the expression shape as defaults if the range is not explicitly given
             exp_expr_shape
-                .slice_mut(s![..expr_layout.rank()])
-                .assign(expr_layout.shape());
+                .slice_mut(s![..expr_layout_to_rank.rank()])
+                .assign(expr_layout_to_rank.shape());
 
             // calculate the shape of the tensor element from the given indices and expression shape
             let all_range_indices = given_indices.iter().all(|i| i.sep == Some(".."));
@@ -451,11 +454,11 @@ impl Env {
             }
 
             // check that the expression shape can be broadcast to the tensor element shape
-            if !can_broadcast_to(&exp_expr_shape, expr_layout.shape()) {
+            if !can_broadcast_to(&exp_expr_shape, expr_layout_to_rank.shape()) {
                 self.errs.push(ValidationError::new(
                     format!(
                         "cannot broadcast expression shape {} to tensor element shape {}",
-                        expr_layout.shape(),
+                        expr_layout_to_rank.shape(),
                         exp_expr_shape
                     ),
                     elmt.expr.span,

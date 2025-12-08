@@ -281,7 +281,9 @@ impl Env {
                     return None;
                 }
                 let dim = usize::try_from(last - first).unwrap();
-                let shape = layout_permuted.shape().map(|&d| if d != 1 { dim } else { 1 });
+                let shape = layout_permuted
+                    .shape()
+                    .map(|&d| if d != 1 { dim } else { 1 });
                 return Some(Layout::new_dense(Shape::from(shape)));
             }
         }

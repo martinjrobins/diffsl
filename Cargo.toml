@@ -14,3 +14,14 @@ readme = "README.md"
 authors = ["Martin Robinson <martinjrobins@gmail.com>"]
 repository = "https://github.com/martinjrobins/diffsl"
 
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.bench]
+debug = true
+
+[profile.release]
+opt-level = 3
+debug = false
+

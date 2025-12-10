@@ -83,6 +83,10 @@ env_logger = "0.11.8"
 name = "evaluation"
 harness = false
 
+[[bench]]
+name = "pybamm_dfn"
+harness = false
+
 [profile.dev]
 opt-level = 0
 debug = true

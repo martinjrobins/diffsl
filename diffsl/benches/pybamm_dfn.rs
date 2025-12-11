@@ -1,4 +1,7 @@
-use diffsl::{CodegenModuleCompile, CodegenModuleJit, Compiler, discretise::DiscreteModel, parser::parse_ds_string};
+use diffsl::{
+    discretise::DiscreteModel, parser::parse_ds_string, CodegenModuleCompile, CodegenModuleJit,
+    Compiler,
+};
 use divan::Bencher;
 
 fn main() {

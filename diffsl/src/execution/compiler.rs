@@ -856,6 +856,7 @@ mod tests {
         Compiler,
     };
     use approx::{assert_relative_eq, RelativeEq};
+    use num_traits::ToPrimitive;
 
     use super::CompilerMode;
     use paste::paste;
@@ -1114,13 +1115,23 @@ mod tests {
     }
 
     #[allow(dead_code)]
-    fn tensor_test_common<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>(
+    fn tensor_test_common<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq + ToPrimitive,
+    >(
         discrete_model: &DiscreteModel,
         tensor_name: &str,
         mode: CompilerMode,
     ) -> Vec<Vec<f64>> {
-        let compiler = Compiler::<M, f64>::from_discrete_model(discrete_model, mode).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(discrete_model, mode).unwrap();
         tensor_test_common_impl(compiler, tensor_name)
+            .into_iter()
+            .map(|v| {
+                v.into_iter()
+                    .map(|x: T| x.to_f64().unwrap())
+                    .collect::<Vec<f64>>()
+            })
+            .collect()
     }
 
     #[allow(dead_code)]

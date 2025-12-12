@@ -83,15 +83,12 @@ env_logger = "0.11.8"
 name = "evaluation"
 harness = false
 
-[profile.dev]
-opt-level = 0
-debug = true
-
-[profile.release]
-opt-level = 3
-debug = false
+[[bench]]
+name = "pybamm_dfn"
+harness = false
 
 [dev-dependencies]
+faer = "0.23.2"
 paste = "1.0.15"
 
 [package.metadata.docs.rs]

@@ -1773,9 +1773,11 @@ impl<'ctx> CodeGen<'ctx> {
             let curr_index = self.builder.build_phi(int_type, format!["i{i}"].as_str())?;
             curr_index.add_incoming(&[(&start_index, preblock)]);
 
-            if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
-                self.builder
-                    .build_store(contract_sum.unwrap(), self.real_type.const_zero())?;
+            if i == expr_rank - contract_by - 1 {
+                if let Some(contract_sum) = contract_sum {
+                    self.builder
+                        .build_store(contract_sum, self.real_type.const_zero())?;
+                }
             }
 
             indices.push(curr_index);
@@ -1791,9 +1793,9 @@ impl<'ctx> CodeGen<'ctx> {
         let float_value =
             self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, None)?;
 
-        if contract_sum.is_some() {
+        if let Some(contract_sum) = contract_sum {
             let contract_sum_value = self
-                .build_load(self.real_type, contract_sum.unwrap(), "contract_sum")?
+                .build_load(self.real_type, contract_sum, "contract_sum")?
                 .into_float_value();
             let new_contract_sum_value = self.builder.build_float_add(
                 contract_sum_value,
@@ -1801,7 +1803,7 @@ impl<'ctx> CodeGen<'ctx> {
                 "new_contract_sum",
             )?;
             self.builder
-                .build_store(contract_sum.unwrap(), new_contract_sum_value)?;
+                .build_store(contract_sum, new_contract_sum_value)?;
         } else {
             let expr_index = indices_int.iter().zip(expr_strides.iter()).fold(
                 self.int_type.const_zero(),
@@ -1826,20 +1828,28 @@ impl<'ctx> CodeGen<'ctx> {
             let next_index = self.builder.build_int_add(indices_int[i], one, name)?;
             indices[i].add_incoming(&[(&next_index, preblock)]);
 
-            if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
-                let contract_sum_value = self
-                    .build_load(self.real_type, contract_sum.unwrap(), "contract_sum")?
-                    .into_float_value();
-                let contract_strides = contract_strides.as_ref().unwrap();
-                let elmt_index = indices_int
-                    .iter()
-                    .take(contract_strides.len())
-                    .zip(contract_strides.iter())
-                    .fold(self.int_type.const_zero(), |acc, (i, s)| {
-                        let tmp = self.builder.build_int_mul(*i, *s, "elmt_index").unwrap();
-                        self.builder.build_int_add(acc, tmp, "acc").unwrap()
-                    });
-                self.jit_compile_store(name, elmt, elmt_index, contract_sum_value, translation)?;
+            if i == expr_rank - contract_by - 1 {
+                if let Some(contract_sum) = contract_sum {
+                    let contract_sum_value = self
+                        .build_load(self.real_type, contract_sum, "contract_sum")?
+                        .into_float_value();
+                    let contract_strides = contract_strides.as_ref().unwrap();
+                    let elmt_index = indices_int
+                        .iter()
+                        .take(contract_strides.len())
+                        .zip(contract_strides.iter())
+                        .fold(self.int_type.const_zero(), |acc, (i, s)| {
+                            let tmp = self.builder.build_int_mul(*i, *s, "elmt_index").unwrap();
+                            self.builder.build_int_add(acc, tmp, "acc").unwrap()
+                        });
+                    self.jit_compile_store(
+                        name,
+                        elmt,
+                        elmt_index,
+                        contract_sum_value,
+                        translation,
+                    )?;
+                }
             }
 
             let end_index = if i == 0 && self.threaded {
@@ -2483,6 +2493,8 @@ impl<'ctx> CodeGen<'ctx> {
                 } else if layout.is_sparse() || layout.is_diagonal() {
                     // must have come from jit_compile_sparse_block, so we can just use the elmt_index
                     // must have come from jit_compile_diagonal_block, so we can just use the elmt_index
+                    // TODO: if the layout is the same as the block layout just use expr_index
+                    //       otherwise we need to load the correct index from the tensor layout
                     expr_index
                 } else {
                     panic!("unexpected layout");

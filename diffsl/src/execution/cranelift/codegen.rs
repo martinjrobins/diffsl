@@ -930,18 +930,42 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
         // add supported external rust functions
-        for func in crate::execution::functions::FUNCTIONS.iter() {
-            builder.symbol(func.0, func.1 as *const u8);
+        for i in 0..crate::execution::functions::FUNCTIONS.len() {
+            let (f_name, f_ptr, df_ptr) = match real_type {
+                RealType::F32 => (
+                    crate::execution::functions::FUNCTIONS_F32[i].0,
+                    crate::execution::functions::FUNCTIONS_F32[i].1 as *const u8,
+                    crate::execution::functions::FUNCTIONS_F32[i].2 as *const u8,
+                ),
+                RealType::F64 => (
+                    crate::execution::functions::FUNCTIONS_F64[i].0,
+                    crate::execution::functions::FUNCTIONS_F64[i].1 as *const u8,
+                    crate::execution::functions::FUNCTIONS_F64[i].2 as *const u8,
+                ),
+            };
+            builder.symbol(f_name, f_ptr);
             builder.symbol(
-                CraneliftCodeGen::<JITModule>::get_function_name(func.0, true),
-                func.2 as *const u8,
+                CraneliftCodeGen::<JITModule>::get_function_name(f_name, true),
+                df_ptr,
             );
         }
-        for func in crate::execution::functions::TWO_ARG_FUNCTIONS.iter() {
-            builder.symbol(func.0, func.1 as *const u8);
+        for i in 0..crate::execution::functions::TWO_ARG_FUNCTIONS.len() {
+            let (f_name, f_ptr, df_ptr) = match real_type {
+                RealType::F32 => (
+                    crate::execution::functions::TWO_ARG_FUNCTIONS_F32[i].0,
+                    crate::execution::functions::TWO_ARG_FUNCTIONS_F32[i].1 as *const u8,
+                    crate::execution::functions::TWO_ARG_FUNCTIONS_F32[i].2 as *const u8,
+                ),
+                RealType::F64 => (
+                    crate::execution::functions::TWO_ARG_FUNCTIONS_F64[i].0,
+                    crate::execution::functions::TWO_ARG_FUNCTIONS_F64[i].1 as *const u8,
+                    crate::execution::functions::TWO_ARG_FUNCTIONS_F64[i].2 as *const u8,
+                ),
+            };
+            builder.symbol(f_name, f_ptr);
             builder.symbol(
-                CraneliftCodeGen::<JITModule>::get_function_name(func.0, true),
-                func.2 as *const u8,
+                CraneliftCodeGen::<JITModule>::get_function_name(f_name, true),
+                df_ptr,
             );
         }
 

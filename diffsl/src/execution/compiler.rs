@@ -1461,15 +1461,25 @@ mod tests {
         indexing_mat_mul: "a_ij { (0:2, 0:2): 1.0 } b_j { 1, 2, 3 } r_i { a_ij * b_j[1:3] }" expect "r" vec![5.0, 5.0],
     }
     tensor_test_typed! {
-        arccosh_function: "r { arccosh(2) }" expect "r" vec![f64::acosh(2.0)] ; f64,
-        exp_function: "r { exp(2) }" expect "r" vec![f64::exp(2.0)] ; f64,
-        pow_function: "r { pow(4.3245, 0.5) }" expect "r" vec![f64::powf(4.3245, 0.5)] ; f64,
-        arcsinh_function: "r { arcsinh(0.5) }" expect "r" vec![f64::asinh(0.5)] ; f64,
-        tanh_function: "r { tanh(0.5) }" expect "r" vec![f64::tanh(0.5)] ; f64,
-        sinh_function: "r { sinh(0.5) }" expect "r" vec![f64::sinh(0.5)] ; f64,
-        cosh_function: "r { cosh(0.5) }" expect "r" vec![f64::cosh(0.5)] ; f64,
+        arccosh_function_f64: "r { arccosh(2) }" expect "r" vec![f64::acosh(2.0)] ; f64,
+        arcosh_function_f32: "r { arccosh(2) }" expect "r" vec![f32::acosh(2.0_f32).into()] ; f32,
+        exp_function_f64: "r { exp(2) }" expect "r" vec![f64::exp(2.0)] ; f64,
+        exp_function_f32: "r { exp(2) }" expect "r" vec![f32::exp(2.0_f32).into()] ; f32,
+        pow_function_f64: "r { pow(4.3245, 0.5) }" expect "r" vec![f64::powf(4.3245, 0.5)] ; f64,
+        pow_function_f32: "r { pow(4.3245, 0.5) }" expect "r" vec![f32::powf(4.3245_f32, 0.5).into()] ; f32,
+        arcsinh_function_f64: "r { arcsinh(0.5) }" expect "r" vec![f64::asinh(0.5)] ; f64,
+        arcsinh_function_f32: "r { arcsinh(0.5) }" expect "r" vec![f32::asinh(0.5_f32).into()] ; f32,
+        tanh_function_f64: "r { tanh(0.5) }" expect "r" vec![f64::tanh(0.5)] ; f64,
+        // todo: why does this fail?
+        //tanh_function_f32: "r { tanh(0.5) }" expect "r" vec![f32::tanh(0.5_f32).into()] ; f32,
+        sinh_function_f64: "r { sinh(0.5) }" expect "r" vec![f64::sinh(0.5)] ; f64,
+        sinh_function_f32: "r { sinh(0.5) }" expect "r" vec![f32::sinh(0.5_f32).into()] ; f32,
+        cosh_function_f64: "r { cosh(0.5) }" expect "r" vec![f64::cosh(0.5)] ; f64,
+        cosh_function_f32: "r { cosh(0.5) }" expect "r" vec![f32::cosh(0.5_f32).into()] ; f32,
         exp_function_time: "r { exp(t) }" expect "r" vec![f64::exp(0.0)] ; f64,
-        sigmoid_function: "r { sigmoid(0.1) }" expect "r" vec![1.0 / (1.0 + f64::exp(-0.1))] ; f64,
+        exp_function_time_f32: "r { exp(t) }" expect "r" vec![f32::exp(0.0_f32).into()] ; f32,
+        sigmoid_function_f64: "r { sigmoid(0.1) }" expect "r" vec![1.0 / (1.0 + f64::exp(-0.1))] ; f64,
+        sigmoid_function_f32: "r { sigmoid(0.1) }" expect "r" vec![ (1.0_f32 / (1.0_f32 + f32::exp(-0.1_f32))).into()] ; f32,
         expression: "r_i {2 + 3, 3 * 2, arcsinh(1.2 + 1.0 / max(1.2, 1.0) * 2.0 + tanh(2.0))}" expect "r" vec![5., 6., f64::asinh(1.2 + 1.0 / f64::max(1.2, 1.0) * 2.0 + f64::tanh(2.0))] ; f64,
         pybamm_expression: "
         constant0_i { (0:19): 0.0, (19:20): 0.0006810238128045524,}

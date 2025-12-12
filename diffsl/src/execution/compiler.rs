@@ -1356,6 +1356,17 @@ mod tests {
 
     macro_rules! tensor_test {
         ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr,)*) => {
+            paste! {
+                tensor_test_typed! {
+                    $([<$name _f64>] : $text expect $tensor_name $expected_value ; f64,)*
+                    $([<$name _f32>] : $text expect $tensor_name $expected_value ; f32,)*
+                }
+            }
+        }
+    }
+
+    macro_rules! tensor_test_typed {
+        ($($name:ident: $text:literal expect $tensor_name:literal $expected_value:expr ; $scalar_type:ty ,)*) => {
         $(
             #[test]
             fn $name() {
@@ -1384,17 +1395,13 @@ mod tests {
                 #[cfg(feature = "llvm")]
                 {
                     use crate::execution::llvm::codegen::LlvmModule;
-                    let results = tensor_test_common::<LlvmModule, f32>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
-                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                    let results = tensor_test_common::<LlvmModule, f64>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<LlvmModule, $scalar_type>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
 
                 #[cfg(feature = "cranelift")]
                 {
-                    let results = tensor_test_common::<crate::CraneliftJitModule, f32>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
-                    assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                    let results = tensor_test_common::<crate::CraneliftJitModule, f64>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
+                    let results = tensor_test_common::<crate::CraneliftJitModule, $scalar_type>(&discrete_model, $tensor_name, CompilerMode::SingleThreaded);
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
 
@@ -1431,18 +1438,14 @@ mod tests {
                 {
                     #[cfg(feature = "cranelift")]
                     {
-                        let results = tensor_test_common::<crate::CraneliftJitModule, f32>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
-                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                        let results = tensor_test_common::<crate::CraneliftJitModule, f64>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<crate::CraneliftJitModule, $scalar_type>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     }
 
                     #[cfg(feature = "llvm")]
                     {
                         use crate::execution::llvm::codegen::LlvmModule;
-                        let results = tensor_test_common::<LlvmModule, f32>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
-                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                        let results = tensor_test_common::<LlvmModule, f64>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
+                        let results = tensor_test_common::<LlvmModule, $scalar_type>(&discrete_model, $tensor_name, CompilerMode::MultiThreaded(None));
                         assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     }
                 }
@@ -1457,28 +1460,17 @@ mod tests {
         indexing3: "a_i { 0.0, 1.0, 2.0, 3.0 } r_i { a_i[1..3] }" expect "r" vec![1.0, 2.0],
         indexing_mat_mul: "a_ij { (0:2, 0:2): 1.0 } b_j { 1, 2, 3 } r_i { a_ij * b_j[1:3] }" expect "r" vec![5.0, 5.0],
     }
-
-    tensor_test! {
-        col_vec: "a_ij { (0, 0): 1, (1, 0): 2 } b_i { (0:2): a_ij }" expect "b" vec![1.0, 2.0],
-        contraction_2d_to_vector: "a_ij { (0:3, 0:3): 1.0 } r_i { a_ij }" expect "r" vec![3.0, 3.0, 3.0],
-        indexing1: "a_i { 0.0, 1.0, 2.0, 3.0 } r { a_i[2] }" expect "r" vec![2.0],
-        heaviside_function0: "r { heaviside(-0.1) }" expect "r" vec![0.0],
-        heaviside_function1: "r { heaviside(0.0) }" expect "r" vec![1.0],
-        exp_function: "r { exp(2) }" expect "r" vec![f64::exp(2.0)],
-        abs_function: "r { abs(-2) }" expect "r" vec![f64::abs(-2.0)],
-        pow_function: "r { pow(4.3245, 0.5) }" expect "r" vec![f64::powf(4.3245, 0.5)],
-        arcsinh_function: "r { arcsinh(0.5) }" expect "r" vec![f64::asinh(0.5)],
-        arccosh_function: "r { arccosh(2) }" expect "r" vec![f64::acosh(2.0)],
-        tanh_function: "r { tanh(0.5) }" expect "r" vec![f64::tanh(0.5)],
-        sinh_function: "r { sinh(0.5) }" expect "r" vec![f64::sinh(0.5)],
-        cosh_function: "r { cosh(0.5) }" expect "r" vec![f64::cosh(0.5)],
-        exp_function_time: "r { exp(t) }" expect "r" vec![f64::exp(0.0)],
-        min_function: "r { min(2, 3) }" expect "r" vec![2.0],
-        max_function: "r { max(2, 3) }" expect "r" vec![3.0],
-        sigmoid_function: "r { sigmoid(0.1) }" expect "r" vec![1.0 / (1.0 + f64::exp(-0.1))],
-        scalar: "r {2}" expect "r" vec![2.0,],
-        constant: "r_i {2, 3}" expect "r" vec![2., 3.],
-        expression: "r_i {2 + 3, 3 * 2, arcsinh(1.2 + 1.0 / max(1.2, 1.0) * 2.0 + tanh(2.0))}" expect "r" vec![5., 6., f64::asinh(1.2 + 1.0 / f64::max(1.2, 1.0) * 2.0 + f64::tanh(2.0))],
+    tensor_test_typed! {
+        arccosh_function: "r { arccosh(2) }" expect "r" vec![f64::acosh(2.0)] ; f64,
+        exp_function: "r { exp(2) }" expect "r" vec![f64::exp(2.0)] ; f64,
+        pow_function: "r { pow(4.3245, 0.5) }" expect "r" vec![f64::powf(4.3245, 0.5)] ; f64,
+        arcsinh_function: "r { arcsinh(0.5) }" expect "r" vec![f64::asinh(0.5)] ; f64,
+        tanh_function: "r { tanh(0.5) }" expect "r" vec![f64::tanh(0.5)] ; f64,
+        sinh_function: "r { sinh(0.5) }" expect "r" vec![f64::sinh(0.5)] ; f64,
+        cosh_function: "r { cosh(0.5) }" expect "r" vec![f64::cosh(0.5)] ; f64,
+        exp_function_time: "r { exp(t) }" expect "r" vec![f64::exp(0.0)] ; f64,
+        sigmoid_function: "r { sigmoid(0.1) }" expect "r" vec![1.0 / (1.0 + f64::exp(-0.1))] ; f64,
+        expression: "r_i {2 + 3, 3 * 2, arcsinh(1.2 + 1.0 / max(1.2, 1.0) * 2.0 + tanh(2.0))}" expect "r" vec![5., 6., f64::asinh(1.2 + 1.0 / f64::max(1.2, 1.0) * 2.0 + f64::tanh(2.0))] ; f64,
         pybamm_expression: "
         constant0_i { (0:19): 0.0, (19:20): 0.0006810238128045524,}
         constant1_i { (0:19): 0.0, (19:20): -0.0011634665332403958,}
@@ -1493,36 +1485,49 @@ mod tests {
         varying4_i {(constant7_ij * xaveragednegativeparticleconcentrationmolm3_j),}
         varying5_i {(constant3_ij * xaveragednegativeparticleconcentrationmolm3_j),}
         r_i {(((0.05138515824298745 * arcsinh((-0.7999999999999998 / ((1.8973665961010275e-05 * pow(max(min(varying2_i, 51217.92521874824), 0.000512179257309275), 0.5)) * pow((51217.9257309275 - max(min(varying2_i, 51217.92521874824), 0.000512179257309275)), 0.5))))) + (((((((2.16216 + (0.07645 * tanh((30.834 - (57.858397200000006 * max(min(varying3_i, 0.9999999999), 1e-10)))))) + (2.1581 * tanh((52.294 - (53.412228 * max(min(varying3_i, 0.9999999999), 1e-10)))))) - (0.14169 * tanh((11.0923 - (21.0852666 * max(min(varying3_i, 0.9999999999), 1e-10)))))) + (0.2051 * tanh((1.4684 - (5.829105600000001 * max(min(varying3_i, 0.9999999999), 1e-10)))))) + (0.2531 * tanh((4.291641337386018 - (8.069908814589667 * max(min(varying3_i, 0.9999999999), 1e-10)))))) - (0.02167 * tanh((-87.5 + (177.0 * max(min(varying3_i, 0.9999999999), 1e-10)))))) + (1e-06 * ((1.0 / max(min(varying3_i, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + max(min(varying3_i, 0.9999999999), 1e-10))))))) - ((0.05138515824298745 * arcsinh((0.6666666666666666 / ((0.0006324555320336759 * pow(max(min(varying4_i, 24983.261744011077), 0.000249832619938437), 0.5)) * pow((24983.2619938437 - max(min(varying4_i, 24983.261744011077), 0.000249832619938437)), 0.5))))) + ((((((((((0.194 + (1.5 * exp((-120.0 * max(min(varying5_i, 0.9999999999), 1e-10))))) + (0.0351 * tanh((-3.44578313253012 + (12.048192771084336 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.0045 * tanh((-7.1344537815126055 + (8.403361344537815 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.035 * tanh((-18.466 + (20.0 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.0147 * tanh((-14.705882352941176 + (29.41176470588235 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.102 * tanh((-1.3661971830985917 + (7.042253521126761 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.022 * tanh((-54.8780487804878 + (60.975609756097555 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.011 * tanh((-5.486725663716814 + (44.24778761061947 * max(min(varying5_i, 0.9999999999), 1e-10)))))) + (0.0155 * tanh((-3.6206896551724133 + (34.48275862068965 * max(min(varying5_i, 0.9999999999), 1e-10)))))) + (1e-06 * ((1.0 / max(min(varying5_i, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + max(min(varying5_i, 0.9999999999), 1e-10)))))))),}
-        " expect "r" vec![3.191533267340602],
+        " expect "r" vec![3.191533267340602] ; f64,
         pybamm_subexpression: "
             constant2_ij { (0,18): -25608.96286546366, (0,19): 76826.88859639116,}
             st_i { (0:20): xaveragednegativeparticleconcentrationmolm3 = 0.8000000000000016, (20:40): xaveragedpositiveparticleconcentrationmolm3 = 0.6000000000000001, }
             varying2_i {(constant2_ij * xaveragedpositiveparticleconcentrationmolm3_j),}
-        " expect "varying2" vec![-25608.96286546366 * 0.6000000000000001 + 76826.88859639116 * 0.6000000000000001],
+        " expect "varying2" vec![-25608.96286546366 * 0.6000000000000001 + 76826.88859639116 * 0.6000000000000001] ; f64,
         pybamm_subexpression2: "
             constant4_ij {(0,18): -0.4999999999999983, (0,19): 1.4999999999999982,}
             st_i { (0:20): xaveragednegativeparticleconcentrationmolm3 = 0.8000000000000016, (20:40): xaveragedpositiveparticleconcentrationmolm3 = 0.6000000000000001, }
             varying3_i {(constant4_ij * xaveragedpositiveparticleconcentrationmolm3_j),}
-        " expect "varying3" vec![-0.4999999999999983 * 0.6000000000000001 + 1.4999999999999982 * 0.6000000000000001],
+        " expect "varying3" vec![-0.4999999999999983 * 0.6000000000000001 + 1.4999999999999982 * 0.6000000000000001] ; f64,
         pybamm_subexpression3: "
             constant7_ij { (0,18): -12491.630996921805, (0,19): 37474.892990765504,}
             st_i { (0:20): xaveragednegativeparticleconcentrationmolm3 = 0.8000000000000016, (20:40): xaveragedpositiveparticleconcentrationmolm3 = 0.6000000000000001, }
             varying4_i {(constant7_ij * xaveragednegativeparticleconcentrationmolm3_j),}
-        " expect "varying4" vec![-12491.630996921805 * 0.8000000000000016 + 37474.892990765504 * 0.8000000000000016],
+        " expect "varying4" vec![-12491.630996921805 * 0.8000000000000016 + 37474.892990765504 * 0.8000000000000016] ; f64,
         pybamm_subexpression4: "
             varying2_i {30730.7554386,}
             varying3_i {0.6,}
             varying4_i {19986.6095951,}
             varying5_i {0.8,}
             r_i {(((0.05138515824298745 * arcsinh((-0.7999999999999998 / ((1.8973665961010275e-05 * pow(max(min(varying2_i, 51217.92521874824), 0.000512179257309275), 0.5)) * pow((51217.9257309275 - max(min(varying2_i, 51217.92521874824), 0.000512179257309275)), 0.5))))) + (((((((2.16216 + (0.07645 * tanh((30.834 - (57.858397200000006 * max(min(varying3_i, 0.9999999999), 1e-10)))))) + (2.1581 * tanh((52.294 - (53.412228 * max(min(varying3_i, 0.9999999999), 1e-10)))))) - (0.14169 * tanh((11.0923 - (21.0852666 * max(min(varying3_i, 0.9999999999), 1e-10)))))) + (0.2051 * tanh((1.4684 - (5.829105600000001 * max(min(varying3_i, 0.9999999999), 1e-10)))))) + (0.2531 * tanh((4.291641337386018 - (8.069908814589667 * max(min(varying3_i, 0.9999999999), 1e-10)))))) - (0.02167 * tanh((-87.5 + (177.0 * max(min(varying3_i, 0.9999999999), 1e-10)))))) + (1e-06 * ((1.0 / max(min(varying3_i, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + max(min(varying3_i, 0.9999999999), 1e-10))))))) - ((0.05138515824298745 * arcsinh((0.6666666666666666 / ((0.0006324555320336759 * pow(max(min(varying4_i, 24983.261744011077), 0.000249832619938437), 0.5)) * pow((24983.2619938437 - max(min(varying4_i, 24983.261744011077), 0.000249832619938437)), 0.5))))) + ((((((((((0.194 + (1.5 * exp((-120.0 * max(min(varying5_i, 0.9999999999), 1e-10))))) + (0.0351 * tanh((-3.44578313253012 + (12.048192771084336 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.0045 * tanh((-7.1344537815126055 + (8.403361344537815 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.035 * tanh((-18.466 + (20.0 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.0147 * tanh((-14.705882352941176 + (29.41176470588235 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.102 * tanh((-1.3661971830985917 + (7.042253521126761 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.022 * tanh((-54.8780487804878 + (60.975609756097555 * max(min(varying5_i, 0.9999999999), 1e-10)))))) - (0.011 * tanh((-5.486725663716814 + (44.24778761061947 * max(min(varying5_i, 0.9999999999), 1e-10)))))) + (0.0155 * tanh((-3.6206896551724133 + (34.48275862068965 * max(min(varying5_i, 0.9999999999), 1e-10)))))) + (1e-06 * ((1.0 / max(min(varying5_i, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + max(min(varying5_i, 0.9999999999), 1e-10)))))))),}
-        " expect "r" vec![(((0.05138515824298745 * f64::asinh(-0.7999999999999998 / ((1.897_366_596_101_027_5e-5 * f64::powf(f64::max(f64::min(30730.7554386, 51217.92521874824), 0.000512179257309275), 0.5)) * f64::powf(51217.9257309275 - f64::max(f64::min(30730.7554386, 51217.92521874824), 0.000512179257309275), 0.5)))) + (((((((2.16216 + (0.07645 * f64::tanh(30.834 - (57.858397200000006 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (2.1581 * f64::tanh(52.294 - (53.412228 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) - (0.14169 * f64::tanh(11.0923 - (21.0852666 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (0.2051 * f64::tanh(1.4684 - (5.829105600000001 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (0.2531 * f64::tanh(4.291641337386018 - (8.069908814589667 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) - (0.02167 * f64::tanh(-87.5 + (177.0 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (1e-06 * ((1.0 / f64::max(f64::min(0.6, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + f64::max(f64::min(0.6, 0.9999999999), 1e-10))))))) - ((0.05138515824298745 * f64::asinh(0.6666666666666666 / ((0.0006324555320336759 * f64::powf(f64::max(f64::min(19986.6095951, 24983.261744011077), 0.000249832619938437), 0.5)) * f64::powf(24983.2619938437 - f64::max(f64::min(19986.6095951, 24983.261744011077), 0.000249832619938437), 0.5)))) + ((((((((((0.194 + (1.5 * f64::exp(-120.0 * f64::max(f64::min(0.8, 0.9999999999), 1e-10)))) + (0.0351 * f64::tanh(-3.44578313253012 + (12.048192771084336 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.0045 * f64::tanh(-7.1344537815126055 + (8.403361344537815 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.035 * f64::tanh(-18.466 + (20.0 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.0147 * f64::tanh(-14.705882352941176 + (29.41176470588235 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.102 * f64::tanh(-1.3661971830985917 + (7.042253521126761 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.022 * f64::tanh(-54.8780487804878 + (60.975609756097555 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.011 * f64::tanh(-5.486725663716814 + (44.24778761061947 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) + (0.0155 * f64::tanh(-3.6206896551724133 + (34.48275862068965 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) + (1e-06 * ((1.0 / f64::max(f64::min(0.8, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + f64::max(f64::min(0.8, 0.9999999999), 1e-10))))))))],
-        pybamm_subexpression5: "r_i { (1.0 / max(min(0.6, 0.9999999999), 1e-10)),}" expect "r" vec![1.0 / f64::max(f64::min(0.6, 0.9999999999), 1e-10)],
-        pybamm_subexpression6: "r_i { arcsinh(1.8973665961010275e-05), }" expect "r" vec![f64::asinh(1.897_366_596_101_027_5e-5)],
-        pybamm_subexpression7: "r_i { (1.5 * exp(-120.0 * max(min(0.8, 0.9999999999), 1e-10))), }" expect "r" vec![1.5 * f64::exp(-120.0 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))],
-        pybamm_subexpression8: "r_i { (0.07645 * tanh(30.834 - (57.858397200000006 * max(min(0.6, 0.9999999999), 1e-10)))), }" expect "r" vec![0.07645 * f64::tanh(30.834 - (57.858397200000006 * f64::max(f64::min(0.6, 0.9999999999), 1e-10)))],
-        pybamm_subexpression9: "r_i { (1e-06 * ((1.0 / max(min(0.8, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + max(min(0.8, 0.9999999999), 1e-10))))), }" expect "r" vec![1e-06 * ((1.0 / f64::max(f64::min(0.8, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + f64::max(f64::min(0.8, 0.9999999999), 1e-10))))],
-        pybamm_subexpression10: "r_i { (1.0 / (-1.0 + max(min(0.8, 0.9999999999), 1e-10))), }" expect "r" vec![1.0 / (-1.0 + f64::max(f64::min(0.8, 0.9999999999), 1e-10))],
-        unary_negate_in_expr: "r_i { 1.0 / (-1.0 + 1.1) }" expect "r" vec![1.0 / (-1.0 + 1.1)],
+        " expect "r" vec![(((0.05138515824298745 * f64::asinh(-0.7999999999999998 / ((1.897_366_596_101_027_5e-5 * f64::powf(f64::max(f64::min(30730.7554386, 51217.92521874824), 0.000512179257309275), 0.5)) * f64::powf(51217.9257309275 - f64::max(f64::min(30730.7554386, 51217.92521874824), 0.000512179257309275), 0.5)))) + (((((((2.16216 + (0.07645 * f64::tanh(30.834 - (57.858397200000006 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (2.1581 * f64::tanh(52.294 - (53.412228 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) - (0.14169 * f64::tanh(11.0923 - (21.0852666 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (0.2051 * f64::tanh(1.4684 - (5.829105600000001 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (0.2531 * f64::tanh(4.291641337386018 - (8.069908814589667 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) - (0.02167 * f64::tanh(-87.5 + (177.0 * f64::max(f64::min(0.6, 0.9999999999), 1e-10))))) + (1e-06 * ((1.0 / f64::max(f64::min(0.6, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + f64::max(f64::min(0.6, 0.9999999999), 1e-10))))))) - ((0.05138515824298745 * f64::asinh(0.6666666666666666 / ((0.0006324555320336759 * f64::powf(f64::max(f64::min(19986.6095951, 24983.261744011077), 0.000249832619938437), 0.5)) * f64::powf(24983.2619938437 - f64::max(f64::min(19986.6095951, 24983.261744011077), 0.000249832619938437), 0.5)))) + ((((((((((0.194 + (1.5 * f64::exp(-120.0 * f64::max(f64::min(0.8, 0.9999999999), 1e-10)))) + (0.0351 * f64::tanh(-3.44578313253012 + (12.048192771084336 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.0045 * f64::tanh(-7.1344537815126055 + (8.403361344537815 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.035 * f64::tanh(-18.466 + (20.0 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.0147 * f64::tanh(-14.705882352941176 + (29.41176470588235 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.102 * f64::tanh(-1.3661971830985917 + (7.042253521126761 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.022 * f64::tanh(-54.8780487804878 + (60.975609756097555 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) - (0.011 * f64::tanh(-5.486725663716814 + (44.24778761061947 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) + (0.0155 * f64::tanh(-3.6206896551724133 + (34.48275862068965 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))))) + (1e-06 * ((1.0 / f64::max(f64::min(0.8, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + f64::max(f64::min(0.8, 0.9999999999), 1e-10))))))))] ; f64,
+        pybamm_subexpression5: "r_i { (1.0 / max(min(0.6, 0.9999999999), 1e-10)),}" expect "r" vec![1.0 / f64::max(f64::min(0.6, 0.9999999999), 1e-10)] ; f64,
+        pybamm_subexpression6: "r_i { arcsinh(1.8973665961010275e-05), }" expect "r" vec![f64::asinh(1.897_366_596_101_027_5e-5)] ; f64,
+        pybamm_subexpression7: "r_i { (1.5 * exp(-120.0 * max(min(0.8, 0.9999999999), 1e-10))), }" expect "r" vec![1.5 * f64::exp(-120.0 * f64::max(f64::min(0.8, 0.9999999999), 1e-10))] ; f64,
+        pybamm_subexpression8: "r_i { (0.07645 * tanh(30.834 - (57.858397200000006 * max(min(0.6, 0.9999999999), 1e-10)))), }" expect "r" vec![0.07645 * f64::tanh(30.834 - (57.858397200000006 * f64::max(f64::min(0.6, 0.9999999999), 1e-10)))] ; f64,
+        pybamm_subexpression9: "r_i { (1e-06 * ((1.0 / max(min(0.8, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + max(min(0.8, 0.9999999999), 1e-10))))), }" expect "r" vec![1e-06 * ((1.0 / f64::max(f64::min(0.8, 0.9999999999), 1e-10)) + (1.0 / (-1.0 + f64::max(f64::min(0.8, 0.9999999999), 1e-10))))] ; f64,
+        pybamm_subexpression10: "r_i { (1.0 / (-1.0 + max(min(0.8, 0.9999999999), 1e-10))), }" expect "r" vec![1.0 / (-1.0 + f64::max(f64::min(0.8, 0.9999999999), 1e-10))] ; f64,
+        unary_negate_in_expr: "r_i { 1.0 / (-1.0 + 1.1) }" expect "r" vec![1.0 / (-1.0 + 1.1)] ; f64,
+    }
+
+    tensor_test! {
+        col_vec: "a_ij { (0, 0): 1, (1, 0): 2 } b_i { (0:2): a_ij }" expect "b" vec![1.0, 2.0],
+        contraction_2d_to_vector: "a_ij { (0:3, 0:3): 1.0 } r_i { a_ij }" expect "r" vec![3.0, 3.0, 3.0],
+        indexing1: "a_i { 0.0, 1.0, 2.0, 3.0 } r { a_i[2] }" expect "r" vec![2.0],
+        heaviside_function0: "r { heaviside(-0.1) }" expect "r" vec![0.0],
+        heaviside_function1: "r { heaviside(0.0) }" expect "r" vec![1.0],
+        abs_function: "r { abs(-2) }" expect "r" vec![f64::abs(-2.0)],
+        min_function: "r { min(2, 3) }" expect "r" vec![2.0],
+        max_function: "r { max(2, 3) }" expect "r" vec![3.0],
+        scalar: "r {2}" expect "r" vec![2.0,],
+        constant: "r_i {2, 3}" expect "r" vec![2., 3.],
         derived: "r_i {2, 3} k_i { 2 * r_i }" expect "k" vec![4., 6.],
         concatenate: "r_i {2, 3} k_i { r_i, 2 * r_i }" expect "k" vec![2., 3., 4., 6.],
         ones_matrix_dense: "I_ij { (0:2, 0:2): 1 }" expect "I" vec![1., 1., 1., 1.],

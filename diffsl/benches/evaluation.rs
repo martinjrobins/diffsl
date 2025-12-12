@@ -99,3 +99,27 @@ fn add_scalar_ndarray<const N: usize>(bencher: divan::Bencher) {
         let _ = &u + 1.0;
     });
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[divan::bench(consts = [2, 10, 100, 1000, 2000, 4000])]
+fn mat_vec_faer<const N: usize>(bencher: divan::Bencher) {
+    let n = N;
+    let u = faer::Col::<f64>::from_fn(n, |_i| 1.0);
+    let triplets = (0..n)
+        .flat_map(|i| {
+            let mut row = vec![faer::sparse::Triplet::new(i, i, 0.0)];
+            if i + 1 < n {
+                row.push(faer::sparse::Triplet::new(i, i + 1, 1.0));
+            }
+            if i >= 1 {
+                row.push(faer::sparse::Triplet::new(i, i - 1, 1.0));
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    let a = faer::sparse::SparseRowMat::try_new_from_triplets(n, n, triplets.as_slice()).unwrap();
+
+    bencher.bench_local(|| {
+        let _ = &a * &u;
+    });
+}

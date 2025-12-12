@@ -88,6 +88,7 @@ name = "pybamm_dfn"
 harness = false
 
 [dev-dependencies]
+faer = "0.23.2"
 paste = "1.0.15"
 
 [package.metadata.docs.rs]

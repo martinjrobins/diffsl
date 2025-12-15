@@ -13,8 +13,7 @@ use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, PointerType,
 };
 use inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue, FloatValue,
-    FunctionValue, GlobalValue, IntValue, PointerValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue
 };
 use inkwell::{
     AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, GlobalVisibility, IntPredicate,
@@ -1894,7 +1893,6 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let int_type = self.int_type;
 
-        let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
         let translation_index = self
             .layout
             .get_translation_index(elmt.expr_layout(), elmt.layout())
@@ -1971,33 +1969,8 @@ impl<'ctx> CodeGen<'ctx> {
         let expr_index_phi = self.builder.build_phi(int_type, "j")?;
         expr_index_phi.add_incoming(&[(&start_contract, block)]);
 
-        // loop body - load index from layout
         let expr_index = expr_index_phi.as_basic_value().into_int_value();
-        let elmt_index_mult_rank = self.builder.build_int_mul(
-            expr_index,
-            int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false),
-            name,
-        )?;
-        let indices_int = (0..elmt.expr_layout().rank())
-            .map(|i| {
-                let layout_index_plus_offset =
-                    int_type.const_int((layout_index + i).try_into().unwrap(), false);
-                let curr_index = self.builder.build_int_add(
-                    elmt_index_mult_rank,
-                    layout_index_plus_offset,
-                    name,
-                )?;
-                let ptr = Self::get_ptr_to_index(
-                    &self.builder,
-                    self.int_type,
-                    self.get_param("indices"),
-                    curr_index,
-                    name,
-                );
-                let index = self.build_load(self.int_type, ptr, name)?.into_int_value();
-                Ok(index)
-            })
-            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+        let indices_int = self.expr_indices_from_elmt_index(expr_index, elmt, name)?;
 
         // loop body - eval expression and increment sum
         let float_value = self.jit_compile_expr(
@@ -2074,6 +2047,41 @@ impl<'ctx> CodeGen<'ctx> {
 
         Ok(())
     }
+    
+    fn expr_indices_from_elmt_index(
+        &mut self,
+        elmt_index: IntValue<'ctx>,
+        elmt: &TensorBlock,
+        name: &str,
+    ) -> Result<Vec<IntValue<'ctx>>, anyhow::Error> {
+        let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
+        let int_type = self.int_type;
+        // loop body - load index from layout
+        let elmt_index_mult_rank = self.builder.build_int_mul(
+            elmt_index,
+            int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false),
+            name,
+        )?;
+        (0..elmt.expr_layout().rank())
+            .map(|i| {
+                let layout_index_plus_offset =
+                    int_type.const_int((layout_index + i).try_into().unwrap(), false);
+                let curr_index = self.builder.build_int_add(
+                    elmt_index_mult_rank,
+                    layout_index_plus_offset,
+                    name,
+                )?;
+                let ptr = Self::get_ptr_to_index(
+                    &self.builder,
+                    self.int_type,
+                    self.get_param("indices"),
+                    curr_index,
+                    name,
+                );
+                Ok(self.build_load(self.int_type, ptr, name)?.into_int_value())
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()
+    }
 
     // for sparse blocks we can loop through the non-zero elements and extract the index from the layout, then we compile the expression passing in this index
     // TODO: havn't implemented contractions yet
@@ -2085,7 +2093,6 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Result<()> {
         let int_type = self.int_type;
 
-        let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
         let start_index = int_type.const_int(0, false);
         let end_index = int_type.const_int(elmt.expr_layout().nnz().try_into().unwrap(), false);
 
@@ -2105,32 +2112,8 @@ impl<'ctx> CodeGen<'ctx> {
         let curr_index = self.builder.build_phi(int_type, "i")?;
         curr_index.add_incoming(&[(&thread_start.unwrap_or(start_index), preblock)]);
 
-        // loop body - load index from layout
         let elmt_index = curr_index.as_basic_value().into_int_value();
-        let elmt_index_mult_rank = self.builder.build_int_mul(
-            elmt_index,
-            int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false),
-            name,
-        )?;
-        let indices_int = (0..elmt.expr_layout().rank())
-            .map(|i| {
-                let layout_index_plus_offset =
-                    int_type.const_int((layout_index + i).try_into().unwrap(), false);
-                let curr_index = self.builder.build_int_add(
-                    elmt_index_mult_rank,
-                    layout_index_plus_offset,
-                    name,
-                )?;
-                let ptr = Self::get_ptr_to_index(
-                    &self.builder,
-                    self.int_type,
-                    self.get_param("indices"),
-                    curr_index,
-                    name,
-                );
-                Ok(self.build_load(self.int_type, ptr, name)?.into_int_value())
-            })
-            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+        let indices_int = self.expr_indices_from_elmt_index(elmt_index, elmt, name)?;
 
         // loop body - eval expression
         let float_value = self.jit_compile_expr(

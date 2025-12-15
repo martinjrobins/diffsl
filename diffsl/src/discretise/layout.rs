@@ -642,7 +642,26 @@ impl Layout {
         }
         data_layout
     }
+    
+    // data entry when this layout is used within an expression with another layout
+    // if the other layout is the same as self, or if its dense, then return an empty vec
+    // 
+    // returns a vec with the same size as the number of nnz in other, 
+    // with each entry giving the index in self corresponding to that entry in other.
+    // If an index in other does not exist in self, then a -1 is returned for that entry.
+    pub fn to_binary_data_layout(&self, other: &Layout ) -> Vec<i32> {
+        if self == other || other.is_dense() {
+            return vec![];
+        }
+        let mut data_layout = vec![];
+        for index in other.indices() {
+            let nnz_index = self.find_nnz_index(&index).map(|i| i as i32).unwrap_or(-1);
+            data_layout.push(nnz_index);
+        }
+        data_layout
+    }
 
+    
     pub fn to_rank(&self, rank: usize) -> Option<Self> {
         if self.rank() == rank {
             Some(self.clone())

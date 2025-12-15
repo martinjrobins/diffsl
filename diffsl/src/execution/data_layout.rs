@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::discretise::{ArcLayout, DiscreteModel, Layout, Tensor};
+use crate::{ast::Binop, discretise::{ArcLayout, DiscreteModel, Layout, Tensor}};
 
 use super::Translation;
 
@@ -18,6 +18,7 @@ pub struct DataLayout {
     data_index_map: HashMap<String, usize>,
     data_length_map: HashMap<String, usize>,
     layout_index_map: HashMap<ArcLayout, usize>,
+    binary_layout_index_map: HashMap<(ArcLayout, ArcLayout), usize>,
     translate_index_map: HashMap<(ArcLayout, ArcLayout), usize>,
     data: Vec<f64>,
     constants: Vec<f64>,
@@ -36,6 +37,7 @@ impl DataLayout {
         let mut constants = Vec::new();
         let mut indices = Vec::new();
         let mut layout_map = HashMap::new();
+        let mut binary_layout_index_map = HashMap::new();
 
         let mut add_tensor = |tensor: &Tensor, in_data: bool, in_constants: bool| {
             // insert the data (non-zeros) for each tensor
@@ -63,6 +65,23 @@ impl DataLayout {
                 // insert the layout info for each tensor expression
                 layout_index_map.insert(blk.expr_layout().clone(), indices.len());
                 indices.extend(blk.expr_layout().to_data_layout());
+                
+                // if any tensors in the block expression have a different layout to the block expression
+                // then we need to add a binary layout translation
+                for tensor_name in blk.expr().get_dependents() {
+                    let tensor_layout = layout_map.get(tensor_name).unwrap();
+                    if tensor_layout != blk.expr_layout() {
+                        binary_layout_index_map.insert(
+                            (tensor_layout.clone(), blk.expr_layout().clone()),
+                            indices.len(),
+                        );
+                        indices.extend(
+                            tensor_layout
+                                .to_binary_data_layout(blk.expr_layout())
+                        );
+                    }
+                    
+                }
 
                 // and the translation info for each block-tensor pair
                 let translation = Translation::new(

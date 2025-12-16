@@ -39,6 +39,10 @@ impl DataLayout {
         let mut layout_map = HashMap::new();
         let mut binary_layout_index_map = HashMap::new();
 
+        // add layout info for "t"
+        let t_layout = ArcLayout::new(Layout::new_scalar());
+        layout_map.insert("t".to_string(), t_layout);
+
         let mut add_tensor = |tensor: &Tensor, in_data: bool, in_constants: bool| {
             // insert the data (non-zeros) for each tensor
             layout_map.insert(tensor.name().to_string(), tensor.layout_ptr().clone());
@@ -106,10 +110,12 @@ impl DataLayout {
             .input_dep_defns()
             .iter()
             .for_each(|i| add_tensor(i, true, false));
+
         model
             .time_dep_defns()
             .iter()
             .for_each(|i| add_tensor(i, true, false));
+
         add_tensor(model.state(), false, false);
         if let Some(state_dot) = model.state_dot() {
             add_tensor(state_dot, false, false);
@@ -125,10 +131,6 @@ impl DataLayout {
         if let Some(out) = model.out() {
             add_tensor(out, false, false);
         }
-
-        // add layout info for "t"
-        let t_layout = ArcLayout::new(Layout::new_scalar());
-        layout_map.insert("t".to_string(), t_layout);
 
         // todo: could we just calculate constants now?
 

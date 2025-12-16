@@ -317,9 +317,9 @@ impl Layout {
         for _i in 0..layouts.len() {
             let layout = layouts.pop().unwrap().broadcast_to_shape(&shape);
             if is_multiply_or_divide {
-                ret.intersect_inplace(layout)?;
+                ret.intersect_inplace(layout);
             } else {
-                ret.union_inplace(layout)?;
+                ret.union_inplace(layout);
             }
         }
 
@@ -669,7 +669,7 @@ impl Layout {
         }
         // check the rest of the shape is ones
         for i in rank..self.rank() {
-            assert_eq!(shape[i], 1);
+            assert_eq!(self.shape[i], 1);
         }
         self.broadcast_to_shape(&shape)
     }
@@ -721,7 +721,7 @@ impl Layout {
                 kind: self.kind.clone(),
                 n_dense_axes,
             }
-        } else if self.rank() <= shape.len() && self.rank() - shape.len() <= self.n_dense_axes {
+        } else if (shape.len() < self.rank()) && (self.rank() - shape.len() <= self.n_dense_axes) {
             // must be reducing the rank by a number of dense axes
             let n_dense_axes = self.n_dense_axes - (self.rank() - shape.len());
             Self {
@@ -813,19 +813,24 @@ impl Layout {
         self.n_dense_axes = 0;
     }
 
-    /// both self and other should be sparse layouts with the same shape
+    /// both self and other should be either dense or sparse layouts with the same shape
     /// the result is the union of the two layouts
     /// Note: one of teh layouts could have a different number of dense axes, in which case
     /// the dense axes are removed from the layout with more dense axes
-    pub fn union_inplace(&mut self, mut other: Layout) -> Result<()> {
-        if !self.is_sparse() || !other.is_sparse() {
-            return Err(anyhow!("can only union sparse layouts"));
-        }
-        if self.shape != other.shape {
-            return Err(anyhow!(
-                "can only union layouts with the same shape and number of dense axes"
-            ));
-        }
+    pub fn union_inplace(&mut self, mut other: Layout) {
+        assert!(
+            self.is_sparse() || self.is_dense(),
+            "can only union sparse or dense layouts"
+        );
+        assert!(
+            other.is_sparse() || other.is_dense(),
+            "can only union sparse or dense layouts"
+        );
+        assert!(
+            self.shape == other.shape,
+            "can only union layouts with the same shape"
+        );
+
         if self.n_dense_axes > other.n_dense_axes {
             self.remove_dense_axes(other.n_dense_axes);
         } else if other.n_dense_axes > self.n_dense_axes {
@@ -834,23 +839,30 @@ impl Layout {
         self.indices.extend(other.indices.iter().cloned());
         self.indices.sort_by(Self::cmp_index);
         self.indices.dedup();
-        Ok(())
     }
 
-    /// self is a sparse layout, other is either a sparse or dense layout with the same shape and n_dense_axes
+    /// self or other is either a sparse or dense layout with the same shape and n_dense_axes
     /// the result is the intersection of the two layouts
-    pub fn intersect_inplace(&mut self, mut other: Layout) -> Result<()> {
-        if !self.is_sparse() {
-            return Err(anyhow!("can only intersect sparse layouts"));
-        }
-        if !other.is_sparse() && !other.is_dense() {
-            return Err(anyhow!("can only intersect with sparse or dense layouts"));
-        }
-        if self.shape != other.shape {
-            return Err(anyhow!("can only intersect layouts with the same shape"));
-        }
+    pub fn intersect_inplace(&mut self, mut other: Layout) {
+        assert!(
+            self.is_sparse() || self.is_dense(),
+            "can only intersect sparse or dense layouts"
+        );
+        assert!(
+            other.is_sparse() || other.is_dense(),
+            "can only intersect sparse or dense layouts"
+        );
+        assert!(
+            self.shape == other.shape,
+            "can only intersect layouts with the same shape"
+        );
+
         if other.is_dense() {
-            return Ok(());
+            return;
+        }
+        if self.is_dense() {
+            std::mem::swap(self, &mut other);
+            return;
         }
         if self.n_dense_axes > other.n_dense_axes {
             self.remove_dense_axes(other.n_dense_axes);
@@ -876,7 +888,6 @@ impl Layout {
             }
         }
         self.indices = new_indices;
-        Ok(())
     }
 }
 
@@ -970,27 +981,26 @@ mod tests {
     }
 
     #[test]
-    fn test_union_sparse_layouts() -> Result<()> {
+    fn test_union_sparse_layouts() {
         let mut layout1 = Layout::sparse(
             vec![Index::from(vec![0, 0]), Index::from(vec![1, 1])],
             Shape::from(vec![2, 2]),
         );
         let layout2 = Layout::sparse(vec![Index::from(vec![1, 0])], Shape::from(vec![2, 2]));
-        layout1.union_inplace(layout2)?;
+        layout1.union_inplace(layout2);
         assert_eq!(layout1.indices.len(), 3);
 
         let mut layout1 = Layout::sparse(vec![Index::from(vec![1])], Shape::from(vec![2, 2]));
         layout1.n_dense_axes = 1;
         let layout2 = Layout::sparse(vec![Index::from(vec![1, 0])], Shape::from(vec![2, 2]));
-        layout1.union_inplace(layout2)?;
+        layout1.union_inplace(layout2);
         assert_eq!(layout1.indices.len(), 2);
         assert_eq!(layout1.indices[0], Index::from(vec![1, 0]));
         assert_eq!(layout1.indices[1], Index::from(vec![1, 1]));
-        Ok(())
     }
 
     #[test]
-    fn test_intersect_sparse_layouts() -> Result<()> {
+    fn test_intersect_sparse_layouts() {
         let mut layout1 = Layout::sparse(
             vec![Index::from(vec![0, 0]), Index::from(vec![1, 1])],
             Shape::from(vec![2, 2]),
@@ -999,16 +1009,15 @@ mod tests {
             vec![Index::from(vec![1, 0]), Index::from(vec![1, 1])],
             Shape::from(vec![2, 2]),
         );
-        layout1.intersect_inplace(layout2)?;
+        layout1.intersect_inplace(layout2);
         assert_eq!(layout1.indices.len(), 1);
         assert_eq!(layout1.indices[0], Index::from(vec![1, 1]));
 
         let mut layout1 = Layout::sparse(vec![Index::from(vec![1])], Shape::from(vec![2, 2]));
         layout1.n_dense_axes = 1;
         let layout2 = Layout::sparse(vec![Index::from(vec![1, 0])], Shape::from(vec![2, 2]));
-        layout1.intersect_inplace(layout2)?;
+        layout1.intersect_inplace(layout2);
         assert_eq!(layout1.indices.len(), 1);
         assert_eq!(layout1.indices[0], Index::from(vec![1, 0]));
-        Ok(())
     }
 }

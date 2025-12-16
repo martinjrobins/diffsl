@@ -1208,7 +1208,6 @@ mod tests {
         error_input_not_defined: "in = [bub]" errors ["input bub is not defined",],
         error_scalar: "r {1, 2}" errors ["cannot have more than one element in a scalar",],
         error_cannot_find: "r { k }" errors ["cannot find variable k",],
-        error_different_sparsity: "A_ij { (0, 0): 1, (1, 0): 1, (1, 1): 1 } B_ij { (1, 1): 1 } C_ij { A_ij + B_ij }" errors ["cannot broadcast layouts with different sparsity",],
         error_different_shape: "a_i { 1, 2 } b_i { 1, 2, 3 } c_i { a_i + b_i }" errors ["cannot broadcast shapes: [2], [3]",],
         too_many_indices: "A_i { 1, 2 } B_i { (0:2): A_ij }" errors ["too many permutation indices",],
         bcast_expr_to_elmt: "A_i { 1, 2 } B_i { (0:2): A_i, (2:3): A_i }" errors ["cannot broadcast expression shape [2] to tensor element shape [1]",],
@@ -1221,6 +1220,7 @@ mod tests {
     );
 
     tensor_tests!(
+        two_dim_sparse_add: "A_ij { (0, 0): 1, (1, 0): 1, (1, 1): 1 } B_ij { (1, 1): 1 } C_ij { A_ij + B_ij }" expect "C" = "C_ij (2s,2s) { (0, 0)(2s,2s): A_ij + B_ij (2s,2s) }",
         mat_mul_sparse_vec: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { (1): 1 } b_i { A_ij * x_j }" expect "b" = "b_i (2s) { (0)(2s): A_ij * x_j (2s, 2s) }",
         add_sparse_vecs: "a_i { (2): 3 } b_i { (1): 2, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i + b_i (3s) }",
         add_sparse_vecs_to_dense: "a_i { (0): 1, (2): 3 } b_i { (1): 2, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
@@ -1237,7 +1237,6 @@ mod tests {
         dense_vect_implicit: "A_i { 1, 2, 3 }" expect "A" = "A_i (3) { (0)(1): 1, (1)(1): 2, (2)(1): 3 }",
         dense_vect_explicit: "A_i { (0:3): 1, (3:4): 2 }" expect "A" = "A_i (4) { (0)(3): 1, (3)(1): 2 }",
         dense_vect_mix: "A_i { (0:3): 1, 2 }" expect "A" = "A_i (4) { (0)(3): 1, (3)(1): 2 }",
-        dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" = "A_ij (2,2) { (0, 0)(1, 1): 1, (0, 1)(1, 1): 2, (1, 0)(1, 1): 3, (1, 1)(1, 1): 4 }",
         diag_matrix: "A_ij { (0, 0): 1, (1, 1): 4 }" expect "A" = "A_ij (2i,2i) { (0, 0)(1, 1): 1, (1, 1)(1, 1): 4 }",
         sparse_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 1): 4 }" expect "A" = "A_ij (2s,2s) { (0, 0)(1, 1): 1, (0, 1)(1, 1): 2, (1, 1)(1, 1): 4 }",
         sparse_row_matrix: "A_ij { (0, 1): 2, (0, 2): 4 }" expect "A" = "A_ij (1s,3s) { (0, 1)(1, 1): 2, (0, 2)(1, 1): 4 }",

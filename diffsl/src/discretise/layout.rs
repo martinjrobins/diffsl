@@ -257,7 +257,6 @@ impl Layout {
         let any_sparse = layouts.iter().any(|x| x.is_sparse());
         let any_diagonal = layouts.iter().any(|x| x.is_diagonal());
         let all_sparse_and_dense = layouts.iter().all(|x| x.is_sparse() || x.is_dense());
-        let all_sparse = layouts.iter().all(|x| x.is_sparse());
         let all_diagonal_and_dense = layouts.iter().all(|x| x.is_diagonal() || x.is_dense());
         let all_diagonal = layouts.iter().all(|x| x.is_diagonal());
 
@@ -280,8 +279,6 @@ impl Layout {
             }
         } else if any_diagonal && !all_diagonal {
             return Err(anyhow!("cannot broadcast diagonal and non-diagonal layouts, except for multiply. Layouts are [{}]", layouts.iter().map(|x| format!("{x}")).join(", ")));
-        } else if any_sparse && !all_sparse {
-            return Err(anyhow!("cannot broadcast sparse and non-sparse layouts, except for multiply. Layouts are [{}]", layouts.iter().map(|x| format!("{x}")).join(", ")));
         }
 
         let mut n_dense_axes = None;
@@ -324,7 +321,7 @@ impl Layout {
         }
 
         // if now dense then convert to dense layout
-        if ret.indices.len() == ret.shape.product() {
+        if ret.is_sparse() && ret.indices.len() == ret.shape.product() {
             return Ok(Layout {
                 indices: Vec::new(),
                 n_dense_axes: ret.shape.len(),
@@ -783,12 +780,16 @@ impl Layout {
         self.n_dense_axes
     }
 
-    /// only usable for sparse layouts, adjusts n_dense_axes by expanding the indices
+    /// only usable for sparse or dense layouts, adjusts n_dense_axes by expanding the indices
     /// can only reduce n_dense_axes
     fn remove_dense_axes(&mut self, new_n_dense_axes: usize) {
-        assert!(self.is_sparse());
+        assert!(self.is_sparse() || self.is_dense(), "can only remove dense axes from sparse or dense layouts");
         assert!(new_n_dense_axes <= self.n_dense_axes);
         if self.n_dense_axes == new_n_dense_axes {
+            return;
+        }
+        if self.is_dense() {
+            self.n_dense_axes = new_n_dense_axes;
             return;
         }
         let rank = self.rank();
@@ -830,6 +831,12 @@ impl Layout {
             self.shape == other.shape,
             "can only union layouts with the same shape"
         );
+        
+        // union with a dense layout results in a dense layout
+        if self.is_dense() || other.is_dense() {
+            *self = Layout::dense(self.shape.clone());
+            return;
+        }
 
         if self.n_dense_axes > other.n_dense_axes {
             self.remove_dense_axes(other.n_dense_axes);
@@ -946,8 +953,8 @@ mod tests {
         assert!(broadcasted2.is_err());
         let broadcasted3 = Layout::broadcast(vec![layout1.clone(), layout3.clone()], Some('*'))?;
         assert!(broadcasted3.is_sparse());
-        let broadcasted4 = Layout::broadcast(vec![layout1.clone(), layout3.clone()], Some('+'));
-        assert!(broadcasted4.is_err());
+        let broadcasted4 = Layout::broadcast(vec![layout1.clone(), layout3.clone()], Some('+'))?;
+        assert!(broadcasted4.is_dense());
         let broadcasted5 = Layout::broadcast(vec![layout3.clone(), layout4.clone()], Some('*'))?;
         assert!(broadcasted5.is_sparse());
         assert_eq!(broadcasted5.indices.len(), 1);

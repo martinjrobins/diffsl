@@ -1220,6 +1220,13 @@ mod tests {
     );
 
     tensor_tests!(
+        sparse_dense_vec_add: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
+        sparse_dense_vec_add2: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { b_i + a_i }" expect "c" = "c_i (3) { (0)(3): b_i + a_i (3) }",
+        sparse_sparse_vec_add:  "a_i { (2): 2 } b_i { (0): 3, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i + b_i (3s) }",
+        sparse_sparse_vec_add2:  "a_i { (2): 2 } b_i { (0): 3, (2): 4 } c_i { b_i + a_i }" expect "c" = "c_i (3s) { (0)(3s): b_i + a_i (3s) }",
+        sparse_sparse_vec_add3: "a_i { (1): 1, (2): 2 } b_i { (0): 3, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
+        sparse_dense_vec_mul: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { a_i * b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i * b_i (3s) }",
+        sparse_dense_vec_mul2: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { b_i * a_i }" expect "c" = "c_i (3s) { (0)(3s): b_i * a_i (3s) }",
         two_dim_sparse_add: "A_ij { (0, 0): 1, (1, 0): 1, (1, 1): 1 } B_ij { (1, 1): 1 } C_ij { A_ij + B_ij }" expect "C" = "C_ij (2s,2s) { (0, 0)(2s,2s): A_ij + B_ij (2s,2s) }",
         mat_mul_sparse_vec: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { (1): 1 } b_i { A_ij * x_j }" expect "b" = "b_i (2s) { (0)(2s): A_ij * x_j (2s, 2s) }",
         add_sparse_vecs: "a_i { (2): 3 } b_i { (1): 2, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i + b_i (3s) }",

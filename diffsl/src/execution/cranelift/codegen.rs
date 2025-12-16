@@ -1063,7 +1063,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         expr: &Ast,
         index: &[Value],
         elmt: &TensorBlock,
-        expr_index: Option<Value>,
+        expr_index: Value,
     ) -> Result<Value> {
         let name = elmt.name().unwrap_or(name);
         match &expr.kind {
@@ -1172,9 +1172,10 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                             iname_elmt_index =
                                 self.builder.ins().iadd(iname_elmt_index, stride_mul_i);
                         }
-                        Some(iname_elmt_index)
+                        iname_elmt_index
                     } else {
-                        None
+                        // zero offset
+                        self.builder.ins().iconst(self.int_type, 0)
                     }
                 } else if layout.is_diagonal() {
                     // must have come from jit_compile_diagonal_block, so we can just use the elmt_index
@@ -1199,7 +1200,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                         let binary_layout_index = self
                             .builder
                             .ins()
-                            .iadd(base_binary_layout_index, expr_index.unwrap());
+                            .iadd(base_binary_layout_index, expr_index);
 
                         let indices_array = self
                             .builder
@@ -1259,10 +1260,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                 } else {
                     panic!("unexpected layout");
                 };
-                let value_ptr = match iname_elmt_index {
-                    Some(offset) => self.ptr_add_offset(self.real_type, ptr, offset),
-                    None => ptr,
-                };
+                let value_ptr = self.ptr_add_offset(self.real_type, ptr, iname_elmt_index);
                 Ok(self
                     .builder
                     .ins()
@@ -1375,7 +1373,8 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             } else {
                 elmt.expr()
             };
-            let float_value = self.jit_compile_expr(a.name(), expr, &[], elmt, None)?;
+            let zero = self.builder.ins().iconst(self.int_type, 0);
+            let float_value = self.jit_compile_expr(a.name(), expr, &[], elmt, zero)?;
             self.builder
                 .ins()
                 .store(self.mem_flags, float_value, self.tensor_ptr.unwrap(), 0);
@@ -1581,7 +1580,23 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         } else {
             elmt.expr()
         };
-        let float_value = self.jit_compile_expr(name, expr, indices.as_slice(), elmt, None)?;
+        
+        // if indices = (i, j, k) and shape = (a, b, c) calculate expr_index = (k + j*b + i*b*c)
+        let mut expr_index = *indices.last().unwrap();
+        let mut stride = 1u64;
+        for i in (0..indices.len() - 1).rev() {
+            let iname_i = indices[i];
+            let shapei: u64 = elmt.expr_layout().shape()[i + 1].try_into().unwrap();
+            stride *= shapei;
+            let stride_intval = self
+                .builder
+                .ins()
+                .iconst(self.int_type, i64::try_from(stride).unwrap());
+            let stride_mul_i = self.builder.ins().imul(stride_intval, iname_i);
+            expr_index = self.builder.ins().iadd(expr_index, stride_mul_i);
+        }
+
+        let float_value = self.jit_compile_expr(name, expr, indices.as_slice(), elmt, expr_index)?;
 
         if let Some(contract_sum) = contract_sum {
             let contract_sum_value = self
@@ -1781,7 +1796,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             elmt.expr()
         };
         let float_value =
-            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, Some(expr_index))?;
+            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, expr_index)?;
         let contract_sum_value = self
             .builder
             .ins()
@@ -1918,7 +1933,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             elmt.expr()
         };
         let float_value =
-            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, Some(elmt_index))?;
+            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, elmt_index)?;
 
         self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation)?;
 
@@ -1990,7 +2005,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             elmt.expr()
         };
         let float_value =
-            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, Some(elmt_index))?;
+            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, elmt_index)?;
 
         // loop body - store result
         self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation)?;

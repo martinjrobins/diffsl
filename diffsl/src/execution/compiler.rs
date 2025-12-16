@@ -1527,8 +1527,11 @@ mod tests {
         unary_negate_in_expr: "r_i { 1.0 / (-1.0 + 1.1) }" expect "r" vec![1.0 / (-1.0 + 1.1)] ; f64,
     }
 
-    tensor_test! {}
     tensor_test! {
+        sparse_dense_vec_add: "a_i { (0): 1, (2): 2 } b_i { (0:3): 3 } r_i { a_i + b_i }" expect "r" vec![4.0, 3.0, 2.0],
+    }
+    tensor_test! {
+        sparse_dense_vec_mul: "a_i { (0): 1, (2): 2 } b_i { (0:3): 3 } r_i { a_i * b_i }" expect "r" vec![3.0, 6.0],
         sparse_vec_vec_mul: "a_i { (0): 1, (2): 2 } b_i { (2): 4 } r_i { a_i * b_i }" expect "r" vec![8.0],
         sparse_vec_vec_add: "a_i { (0): 1, (2): 2 } b_i { (2): 4 } r_i { a_i + b_i }" expect "r" vec![1.0, 6.0],
         contraction_2d_to_vector: "a_ij { (0:3, 0:3): 1.0 } r_i { a_ij }" expect "r" vec![3.0, 3.0, 3.0],

@@ -1602,7 +1602,8 @@ impl<'ctx> CodeGen<'ctx> {
             next_block_opt = Some(next_block);
         }
 
-        let float_value = self.jit_compile_expr(name, elmt.expr(), &[], elmt, None)?;
+        let zero = self.int_type.const_zero();
+        let float_value = self.jit_compile_expr(name, elmt.expr(), &[], elmt, zero)?;
         self.builder.build_store(res_ptr, float_value)?;
 
         // complete the threading block
@@ -1758,7 +1759,7 @@ impl<'ctx> CodeGen<'ctx> {
         } else {
             (None, None, None, None)
         };
-
+        
         for i in 0..expr_rank {
             let block = self.context.append_basic_block(self.fn_value(), name);
             self.builder.build_unconditional_branch(block)?;
@@ -1790,8 +1791,24 @@ impl<'ctx> CodeGen<'ctx> {
             .map(|i| i.as_basic_value().into_int_value())
             .collect();
 
+        
+        // if indices = (i, j, k) and shape = (a, b, c) calculate expr_index = (k + j*b + i*b*c)
+        let mut expr_index = *indices_int.last().unwrap();
+        let mut stride = 1u64;
+        for i in (0..indices.len() - 1).rev() {
+            let iname_i = indices_int[i];
+            let shapei: u64 = elmt.expr_layout().shape()[i + 1].try_into().unwrap();
+            stride *= shapei;
+            let stride_intval = self.context.i32_type().const_int(stride, false);
+            let stride_mul_i =
+                self.builder.build_int_mul(stride_intval, iname_i, name)?;
+            expr_index =
+                self.builder
+                    .build_int_add(expr_index, stride_mul_i, name)?;
+        }
+
         let float_value =
-            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, None)?;
+            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, expr_index)?;
 
         if let Some(contract_sum) = contract_sum {
             let contract_sum_value = self
@@ -1973,7 +1990,7 @@ impl<'ctx> CodeGen<'ctx> {
             elmt.expr(),
             indices_int.as_slice(),
             elmt,
-            Some(expr_index),
+            expr_index,
         )?;
         let contract_sum_value = self
             .build_load(self.real_type, contract_sum_ptr, "contract_sum")?
@@ -2116,7 +2133,7 @@ impl<'ctx> CodeGen<'ctx> {
             elmt.expr(),
             indices_int.as_slice(),
             elmt,
-            Some(elmt_index),
+            elmt_index,
         )?;
 
         self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation)?;
@@ -2192,7 +2209,7 @@ impl<'ctx> CodeGen<'ctx> {
             elmt.expr(),
             indices_int.as_slice(),
             elmt,
-            Some(elmt_index),
+            elmt_index,
         )?;
 
         // loop body - store result
@@ -2350,7 +2367,7 @@ impl<'ctx> CodeGen<'ctx> {
         expr: &Ast,
         index: &[IntValue<'ctx>],
         elmt: &TensorBlock,
-        expr_index: Option<IntValue<'ctx>>,
+        expr_index: IntValue<'ctx>,
     ) -> Result<FloatValue<'ctx>> {
         let name = elmt.name().unwrap_or(name);
         match &expr.kind {
@@ -2451,11 +2468,11 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.builder
                                     .build_int_add(iname_elmt_index, stride_mul_i, name)?;
                         }
-                        Some(iname_elmt_index)
+                        iname_elmt_index
                     } else {
                         // zero if we are not indexing, otherwise use the start value of indice
                         let zero = self.context.i32_type().const_int(0, false);
-                        Some(zero)
+                        zero
                     }
                 } else if layout.is_diagonal() {
                     // must have come from jit_compile_diagonal_block, so we can just use the elmt_index
@@ -2477,7 +2494,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let binary_layout_index = self.builder.build_int_add(
                             self.int_type
                                 .const_int(base_binary_layout_index.try_into().unwrap(), false),
-                            expr_index.unwrap(),
+                            expr_index,
                             name,
                         )?;
 
@@ -2544,12 +2561,7 @@ impl<'ctx> CodeGen<'ctx> {
                 } else {
                     panic!("unexpected layout");
                 };
-                let value_ptr = match iname_elmt_index {
-                    Some(index) => {
-                        Self::get_ptr_to_index(&self.builder, self.real_type, ptr, index, name)
-                    }
-                    None => *ptr,
-                };
+                let value_ptr = Self::get_ptr_to_index(&self.builder, self.real_type, ptr, iname_elmt_index, name);
                 Ok(self
                     .build_load(self.real_type, value_ptr, name)?
                     .into_float_value())

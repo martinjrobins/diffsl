@@ -72,6 +72,17 @@ impl Env {
             inputs: inputs.iter().map(|s| s.to_string()).collect(),
         }
     }
+
+    /// create a new ArcLayout from a Layout, if the layout already exists in the env then return the existing one
+    pub fn new_layout_ptr(&mut self, layout: Layout) -> ArcLayout {
+        for var in self.vars.values() {
+            if var.layout.as_ref() == &layout {
+                return var.layout.clone();
+            }
+        }
+        ArcLayout::new(layout)
+    }
+
     pub fn is_tensor_time_dependent(&self, tensor: &Tensor) -> bool {
         if tensor.name() == "u" || tensor.name() == "dudt" {
             return true;
@@ -133,7 +144,7 @@ impl Env {
         self.vars.insert(
             var_blk.name().unwrap().to_string(),
             EnvVar {
-                layout: var_blk.layout().clone(),
+                layout: var_blk.layout_ptr().clone(),
                 is_algebraic: true,
                 is_time_dependent: self.is_tensor_time_dependent(var),
                 is_state_dependent: self.is_tensor_state_dependent(var),
@@ -156,7 +167,7 @@ impl Env {
     ) -> Option<Layout> {
         let left_layout = self.get_layout(left, indices)?;
         let right_layout = self.get_layout(right, indices)?;
-        match Layout::broadcast(vec![left_layout, right_layout], op.op == '*') {
+        match Layout::broadcast(vec![left_layout, right_layout], Some(op.op)) {
             Ok(layout) => Some(layout),
             Err(e) => {
                 self.errs.push(ValidationError::new(
@@ -302,7 +313,7 @@ impl Env {
             .iter()
             .map(|c| self.get_layout(c, indices))
             .collect::<Option<Vec<Layout>>>()?;
-        match Layout::broadcast(layouts, false) {
+        match Layout::broadcast(layouts, None) {
             Ok(layout) => Some(layout),
             Err(e) => {
                 self.errs
@@ -378,7 +389,7 @@ impl Env {
                 }
             }
         } else {
-            expr_layout.to_rank(indices.len()).unwrap()
+            expr_layout.broadcast_to_rank(indices.len())
         };
 
         // calculate the shape of the tensor element.

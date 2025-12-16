@@ -15,7 +15,6 @@ use crate::ast::StringSpan;
 use crate::continuous::ModelInfo;
 use crate::continuous::Variable;
 
-use super::ArcLayout;
 use super::Env;
 use super::Index;
 use super::Layout;
@@ -187,12 +186,23 @@ impl<'s> DiscreteModel<'s> {
                             ));
                         }
 
+                        // make sure arc layouts are unique
+                        // TODO: if we always use arc layout for the recursion, we can reuse existing ones
+                        // much more efficiently rather than creating new ones all the time
+                        let elmt_layout = env.new_layout_ptr(elmt_layout);
+                        let expr_layout = if &expr_layout == elmt_layout.as_ref() {
+                            // if layouts match, we can use the elmt layout ptr
+                            elmt_layout.clone()
+                        } else {
+                            env.new_layout_ptr(expr_layout)
+                        };
+
                         elmts.push(TensorBlock::new(
                             name,
                             start.clone(),
                             array.indices().to_vec(),
-                            ArcLayout::new(elmt_layout),
-                            ArcLayout::new(expr_layout),
+                            elmt_layout,
+                            expr_layout,
                             *expr,
                         ));
 
@@ -214,14 +224,11 @@ impl<'s> DiscreteModel<'s> {
             ));
             None
         } else {
+            // todo: if we always use arc layout for the recursion, we can reuse existing ones
             match Layout::concatenate(&elmts, rank) {
                 Ok(layout) => {
-                    let tensor = Tensor::new(
-                        array.name(),
-                        elmts,
-                        ArcLayout::new(layout),
-                        array.indices().to_vec(),
-                    );
+                    let layout = env.new_layout_ptr(layout);
+                    let tensor = Tensor::new(array.name(), elmts, layout, array.indices().to_vec());
                     //check that the number of indices matches the rank
                     assert_eq!(tensor.rank(), tensor.indices().len());
                     if nerrs == env.errs().len() {
@@ -1211,10 +1218,12 @@ mod tests {
         error_index4: "A { 1.0 } B { A[0] }" errors ["can only index dense 1D variables",],
         error_contract_1d_to_scalar: "A_i { 1.0, 2.0 } B { A_i }" errors ["contraction only supported from 2D to 1D tensors. Got 1D to 0D",],
         error_broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_i }" errors ["cannot broadcast shapes: [3, 2], [2]",],
-        mat_mul_sparse_vec: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { (1): 1 } b_i { A_ij * x_j }" errors ["cannot broadcast layouts with different sparsity patterns",],
     );
 
     tensor_tests!(
+        mat_mul_sparse_vec: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { (1): 1 } b_i { A_ij * x_j }" expect "b" = "b_i (2s) { (0)(2s): A_ij * x_j (2s, 2s) }",
+        add_sparse_vecs: "a_i { (2): 3 } b_i { (1): 2, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i + b_i (3s) }",
+        add_sparse_vecs_to_dense: "a_i { (0): 1, (2): 3 } b_i { (1): 2, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
         row_vec: "a_ij { (0, 0): 1, (0, 1): 2 } b_i { (0:3): 1 } c_i { a_ij * b_j[0:2] }" expect "c" = "c_i (1) { (0)(1): a_ij * b_j[0:2] (1, 2) }",
         col_vec: "a_ij { (0, 0): 1, (1, 0): 2 } b_i { (0:2): a_ij }" expect "b" = "b_i (2) { (0)(2): a_ij (2, 1) }",
         broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_j }" expect "c" = "c_ij (3,2) { (0,0)(3,2): A_ij + b_j (3,2) }",

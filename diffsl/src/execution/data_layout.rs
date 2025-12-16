@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{ast::Binop, discretise::{ArcLayout, DiscreteModel, Layout, Tensor}};
+use crate::discretise::{ArcLayout, DiscreteModel, Layout, Tensor};
 
 use super::Translation;
 
@@ -65,7 +65,7 @@ impl DataLayout {
                 // insert the layout info for each tensor expression
                 layout_index_map.insert(blk.expr_layout().clone(), indices.len());
                 indices.extend(blk.expr_layout().to_data_layout());
-                
+
                 // if any tensors in the block expression have a different layout to the block expression
                 // then we need to add a binary layout translation
                 for tensor_name in blk.expr().get_dependents() {
@@ -75,12 +75,8 @@ impl DataLayout {
                             (tensor_layout.clone(), blk.expr_layout().clone()),
                             indices.len(),
                         );
-                        indices.extend(
-                            tensor_layout
-                                .to_binary_data_layout(blk.expr_layout())
-                        );
+                        indices.extend(tensor_layout.to_binary_data_layout(blk.expr_layout()));
                     }
-                    
                 }
 
                 // and the translation info for each block-tensor pair
@@ -146,6 +142,7 @@ impl DataLayout {
             layout_map,
             data_length_map,
             constants,
+            binary_layout_index_map,
         }
     }
 
@@ -199,6 +196,12 @@ impl DataLayout {
 
     pub fn get_layout_index(&self, layout: &ArcLayout) -> Option<usize> {
         self.layout_index_map.get(layout).copied()
+    }
+
+    pub fn get_binary_layout_index(&self, from: &ArcLayout, to: &ArcLayout) -> Option<usize> {
+        self.binary_layout_index_map
+            .get(&(from.clone(), to.clone()))
+            .copied()
     }
 
     pub fn get_translation_index(&self, from: &ArcLayout, to: &ArcLayout) -> Option<usize> {

@@ -1527,9 +1527,13 @@ mod tests {
         unary_negate_in_expr: "r_i { 1.0 / (-1.0 + 1.1) }" expect "r" vec![1.0 / (-1.0 + 1.1)] ; f64,
     }
 
-    tensor_test! {}
+    tensor_test! {
+        sparse_broadcast_to_sparse: "A_i { (1): 2 } B_ij { (0:2, 0:2): A_i }" expect "B" vec![2.0, 2.0],
+        sparse_broadcast_to_sparse_add: "A_i { (1): 2 } C_ij{ (1, 1): 1 } B_ij { (0:2, 0:2): A_i + C_ij }" expect "B" vec![1.0, 2.0],
+    }
 
     tensor_test! {
+        sparse_contract_to_sparse: "A_ij { (1, 1): 2 } B_i { A_ij }" expect "B" vec![2.0],
         diag_sparse_add: "A_ij { (0..2, 0..2): 1 } B_ij { (1, 1): 3 } R_ij { A_ij + B_ij }" expect "R" vec![1.0, 4.0],
         diag_sparse_add2: "A_ij { (0..2, 0..2): 1 } B_ij { (1, 1): 3 } R_ij { A_ij + B_ji }" expect "R" vec![1.0, 4.0],
         diag_sparse_mul: "A_ij { (0..2, 0..2): 1 } B_ij { (1, 1): 3 } R_ij { A_ij * B_ij }" expect "R" vec![3.0],

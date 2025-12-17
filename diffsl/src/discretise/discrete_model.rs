@@ -1222,6 +1222,8 @@ mod tests {
     );
 
     tensor_tests!(
+        sparse_broadcast_to_sparse: "A_i { (1): 2 } B_ij { (0:2, 0:2): A_i }" expect "B" = "B_ij (2s,2) { (0,1)(2s,2): A_i (2s) }",
+        sparse_contract_to_sparse: "A_ij { (1, 1): 2 } B_i { A_ij }" expect "B" = "B_i (2s) { (0)(2s): A_ij (2s,2s) }",
         diag_sparse_add: "a_ij { (0..2, 0..2): 2 } b_ij { (1, 1): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij + b_ij (2i,2i) }",
         diag_dense_mul: "a_ij { (0..2, 0..2): 2 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij * b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij * b_ij (2i,2i) }",
         diag_dense_add: "a_ij { (0..2, 0..2): 2 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (2,2) { (0,0)(2,2): a_ij + b_ij (2,2) }",

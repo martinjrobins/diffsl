@@ -502,7 +502,7 @@ impl Env {
                         ));
                         return None;
                     } else {
-                        expr_layout.clone()
+                        expr_layout.broadcast_to_shape(&exp_expr_shape)
                     }
                 }
                 LayoutKind::Diagonal => {

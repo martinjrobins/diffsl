@@ -640,23 +640,19 @@ impl Layout {
         }
     }
 
+    /// returns the number of stored non-zero elements in the layout
+    /// this does not include the implicit dense axes for sparse and diagonal layouts
     pub fn nnz(&self) -> usize {
-        let n_dense: usize = self
-            .shape
-            .slice(s![self.rank() - self.n_dense_axes..])
-            .iter()
-            .product();
         if self.is_dense() {
             self.shape.iter().product()
         } else if self.is_diagonal() {
-            n_dense
-                * (if self.shape.is_empty() {
-                    0
-                } else {
-                    self.shape[0]
-                })
+            if self.shape.is_empty() {
+                0
+            } else {
+                self.shape[0]
+            }
         } else {
-            n_dense * self.indices.len()
+            self.indices.len()
         }
     }
 
@@ -747,6 +743,7 @@ impl Layout {
     /// if we are decreasing the rank, then we can only remove dense axes
     /// if any axis is being broadcasted, then it must be size 1 in the original layout
     pub fn broadcast_to_shape(&self, shape: &Shape) -> Self {
+        println!("Broadcasting layout {} to shape {}", self, shape);
         for i in 0..min(self.rank(), shape.len()) {
             if self.shape[i] != shape[i] && self.shape[i] != 1 {
                 panic!(

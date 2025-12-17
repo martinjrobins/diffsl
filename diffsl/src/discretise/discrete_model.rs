@@ -1217,9 +1217,17 @@ mod tests {
         error_index4: "A { 1.0 } B { A[0] }" errors ["can only index dense 1D variables",],
         error_contract_1d_to_scalar: "A_i { 1.0, 2.0 } B { A_i }" errors ["contraction only supported from 2D to 1D tensors. Got 1D to 0D",],
         error_broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_i }" errors ["cannot broadcast shapes: [3, 2], [2]",],
+        error_divide_by_zero: "a_i { (0): 1, (2): 2 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
+        error_divide_by_zero2: "a_i { (0:3): 1 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
     );
 
     tensor_tests!(
+        diag_sparse_add: "a_ij { (0..2, 0..2): 2 } b_ij { (1, 1): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij + b_ij (2i,2i) }",
+        diag_dense_mul: "a_ij { (0..2, 0..2): 2 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij * b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij * b_ij (2i,2i) }",
+        diag_dense_add: "a_ij { (0..2, 0..2): 2 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (2,2) { (0,0)(2,2): a_ij + b_ij (2,2) }",
+        sparse_dense_mat_add: "a_ij { (2, 2): 2 } b_ij { (0:3, 0:3): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (3,3) { (0,0)(3,3): a_ij + b_ij (3,3) }",
+        sparse_dense_mat_mul: "a_ij { (2, 2): 2 } b_ij { (0:3, 0:3): 3 } c_ij { a_ij * b_ij }" expect "c" = "c_ij (3s,3s) { (0,0)(3s,3s): a_ij * b_ij (3s,3s) }",
+        sparse_dense_mat_mul2: "a_ij { (0, 0): 2, (1, 1): 1 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij * b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij * b_ij (2i,2i) }",
         sparse_dense_vec_add: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
         sparse_dense_vec_add2: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { b_i + a_i }" expect "c" = "c_i (3) { (0)(3): b_i + a_i (3) }",
         sparse_sparse_vec_add:  "a_i { (2): 2 } b_i { (0): 3, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i + b_i (3s) }",

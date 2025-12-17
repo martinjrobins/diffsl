@@ -1759,7 +1759,7 @@ impl<'ctx> CodeGen<'ctx> {
         } else {
             (None, None, None, None)
         };
-        
+
         for i in 0..expr_rank {
             let block = self.context.append_basic_block(self.fn_value(), name);
             self.builder.build_unconditional_branch(block)?;
@@ -1791,20 +1791,18 @@ impl<'ctx> CodeGen<'ctx> {
             .map(|i| i.as_basic_value().into_int_value())
             .collect();
 
-        
         // if indices = (i, j, k) and shape = (a, b, c) calculate expr_index = (k + j*b + i*b*c)
-        let mut expr_index = *indices_int.last().unwrap();
+        let mut expr_index = *indices_int.last().unwrap_or(&int_type.const_zero());
         let mut stride = 1u64;
-        for i in (0..indices.len() - 1).rev() {
-            let iname_i = indices_int[i];
-            let shapei: u64 = elmt.expr_layout().shape()[i + 1].try_into().unwrap();
-            stride *= shapei;
-            let stride_intval = self.context.i32_type().const_int(stride, false);
-            let stride_mul_i =
-                self.builder.build_int_mul(stride_intval, iname_i, name)?;
-            expr_index =
-                self.builder
-                    .build_int_add(expr_index, stride_mul_i, name)?;
+        if !indices.is_empty() {
+            for i in (0..indices.len() - 1).rev() {
+                let iname_i = indices_int[i];
+                let shapei: u64 = elmt.expr_layout().shape()[i + 1].try_into().unwrap();
+                stride *= shapei;
+                let stride_intval = self.context.i32_type().const_int(stride, false);
+                let stride_mul_i = self.builder.build_int_mul(stride_intval, iname_i, name)?;
+                expr_index = self.builder.build_int_add(expr_index, stride_mul_i, name)?;
+            }
         }
 
         let float_value =
@@ -1985,13 +1983,8 @@ impl<'ctx> CodeGen<'ctx> {
         let indices_int = self.expr_indices_from_elmt_index(expr_index, elmt, name)?;
 
         // loop body - eval expression and increment sum
-        let float_value = self.jit_compile_expr(
-            name,
-            elmt.expr(),
-            indices_int.as_slice(),
-            elmt,
-            expr_index,
-        )?;
+        let float_value =
+            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, expr_index)?;
         let contract_sum_value = self
             .build_load(self.real_type, contract_sum_ptr, "contract_sum")?
             .into_float_value();
@@ -2128,13 +2121,8 @@ impl<'ctx> CodeGen<'ctx> {
         let indices_int = self.expr_indices_from_elmt_index(elmt_index, elmt, name)?;
 
         // loop body - eval expression
-        let float_value = self.jit_compile_expr(
-            name,
-            elmt.expr(),
-            indices_int.as_slice(),
-            elmt,
-            elmt_index,
-        )?;
+        let float_value =
+            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, elmt_index)?;
 
         self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation)?;
 
@@ -2204,13 +2192,8 @@ impl<'ctx> CodeGen<'ctx> {
             (0..elmt.expr_layout().rank()).map(|_| elmt_index).collect();
 
         // loop body - eval expression
-        let float_value = self.jit_compile_expr(
-            name,
-            elmt.expr(),
-            indices_int.as_slice(),
-            elmt,
-            elmt_index,
-        )?;
+        let float_value =
+            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, elmt_index)?;
 
         // loop body - store result
         self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation)?;
@@ -2474,10 +2457,7 @@ impl<'ctx> CodeGen<'ctx> {
                         let zero = self.context.i32_type().const_int(0, false);
                         zero
                     }
-                } else if layout.is_diagonal() {
-                    // must have come from jit_compile_diagonal_block, so we can just use the elmt_index
-                    expr_index
-                } else if layout.is_sparse() {
+                } else if layout.is_sparse() || layout.is_diagonal() {
                     let expr_layout = elmt.expr_layout();
 
                     if expr_layout != layout {
@@ -2487,9 +2467,20 @@ impl<'ctx> CodeGen<'ctx> {
                         //.    if expr_index == -1 then return 0 as the value of the expression
                         //.    otherwise load the value at that index
                         // we are doing an if statement so I think we need to return early here
+                        let permutation = elmt
+                            .indices()
+                            .iter()
+                            .map(|c| {
+                                iname
+                                    .indices
+                                    .iter()
+                                    .position(|x| x == c)
+                                    .unwrap_or(elmt.indices().len())
+                            })
+                            .collect();
                         let base_binary_layout_index = self
                             .layout
-                            .get_binary_layout_index(layout, expr_layout)
+                            .get_binary_layout_index(layout, expr_layout, permutation)
                             .unwrap();
                         let binary_layout_index = self.builder.build_int_add(
                             self.int_type
@@ -2561,7 +2552,13 @@ impl<'ctx> CodeGen<'ctx> {
                 } else {
                     panic!("unexpected layout");
                 };
-                let value_ptr = Self::get_ptr_to_index(&self.builder, self.real_type, ptr, iname_elmt_index, name);
+                let value_ptr = Self::get_ptr_to_index(
+                    &self.builder,
+                    self.real_type,
+                    ptr,
+                    iname_elmt_index,
+                    name,
+                );
                 Ok(self
                     .build_load(self.real_type, value_ptr, name)?
                     .into_float_value())

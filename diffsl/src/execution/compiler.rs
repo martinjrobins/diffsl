@@ -1527,11 +1527,30 @@ mod tests {
         unary_negate_in_expr: "r_i { 1.0 / (-1.0 + 1.1) }" expect "r" vec![1.0 / (-1.0 + 1.1)] ; f64,
     }
 
+    tensor_test! {}
+
     tensor_test! {
-        sparse_dense_vec_add: "a_i { (0): 1, (2): 2 } b_i { (0:3): 3 } r_i { a_i + b_i }" expect "r" vec![4.0, 3.0, 2.0],
-    }
-    tensor_test! {
-        sparse_dense_vec_mul: "a_i { (0): 1, (2): 2 } b_i { (0:3): 3 } r_i { a_i * b_i }" expect "r" vec![3.0, 6.0],
+        diag_sparse_add: "A_ij { (0..2, 0..2): 1 } B_ij { (1, 1): 3 } R_ij { A_ij + B_ij }" expect "R" vec![1.0, 4.0],
+        diag_sparse_add2: "A_ij { (0..2, 0..2): 1 } B_ij { (1, 1): 3 } R_ij { A_ij + B_ji }" expect "R" vec![1.0, 4.0],
+        diag_sparse_mul: "A_ij { (0..2, 0..2): 1 } B_ij { (1, 1): 3 } R_ij { A_ij * B_ij }" expect "R" vec![3.0],
+        diag_dense_add: "A_ij { (0..2, 0..2): 1 } B_ij { (0:2, 0:2): 2 } R_ij { A_ij + B_ij }" expect "R" vec![3.0, 2.0, 2.0, 3.0],
+        diag_dense_mul: "A_ij { (0..2, 0..2): 2 } B_ij { (0:2, 0:2): 3 } R_ij { A_ij * B_ij }" expect "R" vec![6.0, 6.0],
+        sparse_sparse_mat_add2: "A_ij { (0, 0): 1, (1, 0): 5, (1, 1): 2 } B_ij { (0, 1): 3, (1, 1): 4 } R_ij { A_ij + B_ij }" expect "R" vec![1.0, 3.0, 5.0, 6.0],
+        sparse_sparse_mat_add3: "A_ij { (0, 0): 1, (1, 0): 5, (1, 1): 2 } B_ij { (0, 1): 3, (1, 1): 4 } R_ij { A_ij + B_ji }" expect "R" vec![1.0, 8.0, 6.0],
+        sparse_sparse_mat_add: "A_ij { (1, 1): 2 } B_ij { (0, 1): 3, (1, 1): 4 } R_ij { A_ij + B_ij }" expect "R" vec![3.0, 6.0],
+        sparse_dense_mat_add: "A_ij { (1, 1): 2 } B_ij { (0:2, 0:2): 3 } R_ij { A_ij + B_ij }" expect "R" vec![3.0, 3.0, 3.0, 5.0],
+        sparse_dense_mat_mul: "A_ij { (1, 1): 2 } B_ij { (0:2, 0:2): 3 } R_ij { A_ij * B_ij }" expect "R" vec![6.0],
+        sparse_dense_mat_mul2: "A_ij { (1, 0): 1, (1, 1): 2 } B_ij { (0:2, 0:2): 3 } R_ij { A_ij * B_ij }" expect "R" vec![3.0, 6.0],
+        diag_dense_mat_mul: "A_ij { (0, 0): 1, (1, 1): 2 } B_ij { (0:2, 0:2): 3 } R_ij { A_ij * B_ij }" expect "R" vec![3.0, 6.0],
+        sparse_sparse_vec_add: "a_i { (0): 1, (2): 2 } b_i { (2): 4 } r_i { a_i + b_i }" expect "r" vec![1.0, 6.0],
+        sparse_sparse_vec_add2: "a_i { (0): 1, (2): 2 } b_i { (1): 2, (2): 4 } r_i { a_i + b_i }" expect "r" vec![1.0, 2.0, 6.0],
+        sparse_sparse_vec_mul: "a_i { (0): 1, (2): 2 } b_i { (2): 4 } r_i { a_i * b_i }" expect "r" vec![8.0],
+        sparse_sparse_vec_div: "a_i { (2): 2 } b_i { (2): 4 } r_i { a_i / b_i }" expect "r" vec![0.5],
+        sparse_sparse_vec_mul2: "a_i { (0): 1, (2): 2 } b_i { (2): 4 } r_i { b_i * a_i }" expect "r" vec![8.0],
+        sparse_dense_vec_add:  "a_i { (0): 1, (2): 2 } b_i { (0:3): 3 } r_i { a_i + b_i }" expect "r" vec![4.0, 3.0, 5.0],
+        sparse_dense_vec_add2: "a_i { (0): 1, (2): 2 } b_i { (0:3): 3 } r_i { b_i + a_i }" expect "r" vec![4.0, 3.0, 5.0],
+        sparse_dense_vec_mul: "a_i { (0): 1, (2): 2 } b_i { (0:3): 3 } r_i { b_i * a_i }" expect "r" vec![3.0, 6.0],
+        sparse_dense_vec_mul2: "a_i { (0): 1, (2): 2 } b_i { (0:3): 3 } r_i { a_i * b_i }" expect "r" vec![3.0, 6.0],
         sparse_vec_vec_mul: "a_i { (0): 1, (2): 2 } b_i { (2): 4 } r_i { a_i * b_i }" expect "r" vec![8.0],
         sparse_vec_vec_add: "a_i { (0): 1, (2): 2 } b_i { (2): 4 } r_i { a_i + b_i }" expect "r" vec![1.0, 6.0],
         contraction_2d_to_vector: "a_ij { (0:3, 0:3): 1.0 } r_i { a_ij }" expect "r" vec![3.0, 3.0, 3.0],

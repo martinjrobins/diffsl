@@ -1177,10 +1177,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                         // zero offset
                         self.builder.ins().iconst(self.int_type, 0)
                     }
-                } else if layout.is_diagonal() {
-                    // must have come from jit_compile_diagonal_block, so we can just use the elmt_index
-                    expr_index
-                } else if layout.is_sparse() {
+                } else if layout.is_sparse() || layout.is_diagonal() {
                     let expr_layout = elmt.expr_layout();
                     if expr_layout != layout {
                         // get correct index from binary layout map, ie. indices[ binary_layout_index + expr_index ]
@@ -1189,9 +1186,20 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                         //.    if expr_index == -1 then return 0 as the value of the expression
                         //.    otherwise load the value at that index
                         // we are doing an if statement so I think we need to return early here
+                        let permutation = elmt
+                            .indices()
+                            .iter()
+                            .map(|c| {
+                                iname
+                                    .indices
+                                    .iter()
+                                    .position(|x| x == c)
+                                    .unwrap_or(elmt.indices().len())
+                            })
+                            .collect();
                         let base_binary_layout_index = self
                             .layout
-                            .get_binary_layout_index(layout, expr_layout)
+                            .get_binary_layout_index(layout, expr_layout, permutation)
                             .unwrap();
                         let base_binary_layout_index = self.builder.ins().iconst(
                             self.int_type,
@@ -1580,23 +1588,26 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         } else {
             elmt.expr()
         };
-        
+
         // if indices = (i, j, k) and shape = (a, b, c) calculate expr_index = (k + j*b + i*b*c)
-        let mut expr_index = *indices.last().unwrap();
+        let mut expr_index = *indices.last().unwrap_or(&zero);
         let mut stride = 1u64;
-        for i in (0..indices.len() - 1).rev() {
-            let iname_i = indices[i];
-            let shapei: u64 = elmt.expr_layout().shape()[i + 1].try_into().unwrap();
-            stride *= shapei;
-            let stride_intval = self
-                .builder
-                .ins()
-                .iconst(self.int_type, i64::try_from(stride).unwrap());
-            let stride_mul_i = self.builder.ins().imul(stride_intval, iname_i);
-            expr_index = self.builder.ins().iadd(expr_index, stride_mul_i);
+        if !indices.is_empty() {
+            for i in (0..indices.len() - 1).rev() {
+                let iname_i = indices[i];
+                let shapei: u64 = elmt.expr_layout().shape()[i + 1].try_into().unwrap();
+                stride *= shapei;
+                let stride_intval = self
+                    .builder
+                    .ins()
+                    .iconst(self.int_type, i64::try_from(stride).unwrap());
+                let stride_mul_i = self.builder.ins().imul(stride_intval, iname_i);
+                expr_index = self.builder.ins().iadd(expr_index, stride_mul_i);
+            }
         }
 
-        let float_value = self.jit_compile_expr(name, expr, indices.as_slice(), elmt, expr_index)?;
+        let float_value =
+            self.jit_compile_expr(name, expr, indices.as_slice(), elmt, expr_index)?;
 
         if let Some(contract_sum) = contract_sum {
             let contract_sum_value = self

@@ -15,7 +15,6 @@ use crate::ast::StringSpan;
 use crate::continuous::ModelInfo;
 use crate::continuous::Variable;
 
-use super::ArcLayout;
 use super::Env;
 use super::Index;
 use super::Layout;
@@ -187,12 +186,23 @@ impl<'s> DiscreteModel<'s> {
                             ));
                         }
 
+                        // make sure arc layouts are unique
+                        // TODO: if we always use arc layout for the recursion, we can reuse existing ones
+                        // much more efficiently rather than creating new ones all the time
+                        let elmt_layout = env.new_layout_ptr(elmt_layout);
+                        let expr_layout = if &expr_layout == elmt_layout.as_ref() {
+                            // if layouts match, we can use the elmt layout ptr
+                            elmt_layout.clone()
+                        } else {
+                            env.new_layout_ptr(expr_layout)
+                        };
+
                         elmts.push(TensorBlock::new(
                             name,
                             start.clone(),
                             array.indices().to_vec(),
-                            ArcLayout::new(elmt_layout),
-                            ArcLayout::new(expr_layout),
+                            elmt_layout,
+                            expr_layout,
                             *expr,
                         ));
 
@@ -214,14 +224,11 @@ impl<'s> DiscreteModel<'s> {
             ));
             None
         } else {
+            // todo: if we always use arc layout for the recursion, we can reuse existing ones
             match Layout::concatenate(&elmts, rank) {
                 Ok(layout) => {
-                    let tensor = Tensor::new(
-                        array.name(),
-                        elmts,
-                        ArcLayout::new(layout),
-                        array.indices().to_vec(),
-                    );
+                    let layout = env.new_layout_ptr(layout);
+                    let tensor = Tensor::new(array.name(), elmts, layout, array.indices().to_vec());
                     //check that the number of indices matches the rank
                     assert_eq!(tensor.rank(), tensor.indices().len());
                     if nerrs == env.errs().len() {
@@ -1201,7 +1208,6 @@ mod tests {
         error_input_not_defined: "in = [bub]" errors ["input bub is not defined",],
         error_scalar: "r {1, 2}" errors ["cannot have more than one element in a scalar",],
         error_cannot_find: "r { k }" errors ["cannot find variable k",],
-        error_different_sparsity: "A_ij { (0, 0): 1, (1, 0): 1, (1, 1): 1 } B_ij { (1, 1): 1 } C_ij { A_ij + B_ij }" errors ["cannot broadcast layouts with different sparsity",],
         error_different_shape: "a_i { 1, 2 } b_i { 1, 2, 3 } c_i { a_i + b_i }" errors ["cannot broadcast shapes: [2], [3]",],
         too_many_indices: "A_i { 1, 2 } B_i { (0:2): A_ij }" errors ["too many permutation indices",],
         bcast_expr_to_elmt: "A_i { 1, 2 } B_i { (0:2): A_i, (2:3): A_i }" errors ["cannot broadcast expression shape [2] to tensor element shape [1]",],
@@ -1211,10 +1217,28 @@ mod tests {
         error_index4: "A { 1.0 } B { A[0] }" errors ["can only index dense 1D variables",],
         error_contract_1d_to_scalar: "A_i { 1.0, 2.0 } B { A_i }" errors ["contraction only supported from 2D to 1D tensors. Got 1D to 0D",],
         error_broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_i }" errors ["cannot broadcast shapes: [3, 2], [2]",],
-        mat_mul_sparse_vec: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { (1): 1 } b_i { A_ij * x_j }" errors ["cannot broadcast layouts with different sparsity patterns",],
+        error_divide_by_zero: "a_i { (0): 1, (2): 2 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
+        error_divide_by_zero2: "a_i { (0:3): 1 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
     );
 
     tensor_tests!(
+        diag_sparse_add: "a_ij { (0..2, 0..2): 2 } b_ij { (1, 1): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij + b_ij (2i,2i) }",
+        diag_dense_mul: "a_ij { (0..2, 0..2): 2 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij * b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij * b_ij (2i,2i) }",
+        diag_dense_add: "a_ij { (0..2, 0..2): 2 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (2,2) { (0,0)(2,2): a_ij + b_ij (2,2) }",
+        sparse_dense_mat_add: "a_ij { (2, 2): 2 } b_ij { (0:3, 0:3): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (3,3) { (0,0)(3,3): a_ij + b_ij (3,3) }",
+        sparse_dense_mat_mul: "a_ij { (2, 2): 2 } b_ij { (0:3, 0:3): 3 } c_ij { a_ij * b_ij }" expect "c" = "c_ij (3s,3s) { (0,0)(3s,3s): a_ij * b_ij (3s,3s) }",
+        sparse_dense_mat_mul2: "a_ij { (0, 0): 2, (1, 1): 1 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij * b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij * b_ij (2i,2i) }",
+        sparse_dense_vec_add: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
+        sparse_dense_vec_add2: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { b_i + a_i }" expect "c" = "c_i (3) { (0)(3): b_i + a_i (3) }",
+        sparse_sparse_vec_add:  "a_i { (2): 2 } b_i { (0): 3, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i + b_i (3s) }",
+        sparse_sparse_vec_add2:  "a_i { (2): 2 } b_i { (0): 3, (2): 4 } c_i { b_i + a_i }" expect "c" = "c_i (3s) { (0)(3s): b_i + a_i (3s) }",
+        sparse_sparse_vec_add3: "a_i { (1): 1, (2): 2 } b_i { (0): 3, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
+        sparse_dense_vec_mul: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { a_i * b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i * b_i (3s) }",
+        sparse_dense_vec_mul2: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { b_i * a_i }" expect "c" = "c_i (3s) { (0)(3s): b_i * a_i (3s) }",
+        two_dim_sparse_add: "A_ij { (0, 0): 1, (1, 0): 1, (1, 1): 1 } B_ij { (1, 1): 1 } C_ij { A_ij + B_ij }" expect "C" = "C_ij (2s,2s) { (0, 0)(2s,2s): A_ij + B_ij (2s,2s) }",
+        mat_mul_sparse_vec: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { (1): 1 } b_i { A_ij * x_j }" expect "b" = "b_i (2s) { (0)(2s): A_ij * x_j (2s, 2s) }",
+        add_sparse_vecs: "a_i { (2): 3 } b_i { (1): 2, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i + b_i (3s) }",
+        add_sparse_vecs_to_dense: "a_i { (0): 1, (2): 3 } b_i { (1): 2, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
         row_vec: "a_ij { (0, 0): 1, (0, 1): 2 } b_i { (0:3): 1 } c_i { a_ij * b_j[0:2] }" expect "c" = "c_i (1) { (0)(1): a_ij * b_j[0:2] (1, 2) }",
         col_vec: "a_ij { (0, 0): 1, (1, 0): 2 } b_i { (0:2): a_ij }" expect "b" = "b_i (2) { (0)(2): a_ij (2, 1) }",
         broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_j }" expect "c" = "c_ij (3,2) { (0,0)(3,2): A_ij + b_j (3,2) }",
@@ -1228,7 +1252,6 @@ mod tests {
         dense_vect_implicit: "A_i { 1, 2, 3 }" expect "A" = "A_i (3) { (0)(1): 1, (1)(1): 2, (2)(1): 3 }",
         dense_vect_explicit: "A_i { (0:3): 1, (3:4): 2 }" expect "A" = "A_i (4) { (0)(3): 1, (3)(1): 2 }",
         dense_vect_mix: "A_i { (0:3): 1, 2 }" expect "A" = "A_i (4) { (0)(3): 1, (3)(1): 2 }",
-        dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" = "A_ij (2,2) { (0, 0)(1, 1): 1, (0, 1)(1, 1): 2, (1, 0)(1, 1): 3, (1, 1)(1, 1): 4 }",
         diag_matrix: "A_ij { (0, 0): 1, (1, 1): 4 }" expect "A" = "A_ij (2i,2i) { (0, 0)(1, 1): 1, (1, 1)(1, 1): 4 }",
         sparse_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 1): 4 }" expect "A" = "A_ij (2s,2s) { (0, 0)(1, 1): 1, (0, 1)(1, 1): 2, (1, 1)(1, 1): 4 }",
         sparse_row_matrix: "A_ij { (0, 1): 2, (0, 2): 4 }" expect "A" = "A_ij (1s,3s) { (0, 1)(1, 1): 2, (0, 2)(1, 1): 4 }",

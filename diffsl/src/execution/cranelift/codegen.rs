@@ -1063,7 +1063,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         expr: &Ast,
         index: &[Value],
         elmt: &TensorBlock,
-        expr_index: Option<Value>,
+        expr_index: Value,
     ) -> Result<Value> {
         let name = elmt.name().unwrap_or(name);
         match &expr.kind {
@@ -1172,21 +1172,103 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                             iname_elmt_index =
                                 self.builder.ins().iadd(iname_elmt_index, stride_mul_i);
                         }
-                        Some(iname_elmt_index)
+                        iname_elmt_index
                     } else {
-                        None
+                        // zero offset
+                        self.builder.ins().iconst(self.int_type, 0)
                     }
                 } else if layout.is_sparse() || layout.is_diagonal() {
-                    // must have come from jit_compile_sparse_block, so we can just use the elmt_index
-                    // must have come from jit_compile_diagonal_block, so we can just use the elmt_index
-                    expr_index
+                    let expr_layout = elmt.expr_layout();
+                    if expr_layout != layout {
+                        // get correct index from binary layout map, ie. indices[ binary_layout_index + expr_index ]
+                        // if its a -1 then return a 0
+                        // ie. expr_index = binary_layout[expr_index]
+                        //.    if expr_index == -1 then return 0 as the value of the expression
+                        //.    otherwise load the value at that index
+                        // we are doing an if statement so I think we need to return early here
+                        let permutation = elmt
+                            .indices()
+                            .iter()
+                            .map(|c| {
+                                iname
+                                    .indices
+                                    .iter()
+                                    .position(|x| x == c)
+                                    .unwrap_or(elmt.indices().len())
+                            })
+                            .collect();
+                        let base_binary_layout_index = self
+                            .layout
+                            .get_binary_layout_index(layout, expr_layout, permutation)
+                            .unwrap();
+                        let base_binary_layout_index = self.builder.ins().iconst(
+                            self.int_type,
+                            i64::try_from(base_binary_layout_index).unwrap(),
+                        );
+                        let binary_layout_index = self
+                            .builder
+                            .ins()
+                            .iadd(base_binary_layout_index, expr_index);
+
+                        let indices_array = self
+                            .builder
+                            .ins()
+                            .global_value(self.int_ptr_type, self.indices);
+
+                        let indices_ptr =
+                            self.ptr_add_offset(self.int_type, indices_array, binary_layout_index);
+
+                        let mapped_index =
+                            self.builder
+                                .ins()
+                                .load(self.int_type, self.mem_flags, indices_ptr, 0);
+
+                        let is_less_than_zero =
+                            self.builder
+                                .ins()
+                                .icmp_imm(IntCC::SignedLessThan, mapped_index, 0);
+
+                        let is_less_than_zero_block = self.builder.create_block();
+                        let not_less_than_zero_block = self.builder.create_block();
+                        let merge_block = self.builder.create_block();
+                        let phi_value =
+                            self.builder.append_block_param(merge_block, self.real_type);
+                        self.builder.ins().brif(
+                            is_less_than_zero,
+                            is_less_than_zero_block,
+                            &[],
+                            not_less_than_zero_block,
+                            &[],
+                        );
+                        self.builder.seal_block(is_less_than_zero_block);
+                        self.builder.seal_block(not_less_than_zero_block);
+
+                        // if mapped index < 0 return 0
+                        self.builder.switch_to_block(is_less_than_zero_block);
+                        let zero = self.fconst(0.);
+                        self.builder.ins().jump(merge_block, &[zero.into()]);
+
+                        // if mapped index >=0 load value at that index
+                        self.builder.switch_to_block(not_less_than_zero_block);
+                        let value_ptr = self.ptr_add_offset(self.real_type, ptr, mapped_index);
+                        let value =
+                            self.builder
+                                .ins()
+                                .load(self.real_type, self.mem_flags, value_ptr, 0);
+                        self.builder.ins().jump(merge_block, &[value.into()]);
+                        self.builder.seal_block(merge_block);
+                        self.builder.switch_to_block(merge_block);
+
+                        // return value or 0 from if statement
+                        return Ok(phi_value);
+                    } else {
+                        // we can just use the elmt_index since the layouts are the same
+                        expr_index
+                    }
                 } else {
                     panic!("unexpected layout");
                 };
-                let value_ptr = match iname_elmt_index {
-                    Some(offset) => self.ptr_add_offset(self.real_type, ptr, offset),
-                    None => ptr,
-                };
+                let value_ptr = self.ptr_add_offset(self.real_type, ptr, iname_elmt_index);
                 Ok(self
                     .builder
                     .ins()
@@ -1299,7 +1381,8 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             } else {
                 elmt.expr()
             };
-            let float_value = self.jit_compile_expr(a.name(), expr, &[], elmt, None)?;
+            let zero = self.builder.ins().iconst(self.int_type, 0);
+            let float_value = self.jit_compile_expr(a.name(), expr, &[], elmt, zero)?;
             self.builder
                 .ins()
                 .store(self.mem_flags, float_value, self.tensor_ptr.unwrap(), 0);
@@ -1505,7 +1588,26 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         } else {
             elmt.expr()
         };
-        let float_value = self.jit_compile_expr(name, expr, indices.as_slice(), elmt, None)?;
+
+        // if indices = (i, j, k) and shape = (a, b, c) calculate expr_index = (k + j*b + i*b*c)
+        let mut expr_index = *indices.last().unwrap_or(&zero);
+        let mut stride = 1u64;
+        if !indices.is_empty() {
+            for i in (0..indices.len() - 1).rev() {
+                let iname_i = indices[i];
+                let shapei: u64 = elmt.expr_layout().shape()[i + 1].try_into().unwrap();
+                stride *= shapei;
+                let stride_intval = self
+                    .builder
+                    .ins()
+                    .iconst(self.int_type, i64::try_from(stride).unwrap());
+                let stride_mul_i = self.builder.ins().imul(stride_intval, iname_i);
+                expr_index = self.builder.ins().iadd(expr_index, stride_mul_i);
+            }
+        }
+
+        let float_value =
+            self.jit_compile_expr(name, expr, indices.as_slice(), elmt, expr_index)?;
 
         if let Some(contract_sum) = contract_sum {
             let contract_sum_value = self
@@ -1524,14 +1626,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                     let tmp = self.builder.ins().imul(*i, *s);
                     self.builder.ins().iadd(acc, tmp)
                 });
-            self.jit_compile_broadcast_and_store(
-                name,
-                elmt,
-                float_value,
-                expr_index,
-                translation,
-                self.builder.current_block().unwrap(),
-            )?;
+            self.jit_compile_broadcast_and_store(name, elmt, float_value, expr_index, translation)?;
         }
 
         // unwind the nested loops
@@ -1712,7 +1807,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             elmt.expr()
         };
         let float_value =
-            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, Some(expr_index))?;
+            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, expr_index)?;
         let contract_sum_value = self
             .builder
             .ins()
@@ -1804,12 +1899,12 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             (None, None, None)
         };
 
-        let block = self.builder.create_block();
-        let curr_index = self.builder.append_block_param(block, int_type);
+        let loop_start_block = self.builder.create_block();
+        let curr_index = self.builder.append_block_param(loop_start_block, int_type);
         self.builder
             .ins()
-            .jump(block, &[thread_start.unwrap_or(zero).into()]);
-        self.builder.switch_to_block(block);
+            .jump(loop_start_block, &[thread_start.unwrap_or(zero).into()]);
+        self.builder.switch_to_block(loop_start_block);
 
         // loop body - load index from layout
         let elmt_index = curr_index;
@@ -1849,16 +1944,9 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             elmt.expr()
         };
         let float_value =
-            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, Some(elmt_index))?;
+            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, elmt_index)?;
 
-        self.jit_compile_broadcast_and_store(
-            name,
-            elmt,
-            float_value,
-            elmt_index,
-            translation,
-            block,
-        )?;
+        self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation)?;
 
         // increment loop index
         let next_index = self.builder.ins().iadd(elmt_index, one);
@@ -1871,10 +1959,14 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         );
         let post_block = exit_block.unwrap_or(self.builder.create_block());
 
-        self.builder
-            .ins()
-            .brif(loop_while, block, &[next_index.into()], post_block, &[]);
-        self.builder.seal_block(block);
+        self.builder.ins().brif(
+            loop_while,
+            loop_start_block,
+            &[next_index.into()],
+            post_block,
+            &[],
+        );
+        self.builder.seal_block(loop_start_block);
         self.builder.switch_to_block(post_block);
         self.builder.seal_block(post_block);
         Ok(())
@@ -1924,17 +2016,10 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             elmt.expr()
         };
         let float_value =
-            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, Some(elmt_index))?;
+            self.jit_compile_expr(name, expr, indices_int.as_slice(), elmt, elmt_index)?;
 
         // loop body - store result
-        self.jit_compile_broadcast_and_store(
-            name,
-            elmt,
-            float_value,
-            elmt_index,
-            translation,
-            block,
-        )?;
+        self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation)?;
 
         // increment loop index
         let next_index = self.builder.ins().iadd(elmt_index, one);
@@ -1961,11 +2046,11 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         float_value: Value,
         expr_index: Value,
         translation: &Translation,
-        pre_block: Block,
     ) -> Result<Block> {
         let int_type = self.int_type;
         let one = self.builder.ins().iconst(int_type, 1);
         let zero = self.builder.ins().iconst(int_type, 0);
+        let pre_block = self.builder.current_block().unwrap();
         match translation.source {
             TranslationFrom::Broadcast {
                 broadcast_by: _,

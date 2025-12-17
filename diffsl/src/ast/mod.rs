@@ -775,17 +775,23 @@ impl<'a> Ast<'a> {
     pub fn get_dependents(&self) -> HashSet<&'a str> {
         let mut deps = HashSet::new();
         self.collect_deps(&mut deps);
+        deps.into_iter().map(|(name, _)| name).collect()
+    }
+
+    pub fn get_dependents_with_indices(&self) -> HashSet<(&'a str, Vec<char>)> {
+        let mut deps = HashSet::new();
+        self.collect_deps(&mut deps);
         deps
     }
 
-    fn collect_deps(&self, deps: &mut HashSet<&'a str>) {
+    fn collect_deps(&self, deps: &mut HashSet<(&'a str, Vec<char>)>) {
         match &self.kind {
             AstKind::Equation(eqn) => {
                 eqn.lhs.collect_deps(deps);
                 eqn.rhs.collect_deps(deps);
             }
             AstKind::RateEquation(eqn) => {
-                deps.insert(eqn.name);
+                deps.insert((eqn.name, Vec::new()));
                 eqn.rhs.collect_deps(deps);
             }
             AstKind::Binop(binop) => {
@@ -810,11 +816,11 @@ impl<'a> Ast<'a> {
             }
             AstKind::Name(Name {
                 name: found_name,
-                indices: _,
+                indices,
                 indice: _,
                 is_tangent: _,
             }) => {
-                deps.insert(found_name);
+                deps.insert((*found_name, indices.clone()));
             }
             AstKind::NamedGradient(gradient) => {
                 gradient.gradient_of.collect_deps(deps);
@@ -835,7 +841,12 @@ impl<'a> Ast<'a> {
             AstKind::TensorElmt(elmt) => {
                 elmt.expr.collect_deps(deps);
             }
-            AstKind::DsModel(m) => deps.extend(m.inputs.iter().cloned()),
+            AstKind::DsModel(m) => deps.extend(
+                m.inputs
+                    .iter()
+                    .map(|&i| (i, Vec::new()))
+                    .collect::<Vec<_>>(),
+            ),
             AstKind::Number(_) => (),
             AstKind::Integer(_) => (),
             AstKind::Model(_) => (),

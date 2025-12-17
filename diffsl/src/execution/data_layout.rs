@@ -18,6 +18,7 @@ pub struct DataLayout {
     data_index_map: HashMap<String, usize>,
     data_length_map: HashMap<String, usize>,
     layout_index_map: HashMap<ArcLayout, usize>,
+    binary_layout_index_map: HashMap<(ArcLayout, ArcLayout, Vec<usize>), usize>,
     translate_index_map: HashMap<(ArcLayout, ArcLayout), usize>,
     data: Vec<f64>,
     constants: Vec<f64>,
@@ -36,6 +37,11 @@ impl DataLayout {
         let mut constants = Vec::new();
         let mut indices = Vec::new();
         let mut layout_map = HashMap::new();
+        let mut binary_layout_index_map = HashMap::new();
+
+        // add layout info for "t"
+        let t_layout = ArcLayout::new(Layout::new_scalar());
+        layout_map.insert("t".to_string(), t_layout);
 
         let mut add_tensor = |tensor: &Tensor, in_data: bool, in_constants: bool| {
             // insert the data (non-zeros) for each tensor
@@ -61,21 +67,59 @@ impl DataLayout {
                 }
 
                 // insert the layout info for each tensor expression
-                layout_index_map.insert(blk.expr_layout().clone(), indices.len());
-                indices.extend(blk.expr_layout().to_data_layout());
+                if !layout_index_map.contains_key(blk.expr_layout()) {
+                    layout_index_map.insert(blk.expr_layout().clone(), indices.len());
+                    indices.extend(blk.expr_layout().to_data_layout());
+                }
+
+                // if any tensors in the block expression have a different layout to the block expression
+                // then we need to add a binary layout translation
+                for (tensor_name, tensor_indices) in blk.expr().get_dependents_with_indices() {
+                    let tensor_layout = layout_map.get(tensor_name).unwrap();
+                    if tensor_layout != blk.expr_layout() {
+                        let permutation = blk
+                            .indices()
+                            .iter()
+                            .map(|idx| {
+                                tensor_indices
+                                    .iter()
+                                    .position(|&c| c == *idx)
+                                    .unwrap_or(blk.indices().len())
+                            })
+                            .collect::<Vec<usize>>();
+                        if !binary_layout_index_map.contains_key(&(
+                            tensor_layout.clone(),
+                            blk.expr_layout().clone(),
+                            permutation.clone(),
+                        )) {
+                            let blayout = tensor_layout
+                                .to_binary_data_layout(blk.expr_layout(), &permutation);
+                            binary_layout_index_map.insert(
+                                (
+                                    tensor_layout.clone(),
+                                    blk.expr_layout().clone(),
+                                    permutation,
+                                ),
+                                indices.len(),
+                            );
+                            indices.extend(blayout);
+                        }
+                    }
+                }
 
                 // and the translation info for each block-tensor pair
-                let translation = Translation::new(
-                    blk.expr_layout(),
-                    blk.layout(),
-                    blk.start(),
-                    tensor.layout_ptr(),
-                );
-                translate_index_map.insert(
-                    (blk.expr_layout().clone(), blk.layout().clone()),
-                    indices.len(),
-                );
-                indices.extend(translation.to_data_layout());
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    translate_index_map.entry((blk.expr_layout().clone(), blk.layout().clone()))
+                {
+                    let translation = Translation::new(
+                        blk.expr_layout(),
+                        blk.layout(),
+                        blk.start(),
+                        tensor.layout_ptr(),
+                    );
+                    e.insert(indices.len());
+                    indices.extend(translation.to_data_layout());
+                }
             }
         };
 
@@ -91,10 +135,12 @@ impl DataLayout {
             .input_dep_defns()
             .iter()
             .for_each(|i| add_tensor(i, true, false));
+
         model
             .time_dep_defns()
             .iter()
             .for_each(|i| add_tensor(i, true, false));
+
         add_tensor(model.state(), false, false);
         if let Some(state_dot) = model.state_dot() {
             add_tensor(state_dot, false, false);
@@ -111,10 +157,6 @@ impl DataLayout {
             add_tensor(out, false, false);
         }
 
-        // add layout info for "t"
-        let t_layout = ArcLayout::new(Layout::new_scalar());
-        layout_map.insert("t".to_string(), t_layout);
-
         // todo: could we just calculate constants now?
 
         Self {
@@ -127,6 +169,7 @@ impl DataLayout {
             layout_map,
             data_length_map,
             constants,
+            binary_layout_index_map,
         }
     }
 
@@ -180,6 +223,17 @@ impl DataLayout {
 
     pub fn get_layout_index(&self, layout: &ArcLayout) -> Option<usize> {
         self.layout_index_map.get(layout).copied()
+    }
+
+    pub fn get_binary_layout_index(
+        &self,
+        from: &ArcLayout,
+        to: &ArcLayout,
+        permutation: Vec<usize>,
+    ) -> Option<usize> {
+        self.binary_layout_index_map
+            .get(&(from.clone(), to.clone(), permutation))
+            .copied()
     }
 
     pub fn get_translation_index(&self, from: &ArcLayout, to: &ArcLayout) -> Option<usize> {

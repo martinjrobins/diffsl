@@ -326,7 +326,7 @@ impl Layout {
         }
 
         // if now dense then convert to dense layout
-        if ret.is_sparse() && ret.indices.len() == ret.shape.product() {
+        if ret.is_sparse_yet_dense() {
             return Ok(Layout {
                 indices: Vec::new(),
                 n_dense_axes: ret.shape.len(),
@@ -336,20 +336,13 @@ impl Layout {
         }
 
         // if now diagonal then convert to diagonal layout
-        if ret.is_sparse() {
-            let is_vector = ret.rank() == 1;
-            let indices_not_equal = ret
-                .indices
-                .iter()
-                .any(|index| index.iter().any(|&x| x != index[0]));
-            if !is_vector && !indices_not_equal {
-                return Ok(Layout {
-                    indices: Vec::new(),
-                    n_dense_axes: ret.n_dense_axes,
-                    shape,
-                    kind: LayoutKind::Diagonal,
-                });
-            }
+        if ret.is_sparse_yet_diagonal() {
+            return Ok(Layout {
+                indices: Vec::new(),
+                n_dense_axes: ret.n_dense_axes,
+                shape,
+                kind: LayoutKind::Diagonal,
+            });
         }
         Ok(ret)
     }
@@ -361,6 +354,23 @@ impl Layout {
     }
     pub fn is_diagonal(&self) -> bool {
         self.kind == LayoutKind::Diagonal
+    }
+    pub fn is_sparse_yet_dense(&self) -> bool {
+        self.is_sparse() && self.indices.len() == self.shape.product()
+    }
+
+    pub fn is_sparse_yet_diagonal(&self) -> bool {
+        if !self.is_sparse() {
+            return false;
+        }
+        let is_vector = self.rank() == 1;
+        let all_dims_equal = self.shape.iter().all(|&x| x == self.shape[0]);
+        let num_indices_equal_to_dim = self.indices.len() == self.shape[0];
+        let indices_not_equal = self
+            .indices
+            .iter()
+            .any(|index| index.iter().any(|&x| x != index[0]));
+        !is_vector && !indices_not_equal && all_dims_equal && num_indices_equal_to_dim
     }
     pub fn is_scalar(&self) -> bool {
         self.rank() == 0

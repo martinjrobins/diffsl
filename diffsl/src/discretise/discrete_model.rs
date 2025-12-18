@@ -1219,9 +1219,12 @@ mod tests {
         error_broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_i }" errors ["cannot broadcast shapes: [3, 2], [2]",],
         error_divide_by_zero: "a_i { (0): 1, (2): 2 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
         error_divide_by_zero2: "a_i { (0:3): 1 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
+        slice_sparse_vec: "A_i { (0): 1, (2): 3 } B_i { A_i[0:1] }" errors ["can only index dense 1D variables",],
     );
 
     tensor_tests!(
+        exp_sparse_vec: "a_i { (0): 1, (2): 3 } r_i { exp(a_i) }" expect "r" = "r_i (3) { (0)(3): exp(a_i) (3)}",
+        max_sparse_scalar: "a_i { (0): 1, (2): 3 } r_i { max(a_i, 2) }" expect "r" = "r_i (3) { (0)(3): max(a_i, 2) (3) }",
         sparse_mat_vec_mul: "A_ij { (1, 1): 2 } b_j { (1): 3 } r_i { A_ij * b_j }" expect "r" = "r_i (2s) { (0)(2s): A_ij * b_j (2s,2s) }",
         sparse_broadcast_to_sparse: "A_i { (1): 2 } B_ij { (0:2, 0:2): A_i }" expect "B" = "B_ij (2s,2) { (0,0)(2s,2): A_i (2s) }",
         sparse_contract_to_sparse: "A_ij { (1, 1): 2 } B_i { A_ij }" expect "B" = "B_i (2s) { (0)(2s): A_ij (2s,2s) }",

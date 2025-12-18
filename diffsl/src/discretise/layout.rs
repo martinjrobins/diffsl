@@ -248,8 +248,9 @@ impl Layout {
         };
 
         let all_dense = layouts.iter().all(|x| x.is_dense());
+        let is_call = op.is_none();
 
-        if all_dense {
+        if all_dense || is_call {
             return Ok(Layout::dense(shape));
         }
 

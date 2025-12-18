@@ -1970,11 +1970,12 @@ impl<'ctx> CodeGen<'ctx> {
             .build_store(contract_sum_ptr, self.real_type.const_float(0.0))?;
 
         // loop through each element in the contraction
-        let contract_block = self
+        let start_contract_block = self
             .context
             .append_basic_block(self.fn_value(), format!("{name}_contract").as_str());
-        self.builder.build_unconditional_branch(contract_block)?;
-        self.builder.position_at_end(contract_block);
+        self.builder
+            .build_unconditional_branch(start_contract_block)?;
+        self.builder.position_at_end(start_contract_block);
 
         let expr_index_phi = self.builder.build_phi(int_type, "j")?;
         expr_index_phi.add_incoming(&[(&start_contract, block)]);
@@ -1994,11 +1995,13 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder
             .build_store(contract_sum_ptr, new_contract_sum_value)?;
 
+        let end_contract_block = self.builder.get_insert_block().unwrap();
+
         // increment contract loop index
         let next_elmt_index =
             self.builder
                 .build_int_add(expr_index, int_type.const_int(1, false), name)?;
-        expr_index_phi.add_incoming(&[(&next_elmt_index, contract_block)]);
+        expr_index_phi.add_incoming(&[(&next_elmt_index, end_contract_block)]);
 
         // contract loop condition
         let loop_while = self.builder.build_int_compare(
@@ -2008,8 +2011,11 @@ impl<'ctx> CodeGen<'ctx> {
             name,
         )?;
         let post_contract_block = self.context.append_basic_block(self.fn_value(), name);
-        self.builder
-            .build_conditional_branch(loop_while, contract_block, post_contract_block)?;
+        self.builder.build_conditional_branch(
+            loop_while,
+            start_contract_block,
+            post_contract_block,
+        )?;
         self.builder.position_at_end(post_contract_block);
 
         // store the result
@@ -2467,17 +2473,8 @@ impl<'ctx> CodeGen<'ctx> {
                         //.    if expr_index == -1 then return 0 as the value of the expression
                         //.    otherwise load the value at that index
                         // we are doing an if statement so I think we need to return early here
-                        let permutation = elmt
-                            .indices()
-                            .iter()
-                            .map(|c| {
-                                iname
-                                    .indices
-                                    .iter()
-                                    .position(|x| x == c)
-                                    .unwrap_or(elmt.indices().len())
-                            })
-                            .collect();
+                        let permutation =
+                            DataLayout::permutation(elmt, iname.indices.as_slice(), layout);
                         let base_binary_layout_index = self
                             .layout
                             .get_binary_layout_index(layout, expr_layout, permutation)

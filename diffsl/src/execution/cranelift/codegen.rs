@@ -1186,17 +1186,8 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                         //.    if expr_index == -1 then return 0 as the value of the expression
                         //.    otherwise load the value at that index
                         // we are doing an if statement so I think we need to return early here
-                        let permutation = elmt
-                            .indices()
-                            .iter()
-                            .map(|c| {
-                                iname
-                                    .indices
-                                    .iter()
-                                    .position(|x| x == c)
-                                    .unwrap_or(elmt.indices().len())
-                            })
-                            .collect();
+                        let permutation =
+                            DataLayout::permutation(elmt, iname.indices.as_slice(), layout);
                         let base_binary_layout_index = self
                             .layout
                             .get_binary_layout_index(layout, expr_layout, permutation)
@@ -1765,14 +1756,14 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         self.builder.ins().stack_store(fzero, contract_sum_var, 0);
 
         // loop through each element in the contraction
-        let contract_block = self.builder.create_block();
+        let start_contract_block = self.builder.create_block();
         let expr_index = self
             .builder
-            .append_block_param(contract_block, self.int_type);
+            .append_block_param(start_contract_block, self.int_type);
         self.builder
             .ins()
-            .jump(contract_block, &[start_contract.into()]);
-        self.builder.switch_to_block(contract_block);
+            .jump(start_contract_block, &[start_contract.into()]);
+        self.builder.switch_to_block(start_contract_block);
 
         // loop body - load index from layout
         let rank_val = self.builder.ins().iconst(
@@ -1828,12 +1819,12 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         let post_contract_block = self.builder.create_block();
         self.builder.ins().brif(
             loop_while,
-            contract_block,
+            start_contract_block,
             &[next_elmt_index.into()],
             post_contract_block,
             &[],
         );
-        self.builder.seal_block(contract_block);
+        self.builder.seal_block(start_contract_block);
         self.builder.seal_block(post_contract_block);
 
         self.builder.switch_to_block(post_contract_block);

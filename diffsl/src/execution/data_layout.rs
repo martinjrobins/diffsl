@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::discretise::{ArcLayout, DiscreteModel, Layout, Tensor};
+use crate::discretise::{ArcLayout, DiscreteModel, Layout, Tensor, TensorBlock};
 
 use super::Translation;
 
@@ -77,16 +77,7 @@ impl DataLayout {
                 for (tensor_name, tensor_indices) in blk.expr().get_dependents_with_indices() {
                     let tensor_layout = layout_map.get(tensor_name).unwrap();
                     if tensor_layout != blk.expr_layout() {
-                        let permutation = blk
-                            .indices()
-                            .iter()
-                            .map(|idx| {
-                                tensor_indices
-                                    .iter()
-                                    .position(|&c| c == *idx)
-                                    .unwrap_or(blk.indices().len())
-                            })
-                            .collect::<Vec<usize>>();
+                        let permutation = Self::permutation(blk, &tensor_indices, tensor_layout);
                         if !binary_layout_index_map.contains_key(&(
                             tensor_layout.clone(),
                             blk.expr_layout().clone(),
@@ -171,6 +162,42 @@ impl DataLayout {
             constants,
             binary_layout_index_map,
         }
+    }
+
+    /// construct a permutation from the block expression indices to the tensor indices
+    /// in case they are in a different order
+    /// if any indices appear in the tensor indices but not in the block indices, we add these
+    /// to the end of the permutation (these will be contracted indices)
+    /// if any indices appear in the block indices but not in the tensor indices, we
+    /// map them to the end (these will be broadcasted indices)
+    ///
+    /// case 1: no contraction, translate
+    /// (i, j) -> (j, i) permutation [1, 0]
+    /// case 2: contraction, translate, always contract last index
+    /// (i) -> (j, i) permutation [1, 1]
+    /// case 3: contraction with tranlation with broadcast
+    /// (i) -> (j) permutation [1, 0]
+    pub fn permutation(
+        blk: &TensorBlock,
+        tensor_indices: &[char],
+        tensor_layout: &ArcLayout,
+    ) -> Vec<usize> {
+        let mut permutation = blk
+            .indices()
+            .iter()
+            .map(|idx| {
+                tensor_indices
+                    .iter()
+                    .position(|&c| c == *idx)
+                    .unwrap_or(tensor_layout.rank())
+            })
+            .collect::<Vec<usize>>();
+        for (i, index) in tensor_indices.iter().enumerate() {
+            if !blk.indices().contains(index) {
+                permutation.push(i);
+            }
+        }
+        permutation
     }
 
     pub fn tensors(&self) -> impl Iterator<Item = (&String, bool)> {

@@ -67,18 +67,12 @@ impl fmt::Display for TranslationFrom {
 impl TranslationFrom {
     // traslate from source layout (an expression) via an intermediary target layout (a tensor block)
     fn new(source: &Layout, target: &Layout) -> Self {
-        let mut min_rank_for_broadcast = source.rank();
-        if source.rank() <= target.rank() {
-            for i in (0..source.rank()).rev() {
-                if source.shape()[i] != target.shape()[i] {
-                    assert!(source.shape()[i] == 1);
-                    min_rank_for_broadcast = i + 1;
-                    break;
-                }
+        let broadcast_by = if target.rank() >= source.rank() {
+            if target.is_dense() {
+                target.rank() - source.rank()
+            } else {
+                target.rank() - target.n_dense_axes() - source.rank() - source.n_dense_axes()
             }
-        }
-        let broadcast_by = if target.rank() >= min_rank_for_broadcast {
-            target.rank() - min_rank_for_broadcast
         } else {
             0
         };
@@ -124,11 +118,7 @@ impl TranslationFrom {
             }
         } else if is_broadcast {
             if target.n_dense_axes() >= broadcast_by {
-                let broadcast_len = target
-                    .shape()
-                    .slice(s![min_rank_for_broadcast..])
-                    .iter()
-                    .product();
+                let broadcast_len = target.shape().slice(s![source.rank()..]).iter().product();
                 Self::Broadcast {
                     broadcast_by,
                     broadcast_len,
@@ -197,7 +187,12 @@ impl TranslationTo {
         } else if target.is_sparse() {
             let indices: Vec<usize> = source
                 .indices()
-                .map(|index| target.find_nnz_index(&(index + start)).unwrap())
+                .map(|mut index| {
+                    for (i, xi) in index.iter_mut().enumerate() {
+                        *xi += start[i];
+                    }
+                    target.find_nnz_index(&index).unwrap()
+                })
                 .collect();
             // check if the indices are contiguous
             let contiguous = indices.windows(2).all(|w| w[1] == w[0] + 1);

@@ -1526,8 +1526,10 @@ mod tests {
         pybamm_subexpression10: "r_i { (1.0 / (-1.0 + max(min(0.8, 0.9999999999), 1e-10))), }" expect "r" vec![1.0 / (-1.0 + f64::max(f64::min(0.8, 0.9999999999), 1e-10))] ; f64,
         unary_negate_in_expr: "r_i { 1.0 / (-1.0 + 1.1) }" expect "r" vec![1.0 / (-1.0 + 1.1)] ; f64,
     }
+    tensor_test! {}
 
     tensor_test! {
+        row_vec_col_vec_mul: "a_ij { (0, 1): 1, (0, 2): 2, (0, 3): 3 } b_i { 4, 5, 6, 7 } r_i { a_ij * b_j }" expect "r" vec![5. + 12. + 21.],
         max_sparse_scalar: "a_i { (0): 1, (2): 3 } r_i { max(a_i, 2) }" expect "r" vec![2., 2., 3.],
         contract_to_mat_vec: "A_ij { (0, 0): 1, (1, 0): 3, (1, 1): 4 } B_ij { (1, 1): 2 } b_i { B_ij } r_i { A_ij * b_j }" expect "r" vec![8.],
         sparse_mat_vec_mul7: "A_ij { (0, 1): 4, (1, 2): 2, (2, 2): 1 } b_i { (2): 5 } r_i { A_ij * (1 + b_j) }" expect "r" vec![4., 12., 6.],

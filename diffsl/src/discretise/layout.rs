@@ -582,9 +582,12 @@ impl Layout {
         };
         for (layout, start) in std::iter::zip(layouts, starts) {
             // convert to sparse
-            new_layout
-                .indices
-                .extend(layout.indices().map(|x| x + start));
+            new_layout.indices.extend(layout.indices().map(|mut x| {
+                for (i, xi) in x.iter_mut().enumerate() {
+                    *xi += start[i];
+                }
+                x
+            }));
         }
 
         // sort the indices in row major order and remove duplicates
@@ -640,23 +643,19 @@ impl Layout {
         }
     }
 
+    /// returns the number of stored non-zero elements in the layout
+    /// this does not include the implicit dense axes for sparse and diagonal layouts
     pub fn nnz(&self) -> usize {
-        let n_dense: usize = self
-            .shape
-            .slice(s![self.rank() - self.n_dense_axes..])
-            .iter()
-            .product();
         if self.is_dense() {
             self.shape.iter().product()
         } else if self.is_diagonal() {
-            n_dense
-                * (if self.shape.is_empty() {
-                    0
-                } else {
-                    self.shape[0]
-                })
+            if self.shape.is_empty() {
+                0
+            } else {
+                self.shape[0]
+            }
         } else {
-            n_dense * self.indices.len()
+            self.indices.len()
         }
     }
 
@@ -706,13 +705,17 @@ impl Layout {
         if self.is_dense() {
             return vec![];
         }
-        assert!(permutation.len() == self.rank());
-        assert!(other.rank() == self.rank());
+        assert!(
+            permutation.len() <= other.rank() + 1,
+            "can have max one contracted axis"
+        );
         let mut data_layout = vec![];
         let permute_index = |index: &Index| {
             let mut new_index = Index::zeros(self.rank());
             for (i, &p) in permutation.iter().enumerate() {
-                new_index[p] = index[i];
+                if p < self.rank() {
+                    new_index[p] = index[i];
+                }
             }
             new_index
         };
@@ -784,7 +787,7 @@ impl Layout {
             let new_ranks = shape.len() - self.rank();
             let n_dense_axes = self.n_dense_axes + new_ranks;
             Self {
-                indices: self.indices.clone(),
+                indices,
                 shape: shape.clone(),
                 kind: self.kind.clone(),
                 n_dense_axes,
@@ -811,9 +814,9 @@ impl Layout {
 
     // returns the index in the nnz array corresponding to the given index
     // this is broadcast aware, if the index is out of bounds for the layout shape and that axis is size 1, then the index is treated as 0
+    // if the index has higher rank
     pub fn find_nnz_index(&self, index: &Index) -> Option<usize> {
-        assert!(index.len() == self.rank());
-        let index = {
+        let bcast_index = {
             let mut new_index = index.clone();
             for i in 0..min(self.rank(), index.len()) {
                 if self.shape[i] == 1 && index[i] > 0 {
@@ -824,11 +827,15 @@ impl Layout {
             }
             new_index
         };
+        // take off the dense axes for sparse and diagonal layouts
+        let non_dense_index = bcast_index
+            .slice(s![0..self.rank() - self.n_dense_axes])
+            .to_owned();
         match self.kind {
-            LayoutKind::Sparse => self.indices.iter().position(|x| x == index),
-            LayoutKind::Dense => Some(Self::ravel_index(&index, self.shape())),
+            LayoutKind::Sparse => self.indices.iter().position(|x| x == non_dense_index),
+            LayoutKind::Dense => Some(Self::ravel_index(&bcast_index, self.shape())),
             LayoutKind::Diagonal => {
-                if index.iter().all(|&x| x == index[0])
+                if index.iter().all(|&x| x == non_dense_index[0])
                     && index[0] < self.shape[0].try_into().unwrap()
                 {
                     Some(index[0].try_into().unwrap())

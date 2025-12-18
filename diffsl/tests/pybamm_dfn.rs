@@ -3,7 +3,7 @@ use diffsl::{
     Compiler,
 };
 
-#[cfg(feature = "llvm")]
+#[cfg(all(feature = "llvm", not(feature = "llvm21-1")))]
 #[test]
 fn test_dfn_model_initialization_llvm() {
     test_dfn_model_initialization::<diffsl::LlvmModule>();

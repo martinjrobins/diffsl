@@ -15,6 +15,7 @@ fn test_dfn_model_initialization_cranelift() {
     test_dfn_model_initialization::<diffsl::CraneliftJitModule>();
 }
 
+#[allow(dead_code)]
 fn test_dfn_model_initialization<M: CodegenModuleJit + CodegenModuleCompile>() {
     let full_text = std::fs::read_to_string("benches/pybamm_dfn.diffsl").unwrap();
     let model = parse_ds_string(&full_text).unwrap();

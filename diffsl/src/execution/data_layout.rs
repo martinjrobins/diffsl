@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use log::debug;
+
 use crate::discretise::{ArcLayout, DiscreteModel, Layout, Tensor, TensorBlock};
 
 use super::Translation;
@@ -49,10 +51,22 @@ impl DataLayout {
             if in_data {
                 data_index_map.insert(tensor.name().to_string(), data.len());
                 data_length_map.insert(tensor.name().to_string(), tensor.nnz());
+                debug!(
+                    "adding tensor {} to data at index {} with nnz {}",
+                    tensor.name(),
+                    data.len(),
+                    tensor.nnz()
+                );
                 data.extend(vec![0.0; tensor.nnz()]);
                 is_constant_map.insert(tensor.name().to_string(), false);
             } else if in_constants {
                 data_index_map.insert(tensor.name().to_string(), constants.len());
+                debug!(
+                    "adding tensor {} to constants at index {} with nnz {}",
+                    tensor.name(),
+                    constants.len(),
+                    tensor.nnz()
+                );
                 data_length_map.insert(tensor.name().to_string(), tensor.nnz());
                 constants.extend(vec![0.0; tensor.nnz()]);
             }
@@ -69,6 +83,14 @@ impl DataLayout {
                 // insert the layout info for each tensor expression
                 if !layout_index_map.contains_key(blk.expr_layout()) {
                     layout_index_map.insert(blk.expr_layout().clone(), indices.len());
+                    let data_layout = blk.expr_layout().to_data_layout();
+                    debug!(
+                        "adding layout for block {} in tensor {} at index {}: {:?}",
+                        blk.name().unwrap_or("<unnamed>"),
+                        tensor.name(),
+                        indices.len(),
+                        data_layout
+                    );
                     indices.extend(blk.expr_layout().to_data_layout());
                 }
 
@@ -85,6 +107,13 @@ impl DataLayout {
                         )) {
                             let blayout = tensor_layout
                                 .to_binary_data_layout(blk.expr_layout(), &permutation);
+                            debug!(
+                                "adding binary layout from {} to {} with permutation {:?}: {:?}",
+                                tensor_name,
+                                blk.name().unwrap_or(tensor.name()),
+                                permutation,
+                                blayout
+                            );
                             binary_layout_index_map.insert(
                                 (
                                     tensor_layout.clone(),
@@ -107,6 +136,12 @@ impl DataLayout {
                         blk.layout(),
                         blk.start(),
                         tensor.layout_ptr(),
+                    );
+                    debug!(
+                        "adding translation from {} to {}: {:?}",
+                        blk.name().unwrap_or("<unnamed>"),
+                        tensor.name(),
+                        translation
                     );
                     e.insert(indices.len());
                     indices.extend(translation.to_data_layout());

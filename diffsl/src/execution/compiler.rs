@@ -1530,7 +1530,8 @@ mod tests {
     }
 
     tensor_test! {
-        sparse_mat_mul8: "A_ij { (0,1): -0.5, (0,0): 1.5, (6,5): 1.5, (6,4): -0.5 } b_i { (0:6): 1 } r_i { A_ij * b_j } A1_ij { (0,1): 1, (0,2): 1, (1,1): 1, (2,2): 1, (3,3): 1, (4,4): 1, (5,5): 1, (6,6): 1 } b2_i { (0:7): 1 } r2_i { A1_ij * (r_j + b2_j) }" expect "r2" vec![2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0],
+        sparse_mat_mul8: "A_ij { (0,1): -0.5, (0,0): 1.5, (6,5): 1.5, (6,4): -0.5 } b_i { (0:6): 1 } r_i { A_ij * b_j } A1_ij { (0,1): 1, (0,2): 1, (1,1): 1, (2,2): 1, (3,3): 1, (4,4): 1, (5,5): 1, (6,6): 1 } b2_i { (0:7): 1 } b3_i { (0:7):2 } r2_i { A1_ij * (r_j + b2_j) * b3_j }" expect "r2" vec![4.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0],
+        sparse_dense_concat: "a_i { (0): 1, (2): 3 } b_i { 4, 5 } r_i { a_i, b_i }" expect "r" vec![1., 3., 4., 5.],
         sparse_mat_mul9: "A_ij { (0,1): -0.5, (0,0): 1.5, (1,1): 0, (2,2): 0, (3,3): 0, (4,4): 0, (5,5): 0, (6,5): 1.5, (6,4): -0.5 } b_i { (0:6): 1 } r_i { A_ij * b_j }" expect "r" vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         sparse_mat_mul10: "A_ij { (0,0): 1.5, (0,1): -0.5, (6,4): -0.5, (6,5): 1.5 } b_i { (0:6): 1 } r_i { A_ij * b_j }" expect "r" vec![1.0, 1.0],
         sparse_mat_mul11: "A_ij { (0,0): 1.5, (0,1): -0.5, (1,1): 0, (2,2): 0, (3,3): 0, (4,4): 0, (5,5): 0, (6,4): -0.5, (6,5): 1.5 } b_i { (0:6): 1 } r_i { A_ij * b_j }" expect "r" vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
@@ -1545,7 +1546,7 @@ mod tests {
         sparse_mat_vec_mul3: "A_ij { (0, 1): 4, (1, 2): 2, (2, 2): 0 } b_i { (2): 5 } c_j { (0:3): 1 } r_i { A_ij * (b_j + c_j) }" expect "r" vec![4., 12., 0.],
         sparse_mat_vec_mul5: "A_ij { (1, 1): 2 } b_j { (1): 3 } r_i { A_ij * (1 * b_j) }" expect "r" vec![6.0],
         sparse_mat_vec_mul4: "A_ij { (0, 1): 4, (1, 2): 2, (2, 2): 0 } b_i { (0): 2, (2): 5 } c_j { (0:3): 1 } r_i { A_ij * (b_j + c_j) }" expect "r" vec![4., 12., 0.],
-        sparse_mat_vec_mul2: "A_ij { (0, 1): 4, (1, 0): 2 } b_i { (1): 5 } c_j { (0:2): 1 } r_i { A_ij * (b_j + c_j) }" expect "r" vec![24.0, 2.0],
+        sparse_mat_vec_mul2: "A_ij { (0, 1): 4, (1, 0): 2 } b_i { (1): 5 } c_j { (0:1): 1, (1:2): 1 } r_i { A_ij * (b_j + c_j) }" expect "r" vec![24.0, 2.0],
         sparse_mat_vec_mul: "A_ij { (1, 1): 2 } b_j { (1): 3 } r_i { A_ij * b_j }" expect "r" vec![6.0],
         sparse_broadcast_to_sparse: "A_i { (1): 2 } B_ij { (0:2, 0:2): A_i }" expect "B" vec![2.0],
         sparse_broadcast_to_sparse_add: "A_i { (1): 2 } C_ij { (1, 1): 1 } B_ij { (0:2, 0:2): A_i + C_ij }" expect "B" vec![2.0, 3.0],

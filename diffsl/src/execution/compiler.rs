@@ -1530,6 +1530,10 @@ mod tests {
     }
 
     tensor_test! {
+        sparse_mat_mul8: "A_ij { (0,1): -0.5, (0,0): 1.5, (6,5): 1.5, (6,4): -0.5 } b_i { (0:6): 1 } r_i { A_ij * b_j } A1_ij { (0,1): 1, (0,2): 1, (1,1): 1, (2,2): 1, (3,3): 1, (4,4): 1, (5,5): 1, (6,6): 1 } b2_i { (0:7): 1 } r2_i { A1_ij * (r_j + b2_j) }" expect "r2" vec![2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0],
+        sparse_mat_mul9: "A_ij { (0,1): -0.5, (0,0): 1.5, (1,1): 0, (2,2): 0, (3,3): 0, (4,4): 0, (5,5): 0, (6,5): 1.5, (6,4): -0.5 } b_i { (0:6): 1 } r_i { A_ij * b_j }" expect "r" vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        sparse_mat_mul10: "A_ij { (0,0): 1.5, (0,1): -0.5, (6,4): -0.5, (6,5): 1.5 } b_i { (0:6): 1 } r_i { A_ij * b_j }" expect "r" vec![1.0, 1.0],
+        sparse_mat_mul11: "A_ij { (0,0): 1.5, (0,1): -0.5, (1,1): 0, (2,2): 0, (3,3): 0, (4,4): 0, (5,5): 0, (6,4): -0.5, (6,5): 1.5 } b_i { (0:6): 1 } r_i { A_ij * b_j }" expect "r" vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         sparse_nonsquare_mat_vec_mul: "A_ij { (0, 0): 1, (0, 1): 4, (1, 2): 2 } b_j { (0:3): 5 } r_i { A_ij * b_j }" expect "r" vec![25.0, 10.0],
         sparse_nonsquare_mat_vec_mul2: "A_ij { (0, 0): 1, (0, 1): 4, (1, 2): 2 } b_j { (2): 5 } r_i { A_ij * b_j } B_ij { (0..2,0..2): 1 } s_i { B_ij * max(r_j, 1) }" expect "s" vec![1.0, 10.0],
         max_sparse_vec: "A_ij { (0..2,0..2): 1 } b_j { (1): 5 } r_i { A_ij * max(b_j, 1) }" expect "r" vec![1.0, 5.0],
@@ -1966,6 +1970,44 @@ mod tests {
             .input_dep_defns()
             .iter()
             .any(|defn| defn.name() == "m"));
+    }
+
+    #[cfg(feature = "cranelift")]
+    #[test]
+    fn test_repeated_rhs_sparse_contraction_cranelift() {
+        test_repeated_rhs_sparse_contraction::<crate::CraneliftJitModule>();
+    }
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_repeated_rhs_sparse_contraction_llvm() {
+        test_repeated_rhs_sparse_contraction::<crate::execution::llvm::codegen::LlvmModule>();
+    }
+
+    fn test_repeated_rhs_sparse_contraction<M: CodegenModuleCompile + CodegenModuleJit>() {
+        let code = "
+            A_ij { (0, 0): 1, (0, 1): 2, (3, 3): 3 }
+            u_i {
+                (0:4): x = 1,
+            }
+            c_i { A_ij * u_j }
+            F_i {
+                c_i,
+            }
+        ";
+        let model = parse_ds_string(code).unwrap();
+        let discrete_model =
+            DiscreteModel::build("test_repeated_rhs_sparse_contraction", &model).unwrap();
+        let compiler =
+            Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let mut u = vec![0.0; 4];
+        let mut res = vec![0.0; 4];
+        let mut data = compiler.get_new_data();
+        let (_n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+        compiler.set_u0(u.as_mut_slice(), data.as_mut_slice());
+        compiler.rhs(0.0, u.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+        assert_relative_eq!(res.as_slice(), vec![3.0, 0.0, 0.0, 3.0].as_slice());
+        compiler.rhs(0.0, u.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+        assert_relative_eq!(res.as_slice(), vec![3.0, 0.0, 0.0, 3.0].as_slice());
     }
 
     #[test]

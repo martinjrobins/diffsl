@@ -106,7 +106,11 @@ impl<'s> DiscreteModel<'s> {
         }
     }
 
-    fn build_array(array: &ast::Tensor<'s>, env: &mut Env) -> Option<Tensor<'s>> {
+    fn build_array(
+        array: &ast::Tensor<'s>,
+        env: &mut Env,
+        force_dense: bool,
+    ) -> Option<Tensor<'s>> {
         let rank = array.indices().len();
         let reserved_names = [
             "u0",
@@ -142,7 +146,7 @@ impl<'s> DiscreteModel<'s> {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
                     if let Some((expr_layout, elmt_layout)) =
-                        env.get_layout_tensor_elmt(te, array.indices())
+                        env.get_layout_tensor_elmt(te, array.indices(), force_dense)
                     {
                         if rank == 0 && elmt_layout.rank() == 1 && elmt_layout.shape()[0] > 1 {
                             env.errs_mut().push(ValidationError::new(
@@ -294,7 +298,7 @@ impl<'s> DiscreteModel<'s> {
                     match tensor.name() {
                         "u" => {
                             read_state = true;
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
                                 ret.state = built;
                             }
                             if ret.state.rank() > 1 {
@@ -305,7 +309,7 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "dudt" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
                                 ret.state_dot = Some(built);
                             }
                             if ret.state.rank() > 1 {
@@ -316,7 +320,7 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "F" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
                                 span_f = Some(span);
                                 ret.rhs = built;
                             }
@@ -331,7 +335,7 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "M" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
                                 span_m = Some(span);
                                 ret.lhs = Some(built);
                             }
@@ -346,7 +350,7 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "stop" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
                                 ret.stop = Some(built);
                             }
                             // check that stop is not dependent on dudt
@@ -360,7 +364,7 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "out" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
                                 if built.rank() > 1 {
                                     env.errs_mut().push(ValidationError::new(
                                         "output shape must be a scalar or 1D vector".to_string(),
@@ -380,7 +384,7 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         name => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) = Self::build_array(tensor, &mut env, false) {
                                 let is_input = model.inputs.contains(&name);
                                 if let Some(env_entry) = env.get(built.name()) {
                                     let dependent_on_state = env_entry.is_state_dependent();

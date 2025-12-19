@@ -1,6 +1,6 @@
 use anyhow::Result;
-use log::info;
 use core::panic;
+use log::info;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;

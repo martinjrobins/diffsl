@@ -1983,6 +1983,7 @@ mod tests {
         test_repeated_rhs_sparse_contraction::<crate::execution::llvm::codegen::LlvmModule>();
     }
 
+    #[allow(dead_code)]
     fn test_repeated_rhs_sparse_contraction<M: CodegenModuleCompile + CodegenModuleJit>() {
         let code = "
             A_ij { (0, 0): 1, (0, 1): 2, (3, 3): 3 }

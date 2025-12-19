@@ -351,6 +351,7 @@ impl Env {
         &mut self,
         elmt: &ast::TensorElmt,
         indices: &[char],
+        force_dense: bool,
     ) -> Option<(Layout, Layout)> {
         let expr_indices = elmt.expr.get_indices();
         // get any indices from the expression that do not appear in 'indices' and add them to 'indices' to a new vector
@@ -374,7 +375,10 @@ impl Env {
             return None;
         }
 
-        let expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
+        let mut expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
+        if force_dense {
+            expr_layout.to_dense();
+        }
 
         // broadcast the expression layout to the tensor rank
         // (tensor rank given by the number of indices)

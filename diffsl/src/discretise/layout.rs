@@ -377,6 +377,15 @@ impl Layout {
         self.rank() == 0
     }
 
+    pub fn to_dense(&mut self) {
+        if self.is_dense() {
+            return;
+        }
+        self.indices.clear();
+        self.kind = LayoutKind::Dense;
+        self.n_dense_axes = self.shape.len();
+    }
+
     pub fn to_sparse(&mut self) {
         if self.is_sparse() {
             return;

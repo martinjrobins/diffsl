@@ -1,5 +1,6 @@
 use anyhow::Result;
 use core::panic;
+use log::info;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -243,6 +244,7 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                     }
+                    info!("Built tensor: {}", tensor);
                     Some(tensor)
                 }
                 Err(e) => {
@@ -1227,6 +1229,7 @@ mod tests {
     );
 
     tensor_tests!(
+        sparse_dense_concat: "a_i { (0): 1, (2): 3 } b_i { 4, 5 } r_i { a_i, b_i }" expect "r" = "r_i (5s) { (0)(3s): a_i (3s) , (3)(2): b_i (2) }",
         exp_sparse_vec: "a_i { (0): 1, (2): 3 } r_i { exp(a_i) }" expect "r" = "r_i (3) { (0)(3): exp(a_i) (3)}",
         max_sparse_scalar: "a_i { (0): 1, (2): 3 } r_i { max(a_i, 2) }" expect "r" = "r_i (3) { (0)(3): max(a_i, 2) (3) }",
         sparse_mat_vec_mul: "A_ij { (1, 1): 2 } b_j { (1): 3 } r_i { A_ij * b_j }" expect "r" = "r_i (2s) { (0)(2s): A_ij * b_j (2s,2s) }",

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use log::debug;
+use log::{Level, debug, log_enabled};
 use ndarray::s;
 
 use crate::ast::{self, Ast, AstKind, StringSpan};
@@ -345,10 +345,13 @@ impl Env {
             ),
             _ => panic!("unrecognised ast node {:#?}", ast.kind),
         };
-        debug!(
-            "layout for ast {} with indices {:?} is {:?}",
-            ast, indices, layout
-        );
+        if log_enabled!(Level::Debug) {
+            let indices_str = layout.as_ref().map(|l| l.explicit_indices().iter().map(|i| i.into_iter().map(|x| x.to_string()).collect::<Vec<String>>().join(", ")).collect::<Vec<String>>());
+            debug!(
+                "layout for ast {} with indices {:?} is {} with indices {:?}",
+                ast, indices, layout.as_ref().unwrap_or(&Layout::new_scalar()), indices_str.unwrap_or_default()
+            );
+        }
         layout
     }
 

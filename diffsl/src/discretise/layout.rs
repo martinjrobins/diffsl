@@ -669,6 +669,7 @@ impl Layout {
         }
     }
 
+    /// return the non-zero indices of the layout as an iterator, corresponding to the order of the data entries
     pub fn indices(&self) -> impl Iterator<Item = Index> + '_ {
         match self.kind {
             LayoutKind::Dense => {
@@ -687,6 +688,11 @@ impl Layout {
                 (0..self.nnz()).map(f as Box<dyn Fn(usize) -> Index>)
             }
         }
+    }
+    
+    /// return the explicit slice of indices for sparse layouts
+    pub fn explicit_indices(&self) -> &[Index] {
+        &self.indices
     }
 
     /// data entry for sparse block expression layouts
@@ -786,6 +792,10 @@ impl Layout {
                 }
             }
         }
+
+        // sort the indices in standard ordering
+        indices.sort_by(Self::cmp_index);
+
         if self.rank() == shape.len() {
             Self {
                 indices,

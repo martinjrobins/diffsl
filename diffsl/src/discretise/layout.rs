@@ -689,7 +689,7 @@ impl Layout {
             }
         }
     }
-    
+
     /// return the explicit slice of indices for sparse layouts
     pub fn explicit_indices(&self) -> &[Index] {
         &self.indices

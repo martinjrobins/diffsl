@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use log::debug;
 use ndarray::s;
 
 use crate::ast::{self, Ast, AstKind, StringSpan};
@@ -324,7 +325,7 @@ impl Env {
     }
 
     pub fn get_layout(&mut self, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
-        match &ast.kind {
+        let layout = match &ast.kind {
             AstKind::Assignment(a) => self.get_layout(a.expr.as_ref(), indices),
             AstKind::Binop(binop) => {
                 self.get_layout_binary_op(binop.left.as_ref(), binop.right.as_ref(), binop, indices)
@@ -343,7 +344,12 @@ impl Env {
                 name.indice.as_ref().map(|i| i.as_ref()),
             ),
             _ => panic!("unrecognised ast node {:#?}", ast.kind),
-        }
+        };
+        debug!(
+            "layout for ast {} with indices {:?} is {:?}",
+            ast, indices, layout
+        );
+        layout
     }
 
     // returns a tuple of (expr_layout, elmt_layout) giving the layouts of the expression and the tensor element.)
@@ -374,7 +380,10 @@ impl Env {
             ));
             return None;
         }
-
+        debug!(
+            "calculating expr layout for tensor element with expr: {}",
+            elmt.expr
+        );
         let mut expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
         if force_dense {
             expr_layout.to_dense();

@@ -1372,6 +1372,14 @@ mod tests {
             (2, 1): 3,
             (2, 2): 1,
         }
+        A_ij {
+            (1, 0): 1, 
+            (1, 1): 2,
+        }
+        b2_i {
+            (0:2): 2,
+        }
+        r2_i { A_ij * b2_i }
         F_i {
             y,
         }
@@ -1398,6 +1406,19 @@ mod tests {
             );
             assert_eq!(layout.to_data_layout(), vec![0, 0, 1, 0, 1, 1, 2, 1, 2, 2]);
         }
+        let r2 = model
+            .constant_defns()
+            .iter()
+            .find(|t| t.name() == "r2")
+            .unwrap();
+        let layout = r2.layout();
+        assert_eq!(layout.rank(), 1);
+        assert_eq!(layout.shape()[0], 2);
+        assert_eq!(
+            layout.indices().map(|i| i.to_string()).collect::<Vec<_>>(),
+            vec!["[1]"]
+        );
+        assert_eq!(layout.to_data_layout(), vec![1]);
         let translation = Translation::new(
             r.elmts()[0].expr_layout(),
             r.elmts()[0].layout(),

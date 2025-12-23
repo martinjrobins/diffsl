@@ -899,8 +899,7 @@ mod tests {
     #[allow(dead_code)]
     fn test_constants<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>() {
         let full_text = "
-        in = [a]
-        a { 1 }
+        in { a = 1 }
         b { 2 }
         a2 { a * a }
         b2 { b * b }
@@ -918,7 +917,7 @@ mod tests {
         assert_relative_eq!(b[0], T::from_f64(2.0).unwrap());
         assert_relative_eq!(b2[0], T::from_f64(4.0).unwrap());
         // a and a2 should not be set (be 0)
-        let a = compiler.get_tensor_data("a", &data).unwrap();
+        let a = compiler.get_tensor_data("in", &data).unwrap();
         let a2 = compiler.get_tensor_data("a2", &data).unwrap();
         assert_relative_eq!(a[0], T::zero());
         assert_relative_eq!(a2[0], T::zero());
@@ -928,7 +927,7 @@ mod tests {
         let mut u0 = vec![T::zero()];
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         // now a and a2 should be set
-        let a = compiler.get_tensor_data("a", &data).unwrap();
+        let a = compiler.get_tensor_data("in", &data).unwrap();
         let a2 = compiler.get_tensor_data("a2", &data).unwrap();
         assert_relative_eq!(a[0], T::one());
         assert_relative_eq!(a2[0], T::one());
@@ -1615,10 +1614,7 @@ mod tests {
             #[test]
             fn $name() {
                 let full_text = format!("
-                    in = [p]
-                    p {{
-                        1,
-                    }}
+                    in {{ p = 1 }}
                     u_i {{
                         y = p,
                     }}
@@ -1752,8 +1748,7 @@ mod tests {
             #[test]
             fn $name() {
                 let full_text = format!("
-                    in = [p]
-                    p {{ 1 }}
+                    in {{ p = 1 }}
                     u_i {{
                         (0:50):   x = p,
                         (50:100): y = p,
@@ -1882,10 +1877,7 @@ mod tests {
         T: Scalar + RelativeEq,
     >() {
         let full_text = "
-            in = [p]
-            p {
-                1,
-            }
+            in { p = 1 }
             u_i {
                 y = p,
             }
@@ -1961,8 +1953,8 @@ mod tests {
     #[test]
     fn test_constant_and_input_deps() {
         let code = "
-            in = [k]
-            k { 1, } l { k } m { l }
+            in  { k = 1, }
+            l { k } m { l }
             u { 1 }
             F { u }
         ";
@@ -2016,10 +2008,7 @@ mod tests {
     #[test]
     fn test_additional_functions() {
         let full_text = "
-            in = [k]
-            k {
-                1,
-            }
+            in  { k = 1, }
             u_i {
                 y = 1,
                 x = 2,
@@ -2092,8 +2081,7 @@ mod tests {
     #[test]
     fn test_inputs() {
         let full_text = "
-            in = [c, a, b]
-            a { 1 } b { 2 } c { 3 }
+            in_i  { a = 1, (1:3): b = 1, c = 1, }
             u { y = 0 }
             F { y }
             out { y }
@@ -2101,6 +2089,7 @@ mod tests {
         let model = parse_ds_string(full_text).unwrap();
         #[allow(unused_variables)]
         let discrete_model = DiscreteModel::build("test_inputs", &model).unwrap();
+        assert_eq!(discrete_model.input().unwrap().layout().nnz(), 4);
 
         #[cfg(feature = "cranelift")]
         {
@@ -2110,13 +2099,11 @@ mod tests {
             )
             .unwrap();
             let mut data = compiler.get_new_data();
-            let inputs = vec![1.0, 2.0, 3.0];
+            let inputs = vec![1.0, 2.0, 3.0, 4.0];
             compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-            for (name, expected_value) in [("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
-                let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
-                assert_relative_eq!(inputs, expected_value.as_slice());
-            }
+            let inputs = compiler.get_tensor_data("in", data.as_slice()).unwrap();
+            assert_relative_eq!(inputs, vec![1.0, 2.0, 3.0, 4.0].as_slice());
         }
 
         #[cfg(feature = "llvm")]
@@ -2127,13 +2114,11 @@ mod tests {
             )
             .unwrap();
             let mut data = compiler.get_new_data();
-            let inputs = vec![1.0, 2.0, 3.0];
+            let inputs = vec![1.0, 2.0, 3.0, 4.0];
             compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-            for (name, expected_value) in [("a", vec![2.0]), ("b", vec![3.0]), ("c", vec![1.0])] {
-                let inputs = compiler.get_tensor_data(name, data.as_slice()).unwrap();
-                assert_relative_eq!(inputs, expected_value.as_slice());
-            }
+            let inputs = compiler.get_tensor_data("in", data.as_slice()).unwrap();
+            assert_relative_eq!(inputs, vec![1.0, 2.0, 3.0, 4.0].as_slice());
         }
     }
 
@@ -2216,8 +2201,7 @@ mod tests {
     #[allow(dead_code)]
     fn test_u0_sgrad<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>() {
         let full_text = "
-            in = [a]
-            a { 1.0 }
+            in  { a = 1, }
             u { 2 * a * a }
             F { -u }
             ";

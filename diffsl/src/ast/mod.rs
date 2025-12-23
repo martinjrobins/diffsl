@@ -6,22 +6,12 @@ use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct DsModel<'a> {
-    pub inputs: Vec<&'a str>,
+    pub has_inputs: bool,
     pub tensors: Vec<Box<Ast<'a>>>,
 }
 
 impl fmt::Display for DsModel<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.inputs.len() > 1 {
-            write!(f, "in = [")?;
-            for (i, name) in self.inputs.iter().enumerate() {
-                write!(f, "{name}")?;
-                if i < self.inputs.len() - 1 {
-                    write!(f, ", ")?;
-                }
-            }
-            write!(f, "]")?;
-        }
         for tensor in self.tensors.iter() {
             write!(f, "{tensor}")?;
         }
@@ -841,12 +831,7 @@ impl<'a> Ast<'a> {
             AstKind::TensorElmt(elmt) => {
                 elmt.expr.collect_deps(deps);
             }
-            AstKind::DsModel(m) => deps.extend(
-                m.inputs
-                    .iter()
-                    .map(|&i| (i, Vec::new()))
-                    .collect::<Vec<_>>(),
-            ),
+            AstKind::DsModel(_m) => (),
             AstKind::Number(_) => (),
             AstKind::Integer(_) => (),
             AstKind::Model(_) => (),

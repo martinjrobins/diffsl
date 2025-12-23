@@ -49,11 +49,10 @@ pub struct Env {
     current_span: Option<StringSpan>,
     errs: ValidationErrors,
     vars: HashMap<String, EnvVar>,
-    inputs: Vec<String>,
 }
 
 impl Env {
-    pub fn new(inputs: &[&str]) -> Self {
+    pub fn new() -> Self {
         let mut vars = HashMap::new();
         vars.insert(
             "t".to_string(),
@@ -70,7 +69,6 @@ impl Env {
             errs: ValidationErrors::default(),
             vars,
             current_span: None,
-            inputs: inputs.iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -101,9 +99,7 @@ impl Env {
     }
 
     pub fn is_tensor_input_dependent(&self, tensor: &Tensor) -> bool {
-        self.inputs
-            .iter()
-            .any(|input| self.is_tensor_dependent_on(tensor, input))
+        self.is_tensor_dependent_on(tensor, "in")
     }
 
     pub fn is_tensor_dstatedt_dependent(&self, tensor: &Tensor) -> bool {
@@ -121,7 +117,8 @@ impl Env {
                         "u" => self.vars[dep].is_state_dependent(),
                         "dudt" => self.vars[dep].is_dstatedt_dependent(),
                         // must be an input
-                        _ => self.vars[dep].is_input_dependent(),
+                        "in" => self.vars[dep].is_input_dependent(),
+                        _ => unreachable!(),
                     }
             })
         })
@@ -566,5 +563,11 @@ impl Env {
 
     pub fn errs_mut(&mut self) -> &mut ValidationErrors {
         &mut self.errs
+    }
+}
+
+impl Default for Env {
+    fn default() -> Self {
+        Self::new()
     }
 }

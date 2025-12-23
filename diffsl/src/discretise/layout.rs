@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{broadcast_shapes, shape::Shape, tensor::Index, TensorBlock};
+use super::{broadcast_shapes, shape::Shape, Index, TensorBlock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutKind {
@@ -18,13 +18,30 @@ pub enum LayoutKind {
     Sparse,
 }
 
-// a sparsity pattern for a multidimensional tensor. A tensor can be sparse, diagonal or dense, as given by the kind field.
-// A tensor can also have n_dense_axes axes which are dense, these are the last n_dense_axes axes of the tensor. So for example,
-// you could have a 2D sparse tensor with 1 dense axis, combining to give a tensor of rank 3 (i.e. the shape is length 3).
-// indices are kept in row major order, so the last index is the fastest changing index.
+#[derive(Debug, Clone, Copy)]
+pub enum TensorType {
+    State,
+    Input,
+    Other,
+}
+
+type NonZero = (Index, usize);
+
+/// a sparsity pattern for a multidimensional tensor. A tensor can be sparse, diagonal or dense, as given by the kind field.
+/// A tensor can also have n_dense_axes axes which are dense, these are the last n_dense_axes axes of the tensor. So for example,
+/// you could have a 2D sparse tensor with 1 dense axis, combining to give a tensor of rank 3 (i.e. the shape is length 3).
+/// indices are kept in row major order, so the last index is the fastest changing index.
+///
+/// For sparse layouts, the indices field contains the list of non-zero indices, excluding the dense axes.
+/// For diagonal layouts, the indices field is empty, as the non-zero indices are implicit.
+/// For dense layouts, the indices field is empty, as all indices are non-zero.
+///
+/// Each layout contains a vector of state and input dependencies, which are pairs of (index, state/input_j), indicating that the non-zero at index depends on state/input j.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
     indices: Vec<Index>,
+    state_deps: Vec<(Index, usize)>,
+    input_deps: Vec<(Index, usize)>,
     shape: Shape,
     kind: LayoutKind,
     n_dense_axes: usize,
@@ -58,6 +75,92 @@ impl fmt::Display for Layout {
 }
 
 impl Layout {
+    /// Merge two dependency lists, removing duplicates.
+    fn merge_deps(mut a: Vec<(Index, usize)>, mut b: Vec<(Index, usize)>) -> Vec<(Index, usize)> {
+        a.append(&mut b);
+        a.sort_unstable_by(|x, y| Self::cmp_index(&x.0, &y.0).then(x.1.cmp(&y.1)));
+        a.dedup();
+        a
+    }
+
+    /// Remap dependency pairs from a source layout into a destination layout using an index mapping function.
+    /// `map_fn` may return multiple destination indices for a single source index (e.g. broadcasting).
+    fn remap_dependencies<F>(
+        state_deps: &[NonZero],
+        input_deps: &[NonZero],
+        map_fn: F,
+    ) -> (Vec<NonZero>, Vec<NonZero>)
+    where
+        F: Fn(&Index) -> Vec<Index>,
+    {
+        let remap = |deps: &[(Index, usize)]| -> Vec<(Index, usize)> {
+            let mut remapped = Vec::new();
+            for (src_index, dep_idx) in deps.iter() {
+                for mapped_index in map_fn(src_index).into_iter() {
+                    remapped.push((mapped_index, *dep_idx));
+                }
+            }
+            remapped.sort_unstable_by(|x, y| Self::cmp_index(&x.0, &y.0).then(x.1.cmp(&y.1)));
+            remapped.dedup();
+            remapped
+        };
+
+        (remap(state_deps), remap(input_deps))
+    }
+
+    /// Convenience wrapper to remap this layout's dependencies onto a destination layout.
+    fn remap_self_dependencies<F>(&self, map_fn: F) -> (Vec<NonZero>, Vec<NonZero>)
+    where
+        F: Fn(&Index) -> Vec<Index>,
+    {
+        Self::remap_dependencies(&self.state_deps, &self.input_deps, map_fn)
+    }
+
+    /// Pad or truncate an index to the required length, filling missing entries with zeros.
+    fn fit_index_len(index: &Index, len: usize) -> Index {
+        if index.len() == len {
+            return index.clone();
+        }
+        let mut new_index = Index::zeros(len);
+        for i in 0..std::cmp::min(index.len(), len) {
+            new_index[i] = index[i];
+        }
+        new_index
+    }
+
+    /// Add state or input dependencies to this layout based on the tensor type.
+    pub fn add_tensor_dependencies(&mut self, tensor_type: TensorType) {
+        let indices = match tensor_type {
+            TensorType::State | TensorType::Input => {
+                let mut deps = Vec::new();
+                let n_states = *self.shape().get(0).unwrap_or(&1);
+                for i in 0..n_states {
+                    let index = Index::from(vec![i as i64]);
+                    deps.push((index, i));
+                }
+                deps
+            }
+            TensorType::Other => Vec::new(),
+        };
+        match tensor_type {
+            TensorType::State => {
+                assert!(
+                    self.state_deps.is_empty(),
+                    "state tensor layout should not already have state dependencies",
+                );
+                self.state_deps = indices;
+            }
+            TensorType::Input => {
+                assert! {
+                    self.input_deps.is_empty(),
+                    "input tensor layout should not already have input dependencies",
+                };
+                self.input_deps = indices;
+            }
+            TensorType::Other => {}
+        }
+    }
+
     // row major order
     pub fn unravel_index(index: usize, shape: &Shape) -> Index {
         let mut idx = index;
@@ -99,37 +202,17 @@ impl Layout {
             return Err(anyhow!("cannot contract last axis of a scalar"));
         }
         let new_shape = self.shape.slice(s![0..rank - 1]).to_owned();
-
-        // if layout is dense just remove the last axis
-        if self.is_dense() {
-            return Ok(Layout::dense(new_shape));
-        }
-
-        // if the layout is diagonal and there are no dense axes, then remove the last axis from the shape
-        // and the second last axis becomes dense. If we have rank <= 2 then the resultant layout is dense
-        if self.is_diagonal() {
+        let (new_indices, new_kind, new_n_dense_axes) = if self.is_dense() {
+            (Vec::new(), LayoutKind::Dense, new_shape.len())
+        } else if self.is_diagonal() {
             if self.n_dense_axes == 0 && rank > 2 {
-                return Ok(Layout {
-                    indices: Vec::new(),
-                    shape: new_shape,
-                    kind: LayoutKind::Diagonal,
-                    n_dense_axes: self.n_dense_axes,
-                });
+                (Vec::new(), LayoutKind::Diagonal, self.n_dense_axes)
             } else if self.n_dense_axes == 0 && rank <= 2 {
-                return Ok(Layout::dense(new_shape));
-            } else if self.n_dense_axes > 0 {
-                return Ok(Layout {
-                    indices: Vec::new(),
-                    shape: new_shape,
-                    kind: LayoutKind::Diagonal,
-                    n_dense_axes: self.n_dense_axes - 1,
-                });
+                (Vec::new(), LayoutKind::Dense, new_shape.len())
+            } else {
+                (Vec::new(), LayoutKind::Diagonal, self.n_dense_axes - 1)
             }
-        }
-
-        // must be sparse
-        // if there are no dense axes, then remove the last axis from each index
-        if self.n_dense_axes == 0 {
+        } else if self.n_dense_axes == 0 {
             let mut new_indices = self.indices.clone();
             (0..self.indices.len()).for_each(|i| {
                 new_indices[i] = new_indices[i].slice(s![0..rank - 1]).to_owned();
@@ -142,29 +225,38 @@ impl Layout {
             // check if now dense
             let new_nnz = new_shape.iter().product();
             if new_indices.len() == new_nnz {
-                Ok(Layout {
-                    indices: new_indices,
-                    shape: new_shape,
-                    kind: LayoutKind::Dense,
-                    n_dense_axes: self.n_dense_axes,
-                })
+                (new_indices, LayoutKind::Dense, self.n_dense_axes)
             } else {
-                Ok(Layout {
-                    indices: new_indices,
-                    shape: new_shape,
-                    kind: LayoutKind::Sparse,
-                    n_dense_axes: self.n_dense_axes,
-                })
+                (new_indices, LayoutKind::Sparse, self.n_dense_axes)
             }
         } else {
             // there are dense axes, so just remove it
-            Ok(Layout {
-                indices: Vec::new(),
-                shape: new_shape,
-                kind: LayoutKind::Sparse,
-                n_dense_axes: self.n_dense_axes - 1,
-            })
-        }
+            (Vec::new(), LayoutKind::Sparse, self.n_dense_axes - 1)
+        };
+
+        let mut new_layout = Layout {
+            indices: new_indices,
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
+            shape: new_shape,
+            kind: new_kind,
+            n_dense_axes: new_n_dense_axes,
+        };
+
+        let (state_deps, input_deps) = self.remap_self_dependencies(|idx| {
+            // If the stored index has one more dimension than the new layout rank, drop the last axis.
+            let mut truncated = if idx.len() > new_layout.rank() {
+                idx.slice(s![0..idx.len() - 1]).to_owned()
+            } else {
+                idx.clone()
+            };
+            truncated = Self::fit_index_len(&truncated, new_layout.rank());
+            vec![truncated]
+        });
+        new_layout.state_deps = state_deps;
+        new_layout.input_deps = input_deps;
+
+        Ok(new_layout)
     }
 
     // permute the axes of the layout and return a new layout
@@ -221,17 +313,31 @@ impl Layout {
             self.n_dense_axes
         };
 
-        Ok(Layout {
+        let mut new_layout = Layout {
             indices: new_indices,
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
             shape: new_shape,
             kind: self.kind.clone(),
             n_dense_axes,
-        })
+        };
+
+        let (state_deps, input_deps) = self.remap_self_dependencies(|idx| {
+            let mut new_idx = Index::zeros(new_layout.rank());
+            for (pi, &p) in permutation.iter().enumerate() {
+                if pi < idx.len() {
+                    new_idx[p] = idx[pi];
+                }
+            }
+            vec![new_idx]
+        });
+        new_layout.state_deps = state_deps;
+        new_layout.input_deps = input_deps;
+
+        Ok(new_layout)
     }
 
     // create a new layout by broadcasting a list of layouts
-    // typically different types of layouts cannot be broadcast together, but for multiplies we can broadcast diagonal and dense layouts
-    // and sparse and dense layouts
     pub fn broadcast(mut layouts: Vec<Layout>, op: Option<char>) -> Result<Layout> {
         // the shapes of the layouts must be broadcastable
         let shapes = layouts.iter().map(|x| &x.shape).collect::<Vec<_>>();
@@ -251,7 +357,22 @@ impl Layout {
         let is_call = op.is_none();
 
         if all_dense || is_call {
-            return Ok(Layout::dense(shape));
+            let mut broadcasted: Vec<Layout> = layouts
+                .iter()
+                .map(|l| l.broadcast_to_shape(&shape))
+                .collect();
+            let mut ret = Layout::dense(shape);
+            let mut state_deps = Vec::new();
+            let mut input_deps = Vec::new();
+            for layout in broadcasted.drain(..) {
+                let (s, i) = layout
+                    .remap_self_dependencies(|idx| vec![Layout::fit_index_len(idx, ret.rank())]);
+                state_deps = Layout::merge_deps(state_deps, s);
+                input_deps = Layout::merge_deps(input_deps, i);
+            }
+            ret.state_deps = state_deps;
+            ret.input_deps = input_deps;
+            return Ok(ret);
         }
 
         let any_sparse = layouts.iter().any(|x| x.is_sparse());
@@ -282,21 +403,57 @@ impl Layout {
             let n_dense_axes = n_dense_axes.unwrap();
 
             if all_diagonal && all_same_dense_axes {
-                return Ok(Layout {
+                let mut ret = Layout {
                     indices: Vec::new(),
+                    state_deps: Vec::new(),
+                    input_deps: Vec::new(),
                     shape,
                     kind: LayoutKind::Diagonal,
                     n_dense_axes,
-                });
+                };
+                let broadcasted: Vec<Layout> = layouts
+                    .iter()
+                    .map(|l| l.broadcast_to_shape(&ret.shape))
+                    .collect();
+                let mut state_deps = Vec::new();
+                let mut input_deps = Vec::new();
+                for layout in broadcasted.iter() {
+                    let (s, i) = layout.remap_self_dependencies(|idx| {
+                        vec![Layout::fit_index_len(idx, ret.rank())]
+                    });
+                    state_deps = Layout::merge_deps(state_deps, s);
+                    input_deps = Layout::merge_deps(input_deps, i);
+                }
+                ret.state_deps = state_deps;
+                ret.input_deps = input_deps;
+                return Ok(ret);
             }
 
             if is_multiply && all_same_dense_axes && !any_sparse {
-                return Ok(Layout {
+                let mut ret = Layout {
                     indices: Vec::new(),
+                    state_deps: Vec::new(),
+                    input_deps: Vec::new(),
                     shape,
                     kind: LayoutKind::Diagonal,
                     n_dense_axes,
-                });
+                };
+                let broadcasted: Vec<Layout> = layouts
+                    .iter()
+                    .map(|l| l.broadcast_to_shape(&ret.shape))
+                    .collect();
+                let mut state_deps = Vec::new();
+                let mut input_deps = Vec::new();
+                for layout in broadcasted.iter() {
+                    let (s, i) = layout.remap_self_dependencies(|idx| {
+                        vec![Layout::fit_index_len(idx, ret.rank())]
+                    });
+                    state_deps = Layout::merge_deps(state_deps, s);
+                    input_deps = Layout::merge_deps(input_deps, i);
+                }
+                ret.state_deps = state_deps;
+                ret.input_deps = input_deps;
+                return Ok(ret);
             }
 
             // convert diagonal layouts to sparse layouts
@@ -311,12 +468,18 @@ impl Layout {
         // and the indicies of all sparse layouts must be identical and have the same number of dense axis.
         // must be sparse and maybe dense
         //
-        let mut ret = layouts.pop().unwrap().broadcast_to_shape(&shape);
-        for i in 0..layouts.len() {
-            let layout = layouts.pop().unwrap().broadcast_to_shape(&shape);
+        let mut broadcasted_layouts: Vec<Layout> = layouts
+            .into_iter()
+            .map(|l| l.broadcast_to_shape(&shape))
+            .collect();
+        let mut ret = broadcasted_layouts.pop().unwrap();
+        let mut dep_sources = vec![ret.clone()];
+        let mut first = true;
+        for layout in broadcasted_layouts.drain(..).rev() {
+            dep_sources.push(layout.clone());
 
             // if a / b, with b is sparse and a being a dense or different sparse layout, then we have a divide by zero issue
-            if i == 0 && is_divide && ret.is_sparse() && (layout.is_dense() || !ret.eq(&layout)) {
+            if first && is_divide && ret.is_sparse() && (layout.is_dense() || !ret.eq(&layout)) {
                 return Err(anyhow!("divide-by-zero detected, cannot only divide by a sparse layout if the numerator has the same sparsity pattern"));
             }
             if is_multiply_or_divide {
@@ -324,27 +487,67 @@ impl Layout {
             } else {
                 ret.union_inplace(layout);
             }
+            first = false;
         }
 
         // if now dense then convert to dense layout
         if ret.is_sparse_yet_dense() {
-            return Ok(Layout {
+            let mut new_layout = Layout {
                 indices: Vec::new(),
+                state_deps: Vec::new(),
+                input_deps: Vec::new(),
                 n_dense_axes: ret.shape.len(),
                 shape,
                 kind: LayoutKind::Dense,
-            });
+            };
+            let mut state_deps = Vec::new();
+            let mut input_deps = Vec::new();
+            for layout in dep_sources.iter() {
+                let (s, i) = layout.remap_self_dependencies(|idx| {
+                    vec![Layout::fit_index_len(idx, new_layout.rank())]
+                });
+                state_deps = Layout::merge_deps(state_deps, s);
+                input_deps = Layout::merge_deps(input_deps, i);
+            }
+            new_layout.state_deps = state_deps;
+            new_layout.input_deps = input_deps;
+            return Ok(new_layout);
         }
 
         // if now diagonal then convert to diagonal layout
         if ret.is_sparse_yet_diagonal() {
-            return Ok(Layout {
+            let mut new_layout = Layout {
                 indices: Vec::new(),
+                state_deps: Vec::new(),
+                input_deps: Vec::new(),
                 n_dense_axes: ret.n_dense_axes,
                 shape,
                 kind: LayoutKind::Diagonal,
-            });
+            };
+            let mut state_deps = Vec::new();
+            let mut input_deps = Vec::new();
+            for layout in dep_sources.iter() {
+                let (s, i) = layout.remap_self_dependencies(|idx| {
+                    vec![Layout::fit_index_len(idx, new_layout.rank())]
+                });
+                state_deps = Layout::merge_deps(state_deps, s);
+                input_deps = Layout::merge_deps(input_deps, i);
+            }
+            new_layout.state_deps = state_deps;
+            new_layout.input_deps = input_deps;
+            return Ok(new_layout);
         }
+        // propagate dependencies for the general sparse case
+        let mut state_deps = Vec::new();
+        let mut input_deps = Vec::new();
+        for layout in dep_sources.iter() {
+            let (s, i) =
+                layout.remap_self_dependencies(|idx| vec![Layout::fit_index_len(idx, ret.rank())]);
+            state_deps = Layout::merge_deps(state_deps, s);
+            input_deps = Layout::merge_deps(input_deps, i);
+        }
+        ret.state_deps = state_deps;
+        ret.input_deps = input_deps;
         Ok(ret)
     }
     pub fn is_dense(&self) -> bool {
@@ -381,9 +584,19 @@ impl Layout {
         if self.is_dense() {
             return;
         }
-        self.indices.clear();
-        self.kind = LayoutKind::Dense;
-        self.n_dense_axes = self.shape.len();
+        let mut new_layout = Layout {
+            indices: Vec::new(),
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
+            shape: self.shape.clone(),
+            kind: LayoutKind::Dense,
+            n_dense_axes: self.shape.len(),
+        };
+        let (state_deps, input_deps) =
+            self.remap_self_dependencies(|idx| vec![Self::fit_index_len(idx, new_layout.rank())]);
+        new_layout.state_deps = state_deps;
+        new_layout.input_deps = input_deps;
+        *self = new_layout;
     }
 
     pub fn to_sparse(&mut self) {
@@ -407,13 +620,26 @@ impl Layout {
                 unreachable!("already sparse");
             }
         }
-        self.indices = new_indices;
-        self.kind = LayoutKind::Sparse;
+        let mut new_layout = Layout {
+            indices: new_indices,
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
+            shape: self.shape.clone(),
+            kind: LayoutKind::Sparse,
+            n_dense_axes: self.n_dense_axes,
+        };
+        let (state_deps, input_deps) =
+            self.remap_self_dependencies(|idx| vec![Self::fit_index_len(idx, new_layout.rank())]);
+        new_layout.state_deps = state_deps;
+        new_layout.input_deps = input_deps;
+        *self = new_layout;
     }
 
     pub fn new_empty(rank: usize) -> Self {
         Layout {
             indices: vec![],
+            state_deps: vec![],
+            input_deps: vec![],
             shape: Shape::zeros(rank),
             kind: LayoutKind::Dense,
             n_dense_axes: rank,
@@ -423,6 +649,8 @@ impl Layout {
     pub fn new_scalar() -> Self {
         Layout {
             indices: vec![],
+            state_deps: vec![],
+            input_deps: vec![],
             shape: Shape::zeros(0),
             kind: LayoutKind::Dense,
             n_dense_axes: 0,
@@ -433,6 +661,8 @@ impl Layout {
         let n_dense_axes = shape.len();
         Layout {
             indices: vec![],
+            state_deps: vec![],
+            input_deps: vec![],
             shape,
             kind: LayoutKind::Dense,
             n_dense_axes,
@@ -442,6 +672,8 @@ impl Layout {
     pub fn new_diagonal(shape: Shape) -> Self {
         Layout {
             indices: vec![],
+            state_deps: vec![],
+            input_deps: vec![],
             shape,
             kind: LayoutKind::Diagonal,
             n_dense_axes: 0,
@@ -499,13 +731,18 @@ impl Layout {
             }
         }
 
-        // if all layouts are dense and contiguous then calculate the new shape and return
+        let mut result_layout: Layout;
+
+        // if all layouts are dense and contiguous then calculate the new shape
         if layouts.iter().all(|x| x.is_dense()) && is_contiguous_on_first_axis {
             // check that this shape can be broadcast into max_shape
             for layout in layouts.iter() {
                 for i in 1..std::cmp::min(layout.rank(), rank) {
                     if layout.shape[i] != 1 && layout.shape[i] != max_shape[i] {
-                        return Err(anyhow!("cannot concatenate layouts that cannot be broadcast into each other (got shapes {:?})", layouts.iter().map(|x| x.shape()).collect::<Vec<_>>()));
+                        return Err(anyhow!(
+                            "cannot concatenate layouts that cannot be broadcast into each other (got shapes {:?})",
+                            layouts.iter().map(|x| x.shape()).collect::<Vec<_>>()
+                        ));
                     }
                 }
             }
@@ -516,102 +753,124 @@ impl Layout {
                     .map(|x| if x.rank() > 0 { x.shape[0] } else { 1 })
                     .sum();
             }
-            return Ok(Layout::dense(new_shape));
-        }
-
-        // must be at least one diagonal or sparse layout here, get its n_dense_axes
-        let mut n_dense_axes = 0;
-        for layout in layouts.iter() {
-            if layout.is_diagonal() || layout.is_sparse() {
-                n_dense_axes = layout.n_dense_axes;
-                break;
-            }
-        }
-
-        // check that the number of final dense axes is the same for all sparse or diagonal layouts
-        if layouts
-            .iter()
-            .any(|x| !x.is_dense() && x.n_dense_axes != n_dense_axes)
-        {
-            return Err(anyhow!(
-                "cannot concatenate layouts with different numbers of final dense axes"
-            ));
-        }
-
-        // check that the shapes of the final dense axes are the same for all layouts
-        if layouts.iter().any(|x| {
-            x.shape.slice(s![x.rank() - n_dense_axes..])
-                != layouts[0].shape.slice(s![x.rank() - n_dense_axes..])
-        }) {
-            return Err(anyhow!(
-                "cannot concatenate layouts with different shapes for the final dense axes"
-            ));
-        }
-
-        // check that the rank is the same for all layouts
-        if layouts.iter().any(|x| x.rank() != layouts[0].rank()) {
-            return Err(anyhow!("cannot concatenate layouts with different ranks"));
-        }
-
-        // if all layouts are diagonal (or scalar), and on the diagonal then
-        if layouts
-            .iter()
-            .all(|x| x.is_diagonal() || x.shape().iter().all(|x| *x == 1))
-            && is_contiguous_on_diagonal
-        {
-            // add up the shapes for the non-final dense axes
-            let mut new_shape = max_shape.clone();
-            for i in 0..rank {
-                new_shape[i] = layouts.iter().map(|x| x.shape[i]).sum();
-            }
-            return Ok(Self {
-                shape: new_shape,
-                indices: Vec::new(),
-                kind: LayoutKind::Diagonal,
-                n_dense_axes,
-            });
-        }
-
-        // find the maxiumum extent of the individual layouts
-        let mut max_extent = Shape::zeros(rank);
-        for (start, layout) in std::iter::zip(starts.iter(), layouts.iter()) {
-            for i in 0..layout.rank() {
-                max_extent[i] = std::cmp::max(
-                    max_extent[i],
-                    usize::try_from(start[i]).unwrap() + layout.shape[i],
-                );
-            }
-        }
-
-        // any other combination we convert all to sparse and concatenate
-        let mut new_layout = Layout {
-            indices: Vec::new(),
-            shape: max_extent,
-            kind: LayoutKind::Sparse,
-            n_dense_axes,
-        };
-        for (layout, start) in std::iter::zip(layouts, starts) {
-            // convert to sparse
-            new_layout.indices.extend(layout.indices().map(|mut x| {
-                for (i, xi) in x.iter_mut().enumerate() {
-                    *xi += start[i];
+            result_layout = Layout::dense(new_shape);
+        } else {
+            // must be at least one diagonal or sparse layout here, get its n_dense_axes
+            let mut n_dense_axes = 0;
+            for layout in layouts.iter() {
+                if layout.is_diagonal() || layout.is_sparse() {
+                    n_dense_axes = layout.n_dense_axes;
+                    break;
                 }
-                x
-            }));
+            }
+
+            // check that the number of final dense axes is the same for all sparse or diagonal layouts
+            if layouts
+                .iter()
+                .any(|x| !x.is_dense() && x.n_dense_axes != n_dense_axes)
+            {
+                return Err(anyhow!(
+                    "cannot concatenate layouts with different numbers of final dense axes"
+                ));
+            }
+
+            // check that the shapes of the final dense axes are the same for all layouts
+            if layouts.iter().any(|x| {
+                x.shape.slice(s![x.rank() - n_dense_axes..])
+                    != layouts[0].shape.slice(s![x.rank() - n_dense_axes..])
+            }) {
+                return Err(anyhow!(
+                    "cannot concatenate layouts with different shapes for the final dense axes"
+                ));
+            }
+
+            // check that the rank is the same for all layouts
+            if layouts.iter().any(|x| x.rank() != layouts[0].rank()) {
+                return Err(anyhow!("cannot concatenate layouts with different ranks"));
+            }
+
+            // if all layouts are diagonal (or scalar), and on the diagonal then
+            if layouts
+                .iter()
+                .all(|x| x.is_diagonal() || x.shape().iter().all(|x| *x == 1))
+                && is_contiguous_on_diagonal
+            {
+                // add up the shapes for the non-final dense axes
+                let mut new_shape = max_shape.clone();
+                for i in 0..rank {
+                    new_shape[i] = layouts.iter().map(|x| x.shape[i]).sum();
+                }
+                result_layout = Self {
+                    shape: new_shape,
+                    indices: Vec::new(),
+                    state_deps: Vec::new(),
+                    input_deps: Vec::new(),
+                    kind: LayoutKind::Diagonal,
+                    n_dense_axes,
+                };
+            } else {
+                // find the maxiumum extent of the individual layouts
+                let mut max_extent = Shape::zeros(rank);
+                for (start, layout) in std::iter::zip(starts.iter(), layouts.iter()) {
+                    for i in 0..layout.rank() {
+                        max_extent[i] = std::cmp::max(
+                            max_extent[i],
+                            usize::try_from(start[i]).unwrap() + layout.shape[i],
+                        );
+                    }
+                }
+
+                // any other combination we convert all to sparse and concatenate
+                let mut new_layout = Layout {
+                    indices: Vec::new(),
+                    state_deps: Vec::new(),
+                    input_deps: Vec::new(),
+                    shape: max_extent,
+                    kind: LayoutKind::Sparse,
+                    n_dense_axes,
+                };
+                for (layout, start) in std::iter::zip(layouts.iter(), starts.iter()) {
+                    // convert to sparse
+                    new_layout.indices.extend(layout.indices().map(|mut x| {
+                        for (i, xi) in x.iter_mut().enumerate() {
+                            *xi += start[i];
+                        }
+                        x
+                    }));
+                }
+
+                // sort the indices in row major order and remove duplicates
+                new_layout.indices.sort_by(Self::cmp_index);
+                new_layout.indices.dedup();
+
+                // check if now dense
+                if new_layout.indices.len() == new_layout.shape.product() {
+                    new_layout.kind = LayoutKind::Dense;
+                    new_layout.indices.clear();
+                    new_layout.n_dense_axes = rank;
+                }
+
+                result_layout = new_layout;
+            }
         }
 
-        // sort the indices in row major order and remove duplicates
-        new_layout.indices.sort_by(Self::cmp_index);
-        new_layout.indices.dedup();
-
-        // check if now dense
-        if new_layout.indices.len() == new_layout.shape.product() {
-            new_layout.kind = LayoutKind::Dense;
-            new_layout.indices.clear();
-            new_layout.n_dense_axes = rank;
+        // collect dependencies from each source layout and offset indices by the block start
+        let mut state_deps = Vec::new();
+        let mut input_deps = Vec::new();
+        for (layout, start) in std::iter::zip(layouts.iter(), starts.iter()) {
+            let (s, i) = layout.remap_self_dependencies(|idx| {
+                let mut new_idx = Layout::fit_index_len(idx, rank);
+                for j in 0..std::cmp::min(new_idx.len(), start.len()) {
+                    new_idx[j] += start[j];
+                }
+                vec![new_idx]
+            });
+            state_deps = Layout::merge_deps(state_deps, s);
+            input_deps = Layout::merge_deps(input_deps, i);
         }
-
-        Ok(new_layout)
+        result_layout.state_deps = state_deps;
+        result_layout.input_deps = input_deps;
+        Ok(result_layout)
     }
 
     pub fn rank(&self) -> usize {
@@ -631,6 +890,8 @@ impl Layout {
         let n_dense_axes = shape.len();
         Self {
             indices: Vec::new(),
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
             shape,
             kind: LayoutKind::Dense,
             n_dense_axes,
@@ -639,6 +900,8 @@ impl Layout {
     pub fn diagonal(shape: Shape) -> Self {
         Self {
             indices: Vec::new(),
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
             shape,
             kind: LayoutKind::Diagonal,
             n_dense_axes: 0,
@@ -647,6 +910,8 @@ impl Layout {
     pub fn sparse(indices: Vec<Index>, shape: Shape) -> Self {
         Self {
             indices,
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
             shape,
             kind: LayoutKind::Sparse,
             n_dense_axes: 0,
@@ -774,31 +1039,36 @@ impl Layout {
                 );
             }
         }
+        let mut indices = self.indices.clone();
+        let broadcast_axes: Vec<usize> = (0..self.rank().saturating_sub(self.n_dense_axes))
+            .filter(|&i| self.shape[i] == 1 && self.shape[i] != shape[i])
+            .collect();
 
         // if sparse, we need to adjust the indices due to broadcasting
-        let mut indices = self.indices.clone();
         if self.is_sparse() {
-            for i in 0..self.rank() - self.n_dense_axes {
-                if self.shape[i] != shape[i] && self.shape[i] == 1 {
-                    let mut new_broadcast_indices = Vec::new();
-                    for index in indices.iter() {
-                        for j in 0..shape[i] {
-                            let mut new_bi = index.clone();
-                            new_bi[i] = i64::try_from(j).unwrap();
-                            new_broadcast_indices.push(new_bi);
+            for &axis in broadcast_axes.iter() {
+                let mut new_broadcast_indices = Vec::new();
+                for index in indices.iter() {
+                    for j in 0..shape[axis] {
+                        let mut new_bi = index.clone();
+                        if axis < new_bi.len() {
+                            new_bi[axis] = i64::try_from(j).unwrap();
                         }
+                        new_broadcast_indices.push(new_bi);
                     }
-                    indices = new_broadcast_indices;
                 }
+                indices = new_broadcast_indices;
             }
         }
 
         // sort the indices in standard ordering
         indices.sort_by(Self::cmp_index);
 
-        if self.rank() == shape.len() {
+        let mut new_layout = if self.rank() == shape.len() {
             Self {
                 indices,
+                state_deps: Vec::new(),
+                input_deps: Vec::new(),
                 shape: shape.clone(),
                 kind: self.kind.clone(),
                 n_dense_axes: self.n_dense_axes,
@@ -808,6 +1078,8 @@ impl Layout {
             let n_dense_axes = self.n_dense_axes + new_ranks;
             Self {
                 indices,
+                state_deps: Vec::new(),
+                input_deps: Vec::new(),
                 shape: shape.clone(),
                 kind: self.kind.clone(),
                 n_dense_axes,
@@ -817,6 +1089,8 @@ impl Layout {
             let n_dense_axes = self.n_dense_axes - (self.rank() - shape.len());
             Self {
                 indices,
+                state_deps: Vec::new(),
+                input_deps: Vec::new(),
                 shape: shape.clone(),
                 kind: self.kind.clone(),
                 n_dense_axes,
@@ -829,7 +1103,46 @@ impl Layout {
                 shape,
                 self.n_dense_axes
             )
-        }
+        };
+
+        let new_rank = new_layout.rank();
+        let (state_deps, input_deps) = self.remap_self_dependencies(|idx| {
+            let mut base = Index::zeros(new_rank);
+            for i in 0..std::cmp::min(idx.len(), base.len()) {
+                // when broadcasting axis size 1, default to zero
+                base[i] = if self.shape[i] == 1 { 0 } else { idx[i] };
+            }
+            let mut seeds = vec![base];
+            for &axis in broadcast_axes.iter() {
+                // only broadcast if the axis still exists in the new rank
+                if axis >= new_rank {
+                    continue;
+                }
+                let mut next = Vec::new();
+                for seed in seeds.iter() {
+                    for j in 0..shape[axis] {
+                        let mut new_seed = seed.clone();
+                        new_seed[axis] = i64::try_from(j).unwrap();
+                        next.push(new_seed);
+                    }
+                }
+                seeds = next;
+            }
+            // if rank has increased, pad the remaining axes with zeros
+            for seed in seeds.iter_mut() {
+                if seed.len() < new_rank {
+                    *seed = Layout::fit_index_len(seed, new_rank);
+                }
+            }
+            if seeds.is_empty() {
+                vec![Index::zeros(new_rank)]
+            } else {
+                seeds
+            }
+        });
+        new_layout.state_deps = state_deps;
+        new_layout.input_deps = input_deps;
+        new_layout
     }
 
     // returns the index in the nnz array corresponding to the given index
@@ -895,13 +1208,13 @@ impl Layout {
         }
         let rank = self.rank();
         let removed_axes = self.n_dense_axes - new_n_dense_axes;
+        let dense_shape = self.shape.slice(s![rank - removed_axes..]).to_owned();
+        let n_dense: usize = dense_shape.iter().product();
         let mut new_indices = Vec::new();
         for index in self.indices.iter() {
-            let dense_shape = self.shape.slice(s![rank - removed_axes..]).to_owned();
-            let n_dense: usize = dense_shape.iter().product();
             for i in 0..n_dense {
                 let mut new_index = Index::zeros(rank);
-                for j in 0..rank - removed_axes {
+                for j in 0..std::cmp::min(index.len(), rank - removed_axes) {
                     new_index[j] = index[j];
                 }
                 let dense_index = Self::unravel_index(i, &dense_shape);
@@ -911,8 +1224,33 @@ impl Layout {
                 new_indices.push(new_index);
             }
         }
-        self.indices = new_indices;
-        self.n_dense_axes = 0;
+
+        let mut new_layout = Layout {
+            indices: new_indices,
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
+            shape: self.shape.clone(),
+            kind: self.kind.clone(),
+            n_dense_axes: new_n_dense_axes,
+        };
+        let (state_deps, input_deps) = self.remap_self_dependencies(|idx| {
+            let mut mapped = Vec::new();
+            for i in 0..n_dense {
+                let dense_index = Layout::unravel_index(i, &dense_shape);
+                let mut new_index = Index::zeros(rank);
+                for j in 0..std::cmp::min(idx.len(), rank - removed_axes) {
+                    new_index[j] = idx[j];
+                }
+                for j in 0..removed_axes {
+                    new_index[rank - removed_axes + j] = dense_index[j];
+                }
+                mapped.push(new_index);
+            }
+            mapped
+        });
+        new_layout.state_deps = state_deps;
+        new_layout.input_deps = input_deps;
+        *self = new_layout;
     }
 
     /// both self and other should be either dense or sparse layouts with the same shape
@@ -935,7 +1273,14 @@ impl Layout {
 
         // union with a dense layout results in a dense layout
         if self.is_dense() || other.is_dense() {
-            *self = Layout::dense(self.shape.clone());
+            let mut ret = Layout::dense(self.shape.clone());
+            let (s_self, i_self) =
+                self.remap_self_dependencies(|idx| vec![Layout::fit_index_len(idx, ret.rank())]);
+            let (s_other, i_other) =
+                other.remap_self_dependencies(|idx| vec![Layout::fit_index_len(idx, ret.rank())]);
+            ret.state_deps = Layout::merge_deps(s_self, s_other);
+            ret.input_deps = Layout::merge_deps(i_self, i_other);
+            *self = ret;
             return;
         }
 
@@ -947,6 +1292,31 @@ impl Layout {
         self.indices.extend(other.indices.iter().cloned());
         self.indices.sort_by(Self::cmp_index);
         self.indices.dedup();
+
+        // compute resulting dependencies
+        let mut ret = Layout {
+            indices: self.indices.clone(),
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
+            shape: self.shape.clone(),
+            kind: LayoutKind::Sparse,
+            n_dense_axes: self.n_dense_axes,
+        };
+        // check if now dense
+        if ret.indices.len() == ret.shape.product() {
+            ret.kind = LayoutKind::Dense;
+            ret.indices.clear();
+            ret.n_dense_axes = ret.shape.len();
+        }
+
+        let (s_self, i_self) =
+            self.remap_self_dependencies(|idx| vec![Layout::fit_index_len(idx, ret.rank())]);
+        let (s_other, i_other) =
+            other.remap_self_dependencies(|idx| vec![Layout::fit_index_len(idx, ret.rank())]);
+        ret.state_deps = Layout::merge_deps(s_self, s_other);
+        ret.input_deps = Layout::merge_deps(i_self, i_other);
+
+        *self = ret;
     }
 
     /// self or other is either a sparse or dense layout with the same shape and n_dense_axes
@@ -969,7 +1339,8 @@ impl Layout {
             return;
         }
         if self.is_dense() {
-            std::mem::swap(self, &mut other);
+            // result is simply the other layout
+            *self = other;
             return;
         }
         if self.n_dense_axes > other.n_dense_axes {
@@ -996,6 +1367,30 @@ impl Layout {
             }
         }
         self.indices = new_indices;
+
+        let mut ret = Layout {
+            indices: self.indices.clone(),
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
+            shape: self.shape.clone(),
+            kind: LayoutKind::Sparse,
+            n_dense_axes: self.n_dense_axes,
+        };
+
+        if ret.indices.len() == ret.shape.product() {
+            ret.kind = LayoutKind::Dense;
+            ret.indices.clear();
+            ret.n_dense_axes = ret.shape.len();
+        }
+
+        let (s_self, i_self) =
+            self.remap_self_dependencies(|idx| vec![Layout::fit_index_len(idx, ret.rank())]);
+        let (s_other, i_other) =
+            other.remap_self_dependencies(|idx| vec![Layout::fit_index_len(idx, ret.rank())]);
+        ret.state_deps = Layout::merge_deps(s_self, s_other);
+        ret.input_deps = Layout::merge_deps(i_self, i_other);
+
+        *self = ret;
     }
 }
 
@@ -1127,5 +1522,100 @@ mod tests {
         layout1.intersect_inplace(layout2);
         assert_eq!(layout1.indices.len(), 1);
         assert_eq!(layout1.indices[0], Index::from(vec![1, 0]));
+    }
+
+    #[test]
+    fn test_dependencies_roundtrip_dense_sparse() {
+        let mut layout = Layout::sparse(
+            vec![Index::from(vec![0]), Index::from(vec![1])],
+            Shape::from(vec![2]),
+        );
+        layout.state_deps = vec![(Index::from(vec![1]), 7)];
+        layout.input_deps = vec![(Index::from(vec![0]), 3)];
+
+        layout.to_dense();
+        assert!(layout.is_dense());
+        assert_eq!(layout.state_deps, vec![(Index::from(vec![1]), 7)]);
+        assert_eq!(layout.input_deps, vec![(Index::from(vec![0]), 3)]);
+
+        layout.to_sparse();
+        assert!(layout.is_sparse());
+        assert_eq!(layout.state_deps, vec![(Index::from(vec![1]), 7)]);
+        assert_eq!(layout.input_deps, vec![(Index::from(vec![0]), 3)]);
+    }
+
+    #[test]
+    fn test_broadcast_to_shape_replicates_dependencies() {
+        let mut layout = Layout::sparse(vec![Index::from(vec![0, 0])], Shape::from(vec![1, 2]));
+        layout.state_deps = vec![(Index::from(vec![0, 0]), 42)];
+
+        let broadcasted = layout.broadcast_to_shape(&Shape::from(vec![3, 2]));
+        assert!(broadcasted.is_sparse());
+        assert_eq!(broadcasted.shape, Shape::from(vec![3, 2]));
+        assert_eq!(
+            broadcasted.state_deps,
+            vec![
+                (Index::from(vec![0, 0]), 42),
+                (Index::from(vec![1, 0]), 42),
+                (Index::from(vec![2, 0]), 42)
+            ]
+        );
+        assert!(broadcasted.input_deps.is_empty());
+    }
+
+    #[test]
+    fn test_permute_remaps_dependencies() -> Result<()> {
+        let mut layout = Layout::sparse(
+            vec![Index::from(vec![0, 1]), Index::from(vec![1, 2])],
+            Shape::from(vec![2, 3]),
+        );
+        layout.state_deps = vec![(Index::from(vec![1, 2]), 5)];
+        layout.input_deps = vec![(Index::from(vec![0, 1]), 8)];
+
+        let permuted = layout.permute(&[1, 0])?;
+        assert_eq!(permuted.shape, Shape::from(vec![3, 2]));
+        assert_eq!(
+            permuted.indices,
+            vec![Index::from(vec![1, 0]), Index::from(vec![2, 1])]
+        );
+        assert_eq!(permuted.state_deps, vec![(Index::from(vec![2, 1]), 5)]);
+        assert_eq!(permuted.input_deps, vec![(Index::from(vec![1, 0]), 8)]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_union_and_intersect_dependencies() {
+        let mut layout1 = Layout::sparse(vec![Index::from(vec![0, 0])], Shape::from(vec![2, 2]));
+        layout1.state_deps = vec![(Index::from(vec![0, 0]), 1)];
+
+        let mut layout2 = Layout::sparse(vec![Index::from(vec![1, 1])], Shape::from(vec![2, 2]));
+        layout2.input_deps = vec![(Index::from(vec![1, 1]), 2)];
+
+        let mut union_layout = layout1.clone();
+        union_layout.union_inplace(layout2.clone());
+        assert_eq!(
+            union_layout.indices,
+            vec![Index::from(vec![0, 0]), Index::from(vec![1, 1])]
+        );
+        assert_eq!(union_layout.state_deps, vec![(Index::from(vec![0, 0]), 1)]);
+        assert_eq!(union_layout.input_deps, vec![(Index::from(vec![1, 1]), 2)]);
+
+        let mut layout3 = Layout::sparse(
+            vec![Index::from(vec![0, 0]), Index::from(vec![1, 1])],
+            Shape::from(vec![2, 2]),
+        );
+        layout3.state_deps = vec![(Index::from(vec![1, 1]), 9)];
+        layout3.input_deps = vec![(Index::from(vec![0, 0]), 8)];
+
+        let mut layout4 = Layout::sparse(vec![Index::from(vec![1, 1])], Shape::from(vec![2, 2]));
+        layout4.state_deps = vec![(Index::from(vec![1, 1]), 5)];
+
+        layout3.intersect_inplace(layout4);
+        assert_eq!(layout3.indices, vec![Index::from(vec![1, 1])]);
+        assert_eq!(
+            layout3.state_deps,
+            vec![(Index::from(vec![1, 1]), 5), (Index::from(vec![1, 1]), 9)]
+        );
+        assert_eq!(layout3.input_deps, vec![(Index::from(vec![0, 0]), 8)]);
     }
 }

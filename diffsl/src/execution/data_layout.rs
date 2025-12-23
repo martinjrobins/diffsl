@@ -153,10 +153,9 @@ impl DataLayout {
             .constant_defns()
             .iter()
             .for_each(|c| add_tensor(c, false, true));
-        model
-            .inputs()
-            .iter()
-            .for_each(|i| add_tensor(i, true, false));
+        if let Some(input) = model.input() {
+            add_tensor(input, true, false);
+        }
         model
             .input_dep_defns()
             .iter()

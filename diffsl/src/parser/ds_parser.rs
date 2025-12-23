@@ -203,7 +203,10 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             };
             let tensors: Vec<Box<Ast>> = inner.map(parse_value).map(Box::new).collect();
             Ast {
-                kind: AstKind::DsModel(ast::DsModel { inputs, tensors }),
+                kind: AstKind::DsModel(ast::DsModel {
+                    has_inputs: !inputs.is_empty(),
+                    tensors,
+                }),
                 span,
             }
         }
@@ -316,7 +319,6 @@ mod tests {
             }
         ";
         let model = parse_string(TEXT).unwrap();
-        assert_eq!(model.inputs.len(), 0);
         assert_eq!(model.tensors.len(), 1);
         let tensor = model.tensors[0].kind.as_tensor().unwrap();
         assert_eq!(tensor.name(), "test");
@@ -332,9 +334,7 @@ mod tests {
     #[test]
     fn logistic_model() {
         const TEXT: &str = "
-            in = [r, k] 
-            r { 1 }
-            k { 1 }
+            in { r=1, k=1 }
             I_ij {
                 (0, 0): 1,
                 (1..2, 1..2): 1,
@@ -359,12 +359,11 @@ mod tests {
             }
         ";
         let model = parse_string(TEXT).unwrap();
-        assert_eq!(model.tensors.len(), 7);
-        assert_eq!(model.inputs.len(), 2);
         let tensor = model.tensors[0].kind.as_tensor().unwrap();
-        assert_eq!(tensor.name(), "r");
-        assert_eq!(tensor.elmts().len(), 1);
-        let tensor = model.tensors[2].kind.as_tensor().unwrap();
+        assert_eq!(tensor.name(), "in");
+        assert_eq!(tensor.elmts().len(), 2);
+        assert_eq!(model.tensors.len(), 6);
+        let tensor = model.tensors[1].kind.as_tensor().unwrap();
         assert_eq!(tensor.name(), "I");
         assert_eq!(tensor.elmts().len(), 3);
         assert_eq!(
@@ -400,7 +399,7 @@ mod tests {
                 .to_string(),
             "1"
         );
-        let tensor = model.tensors[3].kind.as_tensor().unwrap();
+        let tensor = model.tensors[2].kind.as_tensor().unwrap();
         assert_eq!(tensor.name(), "u");
         assert_eq!(tensor.elmts().len(), 2);
         assert_eq!(

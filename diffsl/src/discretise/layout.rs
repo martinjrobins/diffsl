@@ -933,6 +933,14 @@ impl Layout {
             self.indices.len()
         }
     }
+    
+    pub fn state_dependencies(&self) -> &Vec<(Index, usize)> {
+        &self.state_deps
+    }
+    
+    pub fn input_dependencies(&self) -> &Vec<(Index, usize)> {
+        &self.input_deps
+    }
 
     /// return the non-zero indices of the layout as an iterator, corresponding to the order of the data entries
     pub fn indices(&self) -> impl Iterator<Item = Index> + '_ {

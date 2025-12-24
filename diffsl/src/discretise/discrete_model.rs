@@ -42,6 +42,11 @@ pub struct DiscreteModel<'s> {
     state_dot: Option<Tensor<'s>>,
     is_algebraic: Vec<bool>,
     stop: Option<Tensor<'s>>,
+    state0_input_deps: Vec<(usize, usize)>,
+    rhs_state_deps: Vec<(usize, usize)>,
+    rhs_input_deps: Vec<(usize, usize)>,
+    out_input_deps: Vec<(usize, usize)>,
+    out_state_deps: Vec<(usize, usize)>,
 }
 
 impl fmt::Display for DiscreteModel<'_> {
@@ -98,6 +103,11 @@ impl<'s> DiscreteModel<'s> {
             state_dot: None,
             is_algebraic: Vec::new(),
             stop: None,
+            state0_input_deps: Vec::new(),
+            rhs_input_deps: Vec::new(),
+            rhs_state_deps: Vec::new(),
+            out_input_deps: Vec::new(),
+            out_state_deps: Vec::new(),
         }
     }
 
@@ -141,7 +151,7 @@ impl<'s> DiscreteModel<'s> {
         for a in array.elmts() {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
-                    if let Some((expr_layout, elmt_layout)) =
+                    if let Some((expr_layout, mut elmt_layout)) =
                         env.get_layout_tensor_elmt(te, array.indices(), force_dense)
                     {
                         if rank == 0 && elmt_layout.rank() == 1 && elmt_layout.shape()[0] > 1 {
@@ -186,6 +196,8 @@ impl<'s> DiscreteModel<'s> {
                             ));
                         }
 
+                        elmt_layout.add_tensor_dependencies(tensor_type, start[0], env);
+
                         // make sure arc layouts are unique
                         // TODO: if we always use arc layout for the recursion, we can reuse existing ones
                         // much more efficiently rather than creating new ones all the time
@@ -226,12 +238,10 @@ impl<'s> DiscreteModel<'s> {
         } else {
             // todo: if we always use arc layout for the recursion, we can reuse existing ones
             match Layout::concatenate(&elmts, rank) {
-                Ok(mut layout) => {
-                    // Add dependencies based on tensor_type
-                    layout.add_tensor_dependencies(tensor_type);
-
+                Ok(layout) => {
                     let layout = env.new_layout_ptr(layout);
                     let tensor = Tensor::new(array.name(), elmts, layout, array.indices().to_vec());
+
                     //check that the number of indices matches the rank
                     assert_eq!(tensor.rank(), tensor.indices().len());
                     if nerrs == env.errs().len() {
@@ -499,6 +509,49 @@ impl<'s> DiscreteModel<'s> {
             Self::check_match(ret.lhs.as_ref().unwrap(), &ret.state, span, &mut env);
         }
 
+        // store the dependencies in the discrete model
+        ret.state0_input_deps = env
+            .state0_input_deps
+            .iter()
+            .map(|(i, j)| (i[0] as usize, *j))
+            .collect();
+        ret.rhs_input_deps = ret
+            .rhs
+            .layout()
+            .input_dependencies()
+            .iter()
+            .map(|(i, j)| (i[0] as usize, *j))
+            .collect();
+        ret.rhs_state_deps = ret
+            .rhs
+            .layout()
+            .state_dependencies()
+            .iter()
+            .map(|(i, j)| (i[0] as usize, *j))
+            .collect();
+        ret.out_input_deps = ret
+            .out
+            .as_ref()
+            .map(|o| {
+                o.layout()
+                    .input_dependencies()
+                    .iter()
+                    .map(|(i, j)| (i[0] as usize, *j))
+                    .collect()
+            })
+            .unwrap_or_default();
+        ret.out_state_deps = ret
+            .out
+            .as_ref()
+            .map(|o| {
+                o.layout()
+                    .state_dependencies()
+                    .iter()
+                    .map(|(i, j)| (i[0] as usize, *j))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         if env.errs().is_empty() {
             Ok(ret)
         } else {
@@ -722,6 +775,11 @@ impl<'s> DiscreteModel<'s> {
             dstate_dep_defns,
             is_algebraic,
             stop,
+            state0_input_deps: Vec::new(),
+            rhs_state_deps: Vec::new(),
+            rhs_input_deps: Vec::new(),
+            out_input_deps: Vec::new(),
+            out_state_deps: Vec::new(),
         }
     }
 
@@ -778,6 +836,26 @@ impl<'s> DiscreteModel<'s> {
 
     pub fn stop(&self) -> Option<&Tensor<'_>> {
         self.stop.as_ref()
+    }
+
+    pub fn take_state0_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.state0_input_deps)
+    }
+
+    pub fn take_rhs_state_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.rhs_state_deps)
+    }
+
+    pub fn take_rhs_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.rhs_input_deps)
+    }
+
+    pub fn take_out_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.out_input_deps)
+    }
+
+    pub fn take_out_state_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.out_state_deps)
     }
 }
 

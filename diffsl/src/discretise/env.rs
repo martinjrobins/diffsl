@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use log::{debug, log_enabled, Level};
 use ndarray::s;
 
-use crate::ast::{self, Ast, AstKind, StringSpan};
+use crate::{
+    ast::{self, Ast, AstKind, StringSpan},
+    discretise::layout::NonZero,
+};
 
 use super::{
     can_broadcast_to, layout::ArcLayout, Layout, LayoutKind, Shape, Tensor, TensorBlock,
@@ -49,6 +52,7 @@ pub struct Env {
     current_span: Option<StringSpan>,
     errs: ValidationErrors,
     vars: HashMap<String, EnvVar>,
+    pub(crate) state0_input_deps: Vec<NonZero>,
 }
 
 impl Env {
@@ -69,6 +73,7 @@ impl Env {
             errs: ValidationErrors::default(),
             vars,
             current_span: None,
+            state0_input_deps: vec![],
         }
     }
 

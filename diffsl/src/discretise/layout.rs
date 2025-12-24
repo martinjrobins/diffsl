@@ -5,9 +5,12 @@ use std::{
     convert::AsRef,
     fmt,
     hash::{Hash, Hasher},
+    mem,
     ops::Deref,
     sync::Arc,
 };
+
+use crate::discretise::Env;
 
 use super::{broadcast_shapes, shape::Shape, Index, TensorBlock};
 
@@ -25,7 +28,7 @@ pub enum TensorType {
     Other,
 }
 
-type NonZero = (Index, usize);
+pub type NonZero = (Index, usize);
 
 /// a sparsity pattern for a multidimensional tensor. A tensor can be sparse, diagonal or dense, as given by the kind field.
 /// A tensor can also have n_dense_axes axes which are dense, these are the last n_dense_axes axes of the tensor. So for example,
@@ -40,8 +43,8 @@ type NonZero = (Index, usize);
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
     indices: Vec<Index>,
-    state_deps: Vec<(Index, usize)>,
-    input_deps: Vec<(Index, usize)>,
+    state_deps: Vec<NonZero>,
+    input_deps: Vec<NonZero>,
     shape: Shape,
     kind: LayoutKind,
     n_dense_axes: usize,
@@ -129,13 +132,13 @@ impl Layout {
     }
 
     /// Add state or input dependencies to this layout based on the tensor type.
-    pub fn add_tensor_dependencies(&mut self, tensor_type: TensorType) {
+    pub fn add_tensor_dependencies(&mut self, tensor_type: TensorType, start: i64, env: &mut Env) {
         let indices = match tensor_type {
             TensorType::State | TensorType::Input => {
                 let mut deps = Vec::new();
                 let n_states = *self.shape().get(0).unwrap_or(&1);
                 for i in 0..n_states {
-                    let index = Index::from(vec![i as i64]);
+                    let index = Index::from(vec![(i as i64) + start]);
                     deps.push((index, i));
                 }
                 deps
@@ -149,6 +152,8 @@ impl Layout {
                     "state tensor layout should not already have state dependencies",
                 );
                 self.state_deps = indices;
+                // store the state0 input dependencies in the env since we don't want to propagate them further
+                env.state0_input_deps = mem::take(&mut self.input_deps);
             }
             TensorType::Input => {
                 assert! {
@@ -933,13 +938,17 @@ impl Layout {
             self.indices.len()
         }
     }
-    
+
     pub fn state_dependencies(&self) -> &Vec<(Index, usize)> {
         &self.state_deps
     }
-    
+
     pub fn input_dependencies(&self) -> &Vec<(Index, usize)> {
         &self.input_deps
+    }
+
+    pub fn take_input_dependencies(&mut self) -> Vec<(Index, usize)> {
+        std::mem::take(&mut self.input_deps)
     }
 
     /// return the non-zero indices of the layout as an iterator, corresponding to the order of the data entries

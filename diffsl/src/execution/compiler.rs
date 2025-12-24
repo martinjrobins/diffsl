@@ -847,10 +847,13 @@ mod tests {
     use std::{sync::Arc, thread};
 
     use crate::{
-        Compiler, discretise::DiscreteModel, execution::{
+        discretise::DiscreteModel,
+        execution::{
             module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
             scalar::Scalar,
-        }, parser::parse_ds_string
+        },
+        parser::parse_ds_string,
+        Compiler,
     };
     use approx::{assert_relative_eq, RelativeEq};
     use num_traits::ToPrimitive;
@@ -1865,7 +1868,7 @@ mod tests {
         big_state_tridiag: "b_ij { (0..100, 0..100): 3.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![6.; 100]; vec![600.] ; vec![0.; 100]; vec![0.],
         big_state_tridiag2: "b_ij { (0..100, 0..100): p + 2.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![7.; 100]; vec![700.] ; vec![1.; 100]; vec![100.],
     }
-    
+
     macro_rules! tensor_state_input_dep_test {
         ($($name:ident: $text:literal expect $expected_state_state_deps:expr ; $expected_state_inputs_deps:expr,)*) => {
         $(
@@ -1873,36 +1876,31 @@ mod tests {
             fn $name() {
                 let full_text = format!("
                     in_i {{ (0:2): p = 1 }}
-                    u_i {{
-                        y = p_i,
-                    }}
                     {}
-                    out_i {{
-                        u_i,
-                    }}
+                    out_i {{ u_i, }}
                 ", $text);
 
                 let model = parse_ds_string(full_text.as_str()).unwrap();
                 #[allow(unused_variables)]
-                let discrete_model = match DiscreteModel::build("$name", &model) {
+                let mut discrete_model = match DiscreteModel::build("$name", &model) {
                     Ok(model) => model,
                     Err(e) => {
                         panic!("{}", e.as_error_message(full_text.as_str()));
                     }
                 };
-                let state_layout = discrete_model.state().layout();
-                let state_state_deps = state_layout.state_dependencies().into_iter().map(|(i, j)| (i[0] as usize, *j)).collect::<Vec<(usize, usize)>>();
-                let state_inputs_deps = state_layout.input_dependencies().into_iter().map(|(i, j)| (i[0] as usize, *j)).collect::<Vec<(usize, usize)>>();
-                assert_eq!(state_state_deps, $expected_state_state_deps);
-                assert_eq!(state_inputs_deps, $expected_state_inputs_deps);
+                assert_eq!(discrete_model.take_state0_input_deps(), vec![(0,0), (1,1)]);
+                assert_eq!(discrete_model.take_rhs_state_deps(), $expected_state_state_deps);
+                assert_eq!(discrete_model.take_rhs_input_deps(), $expected_state_inputs_deps);
+                assert_eq!(discrete_model.take_out_state_deps(), vec![(0,0), (1,1)]);
+                assert_eq!(discrete_model.take_out_input_deps(), vec![]);
             }
         )*
         }
     }
-    
+
     tensor_state_input_dep_test! {
-        tensor_state_input_just_u: "F_i { u_i }" expect vec![(0, 0), (1, 1)] ; vec![],
-        tensor_state_input_just_p: "F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
+        tensor_state_input_just_u: "u_i { p_i } F_i { u_i }" expect vec![(0, 0), (1, 1)] ; vec![],
+        tensor_state_input_just_p: "u_i { p_i } F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
     }
 
     generate_tests!(test_repeated_grad_common);

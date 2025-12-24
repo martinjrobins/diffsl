@@ -1876,6 +1876,7 @@ mod tests {
             fn $name() {
                 let full_text = format!("
                     in_i {{ (0:2): p = 1 }}
+                    u_i {{ p_i }}
                     {}
                     out_i {{ u_i, }}
                 ", $text);
@@ -1899,8 +1900,10 @@ mod tests {
     }
 
     tensor_state_input_dep_test! {
-        tensor_state_input_just_u: "u_i { p_i } F_i { u_i }" expect vec![(0, 0), (1, 1)] ; vec![],
-        tensor_state_input_just_p: "u_i { p_i } F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
+        tensor_state_input_just_u: "F_i { u_i }" expect vec![(0, 0), (1, 1)] ; vec![],
+        tensor_state_input_just_p: "F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
+        tensor_state_input_index: "F_i { u_i[1], p_i[0] }" expect vec![(0, 1)] ; vec![(1, 0)],
+        tensor_state_input_sparse_mat_mul: "A_ij { (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(1, 1)] ; vec![],
     }
 
     generate_tests!(test_repeated_grad_common);

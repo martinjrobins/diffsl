@@ -277,7 +277,11 @@ impl Env {
 
             // if the indice is a single integer then the resulting layout is a scalar
             if indice.sep.is_none() {
-                return Some(Layout::new_scalar());
+                let mut new_layout = Layout::new_scalar();
+                let first = indice.first.kind.as_integer().unwrap();
+                let last = first + 1;
+                new_layout.filter_deps_from(layout_permuted, first, last);
+                return Some(new_layout);
             } else {
                 // if the indice is a range then the resulting layout is a dense layout with shape given by the range
                 // along the only non-unit dimension of the variable
@@ -298,7 +302,9 @@ impl Env {
                 let shape = layout_permuted
                     .shape()
                     .map(|&d| if d != 1 { dim } else { 1 });
-                return Some(Layout::new_dense(Shape::from(shape)));
+                let mut new_layout = Layout::new_dense(Shape::from(shape));
+                new_layout.filter_deps_from(layout_permuted, first, last);
+                return Some(new_layout);
             }
         }
 

@@ -1890,8 +1890,8 @@ mod tests {
                     }
                 };
                 assert_eq!(discrete_model.take_state0_input_deps(), vec![(0,0), (1,1)]);
-                assert_eq!(discrete_model.take_rhs_state_deps(), $expected_state_state_deps);
-                assert_eq!(discrete_model.take_rhs_input_deps(), $expected_state_inputs_deps);
+                assert_eq!(discrete_model.take_rhs_state_deps(), $expected_state_state_deps, "failed rhs_state_deps");
+                assert_eq!(discrete_model.take_rhs_input_deps(), $expected_state_inputs_deps, "failed rhs_input_deps");
                 assert_eq!(discrete_model.take_out_state_deps(), vec![(0,0), (1,1)]);
                 assert_eq!(discrete_model.take_out_input_deps(), vec![]);
             }
@@ -1903,7 +1903,10 @@ mod tests {
         tensor_state_input_just_u: "F_i { u_i }" expect vec![(0, 0), (1, 1)] ; vec![],
         tensor_state_input_just_p: "F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
         tensor_state_input_index: "F_i { u_i[1], p_i[0] }" expect vec![(0, 1)] ; vec![(1, 0)],
+        tensor_state_input_index2: "F_i { u_i[1:2], p_i[0:1] }" expect vec![(0, 1)] ; vec![(1, 0)],
         tensor_state_input_sparse_mat_mul: "A_ij { (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(1, 1)] ; vec![],
+        tensor_state_input_sparse_mat_mul2: "A_ij { (0, 0): 1, (0, 1): 1, (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(0, 0), (0, 1), (1, 1)] ; vec![],
+        tensor_state_input_diag_mat_mul: "A_ij { (0..2, 0..2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![],
     }
 
     generate_tests!(test_repeated_grad_common);

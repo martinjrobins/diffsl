@@ -1155,7 +1155,7 @@ impl Layout {
             .slice(s![0..self.rank() - self.n_dense_axes])
             .to_owned();
         match self.kind {
-            LayoutKind::Sparse => self.indices.iter().position(|x| x == non_dense_index),
+            LayoutKind::Sparse =>  self.indices.binary_search_by(|x| Self::cmp_index(x, &non_dense_index)).ok(),
             LayoutKind::Dense => Some(Self::ravel_index(&bcast_index, self.shape())),
             LayoutKind::Diagonal => {
                 if index.iter().all(|&x| x == non_dense_index[0])

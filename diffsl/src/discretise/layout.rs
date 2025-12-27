@@ -42,7 +42,7 @@ pub type NonZero = (Index, usize);
 /// For dense layouts, the indices field is empty, as all indices are non-zero.
 ///
 /// Each layout contains a vector of state and input dependencies, which are pairs of (index, state/input_j), indicating that the non-zero at index depends on state/input j.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Layout {
     indices: Vec<Index>,
     state_deps: Vec<NonZero>,
@@ -86,6 +86,37 @@ impl Layout {
         a.sort_unstable_by(|x, y| Self::cmp_index(&x.0, &y.0).then(x.1.cmp(&y.1)));
         a.dedup();
         a
+    }
+
+    /// Check if two layouts are equal in terms of their non-zero patterns.
+    pub fn eq_nonzeros(&self, other: &Layout) -> bool {
+        if self.kind != other.kind {
+            return false;
+        }
+        if self.n_dense_axes != other.n_dense_axes {
+            return false;
+        }
+        if self.shape != other.shape {
+            return false;
+        }
+        if self.indices != other.indices {
+            return false;
+        }
+        true
+    }
+
+    /// Check if two layouts are equal in terms of their non-zero patterns and dependencies.
+    pub fn eq_nonzeros_and_deps(&self, other: &Layout) -> bool {
+        if !self.eq_nonzeros(other) {
+            return false;
+        }
+        if self.state_deps != other.state_deps {
+            return false;
+        }
+        if self.input_deps != other.input_deps {
+            return false;
+        }
+        true
     }
 
     /// Filter dependencies to only include those with indices in the provided iterator. The iterator will always
@@ -415,7 +446,11 @@ impl Layout {
         let mut first = true;
         for layout in broadcasted_layouts.drain(..).rev() {
             // if a / b, with b is sparse and a being a dense or different sparse layout, then we have a divide by zero issue
-            if first && is_divide && ret.is_sparse() && (layout.is_dense() || !ret.eq(&layout)) {
+            if first
+                && is_divide
+                && ret.is_sparse()
+                && (layout.is_dense() || !ret.eq_nonzeros(&layout))
+            {
                 return Err(anyhow!("divide-by-zero detected, cannot only divide by a sparse layout if the numerator has the same sparsity pattern"));
             }
             if is_multiply_or_divide {
@@ -976,15 +1011,15 @@ impl Layout {
     }
 
     // data entry when this layout is used within an expression with another layout
-    // if the other layout is the same as self, then return an empty vec
-    // if this layout is dense or diagonal, then return an empty vec
+    // if the other layout is the same as self and permutation is [0,1,..n-1,n], then return an empty vec
+    // if this layout is dense, then return an empty vec
     //
     // returns a vec with the same size as the number of nnz in other,
     // with each entry giving the index in self corresponding to that entry in other.
     // If an index in other does not exist in self, then a -1 is returned for that entry.
     // A permutation is also provided, giving the self index for each other index.
     pub fn to_binary_data_layout(&self, other: &Layout, permutation: &[usize]) -> Vec<i32> {
-        if self == other {
+        if self.eq_nonzeros(other) && permutation.iter().enumerate().all(|(i, &p)| i == p) {
             return vec![];
         }
         if self.is_dense() {
@@ -1155,7 +1190,10 @@ impl Layout {
             .slice(s![0..self.rank() - self.n_dense_axes])
             .to_owned();
         match self.kind {
-            LayoutKind::Sparse =>  self.indices.binary_search_by(|x| Self::cmp_index(x, &non_dense_index)).ok(),
+            LayoutKind::Sparse => self
+                .indices
+                .binary_search_by(|x| Self::cmp_index(x, &non_dense_index))
+                .ok(),
             LayoutKind::Dense => Some(Self::ravel_index(&bcast_index, self.shape())),
             LayoutKind::Diagonal => {
                 if index.iter().all(|&x| x == non_dense_index[0])

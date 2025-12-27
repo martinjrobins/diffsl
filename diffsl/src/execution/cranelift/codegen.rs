@@ -1188,70 +1188,80 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                         // we are doing an if statement so I think we need to return early here
                         let permutation =
                             DataLayout::permutation(elmt, iname.indices.as_slice(), layout);
-                        let base_binary_layout_index = self
-                            .layout
-                            .get_binary_layout_index(layout, expr_layout, permutation)
-                            .unwrap();
-                        let base_binary_layout_index = self.builder.ins().iconst(
-                            self.int_type,
-                            i64::try_from(base_binary_layout_index).unwrap(),
-                        );
-                        let binary_layout_index = self
-                            .builder
-                            .ins()
-                            .iadd(base_binary_layout_index, expr_index);
-
-                        let indices_array = self
-                            .builder
-                            .ins()
-                            .global_value(self.int_ptr_type, self.indices);
-
-                        let indices_ptr =
-                            self.ptr_add_offset(self.int_type, indices_array, binary_layout_index);
-
-                        let mapped_index =
-                            self.builder
+                        if let Some(base_binary_layout_index) =
+                            self.layout
+                                .get_binary_layout_index(layout, expr_layout, permutation)
+                        {
+                            let base_binary_layout_index = self.builder.ins().iconst(
+                                self.int_type,
+                                i64::try_from(base_binary_layout_index).unwrap(),
+                            );
+                            let binary_layout_index = self
+                                .builder
                                 .ins()
-                                .load(self.int_type, self.mem_flags, indices_ptr, 0);
+                                .iadd(base_binary_layout_index, expr_index);
 
-                        let is_less_than_zero =
-                            self.builder
+                            let indices_array = self
+                                .builder
                                 .ins()
-                                .icmp_imm(IntCC::SignedLessThan, mapped_index, 0);
+                                .global_value(self.int_ptr_type, self.indices);
 
-                        let is_less_than_zero_block = self.builder.create_block();
-                        let not_less_than_zero_block = self.builder.create_block();
-                        let merge_block = self.builder.create_block();
-                        let phi_value =
-                            self.builder.append_block_param(merge_block, self.real_type);
-                        self.builder.ins().brif(
-                            is_less_than_zero,
-                            is_less_than_zero_block,
-                            &[],
-                            not_less_than_zero_block,
-                            &[],
-                        );
-                        self.builder.seal_block(is_less_than_zero_block);
-                        self.builder.seal_block(not_less_than_zero_block);
+                            let indices_ptr = self.ptr_add_offset(
+                                self.int_type,
+                                indices_array,
+                                binary_layout_index,
+                            );
 
-                        // if mapped index < 0 return 0
-                        self.builder.switch_to_block(is_less_than_zero_block);
-                        let zero = self.fconst(0.);
-                        self.builder.ins().jump(merge_block, &[zero.into()]);
+                            let mapped_index = self.builder.ins().load(
+                                self.int_type,
+                                self.mem_flags,
+                                indices_ptr,
+                                0,
+                            );
 
-                        // if mapped index >=0 load value at that index
-                        self.builder.switch_to_block(not_less_than_zero_block);
-                        let value_ptr = self.ptr_add_offset(self.real_type, ptr, mapped_index);
-                        let value =
-                            self.builder
-                                .ins()
-                                .load(self.real_type, self.mem_flags, value_ptr, 0);
-                        self.builder.ins().jump(merge_block, &[value.into()]);
-                        self.builder.seal_block(merge_block);
-                        self.builder.switch_to_block(merge_block);
+                            let is_less_than_zero =
+                                self.builder
+                                    .ins()
+                                    .icmp_imm(IntCC::SignedLessThan, mapped_index, 0);
 
-                        // return value or 0 from if statement
-                        return Ok(phi_value);
+                            let is_less_than_zero_block = self.builder.create_block();
+                            let not_less_than_zero_block = self.builder.create_block();
+                            let merge_block = self.builder.create_block();
+                            let phi_value =
+                                self.builder.append_block_param(merge_block, self.real_type);
+                            self.builder.ins().brif(
+                                is_less_than_zero,
+                                is_less_than_zero_block,
+                                &[],
+                                not_less_than_zero_block,
+                                &[],
+                            );
+                            self.builder.seal_block(is_less_than_zero_block);
+                            self.builder.seal_block(not_less_than_zero_block);
+
+                            // if mapped index < 0 return 0
+                            self.builder.switch_to_block(is_less_than_zero_block);
+                            let zero = self.fconst(0.);
+                            self.builder.ins().jump(merge_block, &[zero.into()]);
+
+                            // if mapped index >=0 load value at that index
+                            self.builder.switch_to_block(not_less_than_zero_block);
+                            let value_ptr = self.ptr_add_offset(self.real_type, ptr, mapped_index);
+                            let value = self.builder.ins().load(
+                                self.real_type,
+                                self.mem_flags,
+                                value_ptr,
+                                0,
+                            );
+                            self.builder.ins().jump(merge_block, &[value.into()]);
+                            self.builder.seal_block(merge_block);
+                            self.builder.switch_to_block(merge_block);
+
+                            // return value or 0 from if statement
+                            return Ok(phi_value);
+                        } else {
+                            expr_index
+                        }
                     } else {
                         // we can just use the elmt_index since the layouts are the same
                         expr_index

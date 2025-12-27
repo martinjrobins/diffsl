@@ -107,22 +107,24 @@ impl DataLayout {
                         )) {
                             let blayout = tensor_layout
                                 .to_binary_data_layout(blk.expr_layout(), &permutation);
-                            debug!(
-                                "adding binary layout from {} to {} with permutation {:?}: {:?}",
-                                tensor_name,
-                                blk.name().unwrap_or(tensor.name()),
-                                permutation,
-                                blayout
-                            );
-                            binary_layout_index_map.insert(
-                                (
-                                    tensor_layout.clone(),
-                                    blk.expr_layout().clone(),
+                            if !blayout.is_empty() {
+                                debug!(
+                                    "adding binary layout from {} to {} with permutation {:?}: {:?}",
+                                    tensor_name,
+                                    blk.name().unwrap_or(tensor.name()),
                                     permutation,
-                                ),
-                                indices.len(),
-                            );
-                            indices.extend(blayout);
+                                    blayout
+                                );
+                                binary_layout_index_map.insert(
+                                    (
+                                        tensor_layout.clone(),
+                                        blk.expr_layout().clone(),
+                                        permutation,
+                                    ),
+                                    indices.len(),
+                                );
+                                indices.extend(blayout);
+                            }
                         }
                     }
                 }

@@ -1014,13 +1014,6 @@ impl Layout {
     /// if we are decreasing the rank, then we can only remove dense axes
     /// if any axis is being broadcasted, then it must be size 1 in the original layout
     pub fn broadcast_to_shape(&self, shape: &Shape) -> Self {
-        println!(
-            "Broadcasting layout shape {} to shape {}",
-            self.shape, shape
-        );
-        println!("Original indices: {:?}", self.indices);
-        println!("original state_deps: {:?}", self.state_deps);
-        println!("original input_deps: {:?}", self.input_deps);
         for i in 0..min(self.rank(), shape.len()) {
             if self.shape[i] != shape[i] && self.shape[i] != 1 {
                 panic!(
@@ -1078,10 +1071,6 @@ impl Layout {
             }
             new_broadcast_indices
         });
-
-        println!("Broadcasted indices: {:?}", indices);
-        println!("Broadcasted state_deps: {:?}", state_deps);
-        println!("Broadcasted input_deps: {:?}", input_deps);
 
         if self.rank() == shape.len() {
             Self {

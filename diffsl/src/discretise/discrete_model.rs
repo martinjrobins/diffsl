@@ -1387,6 +1387,8 @@ mod tests {
         tsi_contract: "a_ij { (0,0): u_i[0], (0, 1): u_i[1], (1, 0): p_i[0], (1, 1): p_i[1] } F_i { a_ij }" expect vec![(0,0), (0,1)] ; vec![(1,0), (1,1)],
         tsi_broadcast3: "F_i { (0:2): u_i[0] }" expect vec![(0,0), (1,0)] ; vec![],
         tsi_diag_mat_mul2: "A_ij { (0..2, 0..2): p_i } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
+        tsi_concat: "F_i { (0): u_i[0], (1): p_i[0] }" expect vec![(0,0)] ; vec![(1,0)],
+        tsi_concat2: "a_ij { (0,0): u_i[0], (1,1): p_i[0] } F_i { a_ij }" expect vec![(0,0)] ; vec![(1,0)],
     }
 
     #[test]

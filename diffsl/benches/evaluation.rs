@@ -65,14 +65,30 @@ fn execute<const N: usize, M: CodegenModuleCompile + CodegenModuleJit>(
     });
 }
 
+#[divan::bench(consts = [2, 10, 100, 1000],sample_count = 1, sample_size = 1)]
+fn mat_vec_diffsl_llvm_setup<const N: usize>(bencher: divan::Bencher) {
+    bencher.bench_local(|| {
+        let n = N;
+        setup::<diffsl::LlvmModule>(n, "a_ij * u_j", "setup");
+    });
+}
+
+#[divan::bench(consts = [2, 10, 100, 1000],sample_count = 1, sample_size = 1)]
+fn mat_vec_diffsl_cranelift_setup<const N: usize>(bencher: divan::Bencher) {
+    bencher.bench_local(|| {
+        let n = N;
+        setup::<diffsl::LlvmModule>(n, "a_ij * u_j", "setup");
+    });
+}
+
 #[cfg(feature = "llvm")]
-#[divan::bench(consts = [2, 10, 100, 1000, 2000, 4000])]
+#[divan::bench(consts = [2, 10, 100, 1000])]
 fn mat_vec_diffsl_llvm<const N: usize>(bencher: divan::Bencher) {
     execute::<N, diffsl::LlvmModule>(bencher, "a_ij * u_j");
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "cranelift"))]
-#[divan::bench(consts = [2, 10, 100, 1000, 2000, 4000])]
+#[divan::bench(consts = [2, 10, 100, 1000])]
 fn mat_vec_diffsl_cranelift<const N: usize>(bencher: divan::Bencher) {
     execute::<N, diffsl::CraneliftJitModule>(bencher, "a_ij * u_j");
 }

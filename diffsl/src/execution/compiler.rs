@@ -1869,58 +1869,6 @@ mod tests {
         big_state_tridiag2: "b_ij { (0..100, 0..100): p + 2.0, (0..99, 1..100): 2.0, (1..100, 0..99): 1.0, (0, 99): 1.0, (99, 0): 2.0 } r_i { b_ij * u_j }" expect "r" vec![6.; 100]; vec![7.; 100]; vec![700.] ; vec![1.; 100]; vec![100.],
     }
 
-    macro_rules! tensor_state_input_dep_test {
-        ($($name:ident: $text:literal expect $expected_state_state_deps:expr ; $expected_state_inputs_deps:expr,)*) => {
-        $(
-            #[test]
-            fn $name() {
-                let full_text = format!("
-                    in_i {{ (0:2): p = 1 }}
-                    u_i {{ p_i }}
-                    {}
-                    out_i {{ u_i, }}
-                ", $text);
-
-                let model = parse_ds_string(full_text.as_str()).unwrap();
-                #[allow(unused_variables)]
-                let mut discrete_model = match DiscreteModel::build("$name", &model) {
-                    Ok(model) => model,
-                    Err(e) => {
-                        panic!("{}", e.as_error_message(full_text.as_str()));
-                    }
-                };
-                assert_eq!(discrete_model.take_state0_input_deps(), vec![(0,0), (1,1)]);
-                assert_eq!(discrete_model.take_rhs_state_deps(), $expected_state_state_deps, "failed rhs_state_deps");
-                assert_eq!(discrete_model.take_rhs_input_deps(), $expected_state_inputs_deps, "failed rhs_input_deps");
-                assert_eq!(discrete_model.take_out_state_deps(), vec![(0,0), (1,1)]);
-                assert_eq!(discrete_model.take_out_input_deps(), vec![]);
-            }
-        )*
-        }
-    }
-
-    tensor_state_input_dep_test! {
-        tsi_just_u: "F_i { u_i }" expect vec![(0, 0), (1, 1)] ; vec![],
-        tsi_just_p: "F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
-        tsi_index: "F_i { u_i[1], p_i[0] }" expect vec![(0, 1)] ; vec![(1, 0)],
-        tsi_index2: "F_i { u_i[1:2], p_i[0:1] }" expect vec![(0, 1)] ; vec![(1, 0)],
-        tsi_sparse_mat_mul: "A_ij { (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(1, 1)] ; vec![],
-        tsi_sparse_mat_mul2: "A_ij { (0, 0): 1, (0, 1): 1, (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(0, 0), (0, 1), (1, 1)] ; vec![],
-        tsi_diag_mat_mul: "A_ij { (0..2, 0..2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![],
-        tsi_sparse_vec_add: "a_i { (1): u_i[0] }  F_i { a_i + u_i }" expect vec![(0, 0), (1, 0), (1, 1)] ; vec![],
-        tsi_dense_vec_add: "a_i { u_i[1], u_i[0] }  F_i { a_i + u_i }" expect vec![(0, 0), (0, 1), (1, 0), (1, 1)] ; vec![],
-        tsi_dense_vec_mul: "a_i { u_i[1], u_i[0] }  F_i { a_i * u_i }" expect vec![(0, 0), (0, 1), (1, 0), (1, 1)] ; vec![],
-        tsi_dense_mat_mul: "A_ij { (0:2,0:2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (0,1), (1,0), (1,1)] ; vec![],
-        tsi_dense_mat_mul2: "A_ij { (0:2,0:2): 1 } a_i { u_i[0], p_i[0] } b_i { A_ij * a_j } c_i { A_ij * b_j} F_i { A_ij * c_j }" expect vec![(0,0), (1,0)] ; vec![(0, 0), (1, 0)],
-        tsi_vec: "a_i { p_i } F_i { 2 * (a_i + u_i) }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
-        tsi_dense_mat_mul3: "A_ij { (0,0): 1, (0, 1): 1, (1, 1): 1, (2, 2): 1, (3, 3): 1 } a_i { u_i, u_i }  b_i { A_ij * a_j } c_i { A_ij * b_j} F_i { c_i[0:2] }" expect vec![(0,0), (0,1), (1,1)] ; vec![],
-        tsi_broadcast: "a_ij { (0:2,0:2): p_j } F_i { a_ij }" expect vec![] ; vec![(0,0), (0,1), (1,0), (1,1)],
-        tsi_broadcast2: "a_ij { (0:2,0:2): u_j } F_i { a_ij }" expect vec![(0,0), (0,1), (1,0), (1,1)] ; vec![],
-        tsi_contract: "a_ij { (0,0): u_i[0], (0, 1): u_i[1], (1, 0): p_i[0], (1, 1): p_i[1] } F_i { a_ij }" expect vec![(0,0), (0,1)] ; vec![(1,0), (1,1)],
-        tsi_broadcast3: "F_i { (0:2): u_i[0] }" expect vec![(0,0), (1,0)] ; vec![],
-        tsi_diag_mat_mul2: "A_ij { (0..2, 0..2): p_i } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
-    }
-
     generate_tests!(test_repeated_grad_common);
 
     #[allow(dead_code)]

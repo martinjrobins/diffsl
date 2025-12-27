@@ -251,6 +251,15 @@ impl<'s> DiscreteModel<'s> {
             match Layout::concatenate(&elmts, rank) {
                 Ok(layout) => {
                     let layout = env.new_layout_ptr(layout);
+                    // if sparse, filter out zero elements
+                    let elmts = if layout.is_sparse() {
+                        elmts
+                            .into_iter()
+                            .filter(|e| !matches!(e.expr().kind, AstKind::Number(0.0)))
+                            .collect::<Vec<_>>()
+                    } else {
+                        elmts
+                    };
                     let tensor = Tensor::new(array.name(), elmts, layout, array.indices().to_vec());
 
                     //check that the number of indices matches the rank
@@ -1406,6 +1415,47 @@ mod tests {
         assert_eq!(discrete_model.take_mass_input_deps(), vec![(0, 0), (1, 1)]);
     }
 
+    #[test]
+    fn tensor_state_input_dep_logistic_test() {
+        let full_text = "
+            in_i { r = 1, k = 1 }
+            u_i {
+                y = 0.1,
+                z = 0,
+            }
+            dudt_i {
+                dydt = 0,
+                dzdt = 0,
+            }
+            M_i {
+                dydt,
+                0,
+            }
+            F_i {
+                (r * y) * (1 - (y / k)),
+                (2 * y) - z,
+            }
+            out_i {
+                3 * y,
+                4 * z,
+            }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let mut discrete_model =
+            DiscreteModel::build("tensor_state_input_dep_logistic_test", &model).unwrap();
+        assert_eq!(discrete_model.take_state0_input_deps(), vec![]);
+        assert_eq!(discrete_model.take_dstate0_input_deps(), vec![]);
+        assert_eq!(
+            discrete_model.take_rhs_state_deps(),
+            vec![(0, 0), (1, 0), (1, 1)]
+        );
+        assert_eq!(discrete_model.take_rhs_input_deps(), vec![(0, 0), (0, 1)]);
+        assert_eq!(discrete_model.take_out_state_deps(), vec![(0, 0), (1, 1)]);
+        assert_eq!(discrete_model.take_out_input_deps(), vec![]);
+        assert_eq!(discrete_model.take_mass_state_deps(), vec![(0, 0)]);
+        assert_eq!(discrete_model.take_mass_input_deps(), vec![]);
+    }
+
     macro_rules! tensor_state_input_dep_test {
         ($($name:ident: $text:literal expect $expected_state_state_deps:expr ; $expected_state_inputs_deps:expr,)*) => {
         $(
@@ -1458,6 +1508,7 @@ mod tests {
         tsi_diag_mat_mul2: "A_ij { (0..2, 0..2): p_i } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
         tsi_concat: "F_i { (0): u_i[0], (1): p_i[0] }" expect vec![(0,0)] ; vec![(1,0)],
         tsi_concat2: "a_ij { (0,0): u_i[0], (1,1): p_i[0] } F_i { a_ij }" expect vec![(0,0)] ; vec![(1,0)],
+        tsi_expr: "a_i { y = u_i[0], z = u_i[1] } b_i { r = p_i[0], k = p_i[1] } F_i { (r * y) * (1 - y / k), (2 * y) - z }" expect vec![(0,0), (1,0), (1,1)] ; vec![(0,0), (0,1)],
     }
 
     #[test]

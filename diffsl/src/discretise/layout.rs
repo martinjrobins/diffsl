@@ -184,7 +184,7 @@ impl Layout {
                 self.state_deps = indices;
                 // store the state0 input dependencies in the env since we don't want to propagate them further
                 env.state0_input_deps = mem::take(&mut self.input_deps);
-            },
+            }
             TensorType::StateDot => {
                 assert!(
                     self.state_deps.is_empty(),
@@ -193,7 +193,7 @@ impl Layout {
                 self.state_deps = indices;
                 // store the dstate0 input dependencies in the env since we don't want to propagate them further
                 env.dstate0_input_deps = mem::take(&mut self.input_deps);
-            },
+            }
             TensorType::Input => {
                 assert! {
                     self.input_deps.is_empty(),

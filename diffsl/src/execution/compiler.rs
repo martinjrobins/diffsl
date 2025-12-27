@@ -2052,7 +2052,7 @@ mod tests {
             let inputs = vec![1.1];
             compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
 
-            let inputs = compiler.get_tensor_data("k", data.as_slice()).unwrap();
+            let inputs = compiler.get_tensor_data("in", data.as_slice()).unwrap();
             assert_relative_eq!(inputs, vec![1.1].as_slice());
 
             let mut id = vec![0.0, 0.0];

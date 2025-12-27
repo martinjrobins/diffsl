@@ -15,6 +15,7 @@ use crate::ast::Indice;
 use crate::ast::StringSpan;
 use crate::continuous::ModelInfo;
 use crate::continuous::Variable;
+use crate::discretise::layout::NonZero;
 
 use super::Env;
 use super::Index;
@@ -196,7 +197,11 @@ impl<'s> DiscreteModel<'s> {
                             ));
                         }
 
-                        elmt_layout.add_tensor_dependencies(tensor_type, start[0], env);
+                        elmt_layout.add_tensor_dependencies(
+                            tensor_type,
+                            *start.get(0).unwrap_or(&0),
+                            env,
+                        );
 
                         // make sure arc layouts are unique
                         // TODO: if we always use arc layout for the recursion, we can reuse existing ones
@@ -509,47 +514,25 @@ impl<'s> DiscreteModel<'s> {
             Self::check_match(ret.lhs.as_ref().unwrap(), &ret.state, span, &mut env);
         }
 
+        let map_dep = |deps: &Vec<NonZero>| -> Vec<(usize, usize)> {
+            deps.iter()
+                .map(|(i, j)| (*i.get(0).unwrap_or(&0) as usize, *j))
+                .collect()
+        };
+
         // store the dependencies in the discrete model
-        ret.state0_input_deps = env
-            .state0_input_deps
-            .iter()
-            .map(|(i, j)| (i[0] as usize, *j))
-            .collect();
-        ret.rhs_input_deps = ret
-            .rhs
-            .layout()
-            .input_dependencies()
-            .iter()
-            .map(|(i, j)| (i[0] as usize, *j))
-            .collect();
-        ret.rhs_state_deps = ret
-            .rhs
-            .layout()
-            .state_dependencies()
-            .iter()
-            .map(|(i, j)| (i[0] as usize, *j))
-            .collect();
+        ret.state0_input_deps = map_dep(&env.state0_input_deps);
+        ret.rhs_input_deps = map_dep(ret.rhs.layout().input_dependencies());
+        ret.rhs_state_deps = map_dep(ret.rhs.layout().state_dependencies());
         ret.out_input_deps = ret
             .out
             .as_ref()
-            .map(|o| {
-                o.layout()
-                    .input_dependencies()
-                    .iter()
-                    .map(|(i, j)| (i[0] as usize, *j))
-                    .collect()
-            })
+            .map(|o| map_dep(o.layout().input_dependencies()))
             .unwrap_or_default();
         ret.out_state_deps = ret
             .out
             .as_ref()
-            .map(|o| {
-                o.layout()
-                    .state_dependencies()
-                    .iter()
-                    .map(|(i, j)| (i[0] as usize, *j))
-                    .collect()
-            })
+            .map(|o| map_dep(o.layout().state_dependencies()))
             .unwrap_or_default();
 
         if env.errs().is_empty() {

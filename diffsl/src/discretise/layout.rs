@@ -85,35 +85,14 @@ impl Layout {
         a.dedup();
         a
     }
-    
-    /// Intersect two dependency lists, a dependency is included in the result if it is present in both lists.
-    fn intersect_deps(a: Vec<NonZero>, b: Vec<NonZero>) -> Vec<NonZero> {
-        let mut intersected_deps = Vec::new();
-        let mut a_iter = a.iter();
-        let mut b_iter = b.iter();
-        let mut current_a = a_iter.next();
-        let mut current_b = b_iter.next();
-        while let (Some((ref a_index, a_j)), Some((ref b_index, b_j))) = (current_a, current_b) {
-            match Self::cmp_index(a_index, b_index) {
-                std::cmp::Ordering::Less => {
-                    current_a = a_iter.next();
-                }
-                std::cmp::Ordering::Greater => {
-                    current_b = b_iter.next();
-                }
-                std::cmp::Ordering::Equal => {
-                    intersected_deps.push((a_index.clone(), *a_j));
-                    current_a = a_iter.next();
-                    current_b = b_iter.next();
-                }
-            }
-        }
-        intersected_deps
-    }
-    
+
     /// Filter dependencies to only include those with indices in the provided iterator. The iterator will always
     /// be in the same sorted order as deps.
-    fn filter_deps(new_deps_rank: usize, deps: Vec<NonZero>, filtered_indices: impl Iterator<Item = Index>) -> Vec<NonZero> {
+    fn filter_deps(
+        new_deps_rank: usize,
+        deps: Vec<NonZero>,
+        filtered_indices: impl Iterator<Item = Index>,
+    ) -> Vec<NonZero> {
         let mut filtered_deps = Vec::new();
         let mut dep_iter = deps.iter();
         let mut current_dep = dep_iter.next();
@@ -393,7 +372,7 @@ impl Layout {
     }
 
     // create a new layout by broadcasting a list of layouts
-    pub fn broadcast(mut layouts: Vec<Layout>, op: Option<char>) -> Result<Layout> {
+    pub fn broadcast(layouts: Vec<Layout>, op: Option<char>) -> Result<Layout> {
         // the shapes of the layouts must be broadcastable
         let shapes = layouts.iter().map(|x| &x.shape).collect::<Vec<_>>();
         let shape = match broadcast_shapes(&shapes[..]) {
@@ -408,24 +387,22 @@ impl Layout {
             }
         };
 
-
         let is_call = op.is_none();
         let is_divide = if let Some(op) = op { op == '/' } else { false };
         let is_multiply = if let Some(op) = op { op == '*' } else { false };
         let is_multiply_or_divide = is_multiply || is_divide;
-        
-        
+
         let mut broadcasted_layouts: Vec<Layout> = layouts
-                .iter()
-                .map(|l| l.broadcast_to_shape(&shape))
-                .collect();
-        
+            .iter()
+            .map(|l| l.broadcast_to_shape(&shape))
+            .collect();
+
         let mut ret = broadcasted_layouts.pop().unwrap();
-        let mut dep_sources = vec![ret.clone()];
+        if is_call {
+            ret.to_dense();
+        }
         let mut first = true;
         for layout in broadcasted_layouts.drain(..).rev() {
-            dep_sources.push(layout.clone());
-
             // if a / b, with b is sparse and a being a dense or different sparse layout, then we have a divide by zero issue
             if first && is_divide && ret.is_sparse() && (layout.is_dense() || !ret.eq(&layout)) {
                 return Err(anyhow!("divide-by-zero detected, cannot only divide by a sparse layout if the numerator has the same sparsity pattern"));
@@ -501,19 +478,9 @@ impl Layout {
         if self.is_dense() {
             return;
         }
-        let mut new_layout = Layout {
-            indices: Vec::new(),
-            state_deps: Vec::new(),
-            input_deps: Vec::new(),
-            shape: self.shape.clone(),
-            kind: LayoutKind::Dense,
-            n_dense_axes: self.shape.len(),
-        };
-        let (state_deps, input_deps) =
-            self.remap_self_dependencies(|idx| vec![Self::fit_index_len(idx, new_layout.rank())]);
-        new_layout.state_deps = state_deps;
-        new_layout.input_deps = input_deps;
-        *self = new_layout;
+        self.indices = Vec::new();
+        self.kind = LayoutKind::Dense;
+        self.n_dense_axes = self.shape.len();
     }
 
     pub fn to_sparse(&mut self) {
@@ -537,19 +504,8 @@ impl Layout {
                 unreachable!("already sparse");
             }
         }
-        let mut new_layout = Layout {
-            indices: new_indices,
-            state_deps: Vec::new(),
-            input_deps: Vec::new(),
-            shape: self.shape.clone(),
-            kind: LayoutKind::Sparse,
-            n_dense_axes: self.n_dense_axes,
-        };
-        let (state_deps, input_deps) =
-            self.remap_self_dependencies(|idx| vec![Self::fit_index_len(idx, new_layout.rank())]);
-        new_layout.state_deps = state_deps;
-        new_layout.input_deps = input_deps;
-        *self = new_layout;
+        self.indices = new_indices;
+        self.kind = LayoutKind::Sparse;
     }
 
     pub fn new_empty(rank: usize) -> Self {
@@ -562,8 +518,7 @@ impl Layout {
             n_dense_axes: rank,
         }
     }
-    
-    
+
     pub fn new_scalar() -> Self {
         Layout {
             indices: vec![],
@@ -597,24 +552,42 @@ impl Layout {
             n_dense_axes: 0,
         }
     }
-    
-    /// filters the dependencies of layout, which is assumed to be a dense 1d layout, to only include those in the range [start, end)
-    /// and assigns them to self
+
+    /// filters the dependencies of layout, which is assumed to be a dense vector layout, to only include those in the range [start, end)
+    /// subtracting start from the indices and assigning the filtered dependencies to self
     pub fn filter_deps_from(&mut self, mut layout: Layout, start: i64, end: i64) {
         assert!(layout.is_dense());
-        assert!(layout.rank() == 1);
+        assert!(layout.shape.iter().filter(|&&x| x > 1).count() <= 1);
+        let axis = layout.shape.iter().position(|&x| x > 1).unwrap_or(0);
+        // assert only one possible axis
         let layout_state_deps = mem::take(&mut layout.state_deps);
         let layout_input_deps = mem::take(&mut layout.input_deps);
         let indices = layout.indices().filter(|idx| {
-            let i = idx[0];
+            let i = idx[axis];
             i >= start && i < end
         });
-        self.state_deps = Self::filter_deps(self.rank(), layout_state_deps, indices);
+        self.state_deps = Self::filter_deps(self.rank(), layout_state_deps, indices)
+            .into_iter()
+            .map(|(mut idx, j)| {
+                if idx.len() > axis {
+                    idx[axis] -= start;
+                }
+                (idx, j)
+            })
+            .collect();
         let indices = layout.indices().filter(|idx| {
-            let i = idx[0];
+            let i = idx[axis];
             i >= start && i < end
         });
-        self.input_deps = Self::filter_deps(self.rank(), layout_input_deps, indices);
+        self.input_deps = Self::filter_deps(self.rank(), layout_input_deps, indices)
+            .into_iter()
+            .map(|(mut idx, j)| {
+                if idx.len() > axis {
+                    idx[axis] -= start;
+                }
+                (idx, j)
+            })
+            .collect();
     }
 
     // concatenate a list of layouts along the first axis
@@ -1017,7 +990,6 @@ impl Layout {
 
         // sort the indices in standard ordering
         indices.sort_by(Self::cmp_index);
-        
 
         // any layout needs to adjust its dependencies due to broadcasting
         let new_rank = shape.len();
@@ -1038,7 +1010,6 @@ impl Layout {
             }
             new_broadcast_indices
         });
-            
 
         if self.rank() == shape.len() {
             Self {
@@ -1189,8 +1160,7 @@ impl Layout {
         new_layout.input_deps = input_deps;
         *self = new_layout;
     }
-    
-    
+
     /// the result is the dense union of the two layouts (i.e. from a call where f(0,0) != 0)
     /// result is always dense
     pub fn union_dense(self, other: Layout) -> Self {
@@ -1209,7 +1179,7 @@ impl Layout {
     }
 
     /// the result is the union of the two layouts (i.e. from addition/subtraction or any function where f(0,0) = 0
-    /// 
+    ///
     /// 1. union deps
     /// 2. if either layout is dense, return dense layout
     /// 3. if both layouts are diagonal with same number of dense axes, return diagonal layout
@@ -1222,29 +1192,35 @@ impl Layout {
         );
 
         // 1. union deps
-        let state_deps = Layout::merge_deps(self.state_deps, other.state_deps);
-        let input_deps = Layout::merge_deps(self.input_deps, other.input_deps);
-        
+        let state_deps = Layout::merge_deps(
+            mem::take(&mut self.state_deps),
+            mem::take(&mut other.state_deps),
+        );
+        let input_deps = Layout::merge_deps(
+            mem::take(&mut self.input_deps),
+            mem::take(&mut other.input_deps),
+        );
+
         // if either layout is dense, return dense layout
         if self.is_dense() {
             self.state_deps = state_deps;
             self.input_deps = input_deps;
             return self;
         }
-        
+
         if other.is_dense() {
             other.state_deps = state_deps;
             other.input_deps = input_deps;
             return other;
         }
-        
+
         // if both layouts are diagonal with same number of dense axes, return diagonal layout
         if self.is_diagonal() && other.is_diagonal() && self.n_dense_axes == other.n_dense_axes {
-           self.state_deps = state_deps;
-           self.input_deps = input_deps;
-           return self;
+            self.state_deps = state_deps;
+            self.input_deps = input_deps;
+            return self;
         }
-        
+
         // convert any diagonal layout to sparse
         if self.is_diagonal() {
             self.to_sparse();
@@ -1252,7 +1228,7 @@ impl Layout {
         if other.is_diagonal() {
             other.to_sparse();
         }
-        
+
         // union indices, return the resulting sparse layout
         if self.n_dense_axes > other.n_dense_axes {
             self.remove_dense_axes(other.n_dense_axes);
@@ -1268,7 +1244,7 @@ impl Layout {
     }
 
     /// the result is the intersection of the two layouts (i.e. from multiplication)
-    /// 
+    ///
     /// 1. start from sparsest layout (sparse, or self if both sparse)
     /// 2. intersect deps
     /// 3. if the remaining layout is dense, we're done
@@ -1276,12 +1252,11 @@ impl Layout {
     /// 5. if remaining layout is diagonal, convert it to sparse
     /// 6. must have two sparse layouts now, so intersect indices
     pub fn intersect(self, other: Layout) -> Self {
-        
         assert!(
             self.shape == other.shape,
             "can only intersect layouts with the same shape"
         );
-        
+
         // 1. start from sparsest layout (sparse, or self if both sparse)
         let mut sparse_layout: Layout;
         let mut other_layout: Layout;
@@ -1301,47 +1276,56 @@ impl Layout {
             sparse_layout = self;
             other_layout = other;
         }
-        
-        
-        // 2. intersect deps
-        let state_deps = Layout::intersect_deps(
-            sparse_layout.state_deps,
-            other_layout.state_deps,
-        );
-        let input_deps = Layout::intersect_deps(
-            sparse_layout.input_deps,
-            other_layout.input_deps,
-        );
-        
-        
+
         // 3. if the remaining layout is dense, we're done, return the sparse layout
         if other_layout.is_dense() {
-            let mut ret = Layout {
+            let state_deps = Layout::merge_deps(
+                mem::take(&mut sparse_layout.state_deps),
+                mem::take(&mut other_layout.state_deps),
+            );
+            let input_deps = Layout::merge_deps(
+                mem::take(&mut sparse_layout.input_deps),
+                mem::take(&mut other_layout.input_deps),
+            );
+            let state_deps =
+                Layout::filter_deps(sparse_layout.rank(), state_deps, sparse_layout.indices());
+            let input_deps =
+                Layout::filter_deps(sparse_layout.rank(), input_deps, sparse_layout.indices());
+            return Layout {
                 indices: sparse_layout.indices.clone(),
                 state_deps,
                 input_deps,
-                shape: self.shape.clone(),
+                shape: sparse_layout.shape.clone(),
                 kind: sparse_layout.kind.clone(),
                 n_dense_axes: sparse_layout.n_dense_axes,
             };
-            return ret;
         }
-        
+
         // 4. if both layouts are diagonal with same number of dense axes, we're done
-        if sparse_layout.is_diagonal() && other_layout.is_diagonal() &&
-           sparse_layout.n_dense_axes == other_layout.n_dense_axes {
+        if sparse_layout.is_diagonal()
+            && other_layout.is_diagonal()
+            && sparse_layout.n_dense_axes == other_layout.n_dense_axes
+        {
+            let state_deps = Layout::merge_deps(
+                mem::take(&mut sparse_layout.state_deps),
+                mem::take(&mut other_layout.state_deps),
+            );
+            let input_deps = Layout::merge_deps(
+                mem::take(&mut sparse_layout.input_deps),
+                mem::take(&mut other_layout.input_deps),
+            );
             let n_dense_axes = sparse_layout.n_dense_axes;
             let ret = Layout {
                 indices: Vec::new(),
                 state_deps,
                 input_deps,
-                shape: self.shape.clone(),
+                shape: sparse_layout.shape.clone(),
                 kind: LayoutKind::Diagonal,
                 n_dense_axes,
             };
             return ret;
         }
-        
+
         // convert any diagonal layout to sparse
         if other_layout.is_diagonal() {
             other_layout.to_sparse();
@@ -1349,7 +1333,7 @@ impl Layout {
         if sparse_layout.is_diagonal() {
             sparse_layout.to_sparse();
         }
-        
+
         // we must have two sparse layouts now, so intersect indices
         if sparse_layout.n_dense_axes > other_layout.n_dense_axes {
             sparse_layout.remove_dense_axes(other_layout.n_dense_axes);
@@ -1377,12 +1361,23 @@ impl Layout {
 
         let mut ret = Layout {
             indices: new_indices,
-            state_deps,
-            input_deps,
-            shape: self.shape.clone(),
+            state_deps: Vec::new(),
+            input_deps: Vec::new(),
+            shape: sparse_layout.shape.clone(),
             kind: LayoutKind::Sparse,
             n_dense_axes: sparse_layout.n_dense_axes,
         };
+
+        let state_deps = Layout::merge_deps(
+            mem::take(&mut sparse_layout.state_deps),
+            mem::take(&mut other_layout.state_deps),
+        );
+        let input_deps = Layout::merge_deps(
+            mem::take(&mut sparse_layout.input_deps),
+            mem::take(&mut other_layout.input_deps),
+        );
+        ret.state_deps = Layout::filter_deps(sparse_layout.rank(), state_deps, ret.indices());
+        ret.input_deps = Layout::filter_deps(sparse_layout.rank(), input_deps, ret.indices());
 
         if ret.indices.len() == ret.shape.product() {
             ret.kind = LayoutKind::Dense;
@@ -1484,26 +1479,26 @@ mod tests {
 
     #[test]
     fn test_union_sparse_layouts() {
-        let mut layout1 = Layout::sparse(
+        let layout1 = Layout::sparse(
             vec![Index::from(vec![0, 0]), Index::from(vec![1, 1])],
             Shape::from(vec![2, 2]),
         );
         let layout2 = Layout::sparse(vec![Index::from(vec![1, 0])], Shape::from(vec![2, 2]));
-        layout1.union_inplace(layout2);
-        assert_eq!(layout1.indices.len(), 3);
+        let layout3 = Layout::union(layout1, layout2);
+        assert_eq!(layout3.indices.len(), 3);
 
         let mut layout1 = Layout::sparse(vec![Index::from(vec![1])], Shape::from(vec![2, 2]));
         layout1.n_dense_axes = 1;
         let layout2 = Layout::sparse(vec![Index::from(vec![1, 0])], Shape::from(vec![2, 2]));
-        layout1.union_inplace(layout2);
-        assert_eq!(layout1.indices.len(), 2);
-        assert_eq!(layout1.indices[0], Index::from(vec![1, 0]));
-        assert_eq!(layout1.indices[1], Index::from(vec![1, 1]));
+        let layout3 = Layout::union(layout1, layout2);
+        assert_eq!(layout3.indices.len(), 2);
+        assert_eq!(layout3.indices[0], Index::from(vec![1, 0]));
+        assert_eq!(layout3.indices[1], Index::from(vec![1, 1]));
     }
 
     #[test]
     fn test_intersect_sparse_layouts() {
-        let mut layout1 = Layout::sparse(
+        let layout1 = Layout::sparse(
             vec![Index::from(vec![0, 0]), Index::from(vec![1, 1])],
             Shape::from(vec![2, 2]),
         );
@@ -1511,16 +1506,16 @@ mod tests {
             vec![Index::from(vec![1, 0]), Index::from(vec![1, 1])],
             Shape::from(vec![2, 2]),
         );
-        layout1.intersect_inplace(layout2);
-        assert_eq!(layout1.indices.len(), 1);
-        assert_eq!(layout1.indices[0], Index::from(vec![1, 1]));
+        let layout3 = Layout::intersect(layout1, layout2);
+        assert_eq!(layout3.indices.len(), 1);
+        assert_eq!(layout3.indices[0], Index::from(vec![1, 1]));
 
         let mut layout1 = Layout::sparse(vec![Index::from(vec![1])], Shape::from(vec![2, 2]));
         layout1.n_dense_axes = 1;
         let layout2 = Layout::sparse(vec![Index::from(vec![1, 0])], Shape::from(vec![2, 2]));
-        layout1.intersect_inplace(layout2);
-        assert_eq!(layout1.indices.len(), 1);
-        assert_eq!(layout1.indices[0], Index::from(vec![1, 0]));
+        let layout3 = Layout::intersect(layout1, layout2);
+        assert_eq!(layout3.indices.len(), 1);
+        assert_eq!(layout3.indices[0], Index::from(vec![1, 0]));
     }
 
     #[test]
@@ -1590,8 +1585,7 @@ mod tests {
         let mut layout2 = Layout::sparse(vec![Index::from(vec![1, 1])], Shape::from(vec![2, 2]));
         layout2.input_deps = vec![(Index::from(vec![1, 1]), 2)];
 
-        let mut union_layout = layout1.clone();
-        union_layout.union_inplace(layout2.clone());
+        let union_layout = Layout::union(layout1, layout2);
         assert_eq!(
             union_layout.indices,
             vec![Index::from(vec![0, 0]), Index::from(vec![1, 1])]
@@ -1609,20 +1603,20 @@ mod tests {
         let mut layout4 = Layout::sparse(vec![Index::from(vec![1, 1])], Shape::from(vec![2, 2]));
         layout4.state_deps = vec![(Index::from(vec![1, 1]), 5)];
 
-        layout3.intersect_inplace(layout4);
-        assert_eq!(layout3.indices, vec![Index::from(vec![1, 1])]);
+        let layout5 = Layout::intersect(layout3, layout4);
+        assert_eq!(layout5.indices, vec![Index::from(vec![1, 1])]);
         assert_eq!(
-            layout3.state_deps,
+            layout5.state_deps,
             vec![(Index::from(vec![1, 1]), 5), (Index::from(vec![1, 1]), 9)]
         );
-        assert_eq!(layout3.input_deps, vec![(Index::from(vec![0, 0]), 8)]);
+        assert_eq!(layout5.input_deps, vec![]);
     }
 
     #[test]
     fn test_filter_deps_from_basic() {
         // Test basic filtering with a dense 1D layout
         let mut target_layout = Layout::dense(Shape::from(vec![5]));
-        
+
         let mut source_layout = Layout::dense(Shape::from(vec![10]));
         source_layout.state_deps = vec![
             (Index::from(vec![0]), 0),
@@ -1648,19 +1642,16 @@ mod tests {
         assert_eq!(
             target_layout.state_deps,
             vec![
-                (Index::from(vec![2]), 2),
-                (Index::from(vec![3]), 3),
-                (Index::from(vec![4]), 4),
-                (Index::from(vec![5]), 5),
-                (Index::from(vec![6]), 6),
+                (Index::from(vec![0]), 2),
+                (Index::from(vec![1]), 3),
+                (Index::from(vec![2]), 4),
+                (Index::from(vec![3]), 5),
+                (Index::from(vec![4]), 6),
             ]
         );
         assert_eq!(
             target_layout.input_deps,
-            vec![
-                (Index::from(vec![3]), 11),
-                (Index::from(vec![5]), 12),
-            ]
+            vec![(Index::from(vec![1]), 11), (Index::from(vec![3]), 12),]
         );
     }
 
@@ -1668,7 +1659,7 @@ mod tests {
     fn test_filter_deps_from_start_of_range() {
         // Test filtering from the start of the layout
         let mut target_layout = Layout::dense(Shape::from(vec![3]));
-        
+
         let mut source_layout = Layout::dense(Shape::from(vec![8]));
         source_layout.state_deps = vec![
             (Index::from(vec![0]), 0),
@@ -1676,10 +1667,7 @@ mod tests {
             (Index::from(vec![2]), 2),
             (Index::from(vec![5]), 5),
         ];
-        source_layout.input_deps = vec![
-            (Index::from(vec![0]), 10),
-            (Index::from(vec![2]), 12),
-        ];
+        source_layout.input_deps = vec![(Index::from(vec![0]), 10), (Index::from(vec![2]), 12)];
 
         // Filter to include indices 0..3
         target_layout.filter_deps_from(source_layout, 0, 3);
@@ -1694,10 +1682,7 @@ mod tests {
         );
         assert_eq!(
             target_layout.input_deps,
-            vec![
-                (Index::from(vec![0]), 10),
-                (Index::from(vec![2]), 12),
-            ]
+            vec![(Index::from(vec![0]), 10), (Index::from(vec![2]), 12),]
         );
     }
 
@@ -1705,7 +1690,7 @@ mod tests {
     fn test_filter_deps_from_end_of_range() {
         // Test filtering from the end of the layout
         let mut target_layout = Layout::dense(Shape::from(vec![3]));
-        
+
         let mut source_layout = Layout::dense(Shape::from(vec![8]));
         source_layout.state_deps = vec![
             (Index::from(vec![2]), 2),
@@ -1713,10 +1698,7 @@ mod tests {
             (Index::from(vec![6]), 6),
             (Index::from(vec![7]), 7),
         ];
-        source_layout.input_deps = vec![
-            (Index::from(vec![5]), 15),
-            (Index::from(vec![7]), 17),
-        ];
+        source_layout.input_deps = vec![(Index::from(vec![5]), 15), (Index::from(vec![7]), 17)];
 
         // Filter to include indices 5..8
         target_layout.filter_deps_from(source_layout, 5, 8);
@@ -1724,17 +1706,14 @@ mod tests {
         assert_eq!(
             target_layout.state_deps,
             vec![
-                (Index::from(vec![5]), 5),
-                (Index::from(vec![6]), 6),
-                (Index::from(vec![7]), 7),
+                (Index::from(vec![0]), 5),
+                (Index::from(vec![1]), 6),
+                (Index::from(vec![2]), 7),
             ]
         );
         assert_eq!(
             target_layout.input_deps,
-            vec![
-                (Index::from(vec![5]), 15),
-                (Index::from(vec![7]), 17),
-            ]
+            vec![(Index::from(vec![0]), 15), (Index::from(vec![2]), 17),]
         );
     }
 
@@ -1742,7 +1721,7 @@ mod tests {
     fn test_filter_deps_from_no_match_in_range() {
         // Test filtering when no dependencies fall in the range
         let mut target_layout = Layout::dense(Shape::from(vec![3]));
-        
+
         let mut source_layout = Layout::dense(Shape::from(vec![10]));
         source_layout.state_deps = vec![
             (Index::from(vec![0]), 0),
@@ -1750,10 +1729,7 @@ mod tests {
             (Index::from(vec![8]), 8),
             (Index::from(vec![9]), 9),
         ];
-        source_layout.input_deps = vec![
-            (Index::from(vec![0]), 10),
-            (Index::from(vec![9]), 19),
-        ];
+        source_layout.input_deps = vec![(Index::from(vec![0]), 10), (Index::from(vec![9]), 19)];
 
         // Filter to include indices 3..6 (no deps in this range)
         target_layout.filter_deps_from(source_layout, 3, 6);
@@ -1766,29 +1742,27 @@ mod tests {
     fn test_filter_deps_from_single_index_range() {
         // Test filtering with a single index range
         let mut target_layout = Layout::dense(Shape::from(vec![1]));
-        
+
         let mut source_layout = Layout::dense(Shape::from(vec![5]));
         source_layout.state_deps = vec![
             (Index::from(vec![0]), 0),
             (Index::from(vec![2]), 2),
             (Index::from(vec![3]), 3),
         ];
-        source_layout.input_deps = vec![
-            (Index::from(vec![2]), 12),
-        ];
+        source_layout.input_deps = vec![(Index::from(vec![2]), 12)];
 
         // Filter to include only index 2
         target_layout.filter_deps_from(source_layout, 2, 3);
 
-        assert_eq!(target_layout.state_deps, vec![(Index::from(vec![2]), 2)]);
-        assert_eq!(target_layout.input_deps, vec![(Index::from(vec![2]), 12)]);
+        assert_eq!(target_layout.state_deps, vec![(Index::from(vec![0]), 2)]);
+        assert_eq!(target_layout.input_deps, vec![(Index::from(vec![0]), 12)]);
     }
 
     #[test]
     fn test_filter_deps_from_empty_source() {
         // Test filtering when source has no dependencies
         let mut target_layout = Layout::dense(Shape::from(vec![5]));
-        
+
         let source_layout = Layout::dense(Shape::from(vec![10]));
         // source_layout has no dependencies
 
@@ -1802,7 +1776,7 @@ mod tests {
     fn test_filter_deps_from_full_range() {
         // Test filtering with the full range of the source layout
         let mut target_layout = Layout::dense(Shape::from(vec![5]));
-        
+
         let mut source_layout = Layout::dense(Shape::from(vec![5]));
         source_layout.state_deps = vec![
             (Index::from(vec![0]), 0),
@@ -1811,10 +1785,7 @@ mod tests {
             (Index::from(vec![3]), 3),
             (Index::from(vec![4]), 4),
         ];
-        source_layout.input_deps = vec![
-            (Index::from(vec![1]), 11),
-            (Index::from(vec![3]), 13),
-        ];
+        source_layout.input_deps = vec![(Index::from(vec![1]), 11), (Index::from(vec![3]), 13)];
 
         // Filter to include all indices 0..5
         target_layout.filter_deps_from(source_layout, 0, 5);
@@ -1831,10 +1802,7 @@ mod tests {
         );
         assert_eq!(
             target_layout.input_deps,
-            vec![
-                (Index::from(vec![1]), 11),
-                (Index::from(vec![3]), 13),
-            ]
+            vec![(Index::from(vec![1]), 11), (Index::from(vec![3]), 13),]
         );
     }
 
@@ -1852,10 +1820,7 @@ mod tests {
 
         // Create a dense 1D layout with state dependencies
         let mut dense_1d = Layout::dense(Shape::from(vec![2]));
-        dense_1d.state_deps = vec![
-            (Index::from(vec![0]), 0),
-            (Index::from(vec![1]), 1),
-        ];
+        dense_1d.state_deps = vec![(Index::from(vec![0]), 0), (Index::from(vec![1]), 1)];
 
         // Broadcast with addition operation
         let result = Layout::broadcast(vec![sparse_2d.clone(), dense_1d.clone()], Some('+'))?;
@@ -1884,22 +1849,16 @@ mod tests {
     fn test_broadcast_sparse_2d_with_dense_1d_multiply() -> Result<()> {
         // Create a sparse 2D layout
         let sparse_2d = Layout::sparse(
-            vec![
-                Index::from(vec![0, 0]),
-                Index::from(vec![1, 1]),
-            ],
+            vec![Index::from(vec![0, 0]), Index::from(vec![1, 1])],
             Shape::from(vec![2, 2]),
         );
 
         // Create a dense 1D layout with state dependencies
         let mut dense_1d = Layout::dense(Shape::from(vec![2]));
-        dense_1d.state_deps = vec![
-            (Index::from(vec![0]), 0),
-            (Index::from(vec![1]), 1),
-        ];
+        dense_1d.state_deps = vec![(Index::from(vec![0]), 0), (Index::from(vec![1]), 1)];
 
         // Broadcast with multiplication operation
-        let result = Layout::broadcast(vec![sparse_2d.clone(), dense_1d.clone()], Some('*'))?;
+        let result = Layout::broadcast(vec![sparse_2d, dense_1d], Some('*'))?;
 
         // When multiplying diagonal sparse with dense, result is diagonal
         assert!(result.is_diagonal());
@@ -1908,10 +1867,7 @@ mod tests {
         // State dependencies only at diagonal positions (off-diagonal zeros eliminate dependencies)
         assert_eq!(
             result.state_deps,
-            vec![
-                (Index::from(vec![0, 0]), 0),
-                (Index::from(vec![1, 1]), 1),
-            ]
+            vec![(Index::from(vec![0, 0]), 0), (Index::from(vec![1, 1]), 1),]
         );
         assert_eq!(result.input_deps, vec![]);
 
@@ -1922,30 +1878,21 @@ mod tests {
     fn test_broadcast_sparse_2d_with_dense_1d_mixed_deps() -> Result<()> {
         // Create a sparse 2D layout with its own dependencies
         let mut sparse_2d = Layout::sparse(
-            vec![
-                Index::from(vec![0, 1]),
-                Index::from(vec![1, 0]),
-            ],
+            vec![Index::from(vec![0, 1]), Index::from(vec![1, 0])],
             Shape::from(vec![2, 2]),
         );
-        sparse_2d.input_deps = vec![
-            (Index::from(vec![0, 1]), 5),
-            (Index::from(vec![1, 0]), 6),
-        ];
+        sparse_2d.input_deps = vec![(Index::from(vec![0, 1]), 5), (Index::from(vec![1, 0]), 6)];
 
         // Create a dense 1D layout with state dependencies
         let mut dense_1d = Layout::dense(Shape::from(vec![2]));
-        dense_1d.state_deps = vec![
-            (Index::from(vec![0]), 0),
-            (Index::from(vec![1]), 1),
-        ];
+        dense_1d.state_deps = vec![(Index::from(vec![0]), 0), (Index::from(vec![1]), 1)];
 
         // Broadcast with addition
         let result = Layout::broadcast(vec![sparse_2d.clone(), dense_1d.clone()], Some('+'))?;
 
         // Result should be dense when one operand is dense
         assert!(result.is_dense());
-        
+
         // State deps from dense_1d broadcast along first axis to all columns
         assert_eq!(
             result.state_deps,
@@ -1960,10 +1907,7 @@ mod tests {
         // Input deps from sparse_2d are broadcast to matching positions
         assert_eq!(
             result.input_deps,
-            vec![
-                (Index::from(vec![0, 1]), 5),
-                (Index::from(vec![1, 0]), 6),
-            ]
+            vec![(Index::from(vec![0, 1]), 5), (Index::from(vec![1, 0]), 6),]
         );
 
         Ok(())
@@ -1973,16 +1917,13 @@ mod tests {
     fn test_broadcast_1d_to_2d_dense_deps() {
         // Test broadcasting a 1D dense layout with dependencies to 2D
         let mut layout_1d = Layout::dense(Shape::from(vec![2]));
-        layout_1d.state_deps = vec![
-            (Index::from(vec![0]), 0),
-            (Index::from(vec![1]), 1),
-        ];
+        layout_1d.state_deps = vec![(Index::from(vec![0]), 0), (Index::from(vec![1]), 1)];
 
         let layout_2d = layout_1d.broadcast_to_shape(&Shape::from(vec![2, 2]));
-        
+
         assert!(layout_2d.is_dense());
         assert_eq!(layout_2d.shape(), &Shape::from(vec![2, 2]));
-        
+
         // Dependencies should be replicated across the new dimension
         assert_eq!(
             layout_2d.state_deps,
@@ -1999,25 +1940,18 @@ mod tests {
     fn test_1d_no_broadcast_preserves_deps() {
         // Test that a 1D layout used without broadcasting keeps its dependencies
         let mut layout_1d = Layout::dense(Shape::from(vec![2]));
-        layout_1d.state_deps = vec![
-            (Index::from(vec![0]), 0),
-            (Index::from(vec![1]), 1),
-        ];
+        layout_1d.state_deps = vec![(Index::from(vec![0]), 0), (Index::from(vec![1]), 1)];
 
         // Using the same shape (no broadcast) should not change dependencies
         let same_layout = layout_1d.broadcast_to_shape(&Shape::from(vec![2]));
-        
+
         assert!(same_layout.is_dense());
         assert_eq!(same_layout.shape(), &Shape::from(vec![2]));
-        
+
         // Dependencies should remain 1D
         assert_eq!(
             same_layout.state_deps,
-            vec![
-                (Index::from(vec![0]), 0),
-                (Index::from(vec![1]), 1),
-            ]
+            vec![(Index::from(vec![0]), 0), (Index::from(vec![1]), 1),]
         );
     }
 }
-

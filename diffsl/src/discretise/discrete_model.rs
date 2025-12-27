@@ -121,7 +121,6 @@ impl<'s> DiscreteModel<'s> {
     fn build_array(
         array: &ast::Tensor<'s>,
         env: &mut Env,
-        force_dense: bool,
         tensor_type: TensorType,
     ) -> Option<Tensor<'s>> {
         let rank = array.indices().len();
@@ -159,7 +158,7 @@ impl<'s> DiscreteModel<'s> {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
                     if let Some((expr_layout, mut elmt_layout)) =
-                        env.get_layout_tensor_elmt(te, array.indices(), force_dense)
+                        env.get_layout_tensor_elmt(te, array.indices())
                     {
                         if rank == 0 && elmt_layout.rank() == 1 && elmt_layout.shape()[0] > 1 {
                             env.errs_mut().push(ValidationError::new(
@@ -213,12 +212,7 @@ impl<'s> DiscreteModel<'s> {
                         // TODO: if we always use arc layout for the recursion, we can reuse existing ones
                         // much more efficiently rather than creating new ones all the time
                         let elmt_layout = env.new_layout_ptr(elmt_layout);
-                        let expr_layout = if &expr_layout == elmt_layout.as_ref() {
-                            // if layouts match, we can use the elmt layout ptr
-                            elmt_layout.clone()
-                        } else {
-                            env.new_layout_ptr(expr_layout)
-                        };
+                        let expr_layout = env.new_layout_ptr(expr_layout);
 
                         elmts.push(TensorBlock::new(
                             name,
@@ -337,10 +331,17 @@ impl<'s> DiscreteModel<'s> {
                         "u" => {
                             read_state = true;
                             if let Some(built) =
-                                Self::build_array(tensor, &mut env, true, TensorType::State)
+                                Self::build_array(tensor, &mut env, TensorType::State)
                             {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "state 'u' must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.state = built;
                             }
+
                             if ret.state.rank() > 1 {
                                 env.errs_mut().push(ValidationError::new(
                                     "u must be a scalar or 1D vector".to_string(),
@@ -350,8 +351,15 @@ impl<'s> DiscreteModel<'s> {
                         }
                         "dudt" => {
                             if let Some(built) =
-                                Self::build_array(tensor, &mut env, true, TensorType::StateDot)
+                                Self::build_array(tensor, &mut env, TensorType::StateDot)
                             {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "state derivative 'dudt' must have a dense layout"
+                                            .to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.state_dot = Some(built);
                             }
                             if ret.state.rank() > 1 {
@@ -363,8 +371,14 @@ impl<'s> DiscreteModel<'s> {
                         }
                         "F" => {
                             if let Some(built) =
-                                Self::build_array(tensor, &mut env, true, TensorType::Other)
+                                Self::build_array(tensor, &mut env, TensorType::Other)
                             {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "RHS 'F' must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 span_f = Some(span);
                                 ret.rhs = built;
                             }
@@ -380,11 +394,18 @@ impl<'s> DiscreteModel<'s> {
                         }
                         "M" => {
                             if let Some(built) =
-                                Self::build_array(tensor, &mut env, true, TensorType::Other)
+                                Self::build_array(tensor, &mut env, TensorType::Other)
                             {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "LHS 'M' must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 span_m = Some(span);
                                 ret.lhs = Some(built);
                             }
+
                             // check that M is not state dependent and only depends on dudt
                             if let Some(m) = env.get("M") {
                                 if m.is_state_dependent() {
@@ -397,8 +418,14 @@ impl<'s> DiscreteModel<'s> {
                         }
                         "stop" => {
                             if let Some(built) =
-                                Self::build_array(tensor, &mut env, true, TensorType::Other)
+                                Self::build_array(tensor, &mut env, TensorType::Other)
                             {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "stop must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.stop = Some(built);
                             }
                             // check that stop is not dependent on dudt
@@ -413,8 +440,14 @@ impl<'s> DiscreteModel<'s> {
                         }
                         "out" => {
                             if let Some(built) =
-                                Self::build_array(tensor, &mut env, true, TensorType::Other)
+                                Self::build_array(tensor, &mut env, TensorType::Other)
                             {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "output 'out' must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 if built.rank() > 1 {
                                     env.errs_mut().push(ValidationError::new(
                                         "output shape must be a scalar or 1D vector".to_string(),
@@ -435,8 +468,14 @@ impl<'s> DiscreteModel<'s> {
                         }
                         "in" => {
                             if let Some(built) =
-                                Self::build_array(tensor, &mut env, true, TensorType::Input)
+                                Self::build_array(tensor, &mut env, TensorType::Input)
                             {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "input 'in' must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.input = Some(built);
                             }
                             if ret.state.rank() > 1 {
@@ -449,7 +488,7 @@ impl<'s> DiscreteModel<'s> {
 
                         _name => {
                             if let Some(built) =
-                                Self::build_array(tensor, &mut env, false, TensorType::Other)
+                                Self::build_array(tensor, &mut env, TensorType::Other)
                             {
                                 if let Some(env_entry) = env.get(built.name()) {
                                     let dependent_on_state = env_entry.is_state_dependent();
@@ -1375,7 +1414,6 @@ mod tests {
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2, 2) }",
         sparse_matrix_vect_multiply_zero_row: "A_ij { (0, 0): 1, (0, 1): 2 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (1) { (0)(1): A_ij * x_j (1, 2) }",
         mat_mul_sparse_vec_out: "A_ij { (1, 0): 2, (1, 1): 3 } x_i { (0:2): 1 } b_i { A_ij * x_j }" expect "b" = "b_i (2s) { (0)(2s): A_ij * x_j (2s, 2s) }",
-
     );
 
     #[test]
@@ -1491,7 +1529,7 @@ mod tests {
         tsi_just_p: "F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
         tsi_index: "F_i { u_i[1], p_i[0] }" expect vec![(0, 1)] ; vec![(1, 0)],
         tsi_index2: "F_i { u_i[1:2], p_i[0:1] }" expect vec![(0, 1)] ; vec![(1, 0)],
-        tsi_sparse_mat_mul: "A_ij { (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(1, 1)] ; vec![],
+        tsi_sparse_mat_mul: "A_ij { (1, 1): 1 } zeros_i { (0:2): 0, } F_i { A_ij * u_j + zeros_i }" expect vec![(1, 1)] ; vec![],
         tsi_sparse_mat_mul2: "A_ij { (0, 0): 1, (0, 1): 1, (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(0, 0), (0, 1), (1, 1)] ; vec![],
         tsi_diag_mat_mul: "A_ij { (0..2, 0..2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![],
         tsi_sparse_vec_add: "a_i { (1): u_i[0] }  F_i { a_i + u_i }" expect vec![(0, 0), (1, 0), (1, 1)] ; vec![],

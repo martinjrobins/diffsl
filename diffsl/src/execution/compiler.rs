@@ -1984,7 +1984,10 @@ mod tests {
             u_i {
                 (0:4): x = 1,
             }
-            c_i { A_ij * u_j }
+            zeros_i {
+                (0:4): 0,
+            }
+            c_i { A_ij * u_j  + zeros_i }
             F_i {
                 c_i,
             }
@@ -2237,5 +2240,43 @@ mod tests {
             du0.as_slice(),
             vec![T::from_f64(4.0).unwrap() * a[0] * da[0]].as_slice()
         );
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_blah() {
+        let n = 10;
+        let full_text = format!(
+            "
+        a_ij {{
+            (0..{},1..{}): 1.0,
+            (0..{},0..{}): 1.0,
+            (1..{},0..{}): 1.0
+        }}
+        u_i {{
+            (0:{}): 1 
+        }}
+        F_i {{
+            a_ij * u_j
+        }}
+        out_i {{
+            u_i 
+        }}
+        ",
+            n - 1,
+            n,
+            n,
+            n,
+            n,
+            n - 1,
+            n,
+        );
+        let model = parse_ds_string(&full_text).unwrap();
+        let discrete_model = DiscreteModel::build("blah", &model).unwrap();
+        Compiler::<crate::LlvmModule, f64>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+        )
+        .unwrap();
     }
 }

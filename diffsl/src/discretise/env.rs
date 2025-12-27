@@ -82,7 +82,7 @@ impl Env {
     /// create a new ArcLayout from a Layout, if the layout already exists in the env then return the existing one
     pub fn new_layout_ptr(&mut self, layout: Layout) -> ArcLayout {
         for var in self.vars.values() {
-            if var.layout.as_ref() == &layout {
+            if var.layout.as_ref().eq_nonzeros_and_deps(&layout) {
                 return var.layout.clone();
             }
         }
@@ -383,7 +383,6 @@ impl Env {
         &mut self,
         elmt: &ast::TensorElmt,
         indices: &[char],
-        force_dense: bool,
     ) -> Option<(Layout, Layout)> {
         let expr_indices = elmt.expr.get_indices();
         // get any indices from the expression that do not appear in 'indices' and add them to 'indices' to a new vector
@@ -410,10 +409,7 @@ impl Env {
             "calculating expr layout for tensor element with expr: {}",
             elmt.expr
         );
-        let mut expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
-        if force_dense {
-            expr_layout.to_dense();
-        }
+        let expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
 
         // broadcast the expression layout to the tensor rank
         // (tensor rank given by the number of indices)

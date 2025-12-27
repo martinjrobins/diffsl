@@ -2475,73 +2475,77 @@ impl<'ctx> CodeGen<'ctx> {
                         // we are doing an if statement so I think we need to return early here
                         let permutation =
                             DataLayout::permutation(elmt, iname.indices.as_slice(), layout);
-                        let base_binary_layout_index = self
-                            .layout
-                            .get_binary_layout_index(layout, expr_layout, permutation)
-                            .unwrap();
-                        let binary_layout_index = self.builder.build_int_add(
-                            self.int_type
-                                .const_int(base_binary_layout_index.try_into().unwrap(), false),
-                            expr_index,
-                            name,
-                        )?;
+                        if let Some(base_binary_layout_index) =
+                            self.layout
+                                .get_binary_layout_index(layout, expr_layout, permutation)
+                        {
+                            let binary_layout_index = self.builder.build_int_add(
+                                self.int_type
+                                    .const_int(base_binary_layout_index.try_into().unwrap(), false),
+                                expr_index,
+                                name,
+                            )?;
 
-                        let indices_ptr = Self::get_ptr_to_index(
-                            &self.builder,
-                            self.int_type,
-                            self.get_param("indices"),
-                            binary_layout_index,
-                            name,
-                        );
-                        let mapped_index = self
-                            .build_load(self.int_type, indices_ptr, name)?
-                            .into_int_value();
-                        let is_less_than_zero = self.builder.build_int_compare(
-                            IntPredicate::SLT,
-                            mapped_index,
-                            self.int_type.const_int(0, true),
-                            "sparse_index_check",
-                        )?;
-                        let is_less_than_zero_block =
-                            self.context.append_basic_block(self.fn_value(), "lt_zero");
-                        let not_less_than_zero_block = self
-                            .context
-                            .append_basic_block(self.fn_value(), "not_lt_zero");
-                        let merge_block = self.context.append_basic_block(self.fn_value(), "merge");
-                        self.builder.build_conditional_branch(
-                            is_less_than_zero,
-                            is_less_than_zero_block,
-                            not_less_than_zero_block,
-                        )?;
+                            let indices_ptr = Self::get_ptr_to_index(
+                                &self.builder,
+                                self.int_type,
+                                self.get_param("indices"),
+                                binary_layout_index,
+                                name,
+                            );
+                            let mapped_index = self
+                                .build_load(self.int_type, indices_ptr, name)?
+                                .into_int_value();
+                            let is_less_than_zero = self.builder.build_int_compare(
+                                IntPredicate::SLT,
+                                mapped_index,
+                                self.int_type.const_int(0, true),
+                                "sparse_index_check",
+                            )?;
+                            let is_less_than_zero_block =
+                                self.context.append_basic_block(self.fn_value(), "lt_zero");
+                            let not_less_than_zero_block = self
+                                .context
+                                .append_basic_block(self.fn_value(), "not_lt_zero");
+                            let merge_block =
+                                self.context.append_basic_block(self.fn_value(), "merge");
+                            self.builder.build_conditional_branch(
+                                is_less_than_zero,
+                                is_less_than_zero_block,
+                                not_less_than_zero_block,
+                            )?;
 
-                        // if mapped index < 0 return 0
-                        self.builder.position_at_end(is_less_than_zero_block);
-                        let zero_value = self.real_type.const_float(0.);
-                        self.builder.build_unconditional_branch(merge_block)?;
+                            // if mapped index < 0 return 0
+                            self.builder.position_at_end(is_less_than_zero_block);
+                            let zero_value = self.real_type.const_float(0.);
+                            self.builder.build_unconditional_branch(merge_block)?;
 
-                        // if mapped index >=0 load value at that index
-                        self.builder.position_at_end(not_less_than_zero_block);
-                        let value_ptr = Self::get_ptr_to_index(
-                            &self.builder,
-                            self.real_type,
-                            ptr,
-                            mapped_index,
-                            name,
-                        );
-                        let value = self
-                            .build_load(self.real_type, value_ptr, name)?
-                            .into_float_value();
-                        self.builder.build_unconditional_branch(merge_block)?;
+                            // if mapped index >=0 load value at that index
+                            self.builder.position_at_end(not_less_than_zero_block);
+                            let value_ptr = Self::get_ptr_to_index(
+                                &self.builder,
+                                self.real_type,
+                                ptr,
+                                mapped_index,
+                                name,
+                            );
+                            let value = self
+                                .build_load(self.real_type, value_ptr, name)?
+                                .into_float_value();
+                            self.builder.build_unconditional_branch(merge_block)?;
 
-                        // return value or 0 from if statement
-                        self.builder.position_at_end(merge_block);
-                        let if_return_value =
-                            self.builder.build_phi(self.real_type, "sparse_value")?;
-                        if_return_value.add_incoming(&[(&zero_value, is_less_than_zero_block)]);
-                        if_return_value.add_incoming(&[(&value, not_less_than_zero_block)]);
+                            // return value or 0 from if statement
+                            self.builder.position_at_end(merge_block);
+                            let if_return_value =
+                                self.builder.build_phi(self.real_type, "sparse_value")?;
+                            if_return_value.add_incoming(&[(&zero_value, is_less_than_zero_block)]);
+                            if_return_value.add_incoming(&[(&value, not_less_than_zero_block)]);
 
-                        let phi_value = if_return_value.as_basic_value().into_float_value();
-                        return Ok(phi_value);
+                            let phi_value = if_return_value.as_basic_value().into_float_value();
+                            return Ok(phi_value);
+                        } else {
+                            expr_index
+                        }
                     } else {
                         // we can just use the elmt_index since the layouts are the same
                         expr_index

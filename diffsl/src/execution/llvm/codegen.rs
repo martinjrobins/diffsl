@@ -1139,8 +1139,8 @@ impl<'ctx> CodeGen<'ctx> {
     fn insert_data(&mut self, model: &DiscreteModel) {
         self.insert_constants(model);
 
-        for tensor in model.inputs() {
-            self.insert_tensor(tensor, false);
+        if let Some(input) = model.input() {
+            self.insert_tensor(input, false);
         }
         for tensor in model.input_dep_defns() {
             self.insert_tensor(tensor, false);
@@ -3292,7 +3292,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_indices();
 
         let number_of_states = model.state().nnz() as u64;
-        let number_of_inputs = model.inputs().iter().fold(0, |acc, x| acc + x.nnz()) as u64;
+        let number_of_inputs = model.input().map(|inp| inp.nnz()).unwrap_or(0) as u64;
         let number_of_outputs = match model.out() {
             Some(out) => out.nnz() as u64,
             None => 0,
@@ -3457,7 +3457,7 @@ impl<'ctx> CodeGen<'ctx> {
         );
         let function_name = if is_get { "get_inputs" } else { "set_inputs" };
         let function = self.module.add_function(function_name, fn_type, None);
-        let mut block = self.context.append_basic_block(function, "entry");
+        let block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
 
         let fn_arg_names = &["inputs", "data"];
@@ -3469,19 +3469,18 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_param(name, alloca);
         }
 
-        let mut inputs_index = 0usize;
-        for input in model.inputs() {
-            let name = format!("input_{}", input.name());
+        if let Some(input) = model.input() {
+            let name = input.name();
             self.insert_tensor(input, false);
             let ptr = self.get_var(input);
             // loop thru the elements of this input and set/get them using the inputs ptr
-            let inputs_start_index = self.int_type.const_int(inputs_index as u64, false);
+            let inputs_start_index = self.int_type.const_int(0, false);
             let start_index = self.int_type.const_int(0, false);
             let end_index = self
                 .int_type
                 .const_int(input.nnz().try_into().unwrap(), false);
 
-            let input_block = self.context.append_basic_block(function, name.as_str());
+            let input_block = self.context.append_basic_block(function, name);
             self.builder.build_unconditional_branch(input_block)?;
             self.builder.position_at_end(input_block);
             let index = self.builder.build_phi(self.int_type, "i")?;
@@ -3489,57 +3488,43 @@ impl<'ctx> CodeGen<'ctx> {
 
             // loop body - copy value from inputs to data
             let curr_input_index = index.as_basic_value().into_int_value();
-            let input_ptr = Self::get_ptr_to_index(
-                &self.builder,
-                self.real_type,
-                ptr,
-                curr_input_index,
-                name.as_str(),
-            );
+            let input_ptr =
+                Self::get_ptr_to_index(&self.builder, self.real_type, ptr, curr_input_index, name);
             let curr_inputs_index =
                 self.builder
-                    .build_int_add(inputs_start_index, curr_input_index, name.as_str())?;
+                    .build_int_add(inputs_start_index, curr_input_index, name)?;
             let inputs_ptr = Self::get_ptr_to_index(
                 &self.builder,
                 self.real_type,
                 self.get_param("inputs"),
                 curr_inputs_index,
-                name.as_str(),
+                name,
             );
             if is_get {
                 let input_value = self
-                    .build_load(self.real_type, input_ptr, name.as_str())?
+                    .build_load(self.real_type, input_ptr, name)?
                     .into_float_value();
                 self.builder.build_store(inputs_ptr, input_value)?;
             } else {
                 let input_value = self
-                    .build_load(self.real_type, inputs_ptr, name.as_str())?
+                    .build_load(self.real_type, inputs_ptr, name)?
                     .into_float_value();
                 self.builder.build_store(input_ptr, input_value)?;
             }
 
             // increment loop index
             let one = self.int_type.const_int(1, false);
-            let next_index = self
-                .builder
-                .build_int_add(curr_input_index, one, name.as_str())?;
+            let next_index = self.builder.build_int_add(curr_input_index, one, name)?;
             index.add_incoming(&[(&next_index, input_block)]);
 
             // loop condition
-            let loop_while = self.builder.build_int_compare(
-                IntPredicate::ULT,
-                next_index,
-                end_index,
-                name.as_str(),
-            )?;
-            let post_block = self.context.append_basic_block(function, name.as_str());
+            let loop_while =
+                self.builder
+                    .build_int_compare(IntPredicate::ULT, next_index, end_index, name)?;
+            let post_block = self.context.append_basic_block(function, name);
             self.builder
                 .build_conditional_branch(loop_while, input_block, post_block)?;
             self.builder.position_at_end(post_block);
-
-            // get ready for next input
-            block = post_block;
-            inputs_index += input.nnz();
         }
         self.builder.build_return(None)?;
 

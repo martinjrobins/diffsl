@@ -2,7 +2,6 @@ use diffsl::{
     discretise::DiscreteModel, parser::parse_ds_string, CodegenModuleCompile, CodegenModuleJit,
     Compiler,
 };
-use env_logger;
 
 #[cfg(all(feature = "llvm", not(feature = "llvm21-1"), not(feature = "llvm20-1")))]
 #[test]

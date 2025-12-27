@@ -15,12 +15,14 @@ use crate::ast::Indice;
 use crate::ast::StringSpan;
 use crate::continuous::ModelInfo;
 use crate::continuous::Variable;
+use crate::discretise::layout::NonZero;
 
 use super::Env;
 use super::Index;
 use super::Layout;
 use super::Tensor;
 use super::TensorBlock;
+use super::TensorType;
 use super::ValidationError;
 use super::ValidationErrors;
 
@@ -36,24 +38,22 @@ pub struct DiscreteModel<'s> {
     time_dep_defns: Vec<Tensor<'s>>,
     state_dep_defns: Vec<Tensor<'s>>,
     dstate_dep_defns: Vec<Tensor<'s>>,
-    inputs: Vec<Tensor<'s>>,
+    input: Option<Tensor<'s>>,
     state: Tensor<'s>,
     state_dot: Option<Tensor<'s>>,
     is_algebraic: Vec<bool>,
     stop: Option<Tensor<'s>>,
+    state0_input_deps: Vec<(usize, usize)>,
+    rhs_state_deps: Vec<(usize, usize)>,
+    rhs_input_deps: Vec<(usize, usize)>,
+    out_input_deps: Vec<(usize, usize)>,
+    out_state_deps: Vec<(usize, usize)>,
 }
 
 impl fmt::Display for DiscreteModel<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if !self.inputs.is_empty() {
-            write!(f, "in = [")?;
-            for input in &self.inputs {
-                write!(f, "{},", input.name())?;
-            }
-            writeln!(f, "]")?;
-            for input in &self.inputs {
-                writeln!(f, "{input}")?;
-            }
+        if let Some(input) = &self.input {
+            writeln!(f, "{input}")?;
         }
         for defn in &self.constant_defns {
             writeln!(f, "{defn}")?;
@@ -99,11 +99,16 @@ impl<'s> DiscreteModel<'s> {
             time_dep_defns: Vec::new(),
             state_dep_defns: Vec::new(),
             dstate_dep_defns: Vec::new(),
-            inputs: Vec::new(),
+            input: None,
             state: Tensor::new_empty("u"),
             state_dot: None,
             is_algebraic: Vec::new(),
             stop: None,
+            state0_input_deps: Vec::new(),
+            rhs_input_deps: Vec::new(),
+            rhs_state_deps: Vec::new(),
+            out_input_deps: Vec::new(),
+            out_state_deps: Vec::new(),
         }
     }
 
@@ -111,6 +116,7 @@ impl<'s> DiscreteModel<'s> {
         array: &ast::Tensor<'s>,
         env: &mut Env,
         force_dense: bool,
+        tensor_type: TensorType,
     ) -> Option<Tensor<'s>> {
         let rank = array.indices().len();
         let reserved_names = [
@@ -146,7 +152,7 @@ impl<'s> DiscreteModel<'s> {
         for a in array.elmts() {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
-                    if let Some((expr_layout, elmt_layout)) =
+                    if let Some((expr_layout, mut elmt_layout)) =
                         env.get_layout_tensor_elmt(te, array.indices(), force_dense)
                     {
                         if rank == 0 && elmt_layout.rank() == 1 && elmt_layout.shape()[0] > 1 {
@@ -191,6 +197,12 @@ impl<'s> DiscreteModel<'s> {
                             ));
                         }
 
+                        elmt_layout.add_tensor_dependencies(
+                            tensor_type,
+                            *start.get(0).unwrap_or(&0),
+                            env,
+                        );
+
                         // make sure arc layouts are unique
                         // TODO: if we always use arc layout for the recursion, we can reuse existing ones
                         // much more efficiently rather than creating new ones all the time
@@ -234,6 +246,7 @@ impl<'s> DiscreteModel<'s> {
                 Ok(layout) => {
                     let layout = env.new_layout_ptr(layout);
                     let tensor = Tensor::new(array.name(), elmts, layout, array.indices().to_vec());
+
                     //check that the number of indices matches the rank
                     assert_eq!(tensor.rank(), tensor.indices().len());
                     if nerrs == env.errs().len() {
@@ -276,7 +289,15 @@ impl<'s> DiscreteModel<'s> {
     }
 
     pub fn build(name: &'s str, model: &'s ast::DsModel) -> Result<Self, ValidationErrors> {
-        let mut env = Env::new(model.inputs.as_slice());
+        let mut env = Env::new();
+        if model.has_inputs {
+            env.errs_mut().push(ValidationError::new(
+                "input list is no longer supported, define the 'in' tensor instead, e.g. \n\
+                \t in { input1 = 0, input2 = 0 }"
+                    .to_string(),
+                None,
+            ));
+        }
         let mut ret = Self::new(name);
         let mut read_state = false;
         let mut span_f = None;
@@ -300,7 +321,9 @@ impl<'s> DiscreteModel<'s> {
                     match tensor.name() {
                         "u" => {
                             read_state = true;
-                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, true, TensorType::State)
+                            {
                                 ret.state = built;
                             }
                             if ret.state.rank() > 1 {
@@ -311,7 +334,9 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "dudt" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, true, TensorType::Other)
+                            {
                                 ret.state_dot = Some(built);
                             }
                             if ret.state.rank() > 1 {
@@ -322,7 +347,9 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "F" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, true, TensorType::Other)
+                            {
                                 span_f = Some(span);
                                 ret.rhs = built;
                             }
@@ -337,7 +364,9 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "M" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, true, TensorType::Other)
+                            {
                                 span_m = Some(span);
                                 ret.lhs = Some(built);
                             }
@@ -352,7 +381,9 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "stop" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, true, TensorType::Other)
+                            {
                                 ret.stop = Some(built);
                             }
                             // check that stop is not dependent on dudt
@@ -366,7 +397,9 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "out" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env, true) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, true, TensorType::Other)
+                            {
                                 if built.rank() > 1 {
                                     env.errs_mut().push(ValidationError::new(
                                         "output shape must be a scalar or 1D vector".to_string(),
@@ -385,24 +418,30 @@ impl<'s> DiscreteModel<'s> {
                                 }
                             }
                         }
-                        name => {
-                            if let Some(built) = Self::build_array(tensor, &mut env, false) {
-                                let is_input = model.inputs.contains(&name);
+                        "in" => {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, true, TensorType::Input)
+                            {
+                                ret.input = Some(built);
+                            }
+                            if ret.state.rank() > 1 {
+                                env.errs_mut().push(ValidationError::new(
+                                    "in must be a scalar or 1D vector".to_string(),
+                                    span,
+                                ));
+                            }
+                        }
+
+                        _name => {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, false, TensorType::Other)
+                            {
                                 if let Some(env_entry) = env.get(built.name()) {
                                     let dependent_on_state = env_entry.is_state_dependent();
                                     let dependent_on_time = env_entry.is_time_dependent();
                                     let dependent_on_dudt = env_entry.is_dstatedt_dependent();
                                     let dependent_on_input = env_entry.is_input_dependent();
-                                    if is_input {
-                                        // inputs must be constants
-                                        if dependent_on_time || dependent_on_state {
-                                            env.errs_mut().push(ValidationError::new(
-                                                format!("input {} must be constant", built.name()),
-                                                tensor_ast.span,
-                                            ));
-                                        }
-                                        ret.inputs.push(built);
-                                    } else if !dependent_on_time && !dependent_on_input {
+                                    if !dependent_on_time && !dependent_on_input {
                                         ret.constant_defns.push(built);
                                     } else if !dependent_on_time {
                                         ret.input_dep_defns.push(built);
@@ -422,15 +461,6 @@ impl<'s> DiscreteModel<'s> {
                 }
             }
         }
-
-        // reorder inputs to match the order defined in "in = [ ... ]"
-        ret.inputs.sort_by_key(|t| {
-            model
-                .inputs
-                .iter()
-                .position(|&name| name == t.name())
-                .unwrap()
-        });
 
         // set is_algebraic for every state based on equations
         if ret.state_dot.is_some() && ret.lhs.is_some() {
@@ -463,15 +493,6 @@ impl<'s> DiscreteModel<'s> {
                 pos_end: model.tensors.last().unwrap().span.unwrap().pos_start,
             })
         };
-        // check that we found all input parameters
-        for name in model.inputs.iter() {
-            if env.get(name).is_none() {
-                env.errs_mut().push(ValidationError::new(
-                    format!("input {name} is not defined"),
-                    span_all,
-                ));
-            }
-        }
 
         // check that we've read all the required arrays
         if !read_state {
@@ -492,6 +513,27 @@ impl<'s> DiscreteModel<'s> {
         if let Some(span) = span_m {
             Self::check_match(ret.lhs.as_ref().unwrap(), &ret.state, span, &mut env);
         }
+
+        let map_dep = |deps: &Vec<NonZero>| -> Vec<(usize, usize)> {
+            deps.iter()
+                .map(|(i, j)| (*i.get(0).unwrap_or(&0) as usize, *j))
+                .collect()
+        };
+
+        // store the dependencies in the discrete model
+        ret.state0_input_deps = map_dep(&env.state0_input_deps);
+        ret.rhs_input_deps = map_dep(ret.rhs.layout().input_dependencies());
+        ret.rhs_state_deps = map_dep(ret.rhs.layout().state_dependencies());
+        ret.out_input_deps = ret
+            .out
+            .as_ref()
+            .map(|o| map_dep(o.layout().input_dependencies()))
+            .unwrap_or_default();
+        ret.out_state_deps = ret
+            .out
+            .as_ref()
+            .map(|o| map_dep(o.layout().state_dependencies()))
+            .unwrap_or_default();
 
         if env.errs().is_empty() {
             Ok(ret)
@@ -575,21 +617,29 @@ impl<'s> DiscreteModel<'s> {
         Tensor::new(defn.name, vec![tsr_blk], layout, vec!['i'])
     }
 
-    fn state_to_input(input_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
-        let input = input_cell.as_ref().borrow();
-        assert!(input.is_independent());
-        assert!(!input.is_time_dependent());
-        let expr = if let Some(expr) = &input.expression {
-            expr.clone()
-        } else {
-            Ast {
-                kind: AstKind::new_num(0.0),
-                span: None,
-            }
-        };
-        let elmt = TensorBlock::new_dense_vector(None, 0, input.dim, expr);
+    fn state_to_input(input_cells: &[Rc<RefCell<Variable<'s>>>]) -> Option<Tensor<'s>> {
+        let elmts = input_cells
+            .iter()
+            .map(|input_cell| {
+                let input = input_cell.as_ref().borrow();
+                assert!(input.is_independent());
+                assert!(!input.is_time_dependent());
+                let expr = if let Some(expr) = &input.expression {
+                    expr.clone()
+                } else {
+                    Ast {
+                        kind: AstKind::new_num(0.0),
+                        span: None,
+                    }
+                };
+                TensorBlock::new_dense_vector(Some(input.name.to_string()), 0, input.dim, expr)
+            })
+            .collect::<Vec<_>>();
+        if elmts.is_empty() {
+            return None;
+        }
         let indices = vec!['i'];
-        Tensor::new_no_layout(input.name, vec![elmt], indices)
+        Some(Tensor::new_no_layout("in", elmts, indices))
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
         let output = output_cell.as_ref().borrow();
@@ -674,11 +724,7 @@ impl<'s> DiscreteModel<'s> {
             is_algebraic.push(state.as_ref().borrow().is_algebraic().unwrap());
         }
 
-        let mut inputs: Vec<Tensor> = Vec::new();
-        for input in const_unknowns.iter() {
-            let inp = DiscreteModel::state_to_input(input);
-            inputs.push(inp);
-        }
+        let input = DiscreteModel::state_to_input(const_unknowns.as_slice());
 
         let state_dep_defns = state_dep_defns
             .iter()
@@ -701,7 +747,7 @@ impl<'s> DiscreteModel<'s> {
             name,
             lhs: Some(lhs),
             rhs,
-            inputs,
+            input,
             state,
             state_dot: Some(state_dot),
             out: Some(out_array),
@@ -712,11 +758,16 @@ impl<'s> DiscreteModel<'s> {
             dstate_dep_defns,
             is_algebraic,
             stop,
+            state0_input_deps: Vec::new(),
+            rhs_state_deps: Vec::new(),
+            rhs_input_deps: Vec::new(),
+            out_input_deps: Vec::new(),
+            out_state_deps: Vec::new(),
         }
     }
 
-    pub fn inputs(&self) -> &[Tensor<'_>] {
-        self.inputs.as_ref()
+    pub fn input(&self) -> Option<&Tensor<'_>> {
+        self.input.as_ref()
     }
 
     pub fn constant_defns(&self) -> &[Tensor<'_>] {
@@ -768,6 +819,26 @@ impl<'s> DiscreteModel<'s> {
 
     pub fn stop(&self) -> Option<&Tensor<'_>> {
         self.stop.as_ref()
+    }
+
+    pub fn take_state0_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.state0_input_deps)
+    }
+
+    pub fn take_rhs_state_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.rhs_state_deps)
+    }
+
+    pub fn take_rhs_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.rhs_input_deps)
+    }
+
+    pub fn take_out_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.out_input_deps)
+    }
+
+    pub fn take_out_state_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.out_state_deps)
     }
 }
 
@@ -831,9 +902,7 @@ mod tests {
     #[test]
     fn tensor_classification() {
         let text = "
-            in = [r, k, ]
-            r { 1, }
-            k { 1, }
+            in_i { r = 1, k = 1 }
             z { 2 * r }
             g { 2 * t }
             u_i {
@@ -868,10 +937,6 @@ mod tests {
         ";
         let model = parse_ds_string(text).unwrap();
         let model = DiscreteModel::build("$name", &model).unwrap();
-        assert_eq!(
-            model.inputs().iter().map(|t| t.name()).collect::<Vec<_>>(),
-            ["r", "k"]
-        );
         assert_eq!(
             model
                 .constant_defns()
@@ -912,10 +977,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["dudt2"]
         );
-        assert_eq!(
-            model.inputs().iter().map(|t| t.name()).collect::<Vec<_>>(),
-            ["r", "k"]
-        );
     }
 
     macro_rules! count {
@@ -955,9 +1016,7 @@ mod tests {
 
     full_model_tests! (
         logistic: "
-            in = [r, k, ]
-            r { 1, }
-            k { 1, }
+            in_i { r  = 1, k = 1, }
             u_i {
                 y = 1,
                 z = 0,
@@ -981,8 +1040,7 @@ mod tests {
             }
         " [],
         logistic_single_state: "
-            in = [r, ]
-            r { 1, }    
+            in { r  = 1, }
             u {
                 y = 1,
             }
@@ -1000,8 +1058,7 @@ mod tests {
             }
         " [],
         logistic_no_m: "
-            in = [r, ]
-            r { 1, }    
+            in { r  = 1, }
             u {
                 y = 1,
             }
@@ -1013,8 +1070,7 @@ mod tests {
             }
         " [],
         logistic_no_m2: "
-            in = [r, ]
-            r { 1, }    
+            in { r  = 1, }
             u_i {
                 x = 1,
                 y = 1,
@@ -1028,8 +1084,7 @@ mod tests {
             }
         " [],
         scalar_state_as_vector: "
-            in = [r, ]
-            r { 1, }    
+            in { r  = 1, }
             u_i {
                 y = 1,
             }
@@ -1047,9 +1102,7 @@ mod tests {
             }
         " [],
         logistic_matrix: "
-            in = [r, k,]
-            r { 1, }
-            k { 1, }
+            in_i { r  = 1, k = 1, }
             sm_ij {
                 (0..2, 0..2): 1,
             }
@@ -1131,6 +1184,12 @@ mod tests {
                 y,
             }
         " ["M must not be dependent on u",],
+        error_use_in_list: "
+            in = [ a ]
+            a { 1 }
+            u { y = 1 }
+            F { y }
+        " ["input list is no longer supported",],
     );
 
     macro_rules! tensor_fail_tests {
@@ -1211,7 +1270,6 @@ mod tests {
     }
 
     tensor_fail_tests!(
-        error_input_not_defined: "in = [bub]" errors ["input bub is not defined",],
         error_scalar: "r {1, 2}" errors ["cannot have more than one element in a scalar",],
         error_cannot_find: "r { k }" errors ["cannot find variable k",],
         error_different_shape: "a_i { 1, 2 } b_i { 1, 2, 3 } c_i { a_i + b_i }" errors ["cannot broadcast shapes: [2], [3]",],
@@ -1279,6 +1337,60 @@ mod tests {
 
     );
 
+    macro_rules! tensor_state_input_dep_test {
+        ($($name:ident: $text:literal expect $expected_state_state_deps:expr ; $expected_state_inputs_deps:expr,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let full_text = format!("
+                    in_i {{ (0:2): p = 1 }}
+                    u_i {{ p_i }}
+                    {}
+                    out_i {{ u_i, }}
+                ", $text);
+
+                let model = parse_ds_string(full_text.as_str()).unwrap();
+                #[allow(unused_variables)]
+                let mut discrete_model = match DiscreteModel::build("$name", &model) {
+                    Ok(model) => model,
+                    Err(e) => {
+                        panic!("{}", e.as_error_message(full_text.as_str()));
+                    }
+                };
+                assert_eq!(discrete_model.take_state0_input_deps(), vec![(0,0), (1,1)]);
+                assert_eq!(discrete_model.take_rhs_state_deps(), $expected_state_state_deps, "failed rhs_state_deps");
+                assert_eq!(discrete_model.take_rhs_input_deps(), $expected_state_inputs_deps, "failed rhs_input_deps");
+                assert_eq!(discrete_model.take_out_state_deps(), vec![(0,0), (1,1)]);
+                assert_eq!(discrete_model.take_out_input_deps(), vec![]);
+            }
+        )*
+        }
+    }
+
+    tensor_state_input_dep_test! {
+        tsi_just_u: "F_i { u_i }" expect vec![(0, 0), (1, 1)] ; vec![],
+        tsi_just_p: "F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
+        tsi_index: "F_i { u_i[1], p_i[0] }" expect vec![(0, 1)] ; vec![(1, 0)],
+        tsi_index2: "F_i { u_i[1:2], p_i[0:1] }" expect vec![(0, 1)] ; vec![(1, 0)],
+        tsi_sparse_mat_mul: "A_ij { (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(1, 1)] ; vec![],
+        tsi_sparse_mat_mul2: "A_ij { (0, 0): 1, (0, 1): 1, (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(0, 0), (0, 1), (1, 1)] ; vec![],
+        tsi_diag_mat_mul: "A_ij { (0..2, 0..2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![],
+        tsi_sparse_vec_add: "a_i { (1): u_i[0] }  F_i { a_i + u_i }" expect vec![(0, 0), (1, 0), (1, 1)] ; vec![],
+        tsi_dense_vec_add: "a_i { u_i[1], u_i[0] }  F_i { a_i + u_i }" expect vec![(0, 0), (0, 1), (1, 0), (1, 1)] ; vec![],
+        tsi_dense_vec_mul: "a_i { u_i[1], u_i[0] }  F_i { a_i * u_i }" expect vec![(0, 0), (0, 1), (1, 0), (1, 1)] ; vec![],
+        tsi_dense_mat_mul: "A_ij { (0:2,0:2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (0,1), (1,0), (1,1)] ; vec![],
+        tsi_dense_mat_mul2: "A_ij { (0:2,0:2): 1 } a_i { u_i[0], p_i[0] } b_i { A_ij * a_j } c_i { A_ij * b_j} F_i { A_ij * c_j }" expect vec![(0,0), (1,0)] ; vec![(0, 0), (1, 0)],
+        tsi_vec: "a_i { p_i } F_i { 2 * (a_i + u_i) }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
+        tsi_dense_mat_mul3: "A_ij { (0,0): 1, (0, 1): 1, (1, 1): 1, (2, 2): 1, (3, 3): 1 } a_i { u_i, u_i }  b_i { A_ij * a_j } c_i { A_ij * b_j} F_i { c_i[0:2] }" expect vec![(0,0), (0,1), (1,1)] ; vec![],
+        tsi_broadcast: "a_ij { (0:2,0:2): p_j } F_i { a_ij }" expect vec![] ; vec![(0,0), (0,1), (1,0), (1,1)],
+        tsi_broadcast2: "a_ij { (0:2,0:2): u_j } F_i { a_ij }" expect vec![(0,0), (0,1), (1,0), (1,1)] ; vec![],
+        tsi_contract: "a_ij { (0,0): u_i[0], (0, 1): u_i[1], (1, 0): p_i[0], (1, 1): p_i[1] } F_i { a_ij }" expect vec![(0,0), (0,1)] ; vec![(1,0), (1,1)],
+        tsi_broadcast3: "F_i { (0:2): u_i[0] }" expect vec![(0,0), (1,0)] ; vec![],
+        tsi_diag_mat_mul2: "A_ij { (0..2, 0..2): p_i } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
+        tsi_concat: "F_i { (0): u_i[0], (1): p_i[0] }" expect vec![(0,0)] ; vec![(1,0)],
+        tsi_concat2: "a_ij { (0,0): u_i[0], (1,1): p_i[0] } F_i { a_ij }" expect vec![(0,0)] ; vec![(1,0)],
+    }
+
     #[test]
     fn test_stop() {
         let text_no_stop = "
@@ -1324,8 +1436,7 @@ mod tests {
     #[test]
     fn test_constants_and_input_dep() {
         let text = "
-        in = [r]
-        r { 1, }
+        in { r  = 1, }
         k { 1, }
         r2 { 2 * r }
         u_i {

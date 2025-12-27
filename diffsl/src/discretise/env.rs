@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use log::{debug, log_enabled, Level};
 use ndarray::s;
 
-use crate::ast::{self, Ast, AstKind, StringSpan};
+use crate::{
+    ast::{self, Ast, AstKind, StringSpan},
+    discretise::layout::NonZero,
+};
 
 use super::{
     can_broadcast_to, layout::ArcLayout, Layout, LayoutKind, Shape, Tensor, TensorBlock,
@@ -49,11 +52,11 @@ pub struct Env {
     current_span: Option<StringSpan>,
     errs: ValidationErrors,
     vars: HashMap<String, EnvVar>,
-    inputs: Vec<String>,
+    pub(crate) state0_input_deps: Vec<NonZero>,
 }
 
 impl Env {
-    pub fn new(inputs: &[&str]) -> Self {
+    pub fn new() -> Self {
         let mut vars = HashMap::new();
         vars.insert(
             "t".to_string(),
@@ -70,7 +73,7 @@ impl Env {
             errs: ValidationErrors::default(),
             vars,
             current_span: None,
-            inputs: inputs.iter().map(|s| s.to_string()).collect(),
+            state0_input_deps: vec![],
         }
     }
 
@@ -101,9 +104,7 @@ impl Env {
     }
 
     pub fn is_tensor_input_dependent(&self, tensor: &Tensor) -> bool {
-        self.inputs
-            .iter()
-            .any(|input| self.is_tensor_dependent_on(tensor, input))
+        self.is_tensor_dependent_on(tensor, "in")
     }
 
     pub fn is_tensor_dstatedt_dependent(&self, tensor: &Tensor) -> bool {
@@ -121,7 +122,8 @@ impl Env {
                         "u" => self.vars[dep].is_state_dependent(),
                         "dudt" => self.vars[dep].is_dstatedt_dependent(),
                         // must be an input
-                        _ => self.vars[dep].is_input_dependent(),
+                        "in" => self.vars[dep].is_input_dependent(),
+                        _ => unreachable!(),
                     }
             })
         })
@@ -275,7 +277,11 @@ impl Env {
 
             // if the indice is a single integer then the resulting layout is a scalar
             if indice.sep.is_none() {
-                return Some(Layout::new_scalar());
+                let mut new_layout = Layout::new_scalar();
+                let first = indice.first.kind.as_integer().unwrap();
+                let last = first + 1;
+                new_layout.filter_deps_from(layout_permuted, first, last);
+                return Some(new_layout);
             } else {
                 // if the indice is a range then the resulting layout is a dense layout with shape given by the range
                 // along the only non-unit dimension of the variable
@@ -296,7 +302,9 @@ impl Env {
                 let shape = layout_permuted
                     .shape()
                     .map(|&d| if d != 1 { dim } else { 1 });
-                return Some(Layout::new_dense(Shape::from(shape)));
+                let mut new_layout = Layout::new_dense(Shape::from(shape));
+                new_layout.filter_deps_from(layout_permuted, first, last);
+                return Some(new_layout);
             }
         }
 
@@ -511,42 +519,38 @@ impl Env {
                 return None;
             }
 
-            // tensor elmt layout is:
-            // 1. dense if the expression is dense and no indices are ranges
-            // 2. diagonal if the expression is dense and all indices are ranges, or the expression is diagonal and no indices are ranges
-            // 3. sparse if the expression is sparse and no indices are blocks
-            let elmt_layout = match expr_layout.kind() {
-                LayoutKind::Dense => {
-                    if all_range_indices {
-                        Layout::new_diagonal(exp_expr_shape)
-                    } else {
-                        Layout::new_dense(exp_expr_shape)
-                    }
-                }
-                LayoutKind::Sparse => {
-                    if all_range_indices {
+            // if we have all range indices, any sparse layouts will error
+            if all_range_indices && expr_layout_to_rank.kind() == &LayoutKind::Sparse {
+                self.errs.push(ValidationError::new(
+                    "cannot use range indices with sparse expression".to_string(),
+                    elmt.expr.span,
+                ));
+                return None;
+            }
+            // if we have all range indices, any diagonal layouts will error
+            if all_range_indices && expr_layout_to_rank.kind() == &LayoutKind::Diagonal {
+                self.errs.push(ValidationError::new(
+                    "cannot use range indices with diagonal expression".to_string(),
+                    elmt.expr.span,
+                ));
+                return None;
+            }
+
+            // if we have all range indices we can make a diagonal layout, otherwise we broadcast
+            if all_range_indices {
+                match Layout::new_diagonal_from(exp_expr_shape, &expr_layout_to_rank) {
+                    Some(layout) => layout,
+                    None => {
                         self.errs.push(ValidationError::new(
-                            "cannot use range indices with sparse expression".to_string(),
+                            "when using all range indices, the expression layout must be scalar or 1D with dimension matching the range".to_string(),
                             elmt.expr.span,
                         ));
                         return None;
-                    } else {
-                        expr_layout.broadcast_to_shape(&exp_expr_shape)
                     }
                 }
-                LayoutKind::Diagonal => {
-                    if all_range_indices {
-                        self.errs.push(ValidationError::new(
-                            "cannot use range indices with diagonal expression".to_string(),
-                            elmt.expr.span,
-                        ));
-                        return None;
-                    } else {
-                        Layout::new_diagonal(exp_expr_shape)
-                    }
-                }
-            };
-            elmt_layout
+            } else {
+                expr_layout_to_rank.broadcast_to_shape(&exp_expr_shape)
+            }
         };
 
         Some((expr_layout, elmt_layout))
@@ -566,5 +570,11 @@ impl Env {
 
     pub fn errs_mut(&mut self) -> &mut ValidationErrors {
         &mut self.errs
+    }
+}
+
+impl Default for Env {
+    fn default() -> Self {
+        Self::new()
     }
 }

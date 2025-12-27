@@ -687,7 +687,7 @@ impl<M: Module> CraneliftModule<M> {
 
             let number_of_states = i64::try_from(model.state().nnz()).unwrap();
             let number_of_inputs =
-                i64::try_from(model.inputs().iter().fold(0, |acc, x| acc + x.nnz())).unwrap();
+                i64::try_from(model.input().map(|inp| inp.nnz()).unwrap_or(0)).unwrap();
             let number_of_outputs = match model.out() {
                 Some(out) => i64::try_from(out.nnz()).unwrap(),
                 None => 0,
@@ -2307,7 +2307,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         }
 
         // insert all tensors in data if it exists in args
-        let tensors = model.inputs().iter();
+        let tensors = model.input().into_iter();
         let tensors = tensors.chain(model.input_dep_defns().iter());
         let tensors = tensors.chain(model.time_dep_defns().iter());
         let tensors = tensors.chain(model.state_dep_defns().iter());
@@ -2342,8 +2342,8 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         is_tangent: bool,
         is_get: bool,
     ) {
-        let mut inputs_index = 0;
-        for input in model.inputs() {
+        let inputs_index = 0;
+        if let Some(input) = model.input() {
             let data_index =
                 i64::try_from(self.layout.get_data_index(input.name()).unwrap()).unwrap();
             self.insert_tensor(input, base_data_ptr, data_index, is_tangent);
@@ -2360,7 +2360,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             let inputs_start_index = self
                 .builder
                 .ins()
-                .iconst(self.int_type, i64::try_from(inputs_index).unwrap());
+                .iconst(self.int_type, i64::from(inputs_index));
 
             // loop thru the elements of this input and set them using the inputs ptr
             let start_index = self.builder.ins().iconst(self.int_type, 0);
@@ -2416,9 +2416,6 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             self.builder.seal_block(input_block);
             self.builder.seal_block(post_block);
             self.builder.switch_to_block(post_block);
-
-            // get ready for next input
-            inputs_index += input.nnz();
         }
     }
 }

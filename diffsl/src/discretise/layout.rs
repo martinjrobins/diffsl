@@ -24,6 +24,7 @@ pub enum LayoutKind {
 #[derive(Debug, Clone, Copy)]
 pub enum TensorType {
     State,
+    StateDot,
     Input,
     Other,
 }
@@ -163,7 +164,7 @@ impl Layout {
     /// Add state or input dependencies to this layout based on the tensor type.
     pub fn add_tensor_dependencies(&mut self, tensor_type: TensorType, start: i64, env: &mut Env) {
         let indices = match tensor_type {
-            TensorType::State | TensorType::Input => {
+            TensorType::State | TensorType::StateDot | TensorType::Input => {
                 let mut deps = Vec::new();
                 let n_states = *self.shape().get(0).unwrap_or(&1);
                 for i in 0..n_states {
@@ -183,7 +184,16 @@ impl Layout {
                 self.state_deps = indices;
                 // store the state0 input dependencies in the env since we don't want to propagate them further
                 env.state0_input_deps = mem::take(&mut self.input_deps);
-            }
+            },
+            TensorType::StateDot => {
+                assert!(
+                    self.state_deps.is_empty(),
+                    "state dot tensor layout should not already have state dependencies",
+                );
+                self.state_deps = indices;
+                // store the dstate0 input dependencies in the env since we don't want to propagate them further
+                env.dstate0_input_deps = mem::take(&mut self.input_deps);
+            },
             TensorType::Input => {
                 assert! {
                     self.input_deps.is_empty(),

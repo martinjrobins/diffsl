@@ -519,42 +519,38 @@ impl Env {
                 return None;
             }
 
-            // tensor elmt layout is:
-            // 1. dense if the expression is dense and no indices are ranges
-            // 2. diagonal if the expression is dense and all indices are ranges, or the expression is diagonal and no indices are ranges
-            // 3. sparse if the expression is sparse and no indices are blocks
-            let elmt_layout = match expr_layout.kind() {
-                LayoutKind::Dense => {
-                    if all_range_indices {
-                        Layout::new_diagonal(exp_expr_shape)
-                    } else {
-                        Layout::new_dense(exp_expr_shape)
-                    }
-                }
-                LayoutKind::Sparse => {
-                    if all_range_indices {
+            // if we have all range indices, any sparse layouts will error
+            if all_range_indices && expr_layout_to_rank.kind() == &LayoutKind::Sparse {
+                self.errs.push(ValidationError::new(
+                    "cannot use range indices with sparse expression".to_string(),
+                    elmt.expr.span,
+                ));
+                return None;
+            }
+            // if we have all range indices, any diagonal layouts will error
+            if all_range_indices && expr_layout_to_rank.kind() == &LayoutKind::Diagonal {
+                self.errs.push(ValidationError::new(
+                    "cannot use range indices with diagonal expression".to_string(),
+                    elmt.expr.span,
+                ));
+                return None;
+            }
+
+            // if we have all range indices we can make a diagonal layout, otherwise we broadcast
+            if all_range_indices {
+                match Layout::new_diagonal_from(exp_expr_shape, &expr_layout_to_rank) {
+                    Some(layout) => layout,
+                    None => {
                         self.errs.push(ValidationError::new(
-                            "cannot use range indices with sparse expression".to_string(),
+                            "when using all range indices, the expression layout must be scalar or 1D with dimension matching the range".to_string(),
                             elmt.expr.span,
                         ));
                         return None;
-                    } else {
-                        expr_layout.broadcast_to_shape(&exp_expr_shape)
                     }
                 }
-                LayoutKind::Diagonal => {
-                    if all_range_indices {
-                        self.errs.push(ValidationError::new(
-                            "cannot use range indices with diagonal expression".to_string(),
-                            elmt.expr.span,
-                        ));
-                        return None;
-                    } else {
-                        Layout::new_diagonal(exp_expr_shape)
-                    }
-                }
-            };
-            elmt_layout
+            } else {
+                expr_layout_to_rank.broadcast_to_shape(&exp_expr_shape)
+            }
         };
 
         Some((expr_layout, elmt_layout))

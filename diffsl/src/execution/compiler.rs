@@ -1900,13 +1900,25 @@ mod tests {
     }
 
     tensor_state_input_dep_test! {
-        tensor_state_input_just_u: "F_i { u_i }" expect vec![(0, 0), (1, 1)] ; vec![],
-        tensor_state_input_just_p: "F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
-        tensor_state_input_index: "F_i { u_i[1], p_i[0] }" expect vec![(0, 1)] ; vec![(1, 0)],
-        tensor_state_input_index2: "F_i { u_i[1:2], p_i[0:1] }" expect vec![(0, 1)] ; vec![(1, 0)],
-        tensor_state_input_sparse_mat_mul: "A_ij { (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(1, 1)] ; vec![],
-        tensor_state_input_sparse_mat_mul2: "A_ij { (0, 0): 1, (0, 1): 1, (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(0, 0), (0, 1), (1, 1)] ; vec![],
-        tensor_state_input_diag_mat_mul: "A_ij { (0..2, 0..2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![],
+        tsi_just_u: "F_i { u_i }" expect vec![(0, 0), (1, 1)] ; vec![],
+        tsi_just_p: "F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
+        tsi_index: "F_i { u_i[1], p_i[0] }" expect vec![(0, 1)] ; vec![(1, 0)],
+        tsi_index2: "F_i { u_i[1:2], p_i[0:1] }" expect vec![(0, 1)] ; vec![(1, 0)],
+        tsi_sparse_mat_mul: "A_ij { (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(1, 1)] ; vec![],
+        tsi_sparse_mat_mul2: "A_ij { (0, 0): 1, (0, 1): 1, (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(0, 0), (0, 1), (1, 1)] ; vec![],
+        tsi_diag_mat_mul: "A_ij { (0..2, 0..2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![],
+        tsi_sparse_vec_add: "a_i { (1): u_i[0] }  F_i { a_i + u_i }" expect vec![(0, 0), (1, 0), (1, 1)] ; vec![],
+        tsi_dense_vec_add: "a_i { u_i[1], u_i[0] }  F_i { a_i + u_i }" expect vec![(0, 0), (0, 1), (1, 0), (1, 1)] ; vec![],
+        tsi_dense_vec_mul: "a_i { u_i[1], u_i[0] }  F_i { a_i * u_i }" expect vec![(0, 0), (0, 1), (1, 0), (1, 1)] ; vec![],
+        tsi_dense_mat_mul: "A_ij { (0:2,0:2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (0,1), (1,0), (1,1)] ; vec![],
+        tsi_dense_mat_mul2: "A_ij { (0:2,0:2): 1 } a_i { u_i[0], p_i[0] } b_i { A_ij * a_j } c_i { A_ij * b_j} F_i { A_ij * c_j }" expect vec![(0,0), (1,0)] ; vec![(0, 0), (1, 0)],
+        tsi_vec: "a_i { p_i } F_i { 2 * (a_i + u_i) }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
+        tsi_dense_mat_mul3: "A_ij { (0,0): 1, (0, 1): 1, (1, 1): 1, (2, 2): 1, (3, 3): 1 } a_i { u_i, u_i }  b_i { A_ij * a_j } c_i { A_ij * b_j} F_i { c_i[0:2] }" expect vec![(0,0), (0,1), (1,1)] ; vec![],
+        tsi_broadcast: "a_ij { (0:2,0:2): p_j } F_i { a_ij }" expect vec![] ; vec![(0,0), (0,1), (1,0), (1,1)],
+        tsi_broadcast2: "a_ij { (0:2,0:2): u_j } F_i { a_ij }" expect vec![(0,0), (0,1), (1,0), (1,1)] ; vec![],
+        tsi_contract: "a_ij { (0,0): u_i[0], (0, 1): u_i[1], (1, 0): p_i[0], (1, 1): p_i[1] } F_i { a_ij }" expect vec![(0,0), (0,1)] ; vec![(1,0), (1,1)],
+        tsi_broadcast3: "F_i { (0:2): u_i[0] }" expect vec![(0,0), (1,0)] ; vec![],
+        tsi_diag_mat_mul2: "A_ij { (0..2, 0..2): p_i } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
     }
 
     generate_tests!(test_repeated_grad_common);

@@ -553,6 +553,67 @@ impl Layout {
         }
     }
 
+    pub fn new_diagonal_from(shape: Shape, layout: &Layout) -> Option<Self> {
+        // should be scalar or vector layout, shape has only one non-one dimension
+        if layout.is_scalar() {
+            let mut state_deps = layout
+                .state_deps
+                .iter()
+                .map(|(_idx, j)| (Index::zeros(shape.len()), *j))
+                .collect::<Vec<_>>();
+            let mut input_deps = layout
+                .input_deps
+                .iter()
+                .map(|(_idx, j)| (Index::zeros(shape.len()), *j))
+                .collect::<Vec<_>>();
+            for i in 1..shape.len() {
+                state_deps.extend(
+                    layout
+                        .state_deps
+                        .iter()
+                        .map(|(_idx, j)| (Index::zeros(shape.len()) + i as i64, *j)),
+                );
+                input_deps.extend(
+                    layout
+                        .input_deps
+                        .iter()
+                        .map(|(_idx, j)| (Index::zeros(shape.len()) + i as i64, *j)),
+                );
+            }
+            return Some(Layout {
+                indices: vec![],
+                state_deps,
+                input_deps,
+                shape,
+                kind: LayoutKind::Diagonal,
+                n_dense_axes: 0,
+            });
+        }
+        if layout.shape.iter().filter(|&&x| x > 1).count() > 1 {
+            return None;
+        }
+        let axis = layout.shape.iter().position(|&x| x > 1).unwrap_or(0);
+
+        let state_deps = layout
+            .state_deps
+            .iter()
+            .map(|(idx, j)| (Index::zeros(shape.len()) + idx[axis], *j))
+            .collect::<Vec<_>>();
+        let input_deps = layout
+            .input_deps
+            .iter()
+            .map(|(idx, j)| (Index::zeros(shape.len()) + idx[axis], *j))
+            .collect::<Vec<_>>();
+        Some(Layout {
+            indices: vec![],
+            state_deps,
+            input_deps,
+            shape,
+            kind: LayoutKind::Diagonal,
+            n_dense_axes: 0,
+        })
+    }
+
     /// filters the dependencies of layout, which is assumed to be a dense vector layout, to only include those in the range [start, end)
     /// subtracting start from the indices and assigning the filtered dependencies to self
     pub fn filter_deps_from(&mut self, mut layout: Layout, start: i64, end: i64) {
@@ -953,6 +1014,13 @@ impl Layout {
     /// if we are decreasing the rank, then we can only remove dense axes
     /// if any axis is being broadcasted, then it must be size 1 in the original layout
     pub fn broadcast_to_shape(&self, shape: &Shape) -> Self {
+        println!(
+            "Broadcasting layout shape {} to shape {}",
+            self.shape, shape
+        );
+        println!("Original indices: {:?}", self.indices);
+        println!("original state_deps: {:?}", self.state_deps);
+        println!("original input_deps: {:?}", self.input_deps);
         for i in 0..min(self.rank(), shape.len()) {
             if self.shape[i] != shape[i] && self.shape[i] != 1 {
                 panic!(
@@ -1010,6 +1078,10 @@ impl Layout {
             }
             new_broadcast_indices
         });
+
+        println!("Broadcasted indices: {:?}", indices);
+        println!("Broadcasted state_deps: {:?}", state_deps);
+        println!("Broadcasted input_deps: {:?}", input_deps);
 
         if self.rank() == shape.len() {
             Self {

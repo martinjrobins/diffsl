@@ -53,6 +53,7 @@ pub struct Env {
     errs: ValidationErrors,
     vars: HashMap<String, EnvVar>,
     pub(crate) state0_input_deps: Vec<NonZero>,
+    pub(crate) dstate0_input_deps: Vec<NonZero>,
 }
 
 impl Env {
@@ -74,6 +75,7 @@ impl Env {
             vars,
             current_span: None,
             state0_input_deps: vec![],
+            dstate0_input_deps: vec![],
         }
     }
 

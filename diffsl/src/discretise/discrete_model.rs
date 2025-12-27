@@ -44,10 +44,13 @@ pub struct DiscreteModel<'s> {
     is_algebraic: Vec<bool>,
     stop: Option<Tensor<'s>>,
     state0_input_deps: Vec<(usize, usize)>,
+    dstate0_input_deps: Vec<(usize, usize)>,
     rhs_state_deps: Vec<(usize, usize)>,
     rhs_input_deps: Vec<(usize, usize)>,
     out_input_deps: Vec<(usize, usize)>,
     out_state_deps: Vec<(usize, usize)>,
+    mass_state_deps: Vec<(usize, usize)>,
+    mass_input_deps: Vec<(usize, usize)>,
 }
 
 impl fmt::Display for DiscreteModel<'_> {
@@ -105,10 +108,13 @@ impl<'s> DiscreteModel<'s> {
             is_algebraic: Vec::new(),
             stop: None,
             state0_input_deps: Vec::new(),
+            dstate0_input_deps: Vec::new(),
             rhs_input_deps: Vec::new(),
             rhs_state_deps: Vec::new(),
             out_input_deps: Vec::new(),
             out_state_deps: Vec::new(),
+            mass_state_deps: Vec::new(),
+            mass_input_deps: Vec::new(),
         }
     }
 
@@ -245,6 +251,15 @@ impl<'s> DiscreteModel<'s> {
             match Layout::concatenate(&elmts, rank) {
                 Ok(layout) => {
                     let layout = env.new_layout_ptr(layout);
+                    // if sparse, filter out zero elements
+                    let elmts = if layout.is_sparse() {
+                        elmts
+                            .into_iter()
+                            .filter(|e| !matches!(e.expr().kind, AstKind::Number(0.0)))
+                            .collect::<Vec<_>>()
+                    } else {
+                        elmts
+                    };
                     let tensor = Tensor::new(array.name(), elmts, layout, array.indices().to_vec());
 
                     //check that the number of indices matches the rank
@@ -335,7 +350,7 @@ impl<'s> DiscreteModel<'s> {
                         }
                         "dudt" => {
                             if let Some(built) =
-                                Self::build_array(tensor, &mut env, true, TensorType::Other)
+                                Self::build_array(tensor, &mut env, true, TensorType::StateDot)
                             {
                                 ret.state_dot = Some(built);
                             }
@@ -522,6 +537,7 @@ impl<'s> DiscreteModel<'s> {
 
         // store the dependencies in the discrete model
         ret.state0_input_deps = map_dep(&env.state0_input_deps);
+        ret.dstate0_input_deps = map_dep(&env.dstate0_input_deps);
         ret.rhs_input_deps = map_dep(ret.rhs.layout().input_dependencies());
         ret.rhs_state_deps = map_dep(ret.rhs.layout().state_dependencies());
         ret.out_input_deps = ret
@@ -534,6 +550,16 @@ impl<'s> DiscreteModel<'s> {
             .as_ref()
             .map(|o| map_dep(o.layout().state_dependencies()))
             .unwrap_or_default();
+        ret.mass_state_deps = if let Some(lhs) = &ret.lhs {
+            map_dep(lhs.layout().state_dependencies())
+        } else {
+            Vec::new()
+        };
+        ret.mass_input_deps = if let Some(lhs) = &ret.lhs {
+            map_dep(lhs.layout().input_dependencies())
+        } else {
+            Vec::new()
+        };
 
         if env.errs().is_empty() {
             Ok(ret)
@@ -759,10 +785,13 @@ impl<'s> DiscreteModel<'s> {
             is_algebraic,
             stop,
             state0_input_deps: Vec::new(),
+            dstate0_input_deps: Vec::new(),
             rhs_state_deps: Vec::new(),
             rhs_input_deps: Vec::new(),
             out_input_deps: Vec::new(),
             out_state_deps: Vec::new(),
+            mass_state_deps: Vec::new(),
+            mass_input_deps: Vec::new(),
         }
     }
 
@@ -825,6 +854,10 @@ impl<'s> DiscreteModel<'s> {
         std::mem::take(&mut self.state0_input_deps)
     }
 
+    pub fn take_dstate0_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.dstate0_input_deps)
+    }
+
     pub fn take_rhs_state_deps(&mut self) -> Vec<(usize, usize)> {
         std::mem::take(&mut self.rhs_state_deps)
     }
@@ -839,6 +872,14 @@ impl<'s> DiscreteModel<'s> {
 
     pub fn take_out_state_deps(&mut self) -> Vec<(usize, usize)> {
         std::mem::take(&mut self.out_state_deps)
+    }
+
+    pub fn take_mass_state_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.mass_state_deps)
+    }
+
+    pub fn take_mass_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.mass_input_deps)
     }
 }
 
@@ -1337,6 +1378,84 @@ mod tests {
 
     );
 
+    #[test]
+    fn tensor_state_input_dep_mass_test() {
+        let full_text = "
+            in_i { (0:2): p = 1 }
+            u_i { p_i }
+            dudt_i { p_i }
+            M_i { dudt_i[1] + p_i[0], dudt_i[0] + p_i[1] }
+            F_i { u_i }
+        ";
+
+        let model = parse_ds_string(full_text).unwrap();
+        let mut discrete_model =
+            DiscreteModel::build("tensor_state_input_dep_mass_test", &model).unwrap();
+        assert_eq!(
+            discrete_model.take_state0_input_deps(),
+            vec![(0, 0), (1, 1)]
+        );
+        assert_eq!(
+            discrete_model.take_dstate0_input_deps(),
+            vec![(0, 0), (1, 1)]
+        );
+        assert_eq!(
+            discrete_model.take_rhs_state_deps(),
+            vec![(0, 0), (1, 1)],
+            "failed rhs_state_deps"
+        );
+        assert_eq!(
+            discrete_model.take_rhs_input_deps(),
+            vec![],
+            "failed rhs_input_deps"
+        );
+        assert_eq!(discrete_model.take_out_state_deps(), vec![]);
+        assert_eq!(discrete_model.take_out_input_deps(), vec![]);
+        assert_eq!(discrete_model.take_mass_state_deps(), vec![(0, 1), (1, 0)]);
+        assert_eq!(discrete_model.take_mass_input_deps(), vec![(0, 0), (1, 1)]);
+    }
+
+    #[test]
+    fn tensor_state_input_dep_logistic_test() {
+        let full_text = "
+            in_i { r = 1, k = 1 }
+            u_i {
+                y = 0.1,
+                z = 0,
+            }
+            dudt_i {
+                dydt = 0,
+                dzdt = 0,
+            }
+            M_i {
+                dydt,
+                0,
+            }
+            F_i {
+                (r * y) * (1 - (y / k)),
+                (2 * y) - z,
+            }
+            out_i {
+                3 * y,
+                4 * z,
+            }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let mut discrete_model =
+            DiscreteModel::build("tensor_state_input_dep_logistic_test", &model).unwrap();
+        assert_eq!(discrete_model.take_state0_input_deps(), vec![]);
+        assert_eq!(discrete_model.take_dstate0_input_deps(), vec![]);
+        assert_eq!(
+            discrete_model.take_rhs_state_deps(),
+            vec![(0, 0), (1, 0), (1, 1)]
+        );
+        assert_eq!(discrete_model.take_rhs_input_deps(), vec![(0, 0), (0, 1)]);
+        assert_eq!(discrete_model.take_out_state_deps(), vec![(0, 0), (1, 1)]);
+        assert_eq!(discrete_model.take_out_input_deps(), vec![]);
+        assert_eq!(discrete_model.take_mass_state_deps(), vec![(0, 0)]);
+        assert_eq!(discrete_model.take_mass_input_deps(), vec![]);
+    }
+
     macro_rules! tensor_state_input_dep_test {
         ($($name:ident: $text:literal expect $expected_state_state_deps:expr ; $expected_state_inputs_deps:expr,)*) => {
         $(
@@ -1389,6 +1508,7 @@ mod tests {
         tsi_diag_mat_mul2: "A_ij { (0..2, 0..2): p_i } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
         tsi_concat: "F_i { (0): u_i[0], (1): p_i[0] }" expect vec![(0,0)] ; vec![(1,0)],
         tsi_concat2: "a_ij { (0,0): u_i[0], (1,1): p_i[0] } F_i { a_ij }" expect vec![(0,0)] ; vec![(1,0)],
+        tsi_expr: "a_i { y = u_i[0], z = u_i[1] } b_i { r = p_i[0], k = p_i[1] } F_i { (r * y) * (1 - y / k), (2 * y) - z }" expect vec![(0,0), (1,0), (1,1)] ; vec![(0,0), (0,1)],
     }
 
     #[test]

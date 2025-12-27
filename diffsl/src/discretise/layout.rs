@@ -5,12 +5,13 @@ use std::{
     convert::AsRef,
     fmt,
     hash::{Hash, Hasher},
+    iter::zip,
     mem,
     ops::Deref,
     sync::Arc,
 };
 
-use crate::discretise::Env;
+use crate::{ast::AstKind, discretise::Env};
 
 use super::{broadcast_shapes, shape::Shape, Index, TensorBlock};
 
@@ -24,6 +25,7 @@ pub enum LayoutKind {
 #[derive(Debug, Clone, Copy)]
 pub enum TensorType {
     State,
+    StateDot,
     Input,
     Other,
 }
@@ -163,12 +165,12 @@ impl Layout {
     /// Add state or input dependencies to this layout based on the tensor type.
     pub fn add_tensor_dependencies(&mut self, tensor_type: TensorType, start: i64, env: &mut Env) {
         let indices = match tensor_type {
-            TensorType::State | TensorType::Input => {
+            TensorType::State | TensorType::StateDot | TensorType::Input => {
                 let mut deps = Vec::new();
-                let n_states = *self.shape().get(0).unwrap_or(&1);
-                for i in 0..n_states {
-                    let index = Index::from(vec![(i as i64) + start]);
-                    deps.push((index, i));
+                let n_states = *self.shape().get(0).unwrap_or(&1) as i64;
+                for i in 0_i64..n_states {
+                    let index = Index::from(vec![i]);
+                    deps.push((index, (i + start) as usize));
                 }
                 deps
             }
@@ -183,6 +185,15 @@ impl Layout {
                 self.state_deps = indices;
                 // store the state0 input dependencies in the env since we don't want to propagate them further
                 env.state0_input_deps = mem::take(&mut self.input_deps);
+            }
+            TensorType::StateDot => {
+                assert!(
+                    self.state_deps.is_empty(),
+                    "state dot tensor layout should not already have state dependencies",
+                );
+                self.state_deps = indices;
+                // store the dstate0 input dependencies in the env since we don't want to propagate them further
+                env.dstate0_input_deps = mem::take(&mut self.input_deps);
             }
             TensorType::Input => {
                 assert! {
@@ -657,6 +668,10 @@ impl Layout {
             .iter()
             .map(|x| x.layout().as_ref())
             .collect::<Vec<_>>();
+        let is_zero = elmts
+            .iter()
+            .map(|x| matches!(x.expr().kind, AstKind::Number(0.0)))
+            .collect::<Vec<_>>();
         let starts = elmts.iter().map(|x| x.start()).collect::<Vec<_>>();
 
         // if there are no layouts then return an empty layout
@@ -800,7 +815,13 @@ impl Layout {
                     kind: LayoutKind::Sparse,
                     n_dense_axes,
                 };
-                for (layout, start) in std::iter::zip(layouts.iter(), starts.iter()) {
+                for ((layout, start), is_zero) in
+                    zip(zip(layouts.iter(), starts.iter()), is_zero.iter())
+                {
+                    if *is_zero {
+                        continue;
+                    }
+
                     // convert to sparse
                     new_layout.indices.extend(layout.indices().map(|mut x| {
                         for (i, xi) in x.iter_mut().enumerate() {

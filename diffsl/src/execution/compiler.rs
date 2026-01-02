@@ -1466,6 +1466,7 @@ mod tests {
         exp_function_f32: "r { exp(2) }" expect "r" vec![f32::exp(2.0_f32).into()] ; f32,
         pow_function_f64: "r { pow(4.3245, 0.5) }" expect "r" vec![f64::powf(4.3245, 0.5)] ; f64,
         pow_function_f32: "r { pow(4.3245, 0.5) }" expect "r" vec![f32::powf(4.3245_f32, 0.5).into()] ; f32,
+        tan_function_f64: "r { tan(0.234) }" expect "r" vec![f64::tan(0.234)] ; f64,
         arcsinh_function_f64: "r { arcsinh(0.5) }" expect "r" vec![f64::asinh(0.5)] ; f64,
         arcsinh_function_f32: "r { arcsinh(0.5) }" expect "r" vec![f32::asinh(0.5_f32).into()] ; f32,
         tanh_function_f64: "r { tanh(0.5) }" expect "r" vec![f64::tanh(0.5)] ; f64,
@@ -2254,13 +2255,13 @@ mod tests {
             (1..{},0..{}): 1.0
         }}
         u_i {{
-            (0:{}): 1 
+            (0:{}): 1
         }}
         F_i {{
             a_ij * u_j
         }}
         out_i {{
-            u_i 
+            u_i
         }}
         ",
             n - 1,

@@ -1446,6 +1446,7 @@ mod tests {
         exp_function: "r { exp(2) }" expect "r" vec![f64::exp(2.0)],
         abs_function: "r { abs(-2) }" expect "r" vec![f64::abs(-2.0)],
         pow_function: "r { pow(4.3245, 0.5) }" expect "r" vec![f64::powf(4.3245, 0.5)],
+        tan_function: "r { tan(0.234) }" expect "r" vec![f64::tan(0.234)],
         arcsinh_function: "r { arcsinh(0.5) }" expect "r" vec![f64::asinh(0.5)],
         arccosh_function: "r { arccosh(2) }" expect "r" vec![f64::acosh(2.0)],
         tanh_function: "r { tanh(0.5) }" expect "r" vec![f64::tanh(0.5)],

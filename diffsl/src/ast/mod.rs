@@ -6,22 +6,12 @@ use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct DsModel<'a> {
-    pub inputs: Vec<&'a str>,
+    pub has_inputs: bool,
     pub tensors: Vec<Box<Ast<'a>>>,
 }
 
 impl fmt::Display for DsModel<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.inputs.len() > 1 {
-            write!(f, "in = [")?;
-            for (i, name) in self.inputs.iter().enumerate() {
-                write!(f, "{name}")?;
-                if i < self.inputs.len() - 1 {
-                    write!(f, ", ")?;
-                }
-            }
-            write!(f, "]")?;
-        }
         for tensor in self.tensors.iter() {
             write!(f, "{tensor}")?;
         }
@@ -72,6 +62,7 @@ pub struct RateEquation<'a> {
 pub struct Name<'a> {
     pub name: &'a str,
     pub indices: Vec<char>,
+    pub indice: Option<Box<Ast<'a>>>,
     pub is_tangent: bool,
 }
 
@@ -86,6 +77,9 @@ impl fmt::Display for Name<'_> {
             for idx in self.indices.iter() {
                 write!(f, "{idx}")?;
             }
+        }
+        if let Some(ref indice) = self.indice {
+            write!(f, "[{}]", indice)?;
         }
         Ok(())
     }
@@ -461,6 +455,7 @@ impl<'a> AstKind<'a> {
         AstKind::Name(Name {
             name,
             indices,
+            indice: None,
             is_tangent: false,
         })
     }
@@ -468,6 +463,7 @@ impl<'a> AstKind<'a> {
         AstKind::Name(Name {
             name,
             indices: Vec::new(),
+            indice: None,
             is_tangent: false,
         })
     }
@@ -475,6 +471,7 @@ impl<'a> AstKind<'a> {
         AstKind::Name(Name {
             name,
             indices,
+            indice: None,
             is_tangent: true,
         })
     }
@@ -624,6 +621,7 @@ impl<'a> Ast<'a> {
             kind: AstKind::Name(Name {
                 name,
                 indices,
+                indice: None,
                 is_tangent,
             }),
             span: None,
@@ -728,6 +726,7 @@ impl<'a> Ast<'a> {
                     AstKind::Name(Name {
                         name: name.name,
                         indices: name.indices.clone(),
+                        indice: name.indice.clone(),
                         is_tangent: name.is_tangent,
                     })
                 }
@@ -766,17 +765,23 @@ impl<'a> Ast<'a> {
     pub fn get_dependents(&self) -> HashSet<&'a str> {
         let mut deps = HashSet::new();
         self.collect_deps(&mut deps);
+        deps.into_iter().map(|(name, _)| name).collect()
+    }
+
+    pub fn get_dependents_with_indices(&self) -> HashSet<(&'a str, Vec<char>)> {
+        let mut deps = HashSet::new();
+        self.collect_deps(&mut deps);
         deps
     }
 
-    fn collect_deps(&self, deps: &mut HashSet<&'a str>) {
+    fn collect_deps(&self, deps: &mut HashSet<(&'a str, Vec<char>)>) {
         match &self.kind {
             AstKind::Equation(eqn) => {
                 eqn.lhs.collect_deps(deps);
                 eqn.rhs.collect_deps(deps);
             }
             AstKind::RateEquation(eqn) => {
-                deps.insert(eqn.name);
+                deps.insert((eqn.name, Vec::new()));
                 eqn.rhs.collect_deps(deps);
             }
             AstKind::Binop(binop) => {
@@ -801,10 +806,11 @@ impl<'a> Ast<'a> {
             }
             AstKind::Name(Name {
                 name: found_name,
-                indices: _,
+                indices,
+                indice: _,
                 is_tangent: _,
             }) => {
-                deps.insert(found_name);
+                deps.insert((*found_name, indices.clone()));
             }
             AstKind::NamedGradient(gradient) => {
                 gradient.gradient_of.collect_deps(deps);
@@ -825,7 +831,7 @@ impl<'a> Ast<'a> {
             AstKind::TensorElmt(elmt) => {
                 elmt.expr.collect_deps(deps);
             }
-            AstKind::DsModel(m) => deps.extend(m.inputs.iter().cloned()),
+            AstKind::DsModel(_m) => (),
             AstKind::Number(_) => (),
             AstKind::Integer(_) => (),
             AstKind::Model(_) => (),
@@ -875,6 +881,13 @@ impl<'a> Ast<'a> {
                 arg.expression.collect_indices(indices);
             }
             AstKind::Name(found_name) => {
+                // if the name is indexed by a single indice, don't add that index to the list
+                if let Some(indice) = &found_name.indice {
+                    let indice = indice.as_ref().kind.as_indice().unwrap();
+                    if indice.sep.is_none() || indice.last.is_none() {
+                        return;
+                    }
+                }
                 indices.extend(found_name.indices.iter().cloned());
             }
             AstKind::Index(index) => {

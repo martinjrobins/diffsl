@@ -67,18 +67,12 @@ impl fmt::Display for TranslationFrom {
 impl TranslationFrom {
     // traslate from source layout (an expression) via an intermediary target layout (a tensor block)
     fn new(source: &Layout, target: &Layout) -> Self {
-        let mut min_rank_for_broadcast = source.rank();
-        if source.rank() <= target.rank() {
-            for i in (0..source.rank()).rev() {
-                if source.shape()[i] != target.shape()[i] {
-                    assert!(source.shape()[i] == 1);
-                    min_rank_for_broadcast = i + 1;
-                    break;
-                }
+        let broadcast_by = if target.rank() >= source.rank() {
+            if target.is_dense() {
+                target.rank() - source.rank()
+            } else {
+                target.rank() - target.n_dense_axes() - source.rank() - source.n_dense_axes()
             }
-        }
-        let broadcast_by = if target.rank() >= min_rank_for_broadcast {
-            target.rank() - min_rank_for_broadcast
         } else {
             0
         };
@@ -91,9 +85,10 @@ impl TranslationFrom {
         let is_contraction = source.rank() > target.rank();
 
         if source.is_dense() && is_contraction {
+            let neg_contract_by = source.rank() - contract_by;
             Self::DenseContraction {
                 contract_by,
-                contract_len: source.shape().slice(s![contract_by..]).iter().product(),
+                contract_len: source.shape().slice(s![neg_contract_by..]).iter().product(),
             }
         } else if source.is_diagonal() && is_contraction {
             Self::DiagonalContraction { contract_by }
@@ -123,11 +118,7 @@ impl TranslationFrom {
             }
         } else if is_broadcast {
             if target.n_dense_axes() >= broadcast_by {
-                let broadcast_len = target
-                    .shape()
-                    .slice(s![min_rank_for_broadcast..])
-                    .iter()
-                    .product();
+                let broadcast_len = target.shape().slice(s![source.rank()..]).iter().product();
                 Self::Broadcast {
                     broadcast_by,
                     broadcast_len,
@@ -196,7 +187,12 @@ impl TranslationTo {
         } else if target.is_sparse() {
             let indices: Vec<usize> = source
                 .indices()
-                .map(|index| target.find_nnz_index(&(index + start)).unwrap())
+                .map(|mut index| {
+                    for (i, xi) in index.iter_mut().enumerate() {
+                        *xi += start[i];
+                    }
+                    target.find_nnz_index(&index).unwrap()
+                })
                 .collect();
             // check if the indices are contiguous
             let contiguous = indices.windows(2).all(|w| w[1] == w[0] + 1);
@@ -245,7 +241,12 @@ impl Translation {
         let to = TranslationTo::new(target_start, via_layout, target_layout);
         assert_eq!(
             from.nnz_after_translate(source_layout),
-            to.nnz_after_translate()
+            to.nnz_after_translate(),
+            "nnz after translate mismatch, from {} to {}, translating from {:?} to {:?}",
+            from.nnz_after_translate(source_layout),
+            to.nnz_after_translate(),
+            from,
+            to
         );
         Self {
             source: from,
@@ -340,6 +341,7 @@ mod tests {
     }
 
     translation_test! {
+        contract_2d_to_1d: "A_ij { (0:2, 0:2): 1 } r_i { y = A_ij }" expect "y" = "Translation(DenseContraction(1, 2), Contiguous(0, 2))",
         elementwise_scalar: "r { y = 2}" expect "y" = "Translation(ElementWise, Contiguous(0, 1))",
         elementwise_vector: "r_i { 1, y = 2}" expect "y" = "Translation(Broadcast(1, 1), Contiguous(1, 2))",
         elementwise_vector2: "a_i { 1, 2 } r_i { 1, y = a_i}" expect "y" = "Translation(ElementWise, Contiguous(1, 3))",

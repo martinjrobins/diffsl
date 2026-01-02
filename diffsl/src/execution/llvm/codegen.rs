@@ -555,7 +555,7 @@ impl<'ctx> Globals<'ctx> {
             let indices_array_values = layout
                 .indices()
                 .iter()
-                .map(|&i| int_type.const_int(i.try_into().unwrap(), false))
+                .map(|&i| int_type.const_int(i as u64, true))
                 .collect::<Vec<IntValue>>();
             let indices_value = int_type.const_array(indices_array_values.as_slice());
             let indices = module.add_global(
@@ -1139,8 +1139,8 @@ impl<'ctx> CodeGen<'ctx> {
     fn insert_data(&mut self, model: &DiscreteModel) {
         self.insert_constants(model);
 
-        for tensor in model.inputs() {
-            self.insert_tensor(tensor, false);
+        if let Some(input) = model.input() {
+            self.insert_tensor(input, false);
         }
         for tensor in model.input_dep_defns() {
             self.insert_tensor(tensor, false);
@@ -1600,7 +1600,8 @@ impl<'ctx> CodeGen<'ctx> {
             next_block_opt = Some(next_block);
         }
 
-        let float_value = self.jit_compile_expr(name, elmt.expr(), &[], elmt, None)?;
+        let zero = self.int_type.const_zero();
+        let float_value = self.jit_compile_expr(name, elmt.expr(), &[], elmt, zero)?;
         self.builder.build_store(res_ptr, float_value)?;
 
         // complete the threading block
@@ -1771,9 +1772,11 @@ impl<'ctx> CodeGen<'ctx> {
             let curr_index = self.builder.build_phi(int_type, format!["i{i}"].as_str())?;
             curr_index.add_incoming(&[(&start_index, preblock)]);
 
-            if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
-                self.builder
-                    .build_store(contract_sum.unwrap(), self.real_type.const_zero())?;
+            if i == expr_rank - contract_by - 1 {
+                if let Some(contract_sum) = contract_sum {
+                    self.builder
+                        .build_store(contract_sum, self.real_type.const_zero())?;
+                }
             }
 
             indices.push(curr_index);
@@ -1786,12 +1789,26 @@ impl<'ctx> CodeGen<'ctx> {
             .map(|i| i.as_basic_value().into_int_value())
             .collect();
 
-        let float_value =
-            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, None)?;
+        // if indices = (i, j, k) and shape = (a, b, c) calculate expr_index = (k + j*b + i*b*c)
+        let mut expr_index = *indices_int.last().unwrap_or(&int_type.const_zero());
+        let mut stride = 1u64;
+        if !indices.is_empty() {
+            for i in (0..indices.len() - 1).rev() {
+                let iname_i = indices_int[i];
+                let shapei: u64 = elmt.expr_layout().shape()[i + 1].try_into().unwrap();
+                stride *= shapei;
+                let stride_intval = self.context.i32_type().const_int(stride, false);
+                let stride_mul_i = self.builder.build_int_mul(stride_intval, iname_i, name)?;
+                expr_index = self.builder.build_int_add(expr_index, stride_mul_i, name)?;
+            }
+        }
 
-        if contract_sum.is_some() {
+        let float_value =
+            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, expr_index)?;
+
+        if let Some(contract_sum) = contract_sum {
             let contract_sum_value = self
-                .build_load(self.real_type, contract_sum.unwrap(), "contract_sum")?
+                .build_load(self.real_type, contract_sum, "contract_sum")?
                 .into_float_value();
             let new_contract_sum_value = self.builder.build_float_add(
                 contract_sum_value,
@@ -1799,7 +1816,7 @@ impl<'ctx> CodeGen<'ctx> {
                 "new_contract_sum",
             )?;
             self.builder
-                .build_store(contract_sum.unwrap(), new_contract_sum_value)?;
+                .build_store(contract_sum, new_contract_sum_value)?;
         } else {
             let expr_index = indices_int.iter().zip(expr_strides.iter()).fold(
                 self.int_type.const_zero(),
@@ -1808,36 +1825,38 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder.build_int_add(acc, tmp, "acc").unwrap()
                 },
             );
-            preblock = self.jit_compile_broadcast_and_store(
-                name,
-                elmt,
-                float_value,
-                expr_index,
-                translation,
-                preblock,
-            )?;
+            self.jit_compile_broadcast_and_store(name, elmt, float_value, expr_index, translation)?;
         }
+
+        let mut postblock = self.builder.get_insert_block().unwrap();
 
         // unwind the nested loops
         for i in (0..expr_rank).rev() {
             // increment index
             let next_index = self.builder.build_int_add(indices_int[i], one, name)?;
-            indices[i].add_incoming(&[(&next_index, preblock)]);
-
-            if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
-                let contract_sum_value = self
-                    .build_load(self.real_type, contract_sum.unwrap(), "contract_sum")?
-                    .into_float_value();
-                let contract_strides = contract_strides.as_ref().unwrap();
-                let elmt_index = indices_int
-                    .iter()
-                    .take(contract_strides.len())
-                    .zip(contract_strides.iter())
-                    .fold(self.int_type.const_zero(), |acc, (i, s)| {
-                        let tmp = self.builder.build_int_mul(*i, *s, "elmt_index").unwrap();
-                        self.builder.build_int_add(acc, tmp, "acc").unwrap()
-                    });
-                self.jit_compile_store(name, elmt, elmt_index, contract_sum_value, translation)?;
+            indices[i].add_incoming(&[(&next_index, postblock)]);
+            if i == expr_rank - contract_by - 1 {
+                if let Some(contract_sum) = contract_sum {
+                    let contract_sum_value = self
+                        .build_load(self.real_type, contract_sum, "contract_sum")?
+                        .into_float_value();
+                    let contract_strides = contract_strides.as_ref().unwrap();
+                    let elmt_index = indices_int
+                        .iter()
+                        .take(contract_strides.len())
+                        .zip(contract_strides.iter())
+                        .fold(self.int_type.const_zero(), |acc, (i, s)| {
+                            let tmp = self.builder.build_int_mul(*i, *s, "elmt_index").unwrap();
+                            self.builder.build_int_add(acc, tmp, "acc").unwrap()
+                        });
+                    self.jit_compile_store(
+                        name,
+                        elmt,
+                        elmt_index,
+                        contract_sum_value,
+                        translation,
+                    )?;
+                }
             }
 
             let end_index = if i == 0 && self.threaded {
@@ -1854,7 +1873,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder
                 .build_conditional_branch(loop_while, blocks[i], block)?;
             self.builder.position_at_end(block);
-            preblock = block;
+            postblock = block;
         }
 
         if self.threaded {
@@ -1882,7 +1901,6 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let int_type = self.int_type;
 
-        let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
         let translation_index = self
             .layout
             .get_translation_index(elmt.expr_layout(), elmt.layout())
@@ -1950,51 +1968,22 @@ impl<'ctx> CodeGen<'ctx> {
             .build_store(contract_sum_ptr, self.real_type.const_float(0.0))?;
 
         // loop through each element in the contraction
-        let contract_block = self
+        let start_contract_block = self
             .context
             .append_basic_block(self.fn_value(), format!("{name}_contract").as_str());
-        self.builder.build_unconditional_branch(contract_block)?;
-        self.builder.position_at_end(contract_block);
+        self.builder
+            .build_unconditional_branch(start_contract_block)?;
+        self.builder.position_at_end(start_contract_block);
 
         let expr_index_phi = self.builder.build_phi(int_type, "j")?;
         expr_index_phi.add_incoming(&[(&start_contract, block)]);
 
-        // loop body - load index from layout
         let expr_index = expr_index_phi.as_basic_value().into_int_value();
-        let elmt_index_mult_rank = self.builder.build_int_mul(
-            expr_index,
-            int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false),
-            name,
-        )?;
-        let indices_int = (0..elmt.expr_layout().rank())
-            .map(|i| {
-                let layout_index_plus_offset =
-                    int_type.const_int((layout_index + i).try_into().unwrap(), false);
-                let curr_index = self.builder.build_int_add(
-                    elmt_index_mult_rank,
-                    layout_index_plus_offset,
-                    name,
-                )?;
-                let ptr = Self::get_ptr_to_index(
-                    &self.builder,
-                    self.int_type,
-                    self.get_param("indices"),
-                    curr_index,
-                    name,
-                );
-                let index = self.build_load(self.int_type, ptr, name)?.into_int_value();
-                Ok(index)
-            })
-            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+        let indices_int = self.expr_indices_from_elmt_index(expr_index, elmt, name)?;
 
         // loop body - eval expression and increment sum
-        let float_value = self.jit_compile_expr(
-            name,
-            elmt.expr(),
-            indices_int.as_slice(),
-            elmt,
-            Some(expr_index),
-        )?;
+        let float_value =
+            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, expr_index)?;
         let contract_sum_value = self
             .build_load(self.real_type, contract_sum_ptr, "contract_sum")?
             .into_float_value();
@@ -2004,11 +1993,13 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder
             .build_store(contract_sum_ptr, new_contract_sum_value)?;
 
+        let end_contract_block = self.builder.get_insert_block().unwrap();
+
         // increment contract loop index
         let next_elmt_index =
             self.builder
                 .build_int_add(expr_index, int_type.const_int(1, false), name)?;
-        expr_index_phi.add_incoming(&[(&next_elmt_index, contract_block)]);
+        expr_index_phi.add_incoming(&[(&next_elmt_index, end_contract_block)]);
 
         // contract loop condition
         let loop_while = self.builder.build_int_compare(
@@ -2018,8 +2009,11 @@ impl<'ctx> CodeGen<'ctx> {
             name,
         )?;
         let post_contract_block = self.context.append_basic_block(self.fn_value(), name);
-        self.builder
-            .build_conditional_branch(loop_while, contract_block, post_contract_block)?;
+        self.builder.build_conditional_branch(
+            loop_while,
+            start_contract_block,
+            post_contract_block,
+        )?;
         self.builder.position_at_end(post_contract_block);
 
         // store the result
@@ -2063,44 +2057,21 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
-    // for sparse blocks we can loop through the non-zero elements and extract the index from the layout, then we compile the expression passing in this index
-    // TODO: havn't implemented contractions yet
-    fn jit_compile_sparse_block(
+    fn expr_indices_from_elmt_index(
         &mut self,
-        name: &str,
+        elmt_index: IntValue<'ctx>,
         elmt: &TensorBlock,
-        translation: &Translation,
-    ) -> Result<()> {
-        let int_type = self.int_type;
-
+        name: &str,
+    ) -> Result<Vec<IntValue<'ctx>>, anyhow::Error> {
         let layout_index = self.layout.get_layout_index(elmt.expr_layout()).unwrap();
-        let start_index = int_type.const_int(0, false);
-        let end_index = int_type.const_int(elmt.expr_layout().nnz().try_into().unwrap(), false);
-
-        let (thread_start, thread_end, test_done, next) = if self.threaded {
-            let (start, end, test_done, next) = self.jit_threading_limits(end_index)?;
-            (Some(start), Some(end), Some(test_done), Some(next))
-        } else {
-            (None, None, None, None)
-        };
-
-        // loop through the non-zero elements
-        let preblock = self.builder.get_insert_block().unwrap();
-        let mut block = self.context.append_basic_block(self.fn_value(), name);
-        self.builder.build_unconditional_branch(block)?;
-        self.builder.position_at_end(block);
-
-        let curr_index = self.builder.build_phi(int_type, "i")?;
-        curr_index.add_incoming(&[(&thread_start.unwrap_or(start_index), preblock)]);
-
+        let int_type = self.int_type;
         // loop body - load index from layout
-        let elmt_index = curr_index.as_basic_value().into_int_value();
         let elmt_index_mult_rank = self.builder.build_int_mul(
             elmt_index,
             int_type.const_int(elmt.expr_layout().rank().try_into().unwrap(), false),
             name,
         )?;
-        let indices_int = (0..elmt.expr_layout().rank())
+        (0..elmt.expr_layout().rank())
             .map(|i| {
                 let layout_index_plus_offset =
                     int_type.const_int((layout_index + i).try_into().unwrap(), false);
@@ -2118,30 +2089,54 @@ impl<'ctx> CodeGen<'ctx> {
                 );
                 Ok(self.build_load(self.int_type, ptr, name)?.into_int_value())
             })
-            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+            .collect::<Result<Vec<_>, anyhow::Error>>()
+    }
+
+    // for sparse blocks we can loop through the non-zero elements and extract the index from the layout, then we compile the expression passing in this index
+    // TODO: havn't implemented contractions yet
+    fn jit_compile_sparse_block(
+        &mut self,
+        name: &str,
+        elmt: &TensorBlock,
+        translation: &Translation,
+    ) -> Result<()> {
+        let int_type = self.int_type;
+
+        let start_index = int_type.const_int(0, false);
+        let end_index = int_type.const_int(elmt.expr_layout().nnz().try_into().unwrap(), false);
+
+        let (thread_start, thread_end, test_done, next) = if self.threaded {
+            let (start, end, test_done, next) = self.jit_threading_limits(end_index)?;
+            (Some(start), Some(end), Some(test_done), Some(next))
+        } else {
+            (None, None, None, None)
+        };
+
+        // loop through the non-zero elements
+        let preblock = self.builder.get_insert_block().unwrap();
+        let loop_block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_unconditional_branch(loop_block)?;
+        self.builder.position_at_end(loop_block);
+
+        let curr_index = self.builder.build_phi(int_type, "i")?;
+        curr_index.add_incoming(&[(&thread_start.unwrap_or(start_index), preblock)]);
+
+        let elmt_index = curr_index.as_basic_value().into_int_value();
+        let indices_int = self.expr_indices_from_elmt_index(elmt_index, elmt, name)?;
 
         // loop body - eval expression
-        let float_value = self.jit_compile_expr(
-            name,
-            elmt.expr(),
-            indices_int.as_slice(),
-            elmt,
-            Some(elmt_index),
-        )?;
+        let float_value =
+            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, elmt_index)?;
 
-        block = self.jit_compile_broadcast_and_store(
-            name,
-            elmt,
-            float_value,
-            elmt_index,
-            translation,
-            block,
-        )?;
+        self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation)?;
+
+        // jit_compile_expr or jit_compile_broadcast_and_store may have changed the current block
+        let end_loop_block = self.builder.get_insert_block().unwrap();
 
         // increment loop index
         let one = int_type.const_int(1, false);
         let next_index = self.builder.build_int_add(elmt_index, one, name)?;
-        curr_index.add_incoming(&[(&next_index, block)]);
+        curr_index.add_incoming(&[(&next_index, end_loop_block)]);
 
         // loop condition
         let loop_while = self.builder.build_int_compare(
@@ -2152,7 +2147,7 @@ impl<'ctx> CodeGen<'ctx> {
         )?;
         let post_block = self.context.append_basic_block(self.fn_value(), name);
         self.builder
-            .build_conditional_branch(loop_while, block, post_block)?;
+            .build_conditional_branch(loop_while, loop_block, post_block)?;
         self.builder.position_at_end(post_block);
 
         if self.threaded {
@@ -2188,9 +2183,9 @@ impl<'ctx> CodeGen<'ctx> {
 
         // loop through the non-zero elements
         let preblock = self.builder.get_insert_block().unwrap();
-        let mut block = self.context.append_basic_block(self.fn_value(), name);
-        self.builder.build_unconditional_branch(block)?;
-        self.builder.position_at_end(block);
+        let start_loop_block = self.context.append_basic_block(self.fn_value(), name);
+        self.builder.build_unconditional_branch(start_loop_block)?;
+        self.builder.position_at_end(start_loop_block);
 
         let curr_index = self.builder.build_phi(int_type, "i")?;
         curr_index.add_incoming(&[(&thread_start.unwrap_or(start_index), preblock)]);
@@ -2201,28 +2196,18 @@ impl<'ctx> CodeGen<'ctx> {
             (0..elmt.expr_layout().rank()).map(|_| elmt_index).collect();
 
         // loop body - eval expression
-        let float_value = self.jit_compile_expr(
-            name,
-            elmt.expr(),
-            indices_int.as_slice(),
-            elmt,
-            Some(elmt_index),
-        )?;
+        let float_value =
+            self.jit_compile_expr(name, elmt.expr(), indices_int.as_slice(), elmt, elmt_index)?;
 
         // loop body - store result
-        block = self.jit_compile_broadcast_and_store(
-            name,
-            elmt,
-            float_value,
-            elmt_index,
-            translation,
-            block,
-        )?;
+        self.jit_compile_broadcast_and_store(name, elmt, float_value, elmt_index, translation)?;
+
+        let end_loop_block = self.builder.get_insert_block().unwrap();
 
         // increment loop index
         let one = int_type.const_int(1, false);
         let next_index = self.builder.build_int_add(elmt_index, one, name)?;
-        curr_index.add_incoming(&[(&next_index, block)]);
+        curr_index.add_incoming(&[(&next_index, end_loop_block)]);
 
         // loop condition
         let loop_while = self.builder.build_int_compare(
@@ -2233,7 +2218,7 @@ impl<'ctx> CodeGen<'ctx> {
         )?;
         let post_block = self.context.append_basic_block(self.fn_value(), name);
         self.builder
-            .build_conditional_branch(loop_while, block, post_block)?;
+            .build_conditional_branch(loop_while, start_loop_block, post_block)?;
         self.builder.position_at_end(post_block);
 
         if self.threaded {
@@ -2255,11 +2240,11 @@ impl<'ctx> CodeGen<'ctx> {
         float_value: FloatValue<'ctx>,
         expr_index: IntValue<'ctx>,
         translation: &Translation,
-        pre_block: BasicBlock<'ctx>,
-    ) -> Result<BasicBlock<'ctx>> {
+    ) -> Result<()> {
         let int_type = self.int_type;
         let one = int_type.const_int(1, false);
         let zero = int_type.const_int(0, false);
+        let pre_block = self.builder.get_insert_block().unwrap();
         match translation.source {
             TranslationFrom::Broadcast {
                 broadcast_by: _,
@@ -2303,13 +2288,11 @@ impl<'ctx> CodeGen<'ctx> {
                 self.builder
                     .build_conditional_branch(bcast_cond, bcast_block, post_bcast_block)?;
                 self.builder.position_at_end(post_bcast_block);
-
-                // return the current block for later
-                Ok(post_bcast_block)
+                Ok(())
             }
             TranslationFrom::ElementWise | TranslationFrom::DiagonalContraction { .. } => {
                 self.jit_compile_store(name, elmt, expr_index, float_value, translation)?;
-                Ok(pre_block)
+                Ok(())
             }
             _ => Err(anyhow!("Invalid translation")),
         }
@@ -2371,7 +2354,7 @@ impl<'ctx> CodeGen<'ctx> {
         expr: &Ast,
         index: &[IntValue<'ctx>],
         elmt: &TensorBlock,
-        expr_index: Option<IntValue<'ctx>>,
+        expr_index: IntValue<'ctx>,
     ) -> Result<FloatValue<'ctx>> {
         let name = elmt.name().unwrap_or(name);
         match &expr.kind {
@@ -2433,7 +2416,27 @@ impl<'ctx> CodeGen<'ctx> {
                             .iter()
                             .position(|x| x == c)
                             .unwrap_or(elmt.indices().len());
-                        iname_index.push(index[pi]);
+                        // if we are indexing, add the start indice to index[pi]
+                        if let Some(indice) =
+                            iname.indice.as_ref().map(|i| i.kind.as_indice().unwrap())
+                        {
+                            let start = indice.first.as_ref().kind.as_integer().unwrap();
+                            let start_intval = self
+                                .context
+                                .i32_type()
+                                .const_int(start.try_into().unwrap(), false);
+                            // if we are indexing a single element, the index may be out of bounds
+                            let index_pi = if pi >= index.len() {
+                                self.context.i32_type().const_int(0, false)
+                            } else {
+                                index[pi]
+                            };
+                            let index_pi =
+                                self.builder.build_int_add(index_pi, start_intval, name)?;
+                            iname_index.push(index_pi);
+                        } else {
+                            iname_index.push(index[pi]);
+                        }
                         no_transform = no_transform && pi == i;
                     }
                     // calculate the element index using iname_index and the shape of the tensor
@@ -2452,24 +2455,109 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.builder
                                     .build_int_add(iname_elmt_index, stride_mul_i, name)?;
                         }
-                        Some(iname_elmt_index)
+                        iname_elmt_index
                     } else {
+                        // zero if we are not indexing, otherwise use the start value of indice
                         let zero = self.context.i32_type().const_int(0, false);
-                        Some(zero)
+                        zero
                     }
                 } else if layout.is_sparse() || layout.is_diagonal() {
-                    // must have come from jit_compile_sparse_block, so we can just use the elmt_index
-                    // must have come from jit_compile_diagonal_block, so we can just use the elmt_index
-                    expr_index
+                    let expr_layout = elmt.expr_layout();
+
+                    if expr_layout != layout {
+                        // get correct index from binary layout map, ie. indices[ binary_layout_index + expr_index ]
+                        // if its a -1 then return a 0
+                        // ie. expr_index = binary_layout[expr_index]
+                        //.    if expr_index == -1 then return 0 as the value of the expression
+                        //.    otherwise load the value at that index
+                        // we are doing an if statement so I think we need to return early here
+                        let permutation =
+                            DataLayout::permutation(elmt, iname.indices.as_slice(), layout);
+                        if let Some(base_binary_layout_index) =
+                            self.layout
+                                .get_binary_layout_index(layout, expr_layout, permutation)
+                        {
+                            let binary_layout_index = self.builder.build_int_add(
+                                self.int_type
+                                    .const_int(base_binary_layout_index.try_into().unwrap(), false),
+                                expr_index,
+                                name,
+                            )?;
+
+                            let indices_ptr = Self::get_ptr_to_index(
+                                &self.builder,
+                                self.int_type,
+                                self.get_param("indices"),
+                                binary_layout_index,
+                                name,
+                            );
+                            let mapped_index = self
+                                .build_load(self.int_type, indices_ptr, name)?
+                                .into_int_value();
+                            let is_less_than_zero = self.builder.build_int_compare(
+                                IntPredicate::SLT,
+                                mapped_index,
+                                self.int_type.const_int(0, true),
+                                "sparse_index_check",
+                            )?;
+                            let is_less_than_zero_block =
+                                self.context.append_basic_block(self.fn_value(), "lt_zero");
+                            let not_less_than_zero_block = self
+                                .context
+                                .append_basic_block(self.fn_value(), "not_lt_zero");
+                            let merge_block =
+                                self.context.append_basic_block(self.fn_value(), "merge");
+                            self.builder.build_conditional_branch(
+                                is_less_than_zero,
+                                is_less_than_zero_block,
+                                not_less_than_zero_block,
+                            )?;
+
+                            // if mapped index < 0 return 0
+                            self.builder.position_at_end(is_less_than_zero_block);
+                            let zero_value = self.real_type.const_float(0.);
+                            self.builder.build_unconditional_branch(merge_block)?;
+
+                            // if mapped index >=0 load value at that index
+                            self.builder.position_at_end(not_less_than_zero_block);
+                            let value_ptr = Self::get_ptr_to_index(
+                                &self.builder,
+                                self.real_type,
+                                ptr,
+                                mapped_index,
+                                name,
+                            );
+                            let value = self
+                                .build_load(self.real_type, value_ptr, name)?
+                                .into_float_value();
+                            self.builder.build_unconditional_branch(merge_block)?;
+
+                            // return value or 0 from if statement
+                            self.builder.position_at_end(merge_block);
+                            let if_return_value =
+                                self.builder.build_phi(self.real_type, "sparse_value")?;
+                            if_return_value.add_incoming(&[(&zero_value, is_less_than_zero_block)]);
+                            if_return_value.add_incoming(&[(&value, not_less_than_zero_block)]);
+
+                            let phi_value = if_return_value.as_basic_value().into_float_value();
+                            return Ok(phi_value);
+                        } else {
+                            expr_index
+                        }
+                    } else {
+                        // we can just use the elmt_index since the layouts are the same
+                        expr_index
+                    }
                 } else {
                     panic!("unexpected layout");
                 };
-                let value_ptr = match iname_elmt_index {
-                    Some(index) => {
-                        Self::get_ptr_to_index(&self.builder, self.real_type, ptr, index, name)
-                    }
-                    None => *ptr,
-                };
+                let value_ptr = Self::get_ptr_to_index(
+                    &self.builder,
+                    self.real_type,
+                    ptr,
+                    iname_elmt_index,
+                    name,
+                );
                 Ok(self
                     .build_load(self.real_type, value_ptr, name)?
                     .into_float_value())
@@ -3206,7 +3294,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_indices();
 
         let number_of_states = model.state().nnz() as u64;
-        let number_of_inputs = model.inputs().iter().fold(0, |acc, x| acc + x.nnz()) as u64;
+        let number_of_inputs = model.input().map(|inp| inp.nnz()).unwrap_or(0) as u64;
         let number_of_outputs = match model.out() {
             Some(out) => out.nnz() as u64,
             None => 0,
@@ -3371,7 +3459,7 @@ impl<'ctx> CodeGen<'ctx> {
         );
         let function_name = if is_get { "get_inputs" } else { "set_inputs" };
         let function = self.module.add_function(function_name, fn_type, None);
-        let mut block = self.context.append_basic_block(function, "entry");
+        let block = self.context.append_basic_block(function, "entry");
         self.fn_value_opt = Some(function);
 
         let fn_arg_names = &["inputs", "data"];
@@ -3383,19 +3471,18 @@ impl<'ctx> CodeGen<'ctx> {
             self.insert_param(name, alloca);
         }
 
-        let mut inputs_index = 0usize;
-        for input in model.inputs() {
-            let name = format!("input_{}", input.name());
+        if let Some(input) = model.input() {
+            let name = input.name();
             self.insert_tensor(input, false);
             let ptr = self.get_var(input);
             // loop thru the elements of this input and set/get them using the inputs ptr
-            let inputs_start_index = self.int_type.const_int(inputs_index as u64, false);
+            let inputs_start_index = self.int_type.const_int(0, false);
             let start_index = self.int_type.const_int(0, false);
             let end_index = self
                 .int_type
                 .const_int(input.nnz().try_into().unwrap(), false);
 
-            let input_block = self.context.append_basic_block(function, name.as_str());
+            let input_block = self.context.append_basic_block(function, name);
             self.builder.build_unconditional_branch(input_block)?;
             self.builder.position_at_end(input_block);
             let index = self.builder.build_phi(self.int_type, "i")?;
@@ -3403,57 +3490,43 @@ impl<'ctx> CodeGen<'ctx> {
 
             // loop body - copy value from inputs to data
             let curr_input_index = index.as_basic_value().into_int_value();
-            let input_ptr = Self::get_ptr_to_index(
-                &self.builder,
-                self.real_type,
-                ptr,
-                curr_input_index,
-                name.as_str(),
-            );
+            let input_ptr =
+                Self::get_ptr_to_index(&self.builder, self.real_type, ptr, curr_input_index, name);
             let curr_inputs_index =
                 self.builder
-                    .build_int_add(inputs_start_index, curr_input_index, name.as_str())?;
+                    .build_int_add(inputs_start_index, curr_input_index, name)?;
             let inputs_ptr = Self::get_ptr_to_index(
                 &self.builder,
                 self.real_type,
                 self.get_param("inputs"),
                 curr_inputs_index,
-                name.as_str(),
+                name,
             );
             if is_get {
                 let input_value = self
-                    .build_load(self.real_type, input_ptr, name.as_str())?
+                    .build_load(self.real_type, input_ptr, name)?
                     .into_float_value();
                 self.builder.build_store(inputs_ptr, input_value)?;
             } else {
                 let input_value = self
-                    .build_load(self.real_type, inputs_ptr, name.as_str())?
+                    .build_load(self.real_type, inputs_ptr, name)?
                     .into_float_value();
                 self.builder.build_store(input_ptr, input_value)?;
             }
 
             // increment loop index
             let one = self.int_type.const_int(1, false);
-            let next_index = self
-                .builder
-                .build_int_add(curr_input_index, one, name.as_str())?;
+            let next_index = self.builder.build_int_add(curr_input_index, one, name)?;
             index.add_incoming(&[(&next_index, input_block)]);
 
             // loop condition
-            let loop_while = self.builder.build_int_compare(
-                IntPredicate::ULT,
-                next_index,
-                end_index,
-                name.as_str(),
-            )?;
-            let post_block = self.context.append_basic_block(function, name.as_str());
+            let loop_while =
+                self.builder
+                    .build_int_compare(IntPredicate::ULT, next_index, end_index, name)?;
+            let post_block = self.context.append_basic_block(function, name);
             self.builder
                 .build_conditional_branch(loop_while, input_block, post_block)?;
             self.builder.position_at_end(post_block);
-
-            // get ready for next input
-            block = post_block;
-            inputs_index += input.nnz();
         }
         self.builder.build_return(None)?;
 

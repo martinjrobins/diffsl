@@ -42,6 +42,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
         Rule::name | Rule::domain_name => Ast {
             kind: AstKind::Name(ast::Name {
                 name: pair.as_str(),
+                indice: None,
                 indices: vec![],
                 is_tangent: false,
             }),

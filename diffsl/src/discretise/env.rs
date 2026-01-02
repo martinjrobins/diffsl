@@ -1,8 +1,12 @@
 use std::collections::HashMap;
 
+use log::{debug, log_enabled, Level};
 use ndarray::s;
 
-use crate::ast::{self, Ast, AstKind, StringSpan};
+use crate::{
+    ast::{self, Ast, AstKind, StringSpan},
+    discretise::layout::NonZero,
+};
 
 use super::{
     can_broadcast_to, layout::ArcLayout, Layout, LayoutKind, Shape, Tensor, TensorBlock,
@@ -48,11 +52,12 @@ pub struct Env {
     current_span: Option<StringSpan>,
     errs: ValidationErrors,
     vars: HashMap<String, EnvVar>,
-    inputs: Vec<String>,
+    pub(crate) state0_input_deps: Vec<NonZero>,
+    pub(crate) dstate0_input_deps: Vec<NonZero>,
 }
 
 impl Env {
-    pub fn new(inputs: &[&str]) -> Self {
+    pub fn new() -> Self {
         let mut vars = HashMap::new();
         vars.insert(
             "t".to_string(),
@@ -69,9 +74,21 @@ impl Env {
             errs: ValidationErrors::default(),
             vars,
             current_span: None,
-            inputs: inputs.iter().map(|s| s.to_string()).collect(),
+            state0_input_deps: vec![],
+            dstate0_input_deps: vec![],
         }
     }
+
+    /// create a new ArcLayout from a Layout, if the layout already exists in the env then return the existing one
+    pub fn new_layout_ptr(&mut self, layout: Layout) -> ArcLayout {
+        for var in self.vars.values() {
+            if var.layout.as_ref().eq_nonzeros_and_deps(&layout) {
+                return var.layout.clone();
+            }
+        }
+        ArcLayout::new(layout)
+    }
+
     pub fn is_tensor_time_dependent(&self, tensor: &Tensor) -> bool {
         if tensor.name() == "u" || tensor.name() == "dudt" {
             return true;
@@ -89,9 +106,7 @@ impl Env {
     }
 
     pub fn is_tensor_input_dependent(&self, tensor: &Tensor) -> bool {
-        self.inputs
-            .iter()
-            .any(|input| self.is_tensor_dependent_on(tensor, input))
+        self.is_tensor_dependent_on(tensor, "in")
     }
 
     pub fn is_tensor_dstatedt_dependent(&self, tensor: &Tensor) -> bool {
@@ -108,7 +123,9 @@ impl Env {
                     || match var {
                         "u" => self.vars[dep].is_state_dependent(),
                         "dudt" => self.vars[dep].is_dstatedt_dependent(),
-                        _ => false,
+                        // must be an input
+                        "in" => self.vars[dep].is_input_dependent(),
+                        _ => unreachable!(),
                     }
             })
         })
@@ -132,7 +149,7 @@ impl Env {
         self.vars.insert(
             var_blk.name().unwrap().to_string(),
             EnvVar {
-                layout: var_blk.layout().clone(),
+                layout: var_blk.layout_ptr().clone(),
                 is_algebraic: true,
                 is_time_dependent: self.is_tensor_time_dependent(var),
                 is_state_dependent: self.is_tensor_state_dependent(var),
@@ -155,7 +172,7 @@ impl Env {
     ) -> Option<Layout> {
         let left_layout = self.get_layout(left, indices)?;
         let right_layout = self.get_layout(right, indices)?;
-        match Layout::broadcast(vec![left_layout, right_layout], op.op == '*') {
+        match Layout::broadcast(vec![left_layout, right_layout], Some(op.op)) {
             Ok(layout) => Some(layout),
             Err(e) => {
                 self.errs.push(ValidationError::new(
@@ -173,6 +190,7 @@ impl Env {
         ast: &Ast,
         rhs_indices: &[char],
         lhs_indices: &[char],
+        indice: Option<&Ast>,
     ) -> Option<Layout> {
         let var = self.get(name);
         if var.is_none() {
@@ -202,14 +220,25 @@ impl Env {
             permutation[i] = match lhs_indices.iter().position(|&x| x == rhs_indices[i]) {
                 Some(pos) => pos,
                 None => {
-                    self.errs.push(ValidationError::new(
-                        format!(
-                            "cannot find index {} in lhs indices {:?} ",
-                            rhs_indices[i], lhs_indices
-                        ),
-                        ast.span,
-                    ));
-                    return None;
+                    // if we are indexing a single element then we can allow for missing indices
+                    let mut allow_missing = false;
+                    if let Some(indice) = indice {
+                        let indice = indice.kind.as_indice().unwrap();
+                        if indice.sep.is_none() || indice.last.is_none() {
+                            allow_missing = true;
+                        }
+                    };
+                    if !allow_missing {
+                        self.errs.push(ValidationError::new(
+                            format!(
+                                "cannot find index {} in lhs indices {:?} ",
+                                rhs_indices[i], lhs_indices
+                            ),
+                            ast.span,
+                        ));
+                        return None;
+                    }
+                    0
                 }
             }
         }
@@ -221,6 +250,65 @@ impl Env {
                 return None;
             }
         };
+
+        if let Some(indice) = indice {
+            let indice = indice.kind.as_indice().unwrap();
+            // we'll only support indexing dense 1D variables for now
+            // a dense 1d variable could be a column vector with shape (n, 1) or a row vector with shape (n)
+            // or an nd array with shape (1, 1, ..., n, 1)
+            let is_one_d = layout_permuted.shape().iter().filter(|&&d| d != 1).count() == 1;
+            if !is_one_d || layout_permuted.kind() != &LayoutKind::Dense {
+                self.errs.push(ValidationError::new(
+                    format!(
+                        "can only index dense 1D variables. Variable {} has layout {}",
+                        name, layout_permuted
+                    ),
+                    ast.span,
+                ));
+                return None;
+            }
+
+            // a separator without a last value is an error
+            if indice.sep.is_some() && indice.last.is_none() {
+                self.errs.push(ValidationError::new(
+                    "range indice must have an end value".to_string(),
+                    ast.span,
+                ));
+                return None;
+            }
+
+            // if the indice is a single integer then the resulting layout is a scalar
+            if indice.sep.is_none() {
+                let mut new_layout = Layout::new_scalar();
+                let first = indice.first.kind.as_integer().unwrap();
+                let last = first + 1;
+                new_layout.filter_deps_from(layout_permuted, first, last);
+                return Some(new_layout);
+            } else {
+                // if the indice is a range then the resulting layout is a dense layout with shape given by the range
+                // along the only non-unit dimension of the variable
+                let first = indice.first.kind.as_integer().unwrap();
+                let last = indice.last.as_ref().unwrap().kind.as_integer().unwrap();
+                // make sure the range is valid
+                if last < first {
+                    self.errs.push(ValidationError::new(
+                        format!(
+                            "invalid range indice: start {} is greater than end {}",
+                            first, last
+                        ),
+                        ast.span,
+                    ));
+                    return None;
+                }
+                let dim = usize::try_from(last - first).unwrap();
+                let shape = layout_permuted
+                    .shape()
+                    .map(|&d| if d != 1 { dim } else { 1 });
+                let mut new_layout = Layout::new_dense(Shape::from(shape));
+                new_layout.filter_deps_from(layout_permuted, first, last);
+                return Some(new_layout);
+            }
+        }
 
         Some(layout_permuted)
     }
@@ -236,7 +324,7 @@ impl Env {
             .iter()
             .map(|c| self.get_layout(c, indices))
             .collect::<Option<Vec<Layout>>>()?;
-        match Layout::broadcast(layouts, false) {
+        match Layout::broadcast(layouts, None) {
             Ok(layout) => Some(layout),
             Err(e) => {
                 self.errs
@@ -247,7 +335,7 @@ impl Env {
     }
 
     pub fn get_layout(&mut self, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {
-        match &ast.kind {
+        let layout = match &ast.kind {
             AstKind::Assignment(a) => self.get_layout(a.expr.as_ref(), indices),
             AstKind::Binop(binop) => {
                 self.get_layout_binary_op(binop.left.as_ref(), binop.right.as_ref(), binop, indices)
@@ -258,9 +346,36 @@ impl Env {
             AstKind::Number(_) => Some(Layout::new_scalar()),
             AstKind::Integer(_) => Some(Layout::new_scalar()),
             AstKind::Domain(d) => Some(Layout::new_dense(Shape::zeros(1) + d.dim)),
-            AstKind::Name(name) => self.get_layout_name(name.name, ast, &name.indices, indices),
+            AstKind::Name(name) => self.get_layout_name(
+                name.name,
+                ast,
+                &name.indices,
+                indices,
+                name.indice.as_ref().map(|i| i.as_ref()),
+            ),
             _ => panic!("unrecognised ast node {:#?}", ast.kind),
+        };
+        if log_enabled!(Level::Debug) {
+            let indices_str = layout.as_ref().map(|l| {
+                l.explicit_indices()
+                    .iter()
+                    .map(|i| {
+                        i.into_iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<String>>()
+                            .join(", ")
+                    })
+                    .collect::<Vec<String>>()
+            });
+            debug!(
+                "layout for ast {} with indices {:?} is {} with indices {:?}",
+                ast,
+                indices,
+                layout.as_ref().unwrap_or(&Layout::new_scalar()),
+                indices_str.unwrap_or_default()
+            );
         }
+        layout
     }
 
     // returns a tuple of (expr_layout, elmt_layout) giving the layouts of the expression and the tensor element.)
@@ -278,37 +393,44 @@ impl Env {
             }
         }
 
-        // TODO: for now we will only support one additional index
-        if new_indices.len() > indices.len() + 1 {
+        // TODO: for now we will only support contractions from 2d to 1d
+        if new_indices.len() > indices.len() && (new_indices.len() != 2 || indices.len() != 1) {
             self.errs.push(ValidationError::new(
                 format!(
-                    "cannot index tensor element with more than one additional index. Found {} indices",
-                    new_indices.len() - indices.len()
+                    "contraction only supported from 2D to 1D tensors. Got {}D to {}D",
+                    new_indices.len(),
+                    indices.len()
                 ),
                 elmt.expr.span,
             ));
             return None;
         }
-
+        debug!(
+            "calculating expr layout for tensor element with expr: {}",
+            elmt.expr
+        );
         let expr_layout = self.get_layout(elmt.expr.as_ref(), &new_indices)?;
+
+        // broadcast the expression layout to the tensor rank
+        // (tensor rank given by the number of indices)
+        // if we have an additional index then we contract the last dimension of the expression layout to get the final layout
+        let expr_layout_to_rank = if new_indices.len() > indices.len() {
+            match expr_layout.contract_last_axis() {
+                Ok(layout) => layout,
+                Err(e) => {
+                    self.errs
+                        .push(ValidationError::new(format!("{e}"), elmt.expr.span));
+                    return None;
+                }
+            }
+        } else {
+            expr_layout.broadcast_to_rank(indices.len())
+        };
 
         // calculate the shape of the tensor element.
         let elmt_layout = if elmt.indices.is_none() {
-            // If there are no indices then blk layout is the same as the expression, but broadcast to the tensor rank
-            // (tensor rank given by the number of indices)
-            // if we have an additional index then we contract the last dimension of the expression layout to get the final layout
-            if new_indices.len() > indices.len() {
-                match expr_layout.contract_last_axis() {
-                    Ok(layout) => layout,
-                    Err(e) => {
-                        self.errs
-                            .push(ValidationError::new(format!("{e}"), elmt.expr.span));
-                        return None;
-                    }
-                }
-            } else {
-                expr_layout.to_rank(indices.len()).unwrap()
-            }
+            // If there are no indicies then the layout is the same as the expression layout
+            expr_layout_to_rank
         } else {
             // If there are indicies then the rank is determined by the number of indices, and the
             // shape is determined by the ranges of the indices
@@ -336,8 +458,8 @@ impl Env {
 
             // we will use the expression shape as defaults if the range is not explicitly given
             exp_expr_shape
-                .slice_mut(s![..expr_layout.rank()])
-                .assign(expr_layout.shape());
+                .slice_mut(s![..expr_layout_to_rank.rank()])
+                .assign(expr_layout_to_rank.shape());
 
             // calculate the shape of the tensor element from the given indices and expression shape
             let all_range_indices = given_indices.iter().all(|i| i.sep == Some(".."));
@@ -383,11 +505,11 @@ impl Env {
             }
 
             // check that the expression shape can be broadcast to the tensor element shape
-            if !can_broadcast_to(&exp_expr_shape, expr_layout.shape()) {
+            if !can_broadcast_to(&exp_expr_shape, expr_layout_to_rank.shape()) {
                 self.errs.push(ValidationError::new(
                     format!(
                         "cannot broadcast expression shape {} to tensor element shape {}",
-                        expr_layout.shape(),
+                        expr_layout_to_rank.shape(),
                         exp_expr_shape
                     ),
                     elmt.expr.span,
@@ -395,42 +517,38 @@ impl Env {
                 return None;
             }
 
-            // tensor elmt layout is:
-            // 1. dense if the expression is dense and no indices are ranges
-            // 2. diagonal if the expression is dense and all indices are ranges, or the expression is diagonal and no indices are ranges
-            // 3. sparse if the expression is sparse and no indices are blocks
-            let elmt_layout = match expr_layout.kind() {
-                LayoutKind::Dense => {
-                    if all_range_indices {
-                        Layout::new_diagonal(exp_expr_shape)
-                    } else {
-                        Layout::new_dense(exp_expr_shape)
-                    }
-                }
-                LayoutKind::Sparse => {
-                    if all_range_indices {
+            // if we have all range indices, any sparse layouts will error
+            if all_range_indices && expr_layout_to_rank.kind() == &LayoutKind::Sparse {
+                self.errs.push(ValidationError::new(
+                    "cannot use range indices with sparse expression".to_string(),
+                    elmt.expr.span,
+                ));
+                return None;
+            }
+            // if we have all range indices, any diagonal layouts will error
+            if all_range_indices && expr_layout_to_rank.kind() == &LayoutKind::Diagonal {
+                self.errs.push(ValidationError::new(
+                    "cannot use range indices with diagonal expression".to_string(),
+                    elmt.expr.span,
+                ));
+                return None;
+            }
+
+            // if we have all range indices we can make a diagonal layout, otherwise we broadcast
+            if all_range_indices {
+                match Layout::new_diagonal_from(exp_expr_shape, &expr_layout_to_rank) {
+                    Some(layout) => layout,
+                    None => {
                         self.errs.push(ValidationError::new(
-                            "cannot use range indices with sparse expression".to_string(),
+                            "when using all range indices, the expression layout must be scalar or 1D with dimension matching the range".to_string(),
                             elmt.expr.span,
                         ));
                         return None;
-                    } else {
-                        expr_layout.clone()
                     }
                 }
-                LayoutKind::Diagonal => {
-                    if all_range_indices {
-                        self.errs.push(ValidationError::new(
-                            "cannot use range indices with diagonal expression".to_string(),
-                            elmt.expr.span,
-                        ));
-                        return None;
-                    } else {
-                        Layout::new_diagonal(exp_expr_shape)
-                    }
-                }
-            };
-            elmt_layout
+            } else {
+                expr_layout_to_rank.broadcast_to_shape(&exp_expr_shape)
+            }
         };
 
         Some((expr_layout, elmt_layout))
@@ -450,5 +568,11 @@ impl Env {
 
     pub fn errs_mut(&mut self) -> &mut ValidationErrors {
         &mut self.errs
+    }
+}
+
+impl Default for Env {
+    fn default() -> Self {
+        Self::new()
     }
 }

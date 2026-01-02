@@ -88,6 +88,10 @@ impl<'s> TensorBlock<'s> {
         &self.layout
     }
 
+    pub fn layout_ptr(&self) -> &ArcLayout {
+        &self.layout
+    }
+
     pub fn expr_layout(&self) -> &ArcLayout {
         &self.expr_layout
     }

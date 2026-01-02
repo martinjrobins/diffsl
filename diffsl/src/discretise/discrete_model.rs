@@ -1,5 +1,6 @@
 use anyhow::Result;
 use core::panic;
+use log::info;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -14,13 +15,14 @@ use crate::ast::Indice;
 use crate::ast::StringSpan;
 use crate::continuous::ModelInfo;
 use crate::continuous::Variable;
+use crate::discretise::layout::NonZero;
 
-use super::ArcLayout;
 use super::Env;
 use super::Index;
 use super::Layout;
 use super::Tensor;
 use super::TensorBlock;
+use super::TensorType;
 use super::ValidationError;
 use super::ValidationErrors;
 
@@ -36,24 +38,25 @@ pub struct DiscreteModel<'s> {
     time_dep_defns: Vec<Tensor<'s>>,
     state_dep_defns: Vec<Tensor<'s>>,
     dstate_dep_defns: Vec<Tensor<'s>>,
-    inputs: Vec<Tensor<'s>>,
+    input: Option<Tensor<'s>>,
     state: Tensor<'s>,
     state_dot: Option<Tensor<'s>>,
     is_algebraic: Vec<bool>,
     stop: Option<Tensor<'s>>,
+    state0_input_deps: Vec<(usize, usize)>,
+    dstate0_input_deps: Vec<(usize, usize)>,
+    rhs_state_deps: Vec<(usize, usize)>,
+    rhs_input_deps: Vec<(usize, usize)>,
+    out_input_deps: Vec<(usize, usize)>,
+    out_state_deps: Vec<(usize, usize)>,
+    mass_state_deps: Vec<(usize, usize)>,
+    mass_input_deps: Vec<(usize, usize)>,
 }
 
 impl fmt::Display for DiscreteModel<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if !self.inputs.is_empty() {
-            write!(f, "in = [")?;
-            for input in &self.inputs {
-                write!(f, "{},", input.name())?;
-            }
-            writeln!(f, "]")?;
-            for input in &self.inputs {
-                writeln!(f, "{input}")?;
-            }
+        if let Some(input) = &self.input {
+            writeln!(f, "{input}")?;
         }
         for defn in &self.constant_defns {
             writeln!(f, "{defn}")?;
@@ -99,15 +102,27 @@ impl<'s> DiscreteModel<'s> {
             time_dep_defns: Vec::new(),
             state_dep_defns: Vec::new(),
             dstate_dep_defns: Vec::new(),
-            inputs: Vec::new(),
+            input: None,
             state: Tensor::new_empty("u"),
             state_dot: None,
             is_algebraic: Vec::new(),
             stop: None,
+            state0_input_deps: Vec::new(),
+            dstate0_input_deps: Vec::new(),
+            rhs_input_deps: Vec::new(),
+            rhs_state_deps: Vec::new(),
+            out_input_deps: Vec::new(),
+            out_state_deps: Vec::new(),
+            mass_state_deps: Vec::new(),
+            mass_input_deps: Vec::new(),
         }
     }
 
-    fn build_array(array: &ast::Tensor<'s>, env: &mut Env) -> Option<Tensor<'s>> {
+    fn build_array(
+        array: &ast::Tensor<'s>,
+        env: &mut Env,
+        tensor_type: TensorType,
+    ) -> Option<Tensor<'s>> {
         let rank = array.indices().len();
         let reserved_names = [
             "u0",
@@ -142,7 +157,7 @@ impl<'s> DiscreteModel<'s> {
         for a in array.elmts() {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
-                    if let Some((expr_layout, elmt_layout)) =
+                    if let Some((expr_layout, mut elmt_layout)) =
                         env.get_layout_tensor_elmt(te, array.indices())
                     {
                         if rank == 0 && elmt_layout.rank() == 1 && elmt_layout.shape()[0] > 1 {
@@ -187,12 +202,24 @@ impl<'s> DiscreteModel<'s> {
                             ));
                         }
 
+                        elmt_layout.add_tensor_dependencies(
+                            tensor_type,
+                            *start.get(0).unwrap_or(&0),
+                            env,
+                        );
+
+                        // make sure arc layouts are unique
+                        // TODO: if we always use arc layout for the recursion, we can reuse existing ones
+                        // much more efficiently rather than creating new ones all the time
+                        let elmt_layout = env.new_layout_ptr(elmt_layout);
+                        let expr_layout = env.new_layout_ptr(expr_layout);
+
                         elmts.push(TensorBlock::new(
                             name,
                             start.clone(),
                             array.indices().to_vec(),
-                            ArcLayout::new(elmt_layout),
-                            ArcLayout::new(expr_layout),
+                            elmt_layout,
+                            expr_layout,
                             *expr,
                         ));
 
@@ -214,14 +241,21 @@ impl<'s> DiscreteModel<'s> {
             ));
             None
         } else {
+            // todo: if we always use arc layout for the recursion, we can reuse existing ones
             match Layout::concatenate(&elmts, rank) {
                 Ok(layout) => {
-                    let tensor = Tensor::new(
-                        array.name(),
-                        elmts,
-                        ArcLayout::new(layout),
-                        array.indices().to_vec(),
-                    );
+                    let layout = env.new_layout_ptr(layout);
+                    // if sparse, filter out zero elements
+                    let elmts = if layout.is_sparse() {
+                        elmts
+                            .into_iter()
+                            .filter(|e| !matches!(e.expr().kind, AstKind::Number(0.0)))
+                            .collect::<Vec<_>>()
+                    } else {
+                        elmts
+                    };
+                    let tensor = Tensor::new(array.name(), elmts, layout, array.indices().to_vec());
+
                     //check that the number of indices matches the rank
                     assert_eq!(tensor.rank(), tensor.indices().len());
                     if nerrs == env.errs().len() {
@@ -232,6 +266,7 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                     }
+                    info!("Built tensor: {}", tensor);
                     Some(tensor)
                 }
                 Err(e) => {
@@ -263,7 +298,15 @@ impl<'s> DiscreteModel<'s> {
     }
 
     pub fn build(name: &'s str, model: &'s ast::DsModel) -> Result<Self, ValidationErrors> {
-        let mut env = Env::new(model.inputs.as_slice());
+        let mut env = Env::new();
+        if model.has_inputs {
+            env.errs_mut().push(ValidationError::new(
+                "input list is no longer supported, define the 'in' tensor instead, e.g. \n\
+                \t in { input1 = 0, input2 = 0 }"
+                    .to_string(),
+                None,
+            ));
+        }
         let mut ret = Self::new(name);
         let mut read_state = false;
         let mut span_f = None;
@@ -287,9 +330,18 @@ impl<'s> DiscreteModel<'s> {
                     match tensor.name() {
                         "u" => {
                             read_state = true;
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, TensorType::State)
+                            {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "state 'u' must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.state = built;
                             }
+
                             if ret.state.rank() > 1 {
                                 env.errs_mut().push(ValidationError::new(
                                     "u must be a scalar or 1D vector".to_string(),
@@ -298,7 +350,16 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "dudt" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, TensorType::StateDot)
+                            {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "state derivative 'dudt' must have a dense layout"
+                                            .to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.state_dot = Some(built);
                             }
                             if ret.state.rank() > 1 {
@@ -309,7 +370,15 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "F" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, TensorType::Other)
+                            {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "RHS 'F' must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 span_f = Some(span);
                                 ret.rhs = built;
                             }
@@ -324,10 +393,19 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "M" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, TensorType::Other)
+                            {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "LHS 'M' must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 span_m = Some(span);
                                 ret.lhs = Some(built);
                             }
+
                             // check that M is not state dependent and only depends on dudt
                             if let Some(m) = env.get("M") {
                                 if m.is_state_dependent() {
@@ -339,7 +417,15 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "stop" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, TensorType::Other)
+                            {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "stop must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 ret.stop = Some(built);
                             }
                             // check that stop is not dependent on dudt
@@ -353,7 +439,15 @@ impl<'s> DiscreteModel<'s> {
                             }
                         }
                         "out" => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, TensorType::Other)
+                            {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "output 'out' must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
                                 if built.rank() > 1 {
                                     env.errs_mut().push(ValidationError::new(
                                         "output shape must be a scalar or 1D vector".to_string(),
@@ -372,24 +466,36 @@ impl<'s> DiscreteModel<'s> {
                                 }
                             }
                         }
-                        name => {
-                            if let Some(built) = Self::build_array(tensor, &mut env) {
-                                let is_input = model.inputs.contains(&name);
+                        "in" => {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, TensorType::Input)
+                            {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "input 'in' must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
+                                ret.input = Some(built);
+                            }
+                            if ret.state.rank() > 1 {
+                                env.errs_mut().push(ValidationError::new(
+                                    "in must be a scalar or 1D vector".to_string(),
+                                    span,
+                                ));
+                            }
+                        }
+
+                        _name => {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, TensorType::Other)
+                            {
                                 if let Some(env_entry) = env.get(built.name()) {
                                     let dependent_on_state = env_entry.is_state_dependent();
                                     let dependent_on_time = env_entry.is_time_dependent();
                                     let dependent_on_dudt = env_entry.is_dstatedt_dependent();
                                     let dependent_on_input = env_entry.is_input_dependent();
-                                    if is_input {
-                                        // inputs must be constants
-                                        if dependent_on_time || dependent_on_state {
-                                            env.errs_mut().push(ValidationError::new(
-                                                format!("input {} must be constant", built.name()),
-                                                tensor_ast.span,
-                                            ));
-                                        }
-                                        ret.inputs.push(built);
-                                    } else if !dependent_on_time && !dependent_on_input {
+                                    if !dependent_on_time && !dependent_on_input {
                                         ret.constant_defns.push(built);
                                     } else if !dependent_on_time {
                                         ret.input_dep_defns.push(built);
@@ -409,15 +515,6 @@ impl<'s> DiscreteModel<'s> {
                 }
             }
         }
-
-        // reorder inputs to match the order defined in "in = [ ... ]"
-        ret.inputs.sort_by_key(|t| {
-            model
-                .inputs
-                .iter()
-                .position(|&name| name == t.name())
-                .unwrap()
-        });
 
         // set is_algebraic for every state based on equations
         if ret.state_dot.is_some() && ret.lhs.is_some() {
@@ -450,15 +547,6 @@ impl<'s> DiscreteModel<'s> {
                 pos_end: model.tensors.last().unwrap().span.unwrap().pos_start,
             })
         };
-        // check that we found all input parameters
-        for name in model.inputs.iter() {
-            if env.get(name).is_none() {
-                env.errs_mut().push(ValidationError::new(
-                    format!("input {name} is not defined"),
-                    span_all,
-                ));
-            }
-        }
 
         // check that we've read all the required arrays
         if !read_state {
@@ -479,6 +567,38 @@ impl<'s> DiscreteModel<'s> {
         if let Some(span) = span_m {
             Self::check_match(ret.lhs.as_ref().unwrap(), &ret.state, span, &mut env);
         }
+
+        let map_dep = |deps: &Vec<NonZero>| -> Vec<(usize, usize)> {
+            deps.iter()
+                .map(|(i, j)| (*i.get(0).unwrap_or(&0) as usize, *j))
+                .collect()
+        };
+
+        // store the dependencies in the discrete model
+        ret.state0_input_deps = map_dep(&env.state0_input_deps);
+        ret.dstate0_input_deps = map_dep(&env.dstate0_input_deps);
+        ret.rhs_input_deps = map_dep(ret.rhs.layout().input_dependencies());
+        ret.rhs_state_deps = map_dep(ret.rhs.layout().state_dependencies());
+        ret.out_input_deps = ret
+            .out
+            .as_ref()
+            .map(|o| map_dep(o.layout().input_dependencies()))
+            .unwrap_or_default();
+        ret.out_state_deps = ret
+            .out
+            .as_ref()
+            .map(|o| map_dep(o.layout().state_dependencies()))
+            .unwrap_or_default();
+        ret.mass_state_deps = if let Some(lhs) = &ret.lhs {
+            map_dep(lhs.layout().state_dependencies())
+        } else {
+            Vec::new()
+        };
+        ret.mass_input_deps = if let Some(lhs) = &ret.lhs {
+            map_dep(lhs.layout().input_dependencies())
+        } else {
+            Vec::new()
+        };
 
         if env.errs().is_empty() {
             Ok(ret)
@@ -562,21 +682,29 @@ impl<'s> DiscreteModel<'s> {
         Tensor::new(defn.name, vec![tsr_blk], layout, vec!['i'])
     }
 
-    fn state_to_input(input_cell: &Rc<RefCell<Variable<'s>>>) -> Tensor<'s> {
-        let input = input_cell.as_ref().borrow();
-        assert!(input.is_independent());
-        assert!(!input.is_time_dependent());
-        let expr = if let Some(expr) = &input.expression {
-            expr.clone()
-        } else {
-            Ast {
-                kind: AstKind::new_num(0.0),
-                span: None,
-            }
-        };
-        let elmt = TensorBlock::new_dense_vector(None, 0, input.dim, expr);
+    fn state_to_input(input_cells: &[Rc<RefCell<Variable<'s>>>]) -> Option<Tensor<'s>> {
+        let elmts = input_cells
+            .iter()
+            .map(|input_cell| {
+                let input = input_cell.as_ref().borrow();
+                assert!(input.is_independent());
+                assert!(!input.is_time_dependent());
+                let expr = if let Some(expr) = &input.expression {
+                    expr.clone()
+                } else {
+                    Ast {
+                        kind: AstKind::new_num(0.0),
+                        span: None,
+                    }
+                };
+                TensorBlock::new_dense_vector(Some(input.name.to_string()), 0, input.dim, expr)
+            })
+            .collect::<Vec<_>>();
+        if elmts.is_empty() {
+            return None;
+        }
         let indices = vec!['i'];
-        Tensor::new_no_layout(input.name, vec![elmt], indices)
+        Some(Tensor::new_no_layout("in", elmts, indices))
     }
     fn output_to_elmt(output_cell: &Rc<RefCell<Variable<'s>>>) -> TensorBlock<'s> {
         let output = output_cell.as_ref().borrow();
@@ -661,11 +789,7 @@ impl<'s> DiscreteModel<'s> {
             is_algebraic.push(state.as_ref().borrow().is_algebraic().unwrap());
         }
 
-        let mut inputs: Vec<Tensor> = Vec::new();
-        for input in const_unknowns.iter() {
-            let inp = DiscreteModel::state_to_input(input);
-            inputs.push(inp);
-        }
+        let input = DiscreteModel::state_to_input(const_unknowns.as_slice());
 
         let state_dep_defns = state_dep_defns
             .iter()
@@ -688,7 +812,7 @@ impl<'s> DiscreteModel<'s> {
             name,
             lhs: Some(lhs),
             rhs,
-            inputs,
+            input,
             state,
             state_dot: Some(state_dot),
             out: Some(out_array),
@@ -699,11 +823,19 @@ impl<'s> DiscreteModel<'s> {
             dstate_dep_defns,
             is_algebraic,
             stop,
+            state0_input_deps: Vec::new(),
+            dstate0_input_deps: Vec::new(),
+            rhs_state_deps: Vec::new(),
+            rhs_input_deps: Vec::new(),
+            out_input_deps: Vec::new(),
+            out_state_deps: Vec::new(),
+            mass_state_deps: Vec::new(),
+            mass_input_deps: Vec::new(),
         }
     }
 
-    pub fn inputs(&self) -> &[Tensor<'_>] {
-        self.inputs.as_ref()
+    pub fn input(&self) -> Option<&Tensor<'_>> {
+        self.input.as_ref()
     }
 
     pub fn constant_defns(&self) -> &[Tensor<'_>] {
@@ -755,6 +887,38 @@ impl<'s> DiscreteModel<'s> {
 
     pub fn stop(&self) -> Option<&Tensor<'_>> {
         self.stop.as_ref()
+    }
+
+    pub fn take_state0_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.state0_input_deps)
+    }
+
+    pub fn take_dstate0_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.dstate0_input_deps)
+    }
+
+    pub fn take_rhs_state_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.rhs_state_deps)
+    }
+
+    pub fn take_rhs_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.rhs_input_deps)
+    }
+
+    pub fn take_out_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.out_input_deps)
+    }
+
+    pub fn take_out_state_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.out_state_deps)
+    }
+
+    pub fn take_mass_state_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.mass_state_deps)
+    }
+
+    pub fn take_mass_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.mass_input_deps)
     }
 }
 
@@ -818,9 +982,7 @@ mod tests {
     #[test]
     fn tensor_classification() {
         let text = "
-            in = [r, k, ]
-            r { 1, }
-            k { 1, }
+            in_i { r = 1, k = 1 }
             z { 2 * r }
             g { 2 * t }
             u_i {
@@ -855,10 +1017,6 @@ mod tests {
         ";
         let model = parse_ds_string(text).unwrap();
         let model = DiscreteModel::build("$name", &model).unwrap();
-        assert_eq!(
-            model.inputs().iter().map(|t| t.name()).collect::<Vec<_>>(),
-            ["r", "k"]
-        );
         assert_eq!(
             model
                 .constant_defns()
@@ -899,10 +1057,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["dudt2"]
         );
-        assert_eq!(
-            model.inputs().iter().map(|t| t.name()).collect::<Vec<_>>(),
-            ["r", "k"]
-        );
     }
 
     macro_rules! count {
@@ -942,9 +1096,7 @@ mod tests {
 
     full_model_tests! (
         logistic: "
-            in = [r, k, ]
-            r { 1, }
-            k { 1, }
+            in_i { r  = 1, k = 1, }
             u_i {
                 y = 1,
                 z = 0,
@@ -968,8 +1120,7 @@ mod tests {
             }
         " [],
         logistic_single_state: "
-            in = [r, ]
-            r { 1, }    
+            in { r  = 1, }
             u {
                 y = 1,
             }
@@ -987,8 +1138,7 @@ mod tests {
             }
         " [],
         logistic_no_m: "
-            in = [r, ]
-            r { 1, }    
+            in { r  = 1, }
             u {
                 y = 1,
             }
@@ -1000,8 +1150,7 @@ mod tests {
             }
         " [],
         logistic_no_m2: "
-            in = [r, ]
-            r { 1, }    
+            in { r  = 1, }
             u_i {
                 x = 1,
                 y = 1,
@@ -1015,8 +1164,7 @@ mod tests {
             }
         " [],
         scalar_state_as_vector: "
-            in = [r, ]
-            r { 1, }    
+            in { r  = 1, }
             u_i {
                 y = 1,
             }
@@ -1034,9 +1182,7 @@ mod tests {
             }
         " [],
         logistic_matrix: "
-            in = [r, k,]
-            r { 1, }
-            k { 1, }
+            in_i { r  = 1, k = 1, }
             sm_ij {
                 (0..2, 0..2): 1,
             }
@@ -1118,6 +1264,12 @@ mod tests {
                 y,
             }
         " ["M must not be dependent on u",],
+        error_use_in_list: "
+            in = [ a ]
+            a { 1 }
+            u { y = 1 }
+            F { y }
+        " ["input list is no longer supported",],
     );
 
     macro_rules! tensor_fail_tests {
@@ -1198,23 +1350,59 @@ mod tests {
     }
 
     tensor_fail_tests!(
-        error_input_not_defined: "in = [bub]" errors ["input bub is not defined",],
         error_scalar: "r {1, 2}" errors ["cannot have more than one element in a scalar",],
         error_cannot_find: "r { k }" errors ["cannot find variable k",],
-        error_different_sparsity: "A_ij { (0, 0): 1, (1, 0): 1, (1, 1): 1 } B_ij { (1, 1): 1 } C_ij { A_ij + B_ij }" errors ["cannot broadcast layouts with different sparsity",],
         error_different_shape: "a_i { 1, 2 } b_i { 1, 2, 3 } c_i { a_i + b_i }" errors ["cannot broadcast shapes: [2], [3]",],
         too_many_indices: "A_i { 1, 2 } B_i { (0:2): A_ij }" errors ["too many permutation indices",],
         bcast_expr_to_elmt: "A_i { 1, 2 } B_i { (0:2): A_i, (2:3): A_i }" errors ["cannot broadcast expression shape [2] to tensor element shape [1]",],
+        error_index1: "A_ij { (0:3, 0:3): 1.0 } B_i { A_ij[1:3] }" errors ["can only index dense 1D variables",],
+        error_index2: "A_i { (2): 1.0 } B_i { A_i[1:3] }" errors ["can only index dense 1D variables",],
+        error_index3: "A_i { 0.0, 1.0, 2.0 } B_i { (0:1): A_i[1:3] }" errors ["cannot broadcast expression shape [2] to tensor element shape [1]",],
+        error_index4: "A { 1.0 } B { A[0] }" errors ["can only index dense 1D variables",],
+        error_contract_1d_to_scalar: "A_i { 1.0, 2.0 } B { A_i }" errors ["contraction only supported from 2D to 1D tensors. Got 1D to 0D",],
+        error_broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_i }" errors ["cannot broadcast shapes: [3, 2], [2]",],
+        error_divide_by_zero: "a_i { (0): 1, (2): 2 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
+        error_divide_by_zero2: "a_i { (0:3): 1 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
+        slice_sparse_vec: "A_i { (0): 1, (2): 3 } B_i { A_i[0:1] }" errors ["can only index dense 1D variables",],
     );
 
     tensor_tests!(
+        sparse_dense_concat: "a_i { (0): 1, (2): 3 } b_i { 4, 5 } r_i { a_i, b_i }" expect "r" = "r_i (5s) { (0)(3s): a_i (3s) , (3)(2): b_i (2) }",
+        exp_sparse_vec: "a_i { (0): 1, (2): 3 } r_i { exp(a_i) }" expect "r" = "r_i (3) { (0)(3): exp(a_i) (3)}",
+        max_sparse_scalar: "a_i { (0): 1, (2): 3 } r_i { max(a_i, 2) }" expect "r" = "r_i (3) { (0)(3): max(a_i, 2) (3) }",
+        sparse_mat_vec_mul: "A_ij { (1, 1): 2 } b_j { (1): 3 } r_i { A_ij * b_j }" expect "r" = "r_i (2s) { (0)(2s): A_ij * b_j (2s,2s) }",
+        sparse_broadcast_to_sparse: "A_i { (1): 2 } B_ij { (0:2, 0:2): A_i }" expect "B" = "B_ij (2s,2) { (0,0)(2s,2): A_i (2s) }",
+        sparse_contract_to_sparse: "A_ij { (1, 1): 2 } B_i { A_ij }" expect "B" = "B_i (2s) { (0)(2s): A_ij (2s,2s) }",
+        diag_sparse_add: "a_ij { (0..2, 0..2): 2 } b_ij { (1, 1): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij + b_ij (2i,2i) }",
+        diag_dense_mul: "a_ij { (0..2, 0..2): 2 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij * b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij * b_ij (2i,2i) }",
+        diag_dense_add: "a_ij { (0..2, 0..2): 2 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (2,2) { (0,0)(2,2): a_ij + b_ij (2,2) }",
+        sparse_dense_mat_add: "a_ij { (2, 2): 2 } b_ij { (0:3, 0:3): 3 } c_ij { a_ij + b_ij }" expect "c" = "c_ij (3,3) { (0,0)(3,3): a_ij + b_ij (3,3) }",
+        sparse_dense_mat_mul: "a_ij { (2, 2): 2 } b_ij { (0:3, 0:3): 3 } c_ij { a_ij * b_ij }" expect "c" = "c_ij (3s,3s) { (0,0)(3s,3s): a_ij * b_ij (3s,3s) }",
+        sparse_dense_mat_mul2: "a_ij { (0, 0): 2, (1, 1): 1 } b_ij { (0:2, 0:2): 3 } c_ij { a_ij * b_ij }" expect "c" = "c_ij (2i,2i) { (0,0)(2i,2i): a_ij * b_ij (2i,2i) }",
+        sparse_dense_vec_add: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
+        sparse_dense_vec_add2: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { b_i + a_i }" expect "c" = "c_i (3) { (0)(3): b_i + a_i (3) }",
+        sparse_sparse_vec_add:  "a_i { (2): 2 } b_i { (0): 3, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i + b_i (3s) }",
+        sparse_sparse_vec_add2:  "a_i { (2): 2 } b_i { (0): 3, (2): 4 } c_i { b_i + a_i }" expect "c" = "c_i (3s) { (0)(3s): b_i + a_i (3s) }",
+        sparse_sparse_vec_add3: "a_i { (1): 1, (2): 2 } b_i { (0): 3, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
+        sparse_dense_vec_mul: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { a_i * b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i * b_i (3s) }",
+        sparse_dense_vec_mul2: "a_i { (2): 2 } b_i { (0:3): 3 } c_i { b_i * a_i }" expect "c" = "c_i (3s) { (0)(3s): b_i * a_i (3s) }",
+        two_dim_sparse_add: "A_ij { (0, 0): 1, (1, 0): 1, (1, 1): 1 } B_ij { (1, 1): 1 } C_ij { A_ij + B_ij }" expect "C" = "C_ij (2s,2s) { (0, 0)(2s,2s): A_ij + B_ij (2s,2s) }",
+        mat_mul_sparse_vec: "A_ij { (0, 0): 1, (1, 0): 2, (1, 1): 3 } x_i { (1): 1 } b_i { A_ij * x_j }" expect "b" = "b_i (2s) { (0)(2s): A_ij * x_j (2s, 2s) }",
+        add_sparse_vecs: "a_i { (2): 3 } b_i { (1): 2, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3s) { (0)(3s): a_i + b_i (3s) }",
+        add_sparse_vecs_to_dense: "a_i { (0): 1, (2): 3 } b_i { (1): 2, (2): 4 } c_i { a_i + b_i }" expect "c" = "c_i (3) { (0)(3): a_i + b_i (3) }",
+        row_vec: "a_ij { (0, 0): 1, (0, 1): 2 } b_i { (0:3): 1 } c_i { a_ij * b_j[0:2] }" expect "c" = "c_i (1) { (0)(1): a_ij * b_j[0:2] (1, 2) }",
+        col_vec: "a_ij { (0, 0): 1, (1, 0): 2 } b_i { (0:2): a_ij }" expect "b" = "b_i (2) { (0)(2): a_ij (2, 1) }",
+        broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_j }" expect "c" = "c_ij (3,2) { (0,0)(3,2): A_ij + b_j (3,2) }",
+        contract_2d_to_1d: "A_ij { (0:3, 0:3): 1.0 } B_i { A_ij }" expect "B" = "B_i (3) { (0)(3): A_ij (3, 3) }",
+        index: "A_i { 0.0, 1.0, 2.0 } B { A_i[1] }" expect "B" = "B { (): A_i[1] }",
+        index2: "A_i { 0.0, 1.0, 2.0 } B_i { A_i[1:3] }" expect "B" = "B_i(2) { (0)(2):A_i[1:3](2) }",
+        index3: "A_ij { (0:2, 0:2): 1 } g_i { 0, 1, 2 } b_i { A_ij * g_j[0:2] }" expect "b" = "b_i (2) { (0)(2): A_ij * g_j[0:2] (2, 2) }",
         prefix_minus: "A { 1.0 / -2.0 }" expect "A" = "A { (): 1 / (-2) }",
         time: "A_i { t }" expect "A" = "A_i (1) { (0)(1):  t }",
         named_blk: "A_i { (0:3): y = 1, 2 }" expect "A" = "A_i (4) { (0)(3): y = 1, (3)(1): 2 }",
         dense_vect_implicit: "A_i { 1, 2, 3 }" expect "A" = "A_i (3) { (0)(1): 1, (1)(1): 2, (2)(1): 3 }",
         dense_vect_explicit: "A_i { (0:3): 1, (3:4): 2 }" expect "A" = "A_i (4) { (0)(3): 1, (3)(1): 2 }",
         dense_vect_mix: "A_i { (0:3): 1, 2 }" expect "A" = "A_i (4) { (0)(3): 1, (3)(1): 2 }",
-        dense_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 }" expect "A" = "A_ij (2,2) { (0, 0)(1, 1): 1, (0, 1)(1, 1): 2, (1, 0)(1, 1): 3, (1, 1)(1, 1): 4 }",
         diag_matrix: "A_ij { (0, 0): 1, (1, 1): 4 }" expect "A" = "A_ij (2i,2i) { (0, 0)(1, 1): 1, (1, 1)(1, 1): 4 }",
         sparse_matrix: "A_ij { (0, 0): 1, (0, 1): 2, (1, 1): 4 }" expect "A" = "A_ij (2s,2s) { (0, 0)(1, 1): 1, (0, 1)(1, 1): 2, (1, 1)(1, 1): 4 }",
         sparse_row_matrix: "A_ij { (0, 1): 2, (0, 2): 4 }" expect "A" = "A_ij (1s,3s) { (0, 1)(1, 1): 2, (0, 2)(1, 1): 4 }",
@@ -1225,7 +1413,141 @@ mod tests {
         diag_matrix_vect_multiply: "A_ij { (0, 0): 1, (1, 1): 3 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2i, 2i) }",
         dense_matrix_vect_multiply: "A_ij {  (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (2) { (0)(2): A_ij * x_j (2, 2) }",
         sparse_matrix_vect_multiply_zero_row: "A_ij { (0, 0): 1, (0, 1): 2 } x_i { 1, 2 } b_i { A_ij * x_j }" expect "b" = "b_i (1) { (0)(1): A_ij * x_j (1, 2) }",
+        mat_mul_sparse_vec_out: "A_ij { (1, 0): 2, (1, 1): 3 } x_i { (0:2): 1 } b_i { A_ij * x_j }" expect "b" = "b_i (2s) { (0)(2s): A_ij * x_j (2s, 2s) }",
     );
+
+    #[test]
+    fn tensor_state_input_dep_mass_test() {
+        let full_text = "
+            in_i { (0:2): p = 1 }
+            u_i { p_i }
+            dudt_i { p_i }
+            M_i { dudt_i[1] + p_i[0], dudt_i[0] + p_i[1] }
+            F_i { u_i }
+        ";
+
+        let model = parse_ds_string(full_text).unwrap();
+        let mut discrete_model =
+            DiscreteModel::build("tensor_state_input_dep_mass_test", &model).unwrap();
+        assert_eq!(
+            discrete_model.take_state0_input_deps(),
+            vec![(0, 0), (1, 1)]
+        );
+        assert_eq!(
+            discrete_model.take_dstate0_input_deps(),
+            vec![(0, 0), (1, 1)]
+        );
+        assert_eq!(
+            discrete_model.take_rhs_state_deps(),
+            vec![(0, 0), (1, 1)],
+            "failed rhs_state_deps"
+        );
+        assert_eq!(
+            discrete_model.take_rhs_input_deps(),
+            vec![],
+            "failed rhs_input_deps"
+        );
+        assert_eq!(discrete_model.take_out_state_deps(), vec![]);
+        assert_eq!(discrete_model.take_out_input_deps(), vec![]);
+        assert_eq!(discrete_model.take_mass_state_deps(), vec![(0, 1), (1, 0)]);
+        assert_eq!(discrete_model.take_mass_input_deps(), vec![(0, 0), (1, 1)]);
+    }
+
+    #[test]
+    fn tensor_state_input_dep_logistic_test() {
+        let full_text = "
+            in_i { r = 1, k = 1 }
+            u_i {
+                y = 0.1,
+                z = 0,
+            }
+            dudt_i {
+                dydt = 0,
+                dzdt = 0,
+            }
+            M_i {
+                dydt,
+                0,
+            }
+            F_i {
+                (r * y) * (1 - (y / k)),
+                (2 * y) - z,
+            }
+            out_i {
+                3 * y,
+                4 * z,
+            }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let mut discrete_model =
+            DiscreteModel::build("tensor_state_input_dep_logistic_test", &model).unwrap();
+        assert_eq!(discrete_model.take_state0_input_deps(), vec![]);
+        assert_eq!(discrete_model.take_dstate0_input_deps(), vec![]);
+        assert_eq!(
+            discrete_model.take_rhs_state_deps(),
+            vec![(0, 0), (1, 0), (1, 1)]
+        );
+        assert_eq!(discrete_model.take_rhs_input_deps(), vec![(0, 0), (0, 1)]);
+        assert_eq!(discrete_model.take_out_state_deps(), vec![(0, 0), (1, 1)]);
+        assert_eq!(discrete_model.take_out_input_deps(), vec![]);
+        assert_eq!(discrete_model.take_mass_state_deps(), vec![(0, 0)]);
+        assert_eq!(discrete_model.take_mass_input_deps(), vec![]);
+    }
+
+    macro_rules! tensor_state_input_dep_test {
+        ($($name:ident: $text:literal expect $expected_state_state_deps:expr ; $expected_state_inputs_deps:expr,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let full_text = format!("
+                    in_i {{ (0:2): p = 1 }}
+                    u_i {{ p_i }}
+                    {}
+                    out_i {{ u_i, }}
+                ", $text);
+
+                let model = parse_ds_string(full_text.as_str()).unwrap();
+                #[allow(unused_variables)]
+                let mut discrete_model = match DiscreteModel::build("$name", &model) {
+                    Ok(model) => model,
+                    Err(e) => {
+                        panic!("{}", e.as_error_message(full_text.as_str()));
+                    }
+                };
+                assert_eq!(discrete_model.take_state0_input_deps(), vec![(0,0), (1,1)]);
+                assert_eq!(discrete_model.take_rhs_state_deps(), $expected_state_state_deps, "failed rhs_state_deps");
+                assert_eq!(discrete_model.take_rhs_input_deps(), $expected_state_inputs_deps, "failed rhs_input_deps");
+                assert_eq!(discrete_model.take_out_state_deps(), vec![(0,0), (1,1)]);
+                assert_eq!(discrete_model.take_out_input_deps(), vec![]);
+            }
+        )*
+        }
+    }
+
+    tensor_state_input_dep_test! {
+        tsi_just_u: "F_i { u_i }" expect vec![(0, 0), (1, 1)] ; vec![],
+        tsi_just_p: "F_i { p_i }" expect vec![] ; vec![(0, 0), (1, 1)],
+        tsi_index: "F_i { u_i[1], p_i[0] }" expect vec![(0, 1)] ; vec![(1, 0)],
+        tsi_index2: "F_i { u_i[1:2], p_i[0:1] }" expect vec![(0, 1)] ; vec![(1, 0)],
+        tsi_sparse_mat_mul: "A_ij { (1, 1): 1 } zeros_i { (0:2): 0, } F_i { A_ij * u_j + zeros_i }" expect vec![(1, 1)] ; vec![],
+        tsi_sparse_mat_mul2: "A_ij { (0, 0): 1, (0, 1): 1, (1, 1): 1 } F_i { A_ij * u_j }" expect vec![(0, 0), (0, 1), (1, 1)] ; vec![],
+        tsi_diag_mat_mul: "A_ij { (0..2, 0..2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![],
+        tsi_sparse_vec_add: "a_i { (1): u_i[0] }  F_i { a_i + u_i }" expect vec![(0, 0), (1, 0), (1, 1)] ; vec![],
+        tsi_dense_vec_add: "a_i { u_i[1], u_i[0] }  F_i { a_i + u_i }" expect vec![(0, 0), (0, 1), (1, 0), (1, 1)] ; vec![],
+        tsi_dense_vec_mul: "a_i { u_i[1], u_i[0] }  F_i { a_i * u_i }" expect vec![(0, 0), (0, 1), (1, 0), (1, 1)] ; vec![],
+        tsi_dense_mat_mul: "A_ij { (0:2,0:2): 1 } F_i { A_ij * u_j }" expect vec![(0,0), (0,1), (1,0), (1,1)] ; vec![],
+        tsi_dense_mat_mul2: "A_ij { (0:2,0:2): 1 } a_i { u_i[0], p_i[0] } b_i { A_ij * a_j } c_i { A_ij * b_j} F_i { A_ij * c_j }" expect vec![(0,0), (1,0)] ; vec![(0, 0), (1, 0)],
+        tsi_vec: "a_i { p_i } F_i { 2 * (a_i + u_i) }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
+        tsi_dense_mat_mul3: "A_ij { (0,0): 1, (0, 1): 1, (1, 1): 1, (2, 2): 1, (3, 3): 1 } a_i { u_i, u_i }  b_i { A_ij * a_j } c_i { A_ij * b_j} F_i { c_i[0:2] }" expect vec![(0,0), (0,1), (1,1)] ; vec![],
+        tsi_broadcast: "a_ij { (0:2,0:2): p_j } F_i { a_ij }" expect vec![] ; vec![(0,0), (0,1), (1,0), (1,1)],
+        tsi_broadcast2: "a_ij { (0:2,0:2): u_j } F_i { a_ij }" expect vec![(0,0), (0,1), (1,0), (1,1)] ; vec![],
+        tsi_contract: "a_ij { (0,0): u_i[0], (0, 1): u_i[1], (1, 0): p_i[0], (1, 1): p_i[1] } F_i { a_ij }" expect vec![(0,0), (0,1)] ; vec![(1,0), (1,1)],
+        tsi_broadcast3: "F_i { (0:2): u_i[0] }" expect vec![(0,0), (1,0)] ; vec![],
+        tsi_diag_mat_mul2: "A_ij { (0..2, 0..2): p_i } F_i { A_ij * u_j }" expect vec![(0,0), (1,1)] ; vec![(0,0), (1,1)],
+        tsi_concat: "F_i { (0): u_i[0], (1): p_i[0] }" expect vec![(0,0)] ; vec![(1,0)],
+        tsi_concat2: "a_ij { (0,0): u_i[0], (1,1): p_i[0] } F_i { a_ij }" expect vec![(0,0)] ; vec![(1,0)],
+        tsi_expr: "a_i { y = u_i[0], z = u_i[1] } b_i { r = p_i[0], k = p_i[1] } F_i { (r * y) * (1 - y / k), (2 * y) - z }" expect vec![(0,0), (1,0), (1,1)] ; vec![(0,0), (0,1)],
+    }
 
     #[test]
     fn test_stop() {
@@ -1272,8 +1594,7 @@ mod tests {
     #[test]
     fn test_constants_and_input_dep() {
         let text = "
-        in = [r]
-        r { 1, }
+        in { r  = 1, }
         k { 1, }
         r2 { 2 * r }
         u_i {
@@ -1320,6 +1641,14 @@ mod tests {
             (2, 1): 3,
             (2, 2): 1,
         }
+        A_ij {
+            (1, 0): 1, 
+            (1, 1): 2,
+        }
+        b2_i {
+            (0:2): 2,
+        }
+        r2_i { A_ij * b2_i }
         F_i {
             y,
         }
@@ -1346,6 +1675,19 @@ mod tests {
             );
             assert_eq!(layout.to_data_layout(), vec![0, 0, 1, 0, 1, 1, 2, 1, 2, 2]);
         }
+        let r2 = model
+            .constant_defns()
+            .iter()
+            .find(|t| t.name() == "r2")
+            .unwrap();
+        let layout = r2.layout();
+        assert_eq!(layout.rank(), 1);
+        assert_eq!(layout.shape()[0], 2);
+        assert_eq!(
+            layout.indices().map(|i| i.to_string()).collect::<Vec<_>>(),
+            vec!["[1]"]
+        );
+        assert_eq!(layout.to_data_layout(), vec![1]);
         let translation = Translation::new(
             r.elmts()[0].expr_layout(),
             r.elmts()[0].layout(),

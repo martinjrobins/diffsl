@@ -1,6 +1,6 @@
 [package]
 name = "diffsl"
-version = "0.6.0"
+version = "0.8.2"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -61,6 +61,7 @@ serde = "1.0"
 object = "0.37"
 libc = "0.2"
 num-traits = "0.2"
+log = "0.4.29"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mmap-rs = "0.7"
@@ -83,15 +84,13 @@ env_logger = "0.11.8"
 name = "evaluation"
 harness = false
 
-[profile.dev]
-opt-level = 0
-debug = true
-
-[profile.release]
-opt-level = 3
-debug = false
+[[bench]]
+name = "pybamm_dfn"
+harness = false
 
 [dev-dependencies]
+env_logger = "0.11.8"
+faer = "0.23.2"
 paste = "1.0.15"
 
 [package.metadata.docs.rs]

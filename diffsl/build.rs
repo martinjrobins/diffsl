@@ -16,11 +16,10 @@ mod enzyme {
             );
 
         // Explicitly set GIT_EXECUTABLE so CMake can find git version
-        if let Ok(output) = std::process::Command::new("which").arg("git").output() {
-            if output.status.success() {
-                let git_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                config.define("GIT_EXECUTABLE", &git_path);
-            }
+        // Use system git to avoid Homebrew compatibility issues on macOS
+        let git_path = "/usr/bin/git";
+        if std::path::Path::new(git_path).exists() {
+            config.define("GIT_EXECUTABLE", git_path);
         }
 
         let dst = config.build();

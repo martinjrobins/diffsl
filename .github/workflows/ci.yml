@@ -186,10 +186,6 @@ jobs:
       if : matrix.llvm != ''
       run: |
         echo "LLVM_SYS_${{ matrix.llvm[2] }}_DIR=${LLVM_PATH}" >> $GITHUB_ENV
-    - name: Add Homebrew to PATH (macOS)
-      if: matrix.os == 'macos-latest' || matrix.os == 'macos-13'
-      run: |
-        echo "/opt/homebrew/bin" >> $GITHUB_PATH
     - name: Install LLVM 16 (macos-13)
       if : matrix.os == 'macos-13'
       run: 

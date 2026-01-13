@@ -14,20 +14,15 @@ mod enzyme {
                 "CMAKE_CXX_FLAGS",
                 "-Wno-comment -Wno-deprecated-declarations",
             );
-        
+
         // Explicitly set GIT_EXECUTABLE so CMake can find git version
-        if let Ok(output) = std::process::Command::new("which")
-            .arg("git")
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("which").arg("git").output() {
             if output.status.success() {
-                let git_path = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .to_string();
+                let git_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 config.define("GIT_EXECUTABLE", &git_path);
             }
         }
-        
+
         let dst = config.build();
         let out_dir = dst.display().to_string();
         let inc_dir = "Enzyme/enzyme".to_string();

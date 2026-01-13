@@ -1155,6 +1155,19 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                         }
                         no_transform = no_transform && pi == i;
                     }
+                    // broadcasting, if the shape is 1 then the index is always 0
+                    let iname_index = iname_index
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, idx)| {
+                            if layout.shape()[i] == 1 {
+                                self.builder.ins().iconst(self.int_type, 0)
+                            } else {
+                                idx
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    
                     // calculate the element index using iname_index and the shape of the tensor
                     // TODO: can we optimise this by using expr_index, and also including elmt_index?
                     if !iname_index.is_empty() {

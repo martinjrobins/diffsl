@@ -1167,7 +1167,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                             }
                         })
                         .collect::<Vec<_>>();
-                    
+
                     // calculate the element index using iname_index and the shape of the tensor
                     // TODO: can we optimise this by using expr_index, and also including elmt_index?
                     if !iname_index.is_empty() {

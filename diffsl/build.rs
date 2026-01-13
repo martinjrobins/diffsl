@@ -5,15 +5,24 @@ mod enzyme {
 
     fn compile_enzyme(llvm_lib_dir: String) -> (String, String) {
         let llvm_cmake_dir = format!("{llvm_lib_dir}/cmake/llvm");
-        let dst = cmake::Config::new("Enzyme/enzyme")
+        let mut config = cmake::Config::new("Enzyme/enzyme");
+        config
             .define("ENZYME_STATIC_LIB", "ON")
             .define("ENZYME_CLANG", "OFF")
             .define("LLVM_DIR", llvm_cmake_dir)
             .define(
                 "CMAKE_CXX_FLAGS",
                 "-Wno-comment -Wno-deprecated-declarations",
-            )
-            .build();
+            );
+
+        // Explicitly set GIT_EXECUTABLE so CMake can find git version
+        // Use system git to avoid Homebrew compatibility issues on macOS
+        let git_path = "/usr/bin/git";
+        if std::path::Path::new(git_path).exists() {
+            config.define("GIT_EXECUTABLE", git_path);
+        }
+
+        let dst = config.build();
         let out_dir = dst.display().to_string();
         let inc_dir = "Enzyme/enzyme".to_string();
         (out_dir, inc_dir)

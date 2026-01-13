@@ -89,7 +89,7 @@ name = "pybamm_dfn"
 harness = false
 
 [dev-dependencies]
-env_logger = "0.11.8"
+colog = "1.4.0"
 faer = "0.23.2"
 paste = "1.0.15"
 

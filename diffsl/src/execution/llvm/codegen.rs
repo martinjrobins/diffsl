@@ -2439,9 +2439,22 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                         no_transform = no_transform && pi == i;
                     }
+                    // broadcasting, if the shape is 1 then the index is always 0
+                    let iname_index: Vec<IntValue> = iname_index
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &idx)| {
+                            if layout.shape()[i] == 1 {
+                                self.context.i32_type().const_int(0, false)
+                            } else {
+                                idx
+                            }
+                        })
+                        .collect();
                     // calculate the element index using iname_index and the shape of the tensor
                     // TODO: can we optimise this by using expr_index, and also including elmt_index?
                     if !iname_index.is_empty() {
+                        // if iname_index is (a, b, c) and shape is s calculate iname_elmt_index = ( c * s[2] + b * s[2] * s[1] + a * s[2] * s[1] * s[0] )
                         let mut iname_elmt_index = *iname_index.last().unwrap();
                         let mut stride = 1u64;
                         for i in (0..iname_index.len() - 1).rev() {

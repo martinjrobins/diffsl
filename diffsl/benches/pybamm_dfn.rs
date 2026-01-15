@@ -12,8 +12,12 @@ fn pybamm_dfn_execute_rhs_grad<M: CodegenModuleCompile + CodegenModuleJit>(bench
     let full_text = std::fs::read_to_string("benches/pybamm_dfn.diffsl").unwrap();
     let model = parse_ds_string(&full_text).unwrap();
     let discrete_model = DiscreteModel::build("pybamm_dfn", &model).unwrap();
-    let compiler =
-        Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+    let compiler = Compiler::<M, f64>::from_discrete_model(
+        &discrete_model,
+        Default::default(),
+        Some(full_text.as_str()),
+    )
+    .unwrap();
     let (n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
     let t = 0.0;
     let y = vec![1.0; n_states];
@@ -51,8 +55,12 @@ fn pybamm_dfn_execute_rhs<M: CodegenModuleCompile + CodegenModuleJit>(bencher: B
     let full_text = std::fs::read_to_string("benches/pybamm_dfn.diffsl").unwrap();
     let model = parse_ds_string(&full_text).unwrap();
     let discrete_model = DiscreteModel::build("pybamm_dfn", &model).unwrap();
-    let compiler =
-        Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+    let compiler = Compiler::<M, f64>::from_discrete_model(
+        &discrete_model,
+        Default::default(),
+        Some(full_text.as_str()),
+    )
+    .unwrap();
     let (n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
     let t = 0.0;
     let y = vec![1.0; n_states];
@@ -80,7 +88,7 @@ fn pybamm_dfn_compile<M: CodegenModuleCompile + CodegenModuleJit>(bencher: Bench
     let model = parse_ds_string(&full_text).unwrap();
     let discrete_model = DiscreteModel::build("pybamm_dfn", &model).unwrap();
     bencher.bench_local(move || {
-        Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default(), None).unwrap();
     });
 }
 

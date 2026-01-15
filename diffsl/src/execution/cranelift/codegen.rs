@@ -887,6 +887,7 @@ impl CodegenModuleCompile for CraneliftModule<ObjectModule> {
         mode: CompilerMode,
         triple: Option<Triple>,
         real_type: RealType,
+        _code: Option<&str>,
     ) -> Result<Self> {
         let thread_dim = mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
@@ -913,6 +914,7 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
         mode: CompilerMode,
         triple: Option<Triple>,
         real_type: RealType,
+        _code: Option<&str>,
     ) -> Result<Self> {
         let thread_dim = mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;

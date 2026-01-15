@@ -158,14 +158,18 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         let model = parse_ds_string(code).map_err(|e| anyhow!(e.to_string()))?;
         let model = DiscreteModel::build(name.as_str(), &model)
             .map_err(|e| anyhow!(e.as_error_message(code)))?;
-        Self::from_discrete_model(&model, mode)
+        Self::from_discrete_model(&model, mode, Some(code))
     }
 
-    pub fn from_discrete_model(model: &DiscreteModel, mode: CompilerMode) -> Result<Self>
+    pub fn from_discrete_model(
+        model: &DiscreteModel,
+        mode: CompilerMode,
+        code: Option<&str>,
+    ) -> Result<Self>
     where
         M: CodegenModuleCompile + CodegenModuleJit,
     {
-        let mut module = M::from_discrete_model(model, mode, None, T::as_real_type())?;
+        let mut module = M::from_discrete_model(model, mode, None, T::as_real_type(), code)?;
         let symbol_map = module.jit()?;
         Self::new(module, symbol_map, mode)
     }
@@ -908,8 +912,12 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler =
-            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
         // b and b2 should already be set
         let mut data = compiler.get_new_data();
         let b = compiler.get_constants_data("b").unwrap();
@@ -1001,8 +1009,12 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler =
-            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
         let mut u0 = vec![T::one()];
         let mut res = vec![T::zero()];
         let mut stop = vec![T::zero()];
@@ -1040,8 +1052,12 @@ mod tests {
         ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("$name", &model).unwrap();
-        let compiler =
-            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
         let mut u0 = vec![T::one()];
         let mut data = compiler.get_new_data();
         // need this to set the constants
@@ -1109,6 +1125,7 @@ mod tests {
         let _compiler = Compiler::<crate::CraneliftJitModule, f64>::from_discrete_model(
             &discrete_model,
             Default::default(),
+            Some(&full_text),
         )
         .unwrap();
     }
@@ -1122,7 +1139,7 @@ mod tests {
         tensor_name: &str,
         mode: CompilerMode,
     ) -> Vec<Vec<f64>> {
-        let compiler = Compiler::<M, T>::from_discrete_model(discrete_model, mode).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(discrete_model, mode, None).unwrap();
         tensor_test_common_impl(compiler, tensor_name)
             .into_iter()
             .map(|v| {
@@ -1906,8 +1923,12 @@ mod tests {
                 panic!("{}", e.as_error_message(full_text));
             }
         };
-        let compiler =
-            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
         let mut u0 = vec![T::one()];
         let mut du0 = vec![T::one()];
         let mut res = vec![T::zero()];
@@ -1997,8 +2018,12 @@ mod tests {
         let model = parse_ds_string(code).unwrap();
         let discrete_model =
             DiscreteModel::build("test_repeated_rhs_sparse_contraction", &model).unwrap();
-        let compiler =
-            Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler = Compiler::<M, f64>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(code),
+        )
+        .unwrap();
         let mut u = vec![0.0; 4];
         let mut res = vec![0.0; 4];
         let mut data = compiler.get_new_data();
@@ -2045,6 +2070,7 @@ mod tests {
             let compiler = Compiler::<crate::CraneliftJitModule, f64>::from_discrete_model(
                 &discrete_model,
                 Default::default(),
+                Some(full_text),
             )
             .unwrap();
             let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass) = compiler.get_dims();
@@ -2101,6 +2127,7 @@ mod tests {
             let compiler = Compiler::<crate::CraneliftJitModule, f64>::from_discrete_model(
                 &discrete_model,
                 Default::default(),
+                Some(full_text),
             )
             .unwrap();
             let mut data = compiler.get_new_data();
@@ -2116,6 +2143,7 @@ mod tests {
             let compiler = Compiler::<crate::LlvmModule, f64>::from_discrete_model(
                 &discrete_model,
                 Default::default(),
+                Some(full_text),
             )
             .unwrap();
             let mut data = compiler.get_new_data();
@@ -2142,6 +2170,7 @@ mod tests {
         let compiler = Compiler::<crate::LlvmModule, f64>::from_discrete_model(
             &discrete_model,
             Default::default(),
+            Some(full_text),
         )
         .unwrap();
         let mut data = compiler.get_new_data();
@@ -2175,7 +2204,12 @@ mod tests {
         let discrete_model = DiscreteModel::build("test_sens_sync", &model).unwrap();
 
         let compiler = Arc::new(
-            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap(),
+            Compiler::<M, T>::from_discrete_model(
+                &discrete_model,
+                Default::default(),
+                Some(full_text),
+            )
+            .unwrap(),
         );
 
         let compiler_clone = Arc::clone(&compiler);
@@ -2212,8 +2246,12 @@ mod tests {
             ";
         let model = parse_ds_string(full_text).unwrap();
         let discrete_model = DiscreteModel::build("test_u0_sgrad", &model).unwrap();
-        let compiler =
-            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default()).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
         let mut data = compiler.get_new_data();
         let mut ddata = compiler.get_new_data();
         let a = vec![T::from_f64(0.6).unwrap()];
@@ -2278,6 +2316,7 @@ mod tests {
         Compiler::<crate::LlvmModule, f64>::from_discrete_model(
             &discrete_model,
             Default::default(),
+            Some(&full_text),
         )
         .unwrap();
     }

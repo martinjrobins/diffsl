@@ -1,9 +1,12 @@
 use aliasable::boxed::AliasableBox;
 use anyhow::{anyhow, Result};
+use core::panic;
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::{AsContextRef, Context};
+use inkwell::debug_info::AsDIScope;
+use inkwell::debug_info::{DICompileUnit, DIFlags, DIFlagsConstants, DebugInfoBuilder};
 use inkwell::execution_engine::ExecutionEngine;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module};
@@ -25,6 +28,7 @@ use llvm_sys::core::{
     LLVMGetInstructionParent, LLVMGetNamedFunction, LLVMGlobalGetValueType, LLVMIsMultithreaded,
 };
 use llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
+use pest::Span;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::iter::zip;
@@ -125,13 +129,29 @@ impl LlvmModule {
             RealType::F32 => context_ref.f32_type(),
             RealType::F64 => context_ref.f64_type(),
         };
+        let int_type_llvm = context_ref.i32_type();
+        let ptr_size_bits = pinned
+            .machine
+            .get_target_data()
+            .get_bit_size(&context_ref.ptr_type(AddressSpace::default()));
+        let real_size_bits = pinned
+            .machine
+            .get_target_data()
+            .get_bit_size(&real_type_llvm);
+        let int_size_bits = pinned
+            .machine
+            .get_target_data()
+            .get_bit_size(&int_type_llvm);
         let codegen = CodeGen::new(
             model,
             context_ref,
             real_type,
             real_type_llvm,
-            context_ref.i32_type(),
+            int_type_llvm,
             threaded,
+            ptr_size_bits,
+            real_size_bits,
+            int_size_bits,
         )?;
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
         unsafe { pinned.inner.as_mut().get_unchecked_mut().codegen = Some(codegen) };
@@ -238,6 +258,7 @@ impl CodegenModuleCompile for LlvmModule {
         mode: CompilerMode,
         triple: Option<Triple>,
         real_type: RealType,
+        code: Option<&str>,
     ) -> Result<Self> {
         let thread_dim = mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
@@ -249,18 +270,18 @@ impl CodegenModuleCompile for LlvmModule {
 
         let mut module = Self::new(triple, model, threaded, real_type)?;
 
-        let set_u0 = module.codegen_mut().compile_set_u0(model)?;
-        let _calc_stop = module.codegen_mut().compile_calc_stop(model)?;
-        let rhs = module.codegen_mut().compile_rhs(model, false)?;
-        let rhs_full = module.codegen_mut().compile_rhs(model, true)?;
-        let mass = module.codegen_mut().compile_mass(model)?;
-        let calc_out = module.codegen_mut().compile_calc_out(model, false)?;
-        let calc_out_full = module.codegen_mut().compile_calc_out(model, true)?;
+        let set_u0 = module.codegen_mut().compile_set_u0(model, code)?;
+        let _calc_stop = module.codegen_mut().compile_calc_stop(model, code)?;
+        let rhs = module.codegen_mut().compile_rhs(model, false, code)?;
+        let rhs_full = module.codegen_mut().compile_rhs(model, true, code)?;
+        let mass = module.codegen_mut().compile_mass(model, code)?;
+        let calc_out = module.codegen_mut().compile_calc_out(model, false, code)?;
+        let calc_out_full = module.codegen_mut().compile_calc_out(model, true, code)?;
         let _set_id = module.codegen_mut().compile_set_id(model)?;
         let _get_dims = module.codegen_mut().compile_get_dims(model)?;
         let set_inputs = module.codegen_mut().compile_inputs(model, false)?;
         let _get_inputs = module.codegen_mut().compile_inputs(model, true)?;
-        let _set_constants = module.codegen_mut().compile_set_constants(model)?;
+        let _set_constants = module.codegen_mut().compile_set_constants(model, code)?;
         let tensor_info = module
             .codegen()
             .layout
@@ -593,6 +614,8 @@ pub struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
+    dibuilder: DebugInfoBuilder<'ctx>,
+    compile_unit: DICompileUnit<'ctx>,
     variables: HashMap<String, PointerValue<'ctx>>,
     functions: HashMap<String, FunctionValue<'ctx>>,
     fn_value_opt: Option<FunctionValue<'ctx>>,
@@ -602,6 +625,9 @@ pub struct CodeGen<'ctx> {
     real_ptr_type: PointerType<'ctx>,
     int_type: IntType<'ctx>,
     int_ptr_type: PointerType<'ctx>,
+    ptr_size_bits: u64,
+    int_size_bits: u64,
+    real_size_bits: u64,
     layout: DataLayout,
     globals: Globals<'ctx>,
     threaded: bool,
@@ -658,6 +684,7 @@ enum PrintValue<'ctx> {
 }
 
 impl<'ctx> CodeGen<'ctx> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: &DiscreteModel,
         context: &'ctx inkwell::context::Context,
@@ -665,10 +692,30 @@ impl<'ctx> CodeGen<'ctx> {
         real_type: FloatType<'ctx>,
         int_type: IntType<'ctx>,
         threaded: bool,
+        ptr_size_bits: u64,
+        real_size_bits: u64,
+        int_size_bits: u64,
     ) -> Result<Self> {
         let builder = context.create_builder();
         let layout = DataLayout::new(model);
         let module = context.create_module(model.name());
+        let (dibuilder, compile_unit) = module.create_debug_info_builder(
+            true,
+            /* language */ inkwell::debug_info::DWARFSourceLanguage::C,
+            /* filename */ model.name(),
+            /* directory */ ".",
+            /* producer */ "diffsl compiler",
+            /* is_optimized */ true,
+            /* compiler command line flags */ "",
+            /* runtime_ver */ 0,
+            /* split_name */ "",
+            /* kind */ inkwell::debug_info::DWARFEmissionKind::Full,
+            /* dwo_id */ 0,
+            /* split_debug_inling */ false,
+            /* debug_info_for_profiling */ false,
+            /* sysroot */ "",
+            /* sdk */ "",
+        );
         let globals = Globals::new(&layout, &module, int_type, real_type, threaded);
         let real_ptr_type = Self::pointer_type(context, real_type.into());
         let int_ptr_type = Self::pointer_type(context, int_type.into());
@@ -676,6 +723,8 @@ impl<'ctx> CodeGen<'ctx> {
             context,
             module,
             builder,
+            dibuilder,
+            compile_unit,
             real_type,
             real_ptr_type,
             variables: HashMap::new(),
@@ -688,6 +737,9 @@ impl<'ctx> CodeGen<'ctx> {
             int_ptr_type,
             globals,
             threaded,
+            ptr_size_bits,
+            real_size_bits,
+            int_size_bits,
             _ee: None,
         };
         if threaded {
@@ -700,21 +752,107 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(ret)
     }
 
+    fn start_function(
+        &mut self,
+        function: FunctionValue<'ctx>,
+        _code: Option<&str>,
+    ) -> BasicBlock<'ctx> {
+        let basic_block = self.context.append_basic_block(function, "entry");
+        self.fn_value_opt = Some(function);
+        self.builder.position_at_end(basic_block);
+
+        let scope = self
+            .fn_value_opt
+            .unwrap()
+            .get_subprogram()
+            .unwrap()
+            .as_debug_info_scope();
+        let loc = self
+            .dibuilder
+            .create_debug_location(self.context, 0, 0, scope, None);
+        self.builder.set_current_debug_location(loc);
+        basic_block
+    }
+
+    fn add_function(
+        &mut self,
+        name: &str,
+        arg_names: &[&str],
+        arg_types: &[BasicMetadataTypeEnum<'ctx>],
+        linkage: Option<Linkage>,
+        is_real_return: bool,
+    ) -> FunctionValue<'ctx> {
+        let ditypes = arg_names
+            .iter()
+            .zip(arg_types.iter())
+            .map(|(&name, &ty)| {
+                let size_in_bits = if ty.is_float_type() {
+                    self.real_size_bits
+                } else if ty.is_int_type() {
+                    self.int_size_bits
+                } else if ty.is_pointer_type() {
+                    self.ptr_size_bits
+                } else {
+                    unreachable!("Unsupported argument type for debug info")
+                };
+                self.dibuilder
+                    .create_basic_type(
+                        name,
+                        size_in_bits,
+                        0x00,
+                        <DIFlags as DIFlagsConstants>::PUBLIC,
+                    )
+                    .unwrap()
+                    .as_type()
+            })
+            .collect::<Vec<_>>();
+        let subroutine_type = self.dibuilder.create_subroutine_type(
+            self.compile_unit.get_file(),
+            /* return type */ None,
+            /* parameter types */ &ditypes,
+            <DIFlags as DIFlagsConstants>::PUBLIC,
+        );
+        let func_scope = self.dibuilder.create_function(
+            /* scope */ self.compile_unit.as_debug_info_scope(),
+            /* func name */ name,
+            /* linkage_name */ None,
+            /* file */ self.compile_unit.get_file(),
+            /* line_no */ 0,
+            /* DIType */ subroutine_type,
+            /* is_local_to_unit */ true,
+            /* is_definition */ true,
+            /* scope_line */ 0,
+            <DIFlags as DIFlagsConstants>::PUBLIC,
+            /* is_optimized */ true,
+        );
+        let function_type = if is_real_return {
+            self.real_type.fn_type(arg_types, false)
+        } else {
+            self.context.void_type().fn_type(arg_types, false)
+        };
+        let function = self.module.add_function(name, function_type, linkage);
+        function.set_subprogram(func_scope);
+        self.functions.insert(name.to_owned(), function);
+        function
+    }
+
     #[allow(dead_code)]
     fn compile_print_value(
         &mut self,
         name: &str,
         value: PrintValue<'ctx>,
     ) -> Result<CallSiteValue<'_>> {
-        let void_type = self.context.void_type();
-        // int printf(const char *format, ...)
-        let printf_type = void_type.fn_type(&[self.int_ptr_type.into()], true);
         // get printf function or declare it if it doesn't exist
         let printf = match self.module.get_function("printf") {
             Some(f) => f,
-            None => self
-                .module
-                .add_function("printf", printf_type, Some(Linkage::External)),
+            // int printf(const char *format, ...)
+            None => self.add_function(
+                "printf",
+                &["format"],
+                &[self.int_ptr_type.into()],
+                Some(Linkage::External),
+                false,
+            ),
         };
         let (format_str, format_str_name) = match value {
             PrintValue::Real(_) => (format!("{name}: %f\n"), format!("real_format_{name}")),
@@ -750,16 +888,21 @@ impl<'ctx> CodeGen<'ctx> {
             .map_err(|e| anyhow!("Error building call to printf: {}", e))
     }
 
-    fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
+    fn compile_set_constants(
+        &mut self,
+        model: &DiscreteModel,
+        code: Option<&str>,
+    ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(&[self.int_type.into(), self.int_type.into()], false);
         let fn_arg_names = &["thread_id", "thread_dim"];
-        let function = self.module.add_function("set_constants", fn_type, None);
-
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(basic_block);
+        let function = self.add_function(
+            "set_constants",
+            fn_arg_names,
+            &[self.int_type.into(), self.int_type.into()],
+            None,
+            false,
+        );
+        let _basic_block = self.start_function(function, code);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
@@ -774,7 +917,7 @@ impl<'ctx> CodeGen<'ctx> {
         let total_barriers = (model.constant_defns().len()) as u64;
         #[allow(clippy::explicit_counter_loop)]
         for a in model.constant_defns() {
-            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+            self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);
             nbarriers += 1;
         }
@@ -785,6 +928,7 @@ impl<'ctx> CodeGen<'ctx> {
             Ok(function)
         } else {
             function.print_to_stderr();
+            self.module.print_to_stderr();
             unsafe {
                 function.delete();
             }
@@ -794,14 +938,8 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn compile_barrier_init(&mut self) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(&[], false);
-        let function = self.module.add_function("barrier_init", fn_type, None);
-
-        let entry_block = self.context.append_basic_block(function, "entry");
-
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(entry_block);
+        let function = self.add_function("barrier_init", &[], &[], None, false);
+        let _entry_block = self.start_function(function, None);
 
         let thread_counter = self.globals.thread_counter.unwrap().as_pointer_value();
         self.builder
@@ -810,7 +948,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.functions.insert("barrier_init".to_owned(), function);
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -823,27 +960,25 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn compile_barrier(&mut self) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(
+        let function = self.add_function(
+            "barrier",
+            &["barrier_num", "total_barriers", "thread_count"],
             &[
                 self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
+            None,
             false,
         );
-        let function = self.module.add_function("barrier", fn_type, None);
         let nolinline_kind_id = Attribute::get_named_enum_kind_id("noinline");
         let noinline = self.context.create_enum_attribute(nolinline_kind_id, 0);
         function.add_attribute(AttributeLoc::Function, noinline);
 
-        let entry_block = self.context.append_basic_block(function, "entry");
         let increment_block = self.context.append_basic_block(function, "increment");
         let wait_loop_block = self.context.append_basic_block(function, "wait_loop");
         let barrier_done_block = self.context.append_basic_block(function, "barrier_done");
-
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(entry_block);
+        let _entry_block = self.start_function(function, None);
 
         let thread_counter = self.globals.thread_counter.unwrap().as_pointer_value();
         let barrier_num = function.get_nth_param(0).unwrap().into_int_value();
@@ -914,7 +1049,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.functions.insert("barrier".to_owned(), function);
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -927,23 +1061,21 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn compile_barrier_grad(&mut self) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(
+        let function = self.add_function(
+            "barrier_grad",
+            &["barrier_num", "total_barriers", "thread_count"],
             &[
                 self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
+            None,
             false,
         );
-        let function = self.module.add_function("barrier_grad", fn_type, None);
 
-        let entry_block = self.context.append_basic_block(function, "entry");
         let wait_loop_block = self.context.append_basic_block(function, "wait_loop");
         let barrier_done_block = self.context.append_basic_block(function, "barrier_done");
-
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(entry_block);
+        let _entry_block = self.start_function(function, None);
 
         let thread_counter = self.globals.thread_counter.unwrap().as_pointer_value();
         let barrier_num = function.get_nth_param(0).unwrap().into_int_value();
@@ -1016,7 +1148,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_return(None)?;
 
         if function.verify(true) {
-            self.functions.insert("barrier_grad".to_owned(), function);
             Ok(function)
         } else {
             function.print_to_stderr();
@@ -1307,6 +1438,9 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(&func) = self.functions.get(name) {
             return Some(func);
         }
+        let current_block = self.builder.get_insert_block().unwrap();
+        let current_loc = self.builder.get_current_debug_location().unwrap();
+        let current_function = self.fn_value_opt.unwrap();
 
         let function = match name {
             // support some llvm intrinsics
@@ -1322,6 +1456,7 @@ impl<'ctx> CodeGen<'ctx> {
                     format!("llvm.{}.{}", intrinsic_name, self.diffsl_real_type.as_str());
 
                 let args_types: Vec<BasicTypeEnum> = vec![self.real_type.into()];
+                self.builder.unset_current_debug_location();
 
                 // Try intrinsic first, fall back to libm for all functions
                 Some(match Intrinsic::find(&llvm_name) {
@@ -1330,9 +1465,9 @@ impl<'ctx> CodeGen<'ctx> {
                         // Fallback: declare external libm function
                         let args_types_meta: Vec<BasicMetadataTypeEnum> =
                             vec![self.real_type.into()];
-                        let fn_type = self.real_type.fn_type(&args_types_meta, false);
+                        let function_type = self.real_type.fn_type(&args_types_meta, false);
                         self.module
-                            .add_function(name, fn_type, Some(Linkage::External))
+                            .add_function(name, function_type, Some(Linkage::External))
                     }
                 })
             }
@@ -1345,16 +1480,13 @@ impl<'ctx> CodeGen<'ctx> {
                     .map(|f| f.into())
                     .collect::<Vec<BasicMetadataTypeEnum>>();
 
-                let fn_type = ret_type.fn_type(args_types.as_slice(), false);
-                let fn_val = self.module.add_function(name, fn_type, None);
+                let fn_val = self.add_function(name, &["x"], &args_types, None, true);
 
                 for arg in fn_val.get_param_iter() {
                     arg.into_float_value().set_name("x");
                 }
+                let _basic_block = self.start_function(fn_val, None);
 
-                let current_block = self.builder.get_insert_block().unwrap();
-                let basic_block = self.context.append_basic_block(fn_val, "entry");
-                self.builder.position_at_end(basic_block);
                 let x = fn_val.get_nth_param(0)?.into_float_value();
                 let one = self.real_type.const_float(1.0);
                 let negx = self.builder.build_float_neg(x, name).ok()?;
@@ -1379,7 +1511,6 @@ impl<'ctx> CodeGen<'ctx> {
                     .build_float_div(one, one_plus_exp_negx, name)
                     .ok()?;
                 self.builder.build_return(Some(&sigmoid)).ok();
-                self.builder.position_at_end(current_block);
                 Some(fn_val)
             }
             "arcsinh" | "arccosh" => {
@@ -1390,16 +1521,13 @@ impl<'ctx> CodeGen<'ctx> {
                     .map(|f| f.into())
                     .collect::<Vec<BasicMetadataTypeEnum>>();
 
-                let fn_type = ret_type.fn_type(args_types.as_slice(), false);
-                let fn_val = self.module.add_function(name, fn_type, None);
+                let fn_val = self.add_function(name, &["x"], &args_types, None, true);
 
                 for arg in fn_val.get_param_iter() {
                     arg.into_float_value().set_name("x");
                 }
 
-                let current_block = self.builder.get_insert_block().unwrap();
-                let basic_block = self.context.append_basic_block(fn_val, "entry");
-                self.builder.position_at_end(basic_block);
+                let _basic_block = self.start_function(fn_val, None);
                 let x = fn_val.get_nth_param(0)?.into_float_value();
                 let one = match name {
                     "arccosh" => self.real_type.const_float(-1.0),
@@ -1439,7 +1567,6 @@ impl<'ctx> CodeGen<'ctx> {
                     .unwrap_basic()
                     .into_float_value();
                 self.builder.build_return(Some(&result)).ok();
-                self.builder.position_at_end(current_block);
                 Some(fn_val)
             }
             "heaviside" => {
@@ -1450,16 +1577,13 @@ impl<'ctx> CodeGen<'ctx> {
                     .map(|f| f.into())
                     .collect::<Vec<BasicMetadataTypeEnum>>();
 
-                let fn_type = ret_type.fn_type(args_types.as_slice(), false);
-                let fn_val = self.module.add_function(name, fn_type, None);
+                let fn_val = self.add_function(name, &["x"], &args_types, None, true);
 
                 for arg in fn_val.get_param_iter() {
                     arg.into_float_value().set_name("x");
                 }
 
-                let current_block = self.builder.get_insert_block().unwrap();
-                let basic_block = self.context.append_basic_block(fn_val, "entry");
-                self.builder.position_at_end(basic_block);
+                let _basic_block = self.start_function(fn_val, None);
                 let x = fn_val.get_nth_param(0)?.into_float_value();
                 let zero = self.real_type.const_float(0.0);
                 let one = self.real_type.const_float(1.0);
@@ -1475,7 +1599,6 @@ impl<'ctx> CodeGen<'ctx> {
                     )
                     .ok()?;
                 self.builder.build_return(Some(&result)).ok();
-                self.builder.position_at_end(current_block);
                 Some(fn_val)
             }
             "tanh" | "sinh" | "cosh" => {
@@ -1486,16 +1609,13 @@ impl<'ctx> CodeGen<'ctx> {
                     .map(|f| f.into())
                     .collect::<Vec<BasicMetadataTypeEnum>>();
 
-                let fn_type = ret_type.fn_type(args_types.as_slice(), false);
-                let fn_val = self.module.add_function(name, fn_type, None);
+                let fn_val = self.add_function(name, &["x"], &args_types, None, true);
 
                 for arg in fn_val.get_param_iter() {
                     arg.into_float_value().set_name("x");
                 }
 
-                let current_block = self.builder.get_insert_block().unwrap();
-                let basic_block = self.context.append_basic_block(fn_val, "entry");
-                self.builder.position_at_end(basic_block);
+                let _basic_block = self.start_function(fn_val, None);
                 let x = fn_val.get_nth_param(0)?.into_float_value();
                 let negx = self.builder.build_float_neg(x, name).ok()?;
                 let exp = self.get_function("exp").unwrap();
@@ -1545,11 +1665,20 @@ impl<'ctx> CodeGen<'ctx> {
                     _ => panic!("unknown function"),
                 };
                 self.builder.build_return(Some(&result)).ok();
-                self.builder.position_at_end(current_block);
                 Some(fn_val)
             }
             _ => None,
         }?;
+
+        if !function.verify(true) {
+            function.print_to_stderr();
+            panic!("Invalid generated function for {}", name);
+        }
+
+        self.builder.position_at_end(current_block);
+        self.builder.set_current_debug_location(current_loc);
+        self.fn_value_opt = Some(current_function);
+
         self.functions.insert(name.to_owned(), function);
         Some(function)
     }
@@ -1638,6 +1767,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         a: &Tensor,
         res_ptr_opt: Option<PointerValue<'ctx>>,
+        code: Option<&str>,
     ) -> Result<PointerValue<'ctx>> {
         // treat scalar as a special case
         if a.rank() == 0 {
@@ -1658,18 +1788,46 @@ impl<'ctx> CodeGen<'ctx> {
         for (i, blk) in a.elmts().iter().enumerate() {
             let default = format!("{}-{}", a.name(), i);
             let name = blk.name().unwrap_or(default.as_str());
-            self.jit_compile_block(name, a, blk)?;
+            self.jit_compile_block(name, a, blk, code)?;
         }
         Ok(res_ptr)
     }
 
-    fn jit_compile_block(&mut self, name: &str, tensor: &Tensor, elmt: &TensorBlock) -> Result<()> {
+    fn jit_compile_block(
+        &mut self,
+        name: &str,
+        tensor: &Tensor,
+        elmt: &TensorBlock,
+        code: Option<&str>,
+    ) -> Result<()> {
         let translation = Translation::new(
             elmt.expr_layout(),
             elmt.layout(),
             elmt.start(),
             tensor.layout_ptr(),
         );
+
+        let (line_no, column_no) = match (elmt.expr().span, code) {
+            (Some(s), Some(c)) => {
+                let s = Span::new(c, s.pos_start, s.pos_end).unwrap();
+                s.start_pos().line_col()
+            }
+            _ => (0, 0),
+        };
+        let scope = self
+            .fn_value_opt
+            .unwrap()
+            .get_subprogram()
+            .unwrap()
+            .as_debug_info_scope();
+        let loc = self.dibuilder.create_debug_location(
+            self.context,
+            line_no.try_into().unwrap(),
+            column_no.try_into().unwrap(),
+            scope,
+            None,
+        );
+        self.builder.set_current_debug_location(loc);
 
         if elmt.expr_layout().is_dense() {
             self.jit_compile_dense_block(name, elmt, &translation)
@@ -2619,20 +2777,25 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    pub fn compile_set_u0<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_set_u0<'m>(
+        &mut self,
+        model: &'m DiscreteModel,
+        code: Option<&str>,
+    ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(
+        let fn_arg_names = &["u0", "data", "thread_id", "thread_dim"];
+        let function = self.add_function(
+            "set_u0",
+            fn_arg_names,
             &[
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
+            None,
             false,
         );
-        let fn_arg_names = &["u0", "data", "thread_id", "thread_dim"];
-        let function = self.module.add_function("set_u0", fn_type, None);
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -2641,9 +2804,7 @@ impl<'ctx> CodeGen<'ctx> {
             function.add_attribute(AttributeLoc::Param(*i), noalign);
         }
 
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(basic_block);
+        let _basic_block = self.start_function(function, code);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
@@ -2658,12 +2819,12 @@ impl<'ctx> CodeGen<'ctx> {
         let total_barriers = (model.input_dep_defns().len() + 1) as u64;
         #[allow(clippy::explicit_counter_loop)]
         for a in model.input_dep_defns() {
-            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+            self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);
             nbarriers += 1;
         }
 
-        self.jit_compile_tensor(model.state(), Some(*self.get_param("u0")))?;
+        self.jit_compile_tensor(model.state(), Some(*self.get_param("u0")), code)?;
         self.jit_compile_call_barrier(nbarriers, total_barriers);
 
         self.builder.build_return(None)?;
@@ -2683,10 +2844,18 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         model: &'m DiscreteModel,
         include_constants: bool,
+        code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(
+        let fn_arg_names = &["t", "u", "data", "out", "thread_id", "thread_dim"];
+        let function_name = if include_constants {
+            "calc_out_full"
+        } else {
+            "calc_out"
+        };
+        let function = self.add_function(
+            function_name,
+            fn_arg_names,
             &[
                 self.real_type.into(),
                 self.real_ptr_type.into(),
@@ -2695,15 +2864,9 @@ impl<'ctx> CodeGen<'ctx> {
                 self.int_type.into(),
                 self.int_type.into(),
             ],
+            None,
             false,
         );
-        let fn_arg_names = &["t", "u", "data", "out", "thread_id", "thread_dim"];
-        let function_name = if include_constants {
-            "calc_out_full"
-        } else {
-            "calc_out"
-        };
-        let function = self.module.add_function(function_name, fn_type, None);
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -2712,9 +2875,7 @@ impl<'ctx> CodeGen<'ctx> {
             function.add_attribute(AttributeLoc::Param(*i), noalign);
         }
 
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(basic_block);
+        let _basic_block = self.start_function(function, code);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
@@ -2739,7 +2900,7 @@ impl<'ctx> CodeGen<'ctx> {
                 total_barriers += model.input_dep_defns().len() as u64;
                 // calculate time independant definitions
                 for tensor in model.input_dep_defns() {
-                    self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                    self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
                     self.jit_compile_call_barrier(nbarriers, total_barriers);
                     nbarriers += 1;
                 }
@@ -2747,7 +2908,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             // calculate time dependant definitions
             for tensor in model.time_dep_defns() {
-                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
                 self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
@@ -2755,12 +2916,12 @@ impl<'ctx> CodeGen<'ctx> {
             // calculate state dependant definitions
             #[allow(clippy::explicit_counter_loop)]
             for a in model.state_dep_defns() {
-                self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+                self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
                 self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
 
-            self.jit_compile_tensor(out, Some(*self.get_var(model.out().unwrap())))?;
+            self.jit_compile_tensor(out, Some(*self.get_var(model.out().unwrap())), code)?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);
         }
         self.builder.build_return(None)?;
@@ -2779,10 +2940,13 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn compile_calc_stop<'m>(
         &mut self,
         model: &'m DiscreteModel,
+        code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(
+        let fn_arg_names = &["t", "u", "data", "root", "thread_id", "thread_dim"];
+        let function = self.add_function(
+            "calc_stop",
+            fn_arg_names,
             &[
                 self.real_type.into(),
                 self.real_ptr_type.into(),
@@ -2791,10 +2955,9 @@ impl<'ctx> CodeGen<'ctx> {
                 self.int_type.into(),
                 self.int_type.into(),
             ],
+            None,
             false,
         );
-        let fn_arg_names = &["t", "u", "data", "root", "thread_id", "thread_dim"];
-        let function = self.module.add_function("calc_stop", fn_type, None);
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -2803,9 +2966,7 @@ impl<'ctx> CodeGen<'ctx> {
             function.add_attribute(AttributeLoc::Param(*i), noalign);
         }
 
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(basic_block);
+        let _basic_block = self.start_function(function, code);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
@@ -2823,20 +2984,20 @@ impl<'ctx> CodeGen<'ctx> {
             let total_barriers =
                 (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
             for tensor in model.time_dep_defns() {
-                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
                 self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
 
             // calculate state dependant definitions
             for a in model.state_dep_defns() {
-                self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+                self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
                 self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
 
             let res_ptr = self.get_param("root");
-            self.jit_compile_tensor(stop, Some(*res_ptr))?;
+            self.jit_compile_tensor(stop, Some(*res_ptr), code)?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);
         }
         self.builder.build_return(None)?;
@@ -2856,10 +3017,14 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         model: &'m DiscreteModel,
         include_constants: bool,
+        code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(
+        let fn_arg_names = &["t", "u", "data", "rr", "thread_id", "thread_dim"];
+        let function_name = if include_constants { "rhs_full" } else { "rhs" };
+        let function = self.add_function(
+            function_name,
+            fn_arg_names,
             &[
                 self.real_type.into(),
                 self.real_ptr_type.into(),
@@ -2868,11 +3033,9 @@ impl<'ctx> CodeGen<'ctx> {
                 self.int_type.into(),
                 self.int_type.into(),
             ],
+            None,
             false,
         );
-        let fn_arg_names = &["t", "u", "data", "rr", "thread_id", "thread_dim"];
-        let function_name = if include_constants { "rhs_full" } else { "rhs" };
-        let function = self.module.add_function(function_name, fn_type, None);
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -2881,9 +3044,7 @@ impl<'ctx> CodeGen<'ctx> {
             function.add_attribute(AttributeLoc::Param(*i), noalign);
         }
 
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(basic_block);
+        let _basic_block = self.start_function(function, code);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
@@ -2902,7 +3063,7 @@ impl<'ctx> CodeGen<'ctx> {
             total_barriers += model.input_dep_defns().len() as u64;
             // calculate constant definitions
             for tensor in model.input_dep_defns() {
-                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
                 self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
@@ -2910,21 +3071,21 @@ impl<'ctx> CodeGen<'ctx> {
 
         // calculate time dependant definitions
         for tensor in model.time_dep_defns() {
-            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);
             nbarriers += 1;
         }
 
         // TODO: could split state dep defns into before and after F
         for a in model.state_dep_defns() {
-            self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+            self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);
             nbarriers += 1;
         }
 
         // F
         let res_ptr = self.get_param("rr");
-        self.jit_compile_tensor(model.rhs(), Some(*res_ptr))?;
+        self.jit_compile_tensor(model.rhs(), Some(*res_ptr), code)?;
         self.jit_compile_call_barrier(nbarriers, total_barriers);
 
         self.builder.build_return(None)?;
@@ -2940,10 +3101,16 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    pub fn compile_mass<'m>(&mut self, model: &'m DiscreteModel) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_mass<'m>(
+        &mut self,
+        model: &'m DiscreteModel,
+        code: Option<&str>,
+    ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(
+        let fn_arg_names = &["t", "dudt", "data", "rr", "thread_id", "thread_dim"];
+        let function = self.add_function(
+            "mass",
+            fn_arg_names,
             &[
                 self.real_type.into(),
                 self.real_ptr_type.into(),
@@ -2952,10 +3119,9 @@ impl<'ctx> CodeGen<'ctx> {
                 self.int_type.into(),
                 self.int_type.into(),
             ],
+            None,
             false,
         );
-        let fn_arg_names = &["t", "dudt", "data", "rr", "thread_id", "thread_dim"];
-        let function = self.module.add_function("mass", fn_type, None);
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -2964,9 +3130,7 @@ impl<'ctx> CodeGen<'ctx> {
             function.add_attribute(AttributeLoc::Param(*i), noalign);
         }
 
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(basic_block);
+        let _basic_block = self.start_function(function, code);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
@@ -2988,20 +3152,20 @@ impl<'ctx> CodeGen<'ctx> {
             let total_barriers =
                 (model.time_dep_defns().len() + model.dstate_dep_defns().len() + 1) as u64;
             for tensor in model.time_dep_defns() {
-                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)))?;
+                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
                 self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
 
             for a in model.dstate_dep_defns() {
-                self.jit_compile_tensor(a, Some(*self.get_var(a)))?;
+                self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
                 self.jit_compile_call_barrier(nbarriers, total_barriers);
                 nbarriers += 1;
             }
 
             // mass
             let res_ptr = self.get_param("rr");
-            self.jit_compile_tensor(lhs, Some(*res_ptr))?;
+            self.jit_compile_tensor(lhs, Some(*res_ptr), code)?;
             self.jit_compile_call_barrier(nbarriers, total_barriers);
         }
 
@@ -3056,9 +3220,16 @@ impl<'ctx> CodeGen<'ctx> {
                 CompileGradientArgType::Const => {}
             }
         }
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(fn_type.as_slice(), false);
-        let function = self.module.add_function(fn_name, fn_type, None);
+        let fn_arg_names = fn_type
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("arg{}", i))
+            .collect::<Vec<String>>();
+        let fn_arg_names_ref = fn_arg_names
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<&str>>();
+        let function = self.add_function(fn_name, &fn_arg_names_ref, &fn_type, None, false);
 
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
@@ -3067,9 +3238,7 @@ impl<'ctx> CodeGen<'ctx> {
             function.add_attribute(AttributeLoc::Param(i), noalign);
         }
 
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-        self.builder.position_at_end(basic_block);
+        let _basic_block = self.start_function(function, None);
 
         let mut enzyme_fn_args: Vec<BasicMetadataValueEnum> = Vec::new();
         let mut input_activity = Vec::new();
@@ -3281,7 +3450,10 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let fn_type = self.context.void_type().fn_type(
+        let fn_arg_names = &["states", "inputs", "outputs", "data", "stop", "has_mass"];
+        let function = self.add_function(
+            "get_dims",
+            fn_arg_names,
             &[
                 self.int_ptr_type.into(),
                 self.int_ptr_type.into(),
@@ -3290,13 +3462,10 @@ impl<'ctx> CodeGen<'ctx> {
                 self.int_ptr_type.into(),
                 self.int_ptr_type.into(),
             ],
+            None,
             false,
         );
-
-        let function = self.module.add_function("get_dims", fn_type, None);
-        let block = self.context.append_basic_block(function, "entry");
-        let fn_arg_names = &["states", "inputs", "outputs", "data", "stop", "has_mass"];
-        self.builder.position_at_end(block);
+        let _block = self.start_function(function, None);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
@@ -3366,23 +3535,20 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_ptr_type = Self::pointer_type(self.context, self.real_ptr_type.into());
-        let fn_type = self.context.void_type().fn_type(
+        let function_name = format!("get_tensor_{name}");
+        let fn_arg_names = &["data", "tensor_data", "tensor_size"];
+        let function = self.add_function(
+            function_name.as_str(),
+            fn_arg_names,
             &[
                 self.real_ptr_type.into(),
                 real_ptr_ptr_type.into(),
                 self.int_ptr_type.into(),
             ],
+            None,
             false,
         );
-        let function_name = format!("get_tensor_{name}");
-        let function = self
-            .module
-            .add_function(function_name.as_str(), fn_type, None);
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-
-        let fn_arg_names = &["data", "tensor_data", "tensor_size"];
-        self.builder.position_at_end(basic_block);
+        let _basic_block = self.start_function(function, None);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
@@ -3418,19 +3584,16 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let real_ptr_ptr_type = Self::pointer_type(self.context, self.real_ptr_type.into());
-        let fn_type = self
-            .context
-            .void_type()
-            .fn_type(&[real_ptr_ptr_type.into(), self.int_ptr_type.into()], false);
         let function_name = format!("get_constant_{name}");
-        let function = self
-            .module
-            .add_function(function_name.as_str(), fn_type, None);
-        let basic_block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-
         let fn_arg_names = &["tensor_data", "tensor_size"];
-        self.builder.position_at_end(basic_block);
+        let function = self.add_function(
+            function_name.as_str(),
+            fn_arg_names,
+            &[real_ptr_ptr_type.into(), self.int_ptr_type.into()],
+            None,
+            false,
+        );
+        let _basic_block = self.start_function(function, None);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
@@ -3465,18 +3628,16 @@ impl<'ctx> CodeGen<'ctx> {
         is_get: bool,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(
+        let function_name = if is_get { "get_inputs" } else { "set_inputs" };
+        let fn_arg_names = &["inputs", "data"];
+        let function = self.add_function(
+            function_name,
+            fn_arg_names,
             &[self.real_ptr_type.into(), self.real_ptr_type.into()],
+            None,
             false,
         );
-        let function_name = if is_get { "get_inputs" } else { "set_inputs" };
-        let function = self.module.add_function(function_name, fn_type, None);
-        let block = self.context.append_basic_block(function, "entry");
-        self.fn_value_opt = Some(function);
-
-        let fn_arg_names = &["inputs", "data"];
-        self.builder.position_at_end(block);
+        let block = self.start_function(function, None);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
@@ -3556,13 +3717,15 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_set_id(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let void_type = self.context.void_type();
-        let fn_type = void_type.fn_type(&[self.real_ptr_type.into()], false);
-        let function = self.module.add_function("set_id", fn_type, None);
-        let mut block = self.context.append_basic_block(function, "entry");
-
         let fn_arg_names = &["id"];
-        self.builder.position_at_end(block);
+        let function = self.add_function(
+            "set_id",
+            fn_arg_names,
+            &[self.real_ptr_type.into()],
+            None,
+            false,
+        );
+        let mut block = self.start_function(function, None);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];

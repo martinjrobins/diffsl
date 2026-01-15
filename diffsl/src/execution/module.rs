@@ -15,6 +15,7 @@ pub trait CodegenModuleCompile: CodegenModule {
         mode: CompilerMode,
         triple: Option<Triple>,
         real_type: RealType,
+        code: Option<&str>,
     ) -> Result<Self>;
 }
 

@@ -47,7 +47,7 @@ use crate::enzyme::{
     FreeTypeAnalysis, GradientUtils, IntList, LLVMOpaqueContext, CDIFFE_TYPE_DFT_CONSTANT,
     CDIFFE_TYPE_DFT_DUP_ARG, CDIFFE_TYPE_DFT_DUP_NONEED,
 };
-use crate::execution::compiler::CompilerMode;
+use crate::execution::compiler::CompilerOptions;
 use crate::execution::module::{
     CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit,
 };
@@ -83,6 +83,7 @@ impl LlvmModule {
         model: &DiscreteModel,
         threaded: bool,
         real_type: RealType,
+        debug: bool,
     ) -> Result<Self> {
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
@@ -152,6 +153,7 @@ impl LlvmModule {
             ptr_size_bits,
             real_size_bits,
             int_size_bits,
+            debug,
         )?;
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
         unsafe { pinned.inner.as_mut().get_unchecked_mut().codegen = Some(codegen) };
@@ -179,6 +181,11 @@ impl LlvmModule {
         //pass_options.set_licm_mssa_no_acc_for_promotion_cap(10);
         //pass_options.set_call_graph_profile(true);
         //pass_options.set_merge_functions(true);
+        //let path = "jit_module_before_pre_autodiff_opt.ll";
+        //self.codegen()
+        //    .module()
+        //    .print_to_file(path)
+        //    .map_err(|e| anyhow!("Failed to print module to file: {:?}", e))?;
 
         //let passes = "default<O2>";
         let passes = "annotation2metadata,forceattrs,inferattrs,coro-early,function<eager-inv>(lower-expect,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;no-switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,early-cse<>),openmp-opt,ipsccp,called-value-propagation,globalopt,function(mem2reg),function<eager-inv>(instcombine,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>),require<globals-aa>,function(invalidate<aa>),require<profile-summary>,cgscc(devirt<4>(inline<only-mandatory>,inline,function-attrs,openmp-opt-cgscc,function<eager-inv>(early-cse<memssa>,speculative-execution,jump-threading,correlated-propagation,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,instcombine,libcalls-shrinkwrap,tailcallelim,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,reassociate,require<opt-remark-emit>,loop-mssa(loop-instsimplify,loop-simplifycfg,licm<no-allowspeculation>,loop-rotate,licm<allowspeculation>,simple-loop-unswitch<no-nontrivial;trivial>),simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>,instcombine,loop(loop-idiom,indvars,loop-deletion),vector-combine,mldst-motion<no-split-footer-bb>,gvn<>,sccp,bdce,instcombine,jump-threading,correlated-propagation,adce,memcpyopt,dse,loop-mssa(licm<allowspeculation>),coro-elide,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;hoist-common-insts;sink-common-insts>,instcombine),coro-split)),deadargelim,coro-cleanup,globalopt,globaldce,elim-avail-extern,rpo-function-attrs,recompute-globalsaa,function<eager-inv>(float2int,lower-constant-intrinsics,loop(loop-rotate,loop-deletion),loop-distribute,inject-tli-mappings,loop-load-elim,instcombine,simplifycfg<bonus-inst-threshold=1;forward-switch-cond;switch-range-to-icmp;switch-to-lookup;no-keep-loops;hoist-common-insts;sink-common-insts>,vector-combine,instcombine,transform-warning,instcombine,require<opt-remark-emit>,loop-mssa(licm<allowspeculation>),alignment-from-assumptions,loop-sink,instsimplify,div-rem-pairs,tailcallelim,simplifycfg<bonus-inst-threshold=1;no-forward-switch-cond;switch-range-to-icmp;no-switch-to-lookup;keep-loops;no-hoist-common-insts;no-sink-common-insts>),globaldce,constmerge,cg-profile,rel-lookup-table-converter,function(annotation-remarks),verify";
@@ -187,6 +194,12 @@ impl LlvmModule {
             .module()
             .run_passes(passes, machine, pass_options)
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))
+
+        //let path = "jit_module_after_pre_autodiff_opt.ll";
+        //self.codegen()
+        //    .module()
+        //    .print_to_file(path)
+        //    .map_err(|e| anyhow!("Failed to print module to file: {:?}", e))
     }
 
     fn post_autodiff_optimisation(&mut self) -> Result<()> {
@@ -205,7 +218,7 @@ impl LlvmModule {
 
         //self.codegen()
         //    .module()
-        //    .print_to_file("post_autodiff_optimisation.ll")
+        //    .print_to_file("jit_module_before_post_autodiff_opt.ll")
         //    .unwrap();
 
         let passes = "default<O3>";
@@ -214,6 +227,11 @@ impl LlvmModule {
             .module()
             .run_passes(passes, machine, PassBuilderOptions::create())
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))?;
+
+        //self.codegen()
+        //    .module()
+        //    .print_to_file("jit_module_after_post_autodiff_opt.ll")
+        //    .unwrap();
 
         Ok(())
     }
@@ -255,12 +273,12 @@ impl CodegenModule for LlvmModule {}
 impl CodegenModuleCompile for LlvmModule {
     fn from_discrete_model(
         model: &DiscreteModel,
-        mode: CompilerMode,
+        options: CompilerOptions,
         triple: Option<Triple>,
         real_type: RealType,
         code: Option<&str>,
     ) -> Result<Self> {
-        let thread_dim = mode.thread_dim(model.state().nnz());
+        let thread_dim = options.mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
         if (unsafe { LLVMIsMultithreaded() } <= 0) {
             return Err(anyhow!(
@@ -268,7 +286,7 @@ impl CodegenModuleCompile for LlvmModule {
             ));
         }
 
-        let mut module = Self::new(triple, model, threaded, real_type)?;
+        let mut module = Self::new(triple, model, threaded, real_type, options.debug)?;
 
         let set_u0 = module.codegen_mut().compile_set_u0(model, code)?;
         let _calc_stop = module.codegen_mut().compile_calc_stop(model, code)?;
@@ -504,9 +522,14 @@ impl CodegenModuleJit for LlvmModule {
         let ee = self
             .codegen()
             .module()
-            .create_jit_execution_engine(OptimizationLevel::Aggressive)
+            .create_jit_execution_engine(OptimizationLevel::Default)
             .map_err(|e| anyhow!("Failed to create JIT execution engine: {:?}", e))?;
 
+        //let path = "jit_module.ll";
+        //self.codegen()
+        //    .module()
+        //    .print_to_file(path)
+        //    .map_err(|e| anyhow!("Failed to print module to file: {:?}", e))?;
         let module = self.codegen().module();
         let mut symbols = HashMap::new();
         for function in module.get_functions() {
@@ -614,8 +637,8 @@ pub struct CodeGen<'ctx> {
     context: &'ctx inkwell::context::Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
-    dibuilder: DebugInfoBuilder<'ctx>,
-    compile_unit: DICompileUnit<'ctx>,
+    dibuilder: Option<DebugInfoBuilder<'ctx>>,
+    compile_unit: Option<DICompileUnit<'ctx>>,
     variables: HashMap<String, PointerValue<'ctx>>,
     functions: HashMap<String, FunctionValue<'ctx>>,
     fn_value_opt: Option<FunctionValue<'ctx>>,
@@ -695,27 +718,33 @@ impl<'ctx> CodeGen<'ctx> {
         ptr_size_bits: u64,
         real_size_bits: u64,
         int_size_bits: u64,
+        debug: bool,
     ) -> Result<Self> {
         let builder = context.create_builder();
         let layout = DataLayout::new(model);
         let module = context.create_module(model.name());
-        let (dibuilder, compile_unit) = module.create_debug_info_builder(
-            true,
-            /* language */ inkwell::debug_info::DWARFSourceLanguage::C,
-            /* filename */ model.name(),
-            /* directory */ ".",
-            /* producer */ "diffsl compiler",
-            /* is_optimized */ true,
-            /* compiler command line flags */ "",
-            /* runtime_ver */ 0,
-            /* split_name */ "",
-            /* kind */ inkwell::debug_info::DWARFEmissionKind::Full,
-            /* dwo_id */ 0,
-            /* split_debug_inling */ false,
-            /* debug_info_for_profiling */ false,
-            /* sysroot */ "",
-            /* sdk */ "",
-        );
+        let (dibuilder, compile_unit) = if debug {
+            let (dib, dic) = module.create_debug_info_builder(
+                true,
+                inkwell::debug_info::DWARFSourceLanguage::C,
+                model.name(),
+                ".",
+                "diffsl compiler",
+                true,
+                "",
+                0,
+                "",
+                inkwell::debug_info::DWARFEmissionKind::Full,
+                0,
+                false,
+                false,
+                "",
+                "",
+            );
+            (Some(dib), Some(dic))
+        } else {
+            (None, None)
+        };
         let globals = Globals::new(&layout, &module, int_type, real_type, threaded);
         let real_ptr_type = Self::pointer_type(context, real_type.into());
         let int_ptr_type = Self::pointer_type(context, int_type.into());
@@ -761,16 +790,16 @@ impl<'ctx> CodeGen<'ctx> {
         self.fn_value_opt = Some(function);
         self.builder.position_at_end(basic_block);
 
-        let scope = self
-            .fn_value_opt
-            .unwrap()
-            .get_subprogram()
-            .unwrap()
-            .as_debug_info_scope();
-        let loc = self
-            .dibuilder
-            .create_debug_location(self.context, 0, 0, scope, None);
-        self.builder.set_current_debug_location(loc);
+        if let Some(dibuilder) = &self.dibuilder {
+            let scope = self
+                .fn_value_opt
+                .unwrap()
+                .get_subprogram()
+                .unwrap()
+                .as_debug_info_scope();
+            let loc = dibuilder.create_debug_location(self.context, 0, 0, scope, None);
+            self.builder.set_current_debug_location(loc);
+        }
         basic_block
     }
 
@@ -782,56 +811,58 @@ impl<'ctx> CodeGen<'ctx> {
         linkage: Option<Linkage>,
         is_real_return: bool,
     ) -> FunctionValue<'ctx> {
-        let ditypes = arg_names
-            .iter()
-            .zip(arg_types.iter())
-            .map(|(&name, &ty)| {
-                let size_in_bits = if ty.is_float_type() {
-                    self.real_size_bits
-                } else if ty.is_int_type() {
-                    self.int_size_bits
-                } else if ty.is_pointer_type() {
-                    self.ptr_size_bits
-                } else {
-                    unreachable!("Unsupported argument type for debug info")
-                };
-                self.dibuilder
-                    .create_basic_type(
-                        name,
-                        size_in_bits,
-                        0x00,
-                        <DIFlags as DIFlagsConstants>::PUBLIC,
-                    )
-                    .unwrap()
-                    .as_type()
-            })
-            .collect::<Vec<_>>();
-        let subroutine_type = self.dibuilder.create_subroutine_type(
-            self.compile_unit.get_file(),
-            /* return type */ None,
-            /* parameter types */ &ditypes,
-            <DIFlags as DIFlagsConstants>::PUBLIC,
-        );
-        let func_scope = self.dibuilder.create_function(
-            /* scope */ self.compile_unit.as_debug_info_scope(),
-            /* func name */ name,
-            /* linkage_name */ None,
-            /* file */ self.compile_unit.get_file(),
-            /* line_no */ 0,
-            /* DIType */ subroutine_type,
-            /* is_local_to_unit */ true,
-            /* is_definition */ true,
-            /* scope_line */ 0,
-            <DIFlags as DIFlagsConstants>::PUBLIC,
-            /* is_optimized */ true,
-        );
         let function_type = if is_real_return {
             self.real_type.fn_type(arg_types, false)
         } else {
             self.context.void_type().fn_type(arg_types, false)
         };
         let function = self.module.add_function(name, function_type, linkage);
-        function.set_subprogram(func_scope);
+        if let (Some(dibuilder), Some(compile_unit)) = (&self.dibuilder, &self.compile_unit) {
+            let ditypes = arg_names
+                .iter()
+                .zip(arg_types.iter())
+                .map(|(&name, &ty)| {
+                    let size_in_bits = if ty.is_float_type() {
+                        self.real_size_bits
+                    } else if ty.is_int_type() {
+                        self.int_size_bits
+                    } else if ty.is_pointer_type() {
+                        self.ptr_size_bits
+                    } else {
+                        unreachable!("Unsupported argument type for debug info")
+                    };
+                    dibuilder
+                        .create_basic_type(
+                            name,
+                            size_in_bits,
+                            0x00,
+                            <DIFlags as DIFlagsConstants>::PUBLIC,
+                        )
+                        .unwrap()
+                        .as_type()
+                })
+                .collect::<Vec<_>>();
+            let subroutine_type = dibuilder.create_subroutine_type(
+                compile_unit.get_file(),
+                None,
+                &ditypes,
+                <DIFlags as DIFlagsConstants>::PUBLIC,
+            );
+            let func_scope = dibuilder.create_function(
+                compile_unit.as_debug_info_scope(),
+                name,
+                None,
+                compile_unit.get_file(),
+                0,
+                subroutine_type,
+                true,
+                true,
+                0,
+                <DIFlags as DIFlagsConstants>::PUBLIC,
+                true,
+            );
+            function.set_subprogram(func_scope);
+        }
         self.functions.insert(name.to_owned(), function);
         function
     }
@@ -1676,7 +1707,9 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         self.builder.position_at_end(current_block);
-        self.builder.set_current_debug_location(current_loc);
+        if self.dibuilder.is_some() {
+            self.builder.set_current_debug_location(current_loc);
+        }
         self.fn_value_opt = Some(current_function);
 
         self.functions.insert(name.to_owned(), function);
@@ -1807,27 +1840,29 @@ impl<'ctx> CodeGen<'ctx> {
             tensor.layout_ptr(),
         );
 
-        let (line_no, column_no) = match (elmt.expr().span, code) {
-            (Some(s), Some(c)) => {
-                let s = Span::new(c, s.pos_start, s.pos_end).unwrap();
-                s.start_pos().line_col()
-            }
-            _ => (0, 0),
-        };
-        let scope = self
-            .fn_value_opt
-            .unwrap()
-            .get_subprogram()
-            .unwrap()
-            .as_debug_info_scope();
-        let loc = self.dibuilder.create_debug_location(
-            self.context,
-            line_no.try_into().unwrap(),
-            column_no.try_into().unwrap(),
-            scope,
-            None,
-        );
-        self.builder.set_current_debug_location(loc);
+        if let Some(dibuilder) = &self.dibuilder {
+            let (line_no, column_no) = match (elmt.expr().span, code) {
+                (Some(s), Some(c)) => {
+                    let s = Span::new(c, s.pos_start, s.pos_end).unwrap();
+                    s.start_pos().line_col()
+                }
+                _ => (0, 0),
+            };
+            let scope = self
+                .fn_value_opt
+                .unwrap()
+                .get_subprogram()
+                .unwrap()
+                .as_debug_info_scope();
+            let loc = dibuilder.create_debug_location(
+                self.context,
+                line_no.try_into().unwrap(),
+                column_no.try_into().unwrap(),
+                scope,
+                None,
+            );
+            self.builder.set_current_debug_location(loc);
+        }
 
         if elmt.expr_layout().is_dense() {
             self.jit_compile_dense_block(name, elmt, &translation)

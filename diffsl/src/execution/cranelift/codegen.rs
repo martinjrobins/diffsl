@@ -11,7 +11,7 @@ use target_lexicon::{Endianness, PointerWidth, Triple};
 
 use crate::ast::{Ast, AstKind};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
-use crate::execution::compiler::CompilerMode;
+use crate::execution::compiler::CompilerOptions;
 use crate::execution::module::{
     CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit,
 };
@@ -884,12 +884,12 @@ impl<M: Module + Send + 'static> CodegenModule for CraneliftModule<M> {}
 impl CodegenModuleCompile for CraneliftModule<ObjectModule> {
     fn from_discrete_model(
         model: &DiscreteModel,
-        mode: CompilerMode,
+        options: CompilerOptions,
         triple: Option<Triple>,
         real_type: RealType,
         _code: Option<&str>,
     ) -> Result<Self> {
-        let thread_dim = mode.thread_dim(model.state().nnz());
+        let thread_dim = options.mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
 
         let triple = triple.unwrap_or(Triple::host());
@@ -911,12 +911,12 @@ impl CodegenModuleCompile for CraneliftModule<ObjectModule> {
 impl CodegenModuleCompile for CraneliftModule<JITModule> {
     fn from_discrete_model(
         model: &DiscreteModel,
-        mode: CompilerMode,
+        options: CompilerOptions,
         triple: Option<Triple>,
         real_type: RealType,
         _code: Option<&str>,
     ) -> Result<Self> {
-        let thread_dim = mode.thread_dim(model.state().nnz());
+        let thread_dim = options.mode.thread_dim(model.state().nnz());
         let threaded = thread_dim > 1;
 
         let triple = triple.unwrap_or(Triple::host());

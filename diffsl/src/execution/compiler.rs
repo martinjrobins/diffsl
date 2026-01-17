@@ -69,6 +69,12 @@ impl CompilerMode {
     }
 }
 
+#[derive(Default)]
+pub struct CompilerOptions {
+    pub mode: CompilerMode,
+    pub debug: bool,
+}
+
 impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     pub fn new(
         module: M,
@@ -149,7 +155,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         Self::new(module, symbol_map, mode)
     }
 
-    pub fn from_discrete_str(code: &str, mode: CompilerMode) -> Result<Self>
+    pub fn from_discrete_str(code: &str, options: CompilerOptions) -> Result<Self>
     where
         M: CodegenModuleCompile + CodegenModuleJit,
     {
@@ -158,18 +164,19 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         let model = parse_ds_string(code).map_err(|e| anyhow!(e.to_string()))?;
         let model = DiscreteModel::build(name.as_str(), &model)
             .map_err(|e| anyhow!(e.as_error_message(code)))?;
-        Self::from_discrete_model(&model, mode, Some(code))
+        Self::from_discrete_model(&model, options, Some(code))
     }
 
     pub fn from_discrete_model(
         model: &DiscreteModel,
-        mode: CompilerMode,
+        options: CompilerOptions,
         code: Option<&str>,
     ) -> Result<Self>
     where
         M: CodegenModuleCompile + CodegenModuleJit,
     {
-        let mut module = M::from_discrete_model(model, mode, None, T::as_real_type(), code)?;
+        let mode = options.mode;
+        let mut module = M::from_discrete_model(model, options, None, T::as_real_type(), code)?;
         let symbol_map = module.jit()?;
         Self::new(module, symbol_map, mode)
     }
@@ -853,6 +860,7 @@ mod tests {
     use crate::{
         discretise::DiscreteModel,
         execution::{
+            compiler::CompilerOptions,
             module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
             scalar::Scalar,
         },
@@ -1139,7 +1147,12 @@ mod tests {
         tensor_name: &str,
         mode: CompilerMode,
     ) -> Vec<Vec<f64>> {
-        let compiler = Compiler::<M, T>::from_discrete_model(discrete_model, mode, None).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            discrete_model,
+            CompilerOptions { mode, debug: false },
+            None,
+        )
+        .unwrap();
         tensor_test_common_impl(compiler, tensor_name)
             .into_iter()
             .map(|v| {

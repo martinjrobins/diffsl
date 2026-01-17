@@ -4,7 +4,7 @@ use diffsl::{
 };
 use std::io::Write;
 
-#[cfg(all(feature = "llvm", not(feature = "llvm21-1"), not(feature = "llvm20-1")))]
+#[cfg(feature = "llvm")]
 #[test]
 fn test_dfn_model_initialization_llvm() {
     test_dfn_model_initialization::<diffsl::LlvmModule>();

@@ -3,16 +3,17 @@ use std::collections::HashMap;
 use anyhow::Result;
 use target_lexicon::Triple;
 
-use crate::{discretise::DiscreteModel, execution::scalar::RealType};
-
-use super::compiler::CompilerMode;
+use crate::{
+    discretise::DiscreteModel,
+    execution::{compiler::CompilerOptions, scalar::RealType},
+};
 
 pub trait CodegenModule: Sized + Send + Sync + 'static {}
 
 pub trait CodegenModuleCompile: CodegenModule {
     fn from_discrete_model(
         model: &DiscreteModel,
-        mode: CompilerMode,
+        options: CompilerOptions,
         triple: Option<Triple>,
         real_type: RealType,
         code: Option<&str>,

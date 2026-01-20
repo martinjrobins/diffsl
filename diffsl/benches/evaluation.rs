@@ -44,7 +44,8 @@ fn setup<M: CodegenModuleCompile + CodegenModuleJit>(
     );
     let model = parse_ds_string(&full_text).unwrap();
     let discrete_model = DiscreteModel::build(name, &model).unwrap();
-    Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default()).unwrap()
+    Compiler::<M, f64>::from_discrete_model(&discrete_model, Default::default(), Some(f_text))
+        .unwrap()
 }
 
 fn execute<const N: usize, M: CodegenModuleCompile + CodegenModuleJit>(

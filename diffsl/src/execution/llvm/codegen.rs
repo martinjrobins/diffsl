@@ -1006,10 +1006,10 @@ impl<'ctx> CodeGen<'ctx> {
         let noinline = self.context.create_enum_attribute(nolinline_kind_id, 0);
         function.add_attribute(AttributeLoc::Function, noinline);
 
+        let _entry_block = self.start_function(function, None);
         let increment_block = self.context.append_basic_block(function, "increment");
         let wait_loop_block = self.context.append_basic_block(function, "wait_loop");
         let barrier_done_block = self.context.append_basic_block(function, "barrier_done");
-        let _entry_block = self.start_function(function, None);
 
         let thread_counter = self.globals.thread_counter.unwrap().as_pointer_value();
         let barrier_num = function.get_nth_param(0).unwrap().into_int_value();
@@ -1104,9 +1104,9 @@ impl<'ctx> CodeGen<'ctx> {
             false,
         );
 
+        let _entry_block = self.start_function(function, None);
         let wait_loop_block = self.context.append_basic_block(function, "wait_loop");
         let barrier_done_block = self.context.append_basic_block(function, "barrier_done");
-        let _entry_block = self.start_function(function, None);
 
         let thread_counter = self.globals.thread_counter.unwrap().as_pointer_value();
         let barrier_num = function.get_nth_param(0).unwrap().into_int_value();

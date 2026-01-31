@@ -2862,7 +2862,7 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(function) = self.module.get_function("calc_time_dep") {
             return Ok(function);
         }
-        self.compile_time_dep_defns(model, code)
+        self.compile_dep_defns(model, "calc_time_dep", model.time_dep_defns(), code)
     }
 
     fn ensure_state_dep_fn<'m>(
@@ -2873,7 +2873,7 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(function) = self.module.get_function("calc_state_dep") {
             return Ok(function);
         }
-        self.compile_state_dep_defns(model, code)
+        self.compile_dep_defns(model, "calc_state_dep", model.state_dep_defns(), code)
     }
 
     fn ensure_state_dep_post_f_fn<'m>(
@@ -2884,7 +2884,12 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(function) = self.module.get_function("calc_state_dep_post_f") {
             return Ok(function);
         }
-        self.compile_state_dep_post_f_defns(model, code)
+        self.compile_dep_defns(
+            model,
+            "calc_state_dep_post_f",
+            model.state_dep_post_f_defns(),
+            code,
+        )
     }
 
     fn function_arg_alloca(&mut self, name: &str, arg: BasicValueEnum<'ctx>) -> PointerValue<'ctx> {
@@ -3082,35 +3087,6 @@ impl<'ctx> CodeGen<'ctx> {
             }
             Err(anyhow!("Invalid generated function."))
         }
-    }
-
-    pub fn compile_time_dep_defns<'m>(
-        &mut self,
-        model: &'m DiscreteModel,
-        code: Option<&str>,
-    ) -> Result<FunctionValue<'ctx>> {
-        self.compile_dep_defns(model, "calc_time_dep", model.time_dep_defns(), code)
-    }
-
-    pub fn compile_state_dep_defns<'m>(
-        &mut self,
-        model: &'m DiscreteModel,
-        code: Option<&str>,
-    ) -> Result<FunctionValue<'ctx>> {
-        self.compile_dep_defns(model, "calc_state_dep", model.state_dep_defns(), code)
-    }
-
-    pub fn compile_state_dep_post_f_defns<'m>(
-        &mut self,
-        model: &'m DiscreteModel,
-        code: Option<&str>,
-    ) -> Result<FunctionValue<'ctx>> {
-        self.compile_dep_defns(
-            model,
-            "calc_state_dep_post_f",
-            model.state_dep_post_f_defns(),
-            code,
-        )
     }
 
     fn compile_dep_defns<'m>(

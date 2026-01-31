@@ -37,6 +37,7 @@ pub struct DiscreteModel<'s> {
     input_dep_defns: Vec<Tensor<'s>>,
     time_dep_defns: Vec<Tensor<'s>>,
     state_dep_defns: Vec<Tensor<'s>>,
+    state_dep_post_f_defns: Vec<Tensor<'s>>,
     dstate_dep_defns: Vec<Tensor<'s>>,
     input: Option<Tensor<'s>>,
     state: Tensor<'s>,
@@ -78,6 +79,9 @@ impl fmt::Display for DiscreteModel<'_> {
             writeln!(f, "{lhs}")?;
         }
         writeln!(f, "{}", self.rhs)?;
+        for defn in &self.state_dep_post_f_defns {
+            writeln!(f, "{defn}")?;
+        }
         if let Some(stop) = &self.stop {
             writeln!(f, "{stop}")?;
         }
@@ -101,6 +105,7 @@ impl<'s> DiscreteModel<'s> {
             input_dep_defns: Vec::new(),
             time_dep_defns: Vec::new(),
             state_dep_defns: Vec::new(),
+            state_dep_post_f_defns: Vec::new(),
             dstate_dep_defns: Vec::new(),
             input: None,
             state: Tensor::new_empty("u"),
@@ -311,6 +316,7 @@ impl<'s> DiscreteModel<'s> {
         let mut read_state = false;
         let mut span_f = None;
         let mut span_m = None;
+        let mut seen_f = false;
         for tensor_ast in model.tensors.iter() {
             env.set_current_span(tensor_ast.span);
             match tensor_ast.kind.as_array() {
@@ -382,6 +388,7 @@ impl<'s> DiscreteModel<'s> {
                                 span_f = Some(span);
                                 ret.rhs = built;
                             }
+                            seen_f = true;
                             // check that F is not dstatedt dependent and only depends on u
                             if let Some(f) = env.get("F") {
                                 if f.is_dstatedt_dependent() {
@@ -502,7 +509,11 @@ impl<'s> DiscreteModel<'s> {
                                     } else if !dependent_on_state && !dependent_on_dudt {
                                         ret.time_dep_defns.push(built);
                                     } else if dependent_on_state {
-                                        ret.state_dep_defns.push(built);
+                                        if seen_f {
+                                            ret.state_dep_post_f_defns.push(built);
+                                        } else {
+                                            ret.state_dep_defns.push(built);
+                                        }
                                     } else if dependent_on_dudt {
                                         ret.dstate_dep_defns.push(built);
                                     } else {
@@ -517,9 +528,7 @@ impl<'s> DiscreteModel<'s> {
         }
 
         // set is_algebraic for every state based on equations
-        if ret.state_dot.is_some() && ret.lhs.is_some() {
-            let state_dot = ret.state_dot.as_ref().unwrap();
-            let lhs = ret.lhs.as_ref().unwrap();
+        if let (Some(state_dot), Some(lhs)) = (ret.state_dot.as_ref(), ret.lhs.as_ref()) {
             for i in 0..std::cmp::min(
                 state_dot.elmts().len(),
                 std::cmp::min(lhs.elmts().len(), ret.rhs.elmts().len()),
@@ -808,6 +817,7 @@ impl<'s> DiscreteModel<'s> {
         let name = model.name;
         let stop = None;
         let dstate_dep_defns = Vec::new();
+        let state_dep_post_f_defns = Vec::new();
         DiscreteModel {
             name,
             lhs: Some(lhs),
@@ -820,6 +830,7 @@ impl<'s> DiscreteModel<'s> {
             input_dep_defns: Vec::new(), // todo: need to implement
             time_dep_defns,
             state_dep_defns,
+            state_dep_post_f_defns,
             dstate_dep_defns,
             is_algebraic,
             stop,
@@ -851,6 +862,9 @@ impl<'s> DiscreteModel<'s> {
     }
     pub fn state_dep_defns(&self) -> &[Tensor<'_>] {
         self.state_dep_defns.as_ref()
+    }
+    pub fn state_dep_post_f_defns(&self) -> &[Tensor<'_>] {
+        self.state_dep_post_f_defns.as_ref()
     }
 
     pub fn dstate_dep_defns(&self) -> &[Tensor<'_>] {
@@ -1056,6 +1070,42 @@ mod tests {
                 .map(|t| t.name())
                 .collect::<Vec<_>>(),
             ["dudt2"]
+        );
+    }
+
+    #[test]
+    fn state_dep_post_f_defns() {
+        let text = "
+            u_i {
+                y = 1,
+            }
+            pre_i {
+                2 * y,
+            }
+            F_i {
+                y,
+            }
+            post_i {
+                3 * y,
+            }
+        ";
+        let model = parse_ds_string(text).unwrap();
+        let model = DiscreteModel::build("$name", &model).unwrap();
+        assert_eq!(
+            model
+                .state_dep_post_f_defns()
+                .iter()
+                .map(|t| t.name())
+                .collect::<Vec<_>>(),
+            ["post"]
+        );
+        assert_eq!(
+            model
+                .state_dep_defns()
+                .iter()
+                .map(|t| t.name())
+                .collect::<Vec<_>>(),
+            ["pre"]
         );
     }
 

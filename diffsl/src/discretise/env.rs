@@ -428,16 +428,12 @@ impl Env {
         };
 
         // calculate the shape of the tensor element.
-        let elmt_layout = if elmt.indices.is_none() {
-            // If there are no indicies then the layout is the same as the expression layout
-            expr_layout_to_rank
-        } else {
+        let elmt_layout = if let Some(elmt_indices) = elmt.indices.as_ref() {
             // If there are indicies then the rank is determined by the number of indices, and the
             // shape is determined by the ranges of the indices
             // TODO: this is quite large, perhaps move to another function
 
             // make sure the number of indices matches the number of dimensions
-            let elmt_indices = elmt.indices.as_ref().unwrap();
             let given_indices_ast = &elmt_indices.kind.as_vector().unwrap().data;
             let given_indices: Vec<&ast::Indice> = given_indices_ast
                 .iter()
@@ -549,6 +545,9 @@ impl Env {
             } else {
                 expr_layout_to_rank.broadcast_to_shape(&exp_expr_shape)
             }
+        } else {
+            // If there are no indicies then the layout is the same as the expression layout
+            expr_layout_to_rank
         };
 
         Some((expr_layout, elmt_layout))

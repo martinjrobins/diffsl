@@ -122,8 +122,8 @@ impl fmt::Display for TensorBlock<'_> {
             }
         }
         write!(f, "){}: ", self.layout().as_ref())?;
-        if self.name.is_some() {
-            write!(f, "{} = ", self.name.as_ref().unwrap())?;
+        if let Some(name) = self.name.as_ref() {
+            write!(f, "{} = ", name)?;
         }
         write!(f, "{} {}", self.expr, self.expr_layout().as_ref())
     }

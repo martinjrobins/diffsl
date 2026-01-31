@@ -1219,10 +1219,6 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap();
     }
 
-    fn barrier_num(&self, index: u64) -> IntValue<'ctx> {
-        self.int_type.const_int(index + 1, false)
-    }
-
     fn jit_threading_limits(
         &mut self,
         size: IntValue<'ctx>,
@@ -2836,24 +2832,6 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
-    fn build_time_dep_call(
-        &mut self,
-        time_dep_fn: FunctionValue<'ctx>,
-        barrier_start: u64,
-        total_barriers: u64,
-    ) -> Result<()> {
-        self.build_dep_call(time_dep_fn, "time_dep", barrier_start, total_barriers)
-    }
-
-    fn build_state_dep_call(
-        &mut self,
-        state_dep_fn: FunctionValue<'ctx>,
-        barrier_start: u64,
-        total_barriers: u64,
-    ) -> Result<()> {
-        self.build_dep_call(state_dep_fn, "state_dep", barrier_start, total_barriers)
-    }
-
     fn ensure_time_dep_fn<'m>(
         &mut self,
         model: &'m DiscreteModel,
@@ -3050,7 +3028,7 @@ impl<'ctx> CodeGen<'ctx> {
                 // calculate time independant definitions
                 for tensor in model.input_dep_defns() {
                     self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
-                    let barrier_num = self.barrier_num(nbarriers);
+                    let barrier_num = self.int_type.const_int(nbarriers + 1, false);
                     self.jit_compile_call_barrier(barrier_num, total_barriers_val);
                     nbarriers += 1;
                 }
@@ -3058,22 +3036,22 @@ impl<'ctx> CodeGen<'ctx> {
 
             // calculate time dependant definitions
             if !model.time_dep_defns().is_empty() {
-                self.build_time_dep_call(time_dep_fn, nbarriers, total_barriers)?;
+                self.build_dep_call(time_dep_fn, "time_dep", nbarriers, total_barriers)?;
                 nbarriers += model.time_dep_defns().len() as u64;
             }
 
             // calculate state dependant definitions
             if !model.state_dep_defns().is_empty() {
-                self.build_state_dep_call(state_dep_fn, nbarriers, total_barriers)?;
+                self.build_dep_call(state_dep_fn, "state_dep", nbarriers, total_barriers)?;
                 nbarriers += model.state_dep_defns().len() as u64;
             }
             if !model.state_dep_post_f_defns().is_empty() {
-                self.build_state_dep_call(state_dep_post_f_fn, nbarriers, total_barriers)?;
+                self.build_dep_call(state_dep_post_f_fn, "state_dep", nbarriers, total_barriers)?;
                 nbarriers += model.state_dep_post_f_defns().len() as u64;
             }
 
             self.jit_compile_tensor(out, Some(*self.get_var(model.out().unwrap())), code)?;
-            let barrier_num = self.barrier_num(nbarriers);
+            let barrier_num = self.int_type.const_int(nbarriers + 1, false);
             self.jit_compile_call_barrier(barrier_num, total_barriers_val);
         }
         self.builder.build_return(None)?;
@@ -3235,17 +3213,17 @@ impl<'ctx> CodeGen<'ctx> {
                 + 1) as u64;
             let total_barriers_val = self.int_type.const_int(total_barriers, false);
             if !model.time_dep_defns().is_empty() {
-                self.build_time_dep_call(time_dep_fn, nbarriers, total_barriers)?;
+                self.build_dep_call(time_dep_fn, "time_dep", nbarriers, total_barriers)?;
                 nbarriers += model.time_dep_defns().len() as u64;
             }
 
             // calculate state dependant definitions
             if !model.state_dep_defns().is_empty() {
-                self.build_state_dep_call(state_dep_fn, nbarriers, total_barriers)?;
+                self.build_dep_call(state_dep_fn, "state_dep", nbarriers, total_barriers)?;
                 nbarriers += model.state_dep_defns().len() as u64;
             }
             if !model.state_dep_post_f_defns().is_empty() {
-                self.build_state_dep_call(state_dep_post_f_fn, nbarriers, total_barriers)?;
+                self.build_dep_call(state_dep_post_f_fn, "state_dep", nbarriers, total_barriers)?;
                 nbarriers += model.state_dep_post_f_defns().len() as u64;
             }
 
@@ -3329,12 +3307,12 @@ impl<'ctx> CodeGen<'ctx> {
 
         // calculate time dependant definitions
         if !model.time_dep_defns().is_empty() {
-            self.build_time_dep_call(time_dep_fn, nbarriers, total_barriers)?;
+            self.build_dep_call(time_dep_fn, "time_dep", nbarriers, total_barriers)?;
             nbarriers += model.time_dep_defns().len() as u64;
         }
 
         if !model.state_dep_defns().is_empty() {
-            self.build_state_dep_call(state_dep_fn, nbarriers, total_barriers)?;
+            self.build_dep_call(state_dep_fn, "state_dep", nbarriers, total_barriers)?;
             nbarriers += model.state_dep_defns().len() as u64;
         }
 
@@ -3411,14 +3389,14 @@ impl<'ctx> CodeGen<'ctx> {
             let total_barriers_val = self.int_type.const_int(total_barriers, false);
             for tensor in model.time_dep_defns() {
                 self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
-                let barrier_num = self.barrier_num(nbarriers);
+                let barrier_num = self.int_type.const_int(nbarriers + 1, false);
                 self.jit_compile_call_barrier(barrier_num, total_barriers_val);
                 nbarriers += 1;
             }
 
             for a in model.dstate_dep_defns() {
                 self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
-                let barrier_num = self.barrier_num(nbarriers);
+                let barrier_num = self.int_type.const_int(nbarriers + 1, false);
                 self.jit_compile_call_barrier(barrier_num, total_barriers_val);
                 nbarriers += 1;
             }
@@ -3426,7 +3404,7 @@ impl<'ctx> CodeGen<'ctx> {
             // mass
             let res_ptr = self.get_param("rr");
             self.jit_compile_tensor(lhs, Some(*res_ptr), code)?;
-            let barrier_num = self.barrier_num(nbarriers);
+            let barrier_num = self.int_type.const_int(nbarriers + 1, false);
             self.jit_compile_call_barrier(barrier_num, total_barriers_val);
         }
 

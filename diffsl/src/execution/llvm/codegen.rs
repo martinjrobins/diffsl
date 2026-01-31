@@ -1219,6 +1219,10 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap();
     }
 
+    fn barrier_num(&self, index: u64) -> IntValue<'ctx> {
+        self.int_type.const_int(index + 1, false)
+    }
+
     fn jit_threading_limits(
         &mut self,
         size: IntValue<'ctx>,
@@ -2992,7 +2996,7 @@ impl<'ctx> CodeGen<'ctx> {
                 // calculate time independant definitions
                 for tensor in model.input_dep_defns() {
                     self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
-                    let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+                    let barrier_num = self.barrier_num(nbarriers);
                     self.jit_compile_call_barrier(barrier_num, total_barriers_val);
                     nbarriers += 1;
                 }
@@ -3001,7 +3005,7 @@ impl<'ctx> CodeGen<'ctx> {
             // calculate time dependant definitions
             for tensor in model.time_dep_defns() {
                 self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
-                let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+                let barrier_num = self.barrier_num(nbarriers);
                 self.jit_compile_call_barrier(barrier_num, total_barriers_val);
                 nbarriers += 1;
             }
@@ -3010,13 +3014,13 @@ impl<'ctx> CodeGen<'ctx> {
             #[allow(clippy::explicit_counter_loop)]
             for a in model.state_dep_defns() {
                 self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
-                let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+                let barrier_num = self.barrier_num(nbarriers);
                 self.jit_compile_call_barrier(barrier_num, total_barriers_val);
                 nbarriers += 1;
             }
 
             self.jit_compile_tensor(out, Some(*self.get_var(model.out().unwrap())), code)?;
-            let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+            let barrier_num = self.barrier_num(nbarriers);
             self.jit_compile_call_barrier(barrier_num, total_barriers_val);
         }
         self.builder.build_return(None)?;
@@ -3349,14 +3353,14 @@ impl<'ctx> CodeGen<'ctx> {
             let total_barriers_val = self.int_type.const_int(total_barriers, false);
             for tensor in model.time_dep_defns() {
                 self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
-                let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+                let barrier_num = self.barrier_num(nbarriers);
                 self.jit_compile_call_barrier(barrier_num, total_barriers_val);
                 nbarriers += 1;
             }
 
             for a in model.dstate_dep_defns() {
                 self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
-                let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+                let barrier_num = self.barrier_num(nbarriers);
                 self.jit_compile_call_barrier(barrier_num, total_barriers_val);
                 nbarriers += 1;
             }
@@ -3364,7 +3368,7 @@ impl<'ctx> CodeGen<'ctx> {
             // mass
             let res_ptr = self.get_param("rr");
             self.jit_compile_tensor(lhs, Some(*res_ptr), code)?;
-            let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+            let barrier_num = self.barrier_num(nbarriers);
             self.jit_compile_call_barrier(barrier_num, total_barriers_val);
         }
 

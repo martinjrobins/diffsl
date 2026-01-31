@@ -3106,90 +3106,7 @@ impl<'ctx> CodeGen<'ctx> {
         model: &'m DiscreteModel,
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
-        self.clear();
-        let fn_arg_names = &[
-            "t",
-            "u",
-            "data",
-            "thread_id",
-            "thread_dim",
-            "barrier_start",
-            "total_barriers",
-        ];
-        let function = self.add_function(
-            "calc_time_dep",
-            fn_arg_names,
-            &[
-                self.real_type.into(),
-                self.real_ptr_type.into(),
-                self.real_ptr_type.into(),
-                self.int_type.into(),
-                self.int_type.into(),
-                self.int_type.into(),
-                self.int_type.into(),
-            ],
-            None,
-            false,
-        );
-
-        // add noalias
-        let alias_id = Attribute::get_named_enum_kind_id("noalias");
-        let noalign = self.context.create_enum_attribute(alias_id, 0);
-        for i in &[1, 2] {
-            function.add_attribute(AttributeLoc::Param(*i), noalign);
-        }
-
-        let _basic_block = self.start_function(function, code);
-
-        for (i, arg) in function.get_param_iter().enumerate() {
-            let name = fn_arg_names[i];
-            let alloca = self.function_arg_alloca(name, arg);
-            self.insert_param(name, alloca);
-        }
-
-        self.insert_state(model.state());
-        self.insert_data(model);
-        self.insert_indices();
-
-        let barrier_start = self
-            .build_load(
-                self.int_type,
-                *self.get_param("barrier_start"),
-                "barrier_start",
-            )?
-            .into_int_value();
-        let total_barriers = self
-            .build_load(
-                self.int_type,
-                *self.get_param("total_barriers"),
-                "total_barriers",
-            )?
-            .into_int_value();
-        let one = self.int_type.const_int(1, false);
-
-        for (index, tensor) in model.time_dep_defns().iter().enumerate() {
-            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
-            let index = self.int_type.const_int(index as u64, false);
-            let barrier_num_base =
-                self.builder
-                    .build_int_add(barrier_start, index, "barrier_num_base")?;
-            let barrier_num = self
-                .builder
-                .build_int_add(barrier_num_base, one, "barrier_num")?;
-            self.jit_compile_call_barrier(barrier_num, total_barriers);
-        }
-
-        self.builder.build_return(None)?;
-
-        if function.verify(true) {
-            Ok(function)
-        } else {
-            function.print_to_stderr();
-            unsafe {
-                function.delete();
-            }
-            Err(anyhow!("Invalid generated function."))
-        }
+        self.compile_dep_defns(model, "calc_time_dep", model.time_dep_defns(), code)
     }
 
     pub fn compile_state_dep_defns<'m>(
@@ -3197,95 +3114,27 @@ impl<'ctx> CodeGen<'ctx> {
         model: &'m DiscreteModel,
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
-        self.clear();
-        let fn_arg_names = &[
-            "t",
-            "u",
-            "data",
-            "thread_id",
-            "thread_dim",
-            "barrier_start",
-            "total_barriers",
-        ];
-        let function = self.add_function(
-            "calc_state_dep",
-            fn_arg_names,
-            &[
-                self.real_type.into(),
-                self.real_ptr_type.into(),
-                self.real_ptr_type.into(),
-                self.int_type.into(),
-                self.int_type.into(),
-                self.int_type.into(),
-                self.int_type.into(),
-            ],
-            None,
-            false,
-        );
-
-        // add noalias
-        let alias_id = Attribute::get_named_enum_kind_id("noalias");
-        let noalign = self.context.create_enum_attribute(alias_id, 0);
-        for i in &[1, 2] {
-            function.add_attribute(AttributeLoc::Param(*i), noalign);
-        }
-
-        let _basic_block = self.start_function(function, code);
-
-        for (i, arg) in function.get_param_iter().enumerate() {
-            let name = fn_arg_names[i];
-            let alloca = self.function_arg_alloca(name, arg);
-            self.insert_param(name, alloca);
-        }
-
-        self.insert_state(model.state());
-        self.insert_data(model);
-        self.insert_indices();
-
-        let barrier_start = self
-            .build_load(
-                self.int_type,
-                *self.get_param("barrier_start"),
-                "barrier_start",
-            )?
-            .into_int_value();
-        let total_barriers = self
-            .build_load(
-                self.int_type,
-                *self.get_param("total_barriers"),
-                "total_barriers",
-            )?
-            .into_int_value();
-        let one = self.int_type.const_int(1, false);
-
-        for (index, tensor) in model.state_dep_defns().iter().enumerate() {
-            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
-            let index = self.int_type.const_int(index as u64, false);
-            let barrier_num_base =
-                self.builder
-                    .build_int_add(barrier_start, index, "barrier_num_base")?;
-            let barrier_num = self
-                .builder
-                .build_int_add(barrier_num_base, one, "barrier_num")?;
-            self.jit_compile_call_barrier(barrier_num, total_barriers);
-        }
-
-        self.builder.build_return(None)?;
-
-        if function.verify(true) {
-            Ok(function)
-        } else {
-            function.print_to_stderr();
-            unsafe {
-                function.delete();
-            }
-            Err(anyhow!("Invalid generated function."))
-        }
+        self.compile_dep_defns(model, "calc_state_dep", model.state_dep_defns(), code)
     }
 
     pub fn compile_state_dep_post_f_defns<'m>(
         &mut self,
         model: &'m DiscreteModel,
+        code: Option<&str>,
+    ) -> Result<FunctionValue<'ctx>> {
+        self.compile_dep_defns(
+            model,
+            "calc_state_dep_post_f",
+            model.state_dep_post_f_defns(),
+            code,
+        )
+    }
+
+    fn compile_dep_defns<'m>(
+        &mut self,
+        model: &'m DiscreteModel,
+        fn_name: &str,
+        tensors: &[Tensor<'m>],
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
@@ -3299,7 +3148,7 @@ impl<'ctx> CodeGen<'ctx> {
             "total_barriers",
         ];
         let function = self.add_function(
-            "calc_state_dep_post_f",
+            fn_name,
             fn_arg_names,
             &[
                 self.real_type.into(),
@@ -3349,7 +3198,7 @@ impl<'ctx> CodeGen<'ctx> {
             .into_int_value();
         let one = self.int_type.const_int(1, false);
 
-        for (index, tensor) in model.state_dep_post_f_defns().iter().enumerate() {
+        for (index, tensor) in tensors.iter().enumerate() {
             self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
             let index = self.int_type.const_int(index as u64, false);
             let barrier_num_base =

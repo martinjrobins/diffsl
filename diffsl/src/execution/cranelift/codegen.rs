@@ -545,6 +545,11 @@ impl<M: Module> CraneliftModule<M> {
                     codegen.jit_compile_call_barrier(nbarrier);
                     nbarrier += 1;
                 }
+                for a in model.state_dep_post_f_defns() {
+                    codegen.jit_compile_tensor(a, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
 
                 codegen.jit_compile_tensor(out, None, false)?;
             }
@@ -579,6 +584,11 @@ impl<M: Module> CraneliftModule<M> {
 
                 // calculate state dependant definitions
                 for a in model.state_dep_defns() {
+                    codegen.jit_compile_tensor(a, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+                for a in model.state_dep_post_f_defns() {
                     codegen.jit_compile_tensor(a, None, false)?;
                     codegen.jit_compile_call_barrier(nbarrier);
                     nbarrier += 1;
@@ -2336,6 +2346,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         let tensors = tensors.chain(model.input_dep_defns().iter());
         let tensors = tensors.chain(model.time_dep_defns().iter());
         let tensors = tensors.chain(model.state_dep_defns().iter());
+        let tensors = tensors.chain(model.state_dep_post_f_defns().iter());
 
         if let Some(data) = codegen.variables.get("data") {
             let data_ptr = codegen.builder.use_var(*data);

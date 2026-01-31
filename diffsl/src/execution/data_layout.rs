@@ -176,6 +176,10 @@ impl DataLayout {
             .state_dep_defns()
             .iter()
             .for_each(|i| add_tensor(i, true, false));
+        model
+            .state_dep_post_f_defns()
+            .iter()
+            .for_each(|i| add_tensor(i, true, false));
         if let Some(lhs) = model.lhs() {
             add_tensor(lhs, false, false);
         }

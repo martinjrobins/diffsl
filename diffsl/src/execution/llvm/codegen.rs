@@ -1321,6 +1321,9 @@ impl<'ctx> CodeGen<'ctx> {
         for tensor in model.state_dep_defns() {
             self.insert_tensor(tensor, false);
         }
+        for tensor in model.state_dep_post_f_defns() {
+            self.insert_tensor(tensor, false);
+        }
     }
 
     fn pointer_type(context: &'ctx Context, _ty: BasicTypeEnum<'ctx>) -> PointerType<'ctx> {
@@ -2889,6 +2892,17 @@ impl<'ctx> CodeGen<'ctx> {
         self.compile_state_dep_defns(model, code)
     }
 
+    fn ensure_state_dep_post_f_fn<'m>(
+        &mut self,
+        model: &'m DiscreteModel,
+        code: Option<&str>,
+    ) -> Result<FunctionValue<'ctx>> {
+        if let Some(function) = self.module.get_function("calc_state_dep_post_f") {
+            return Ok(function);
+        }
+        self.compile_state_dep_post_f_defns(model, code)
+    }
+
     fn function_arg_alloca(&mut self, name: &str, arg: BasicValueEnum<'ctx>) -> PointerValue<'ctx> {
         match arg {
             BasicValueEnum::PointerValue(v) => v,
@@ -2985,6 +2999,7 @@ impl<'ctx> CodeGen<'ctx> {
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
+        let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
         self.clear();
         let fn_arg_names = &["t", "u", "data", "out", "thread_id", "thread_dim"];
         let function_name = if include_constants {
@@ -3033,8 +3048,10 @@ impl<'ctx> CodeGen<'ctx> {
         //self.compile_print_value("thread_dim", PrintValue::Int(thread_dim.into_int_value()))?;
         if let Some(out) = model.out() {
             let mut nbarriers = 0;
-            let mut total_barriers =
-                (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
+            let mut total_barriers = (model.time_dep_defns().len()
+                + model.state_dep_defns().len()
+                + model.state_dep_post_f_defns().len()
+                + 1) as u64;
             if include_constants {
                 total_barriers += model.input_dep_defns().len() as u64;
             }
@@ -3061,6 +3078,10 @@ impl<'ctx> CodeGen<'ctx> {
             if !model.state_dep_defns().is_empty() {
                 self.build_state_dep_call(state_dep_fn, nbarriers, total_barriers)?;
                 nbarriers += model.state_dep_defns().len() as u64;
+            }
+            if !model.state_dep_post_f_defns().is_empty() {
+                self.build_state_dep_call(state_dep_post_f_fn, nbarriers, total_barriers)?;
+                nbarriers += model.state_dep_post_f_defns().len() as u64;
             }
 
             self.jit_compile_tensor(out, Some(*self.get_var(model.out().unwrap())), code)?;
@@ -3262,6 +3283,97 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
+    pub fn compile_state_dep_post_f_defns<'m>(
+        &mut self,
+        model: &'m DiscreteModel,
+        code: Option<&str>,
+    ) -> Result<FunctionValue<'ctx>> {
+        self.clear();
+        let fn_arg_names = &[
+            "t",
+            "u",
+            "data",
+            "thread_id",
+            "thread_dim",
+            "barrier_start",
+            "total_barriers",
+        ];
+        let function = self.add_function(
+            "calc_state_dep_post_f",
+            fn_arg_names,
+            &[
+                self.real_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.int_type.into(),
+                self.int_type.into(),
+                self.int_type.into(),
+                self.int_type.into(),
+            ],
+            None,
+            false,
+        );
+
+        // add noalias
+        let alias_id = Attribute::get_named_enum_kind_id("noalias");
+        let noalign = self.context.create_enum_attribute(alias_id, 0);
+        for i in &[1, 2] {
+            function.add_attribute(AttributeLoc::Param(*i), noalign);
+        }
+
+        let _basic_block = self.start_function(function, code);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+
+        self.insert_state(model.state());
+        self.insert_data(model);
+        self.insert_indices();
+
+        let barrier_start = self
+            .build_load(
+                self.int_type,
+                *self.get_param("barrier_start"),
+                "barrier_start",
+            )?
+            .into_int_value();
+        let total_barriers = self
+            .build_load(
+                self.int_type,
+                *self.get_param("total_barriers"),
+                "total_barriers",
+            )?
+            .into_int_value();
+        let one = self.int_type.const_int(1, false);
+
+        for (index, tensor) in model.state_dep_post_f_defns().iter().enumerate() {
+            self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
+            let index = self.int_type.const_int(index as u64, false);
+            let barrier_num_base =
+                self.builder
+                    .build_int_add(barrier_start, index, "barrier_num_base")?;
+            let barrier_num = self
+                .builder
+                .build_int_add(barrier_num_base, one, "barrier_num")?;
+            self.jit_compile_call_barrier(barrier_num, total_barriers);
+        }
+
+        self.builder.build_return(None)?;
+
+        if function.verify(true) {
+            Ok(function)
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
     pub fn compile_calc_stop<'m>(
         &mut self,
         model: &'m DiscreteModel,
@@ -3269,6 +3381,7 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Result<FunctionValue<'ctx>> {
         let time_dep_fn = self.ensure_time_dep_fn(model, code)?;
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
+        let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
         self.clear();
         let fn_arg_names = &["t", "u", "data", "root", "thread_id", "thread_dim"];
         let function = self.add_function(
@@ -3308,8 +3421,10 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(stop) = model.stop() {
             // calculate time dependant definitions
             let mut nbarriers = 0;
-            let total_barriers =
-                (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
+            let total_barriers = (model.time_dep_defns().len()
+                + model.state_dep_defns().len()
+                + model.state_dep_post_f_defns().len()
+                + 1) as u64;
             let total_barriers_val = self.int_type.const_int(total_barriers, false);
             if !model.time_dep_defns().is_empty() {
                 self.build_time_dep_call(time_dep_fn, nbarriers, total_barriers)?;
@@ -3320,6 +3435,10 @@ impl<'ctx> CodeGen<'ctx> {
             if !model.state_dep_defns().is_empty() {
                 self.build_state_dep_call(state_dep_fn, nbarriers, total_barriers)?;
                 nbarriers += model.state_dep_defns().len() as u64;
+            }
+            if !model.state_dep_post_f_defns().is_empty() {
+                self.build_state_dep_call(state_dep_post_f_fn, nbarriers, total_barriers)?;
+                nbarriers += model.state_dep_post_f_defns().len() as u64;
             }
 
             let res_ptr = self.get_param("root");

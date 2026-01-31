@@ -2800,9 +2800,10 @@ impl<'ctx> CodeGen<'ctx> {
         self.tensor_ptr_opt = None;
     }
 
-    fn build_time_dep_call(
+    fn build_dep_call(
         &mut self,
-        time_dep_fn: FunctionValue<'ctx>,
+        dep_fn: FunctionValue<'ctx>,
+        call_name: &str,
         barrier_start: u64,
         total_barriers: u64,
     ) -> Result<()> {
@@ -2820,7 +2821,7 @@ impl<'ctx> CodeGen<'ctx> {
         let barrier_start = self.int_type.const_int(barrier_start, false);
         let total_barriers = self.int_type.const_int(total_barriers, false);
         self.builder.build_call(
-            time_dep_fn,
+            dep_fn,
             &[
                 t.into(),
                 u.into(),
@@ -2830,9 +2831,18 @@ impl<'ctx> CodeGen<'ctx> {
                 barrier_start.into(),
                 total_barriers.into(),
             ],
-            "time_dep",
+            call_name,
         )?;
         Ok(())
+    }
+
+    fn build_time_dep_call(
+        &mut self,
+        time_dep_fn: FunctionValue<'ctx>,
+        barrier_start: u64,
+        total_barriers: u64,
+    ) -> Result<()> {
+        self.build_dep_call(time_dep_fn, "time_dep", barrier_start, total_barriers)
     }
 
     fn build_state_dep_call(
@@ -2841,33 +2851,7 @@ impl<'ctx> CodeGen<'ctx> {
         barrier_start: u64,
         total_barriers: u64,
     ) -> Result<()> {
-        let t = self
-            .build_load(self.real_type, *self.get_param("t"), "t")?
-            .into_float_value();
-        let u = *self.get_param("u");
-        let data = *self.get_param("data");
-        let thread_id = self
-            .build_load(self.int_type, *self.get_param("thread_id"), "thread_id")?
-            .into_int_value();
-        let thread_dim = self
-            .build_load(self.int_type, *self.get_param("thread_dim"), "thread_dim")?
-            .into_int_value();
-        let barrier_start = self.int_type.const_int(barrier_start, false);
-        let total_barriers = self.int_type.const_int(total_barriers, false);
-        self.builder.build_call(
-            state_dep_fn,
-            &[
-                t.into(),
-                u.into(),
-                data.into(),
-                thread_id.into(),
-                thread_dim.into(),
-                barrier_start.into(),
-                total_barriers.into(),
-            ],
-            "state_dep",
-        )?;
-        Ok(())
+        self.build_dep_call(state_dep_fn, "state_dep", barrier_start, total_barriers)
     }
 
     fn ensure_time_dep_fn<'m>(
@@ -2998,6 +2982,7 @@ impl<'ctx> CodeGen<'ctx> {
         include_constants: bool,
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
+        let time_dep_fn = self.ensure_time_dep_fn(model, code)?;
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
         self.clear();
@@ -3067,11 +3052,9 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             // calculate time dependant definitions
-            for tensor in model.time_dep_defns() {
-                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
-                let barrier_num = self.barrier_num(nbarriers);
-                self.jit_compile_call_barrier(barrier_num, total_barriers_val);
-                nbarriers += 1;
+            if !model.time_dep_defns().is_empty() {
+                self.build_time_dep_call(time_dep_fn, nbarriers, total_barriers)?;
+                nbarriers += model.time_dep_defns().len() as u64;
             }
 
             // calculate state dependant definitions
@@ -3374,7 +3357,6 @@ impl<'ctx> CodeGen<'ctx> {
             nbarriers += model.time_dep_defns().len() as u64;
         }
 
-        // TODO: could split state dep defns into before and after F
         if !model.state_dep_defns().is_empty() {
             self.build_state_dep_call(state_dep_fn, nbarriers, total_barriers)?;
             nbarriers += model.state_dep_defns().len() as u64;

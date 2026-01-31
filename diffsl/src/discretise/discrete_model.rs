@@ -1081,11 +1081,14 @@ mod tests {
             u_i {
                 y = 1,
             }
+            pre_i {
+                2 * y,
+            }
             F_i {
                 y,
             }
             post_i {
-                2 * y,
+                3 * y,
             }
         ";
         let model = parse_ds_string(text).unwrap();
@@ -1104,7 +1107,7 @@ mod tests {
                 .iter()
                 .map(|t| t.name())
                 .collect::<Vec<_>>(),
-            Vec::<&str>::new()
+            ["pre"]
         );
     }
 

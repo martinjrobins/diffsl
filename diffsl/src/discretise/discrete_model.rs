@@ -528,9 +528,7 @@ impl<'s> DiscreteModel<'s> {
         }
 
         // set is_algebraic for every state based on equations
-        if ret.state_dot.is_some() && ret.lhs.is_some() {
-            let state_dot = ret.state_dot.as_ref().unwrap();
-            let lhs = ret.lhs.as_ref().unwrap();
+        if let (Some(state_dot), Some(lhs)) = (ret.state_dot.as_ref(), ret.lhs.as_ref()) {
             for i in 0..std::cmp::min(
                 state_dot.elmts().len(),
                 std::cmp::min(lhs.elmts().len(), ret.rhs.elmts().len()),

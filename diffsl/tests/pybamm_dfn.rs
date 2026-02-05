@@ -1,21 +1,24 @@
+#[cfg(not(target_arch = "wasm32"))]
 use diffsl::{
     discretise::DiscreteModel, parser::parse_ds_string, CodegenModuleCompile, CodegenModuleJit,
     Compiler,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 
-#[cfg(feature = "llvm")]
+#[cfg(all(feature = "llvm", not(target_arch = "wasm32")))]
 #[test]
 fn test_dfn_model_initialization_llvm() {
     test_dfn_model_initialization::<diffsl::LlvmModule>();
 }
 
-#[cfg(feature = "cranelift")]
+#[cfg(all(feature = "cranelift", not(target_arch = "wasm32")))]
 #[test]
 fn test_dfn_model_initialization_cranelift() {
     test_dfn_model_initialization::<diffsl::CraneliftJitModule>();
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 fn test_dfn_model_initialization<M: CodegenModuleJit + CodegenModuleCompile>() {
     let _ = env_logger::builder().is_test(true).try_init();

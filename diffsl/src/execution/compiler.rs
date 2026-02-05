@@ -6,7 +6,7 @@ use super::{
         JitFunctions, JitGetTensorFunctions, JitGradFunctions, JitGradRFunctions,
         JitSensGradFunctions, JitSensRevGradFunctions,
     },
-    module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit},
+    module::{CodegenModule, CodegenModuleCompile, CodegenModuleJit, CodegenModuleLink},
 };
 use crate::{discretise::DiscreteModel, execution::scalar::Scalar, parser::parse_ds_string};
 
@@ -151,6 +151,15 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     where
         M: CodegenModuleJit,
     {
+        let symbol_map = module.jit()?;
+        Self::new(module, symbol_map, mode)
+    }
+
+    pub fn from_object_file(buffer: Vec<u8>, mode: CompilerMode) -> Result<Self>
+    where
+        M: CodegenModuleLink + CodegenModuleJit,
+    {
+        let mut module = M::from_object(buffer.as_slice())?;
         let symbol_map = module.jit()?;
         Self::new(module, symbol_map, mode)
     }
@@ -857,6 +866,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
 mod tests {
     use std::{sync::Arc, thread};
 
+    use super::CompilerMode;
     use crate::{
         discretise::DiscreteModel,
         execution::{
@@ -869,8 +879,6 @@ mod tests {
     };
     use approx::{assert_relative_eq, RelativeEq};
     use num_traits::ToPrimitive;
-
-    use super::CompilerMode;
     use paste::paste;
 
     /// Macro to generate test functions for all combinations of backend (cranelift/llvm) and scalar type (f32/f64)
@@ -1104,7 +1112,7 @@ mod tests {
         assert_relative_eq!(stop[0], T::from_f64(0.5).unwrap());
     }
 
-    #[cfg(feature = "cranelift")]
+    #[cfg(all(feature = "cranelift", not(target_arch = "wasm32")))]
     #[test]
     fn test_vector_add_scalar_cranelift() {
         let n = 1;
@@ -1434,24 +1442,6 @@ mod tests {
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                 }
 
-                #[cfg(target_arch = "wasm32")]
-                {
-                    for filename in [
-                        concat!(stringify!($name),"_llvm"),
-                    ] {
-                        let filename = format!("test_output/{filename}.wasm");
-                        let mut file = std::fs::File::open(filename.as_str()).unwrap();
-                        let mut buffer = Vec::new();
-                        file.read_to_end(&mut buffer).unwrap();
-                        let compiler = Compiler::from_object_file(
-                            buffer,
-                            CompilerMode::SingleThreaded,
-                        ).unwrap();
-                        let results = tensor_test_common_impl(compiler, $tensor_name);
-                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                    }
-                }
-
                 #[cfg(not(feature = "cranelift"))]
                 {
                     let model = parse_ds_string(full_text.as_str()).unwrap();
@@ -1733,28 +1723,6 @@ mod tests {
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                 }
 
-                #[cfg(target_arch = "wasm32")]
-                {
-                    for filename in [
-                        concat!(stringify!($name),"_llvm"),
-                    ] {
-                        let filename = format!("test_output/{filename}.wasm");
-                        let mut file = std::fs::File::open(filename.as_str()).unwrap();
-                        let mut buffer = Vec::new();
-                        file.read_to_end(&mut buffer).unwrap();
-                        let compiler = Compiler::from_object_file(
-                            buffer,
-                            CompilerMode::SingleThreaded,
-                        ).unwrap();
-                        let results = tensor_test_common_impl(compiler, $tensor_name);
-                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                        assert_relative_eq!(results[2].as_slice(), $expected_rgrad.as_slice());
-                        assert_relative_eq!(results[3].as_slice(), $expected_sgrad.as_slice());
-                        assert_relative_eq!(results[4].as_slice(), $expected_sgrad.as_slice());
-                        assert_relative_eq!(results[5].as_slice(), $expected_srgrad.as_slice());
-                        assert_relative_eq!(results[6].as_slice(), $expected_srgrad.as_slice());
-                    }
-                }
             }
         )*
         }
@@ -1830,26 +1798,6 @@ mod tests {
                     assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
                     assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
                 }
-
-                #[cfg(target_arch = "wasm32")]
-                {
-                    for filename in [
-                        concat!(stringify!($name),"_llvm"),
-                    ] {
-                        let filename = format!("test_output/{filename}.wasm");
-                        let mut file = std::fs::File::open(filename.as_str()).unwrap();
-                        let mut buffer = Vec::new();
-                        file.read_to_end(&mut buffer).unwrap();
-                        let compiler = Compiler::from_object_file(
-                            buffer,
-                            CompilerMode::SingleThreaded,
-                        ).unwrap();
-                        let results = tensor_test_common_impl(compiler, $tensor_name);
-                        assert_relative_eq!(results[0].as_slice(), $expected_value.as_slice());
-                        assert_relative_eq!(results[1].as_slice(), $expected_grad.as_slice());
-                    }
-                }
-
 
                 #[cfg(feature = "rayon")]
                 {

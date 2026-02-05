@@ -20,22 +20,20 @@ use crate::ast::{self, Ast};
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use pest::Parser;
 
     use super::{MsParser, MsRule};
 
-    const MS_FILENAMES: &[&str] = &["test_circuit.ms", "test_fishers.ms", "test_pk.ms"];
-
-    const BASE_DIR: &str = "src/parser";
+    const MS_FILES: &[(&str, &str)] = &[
+        ("test_circuit.ms", include_str!("test_circuit.ms")),
+        ("test_fishers.ms", include_str!("test_fishers.ms")),
+        ("test_pk.ms", include_str!("test_pk.ms")),
+    ];
 
     #[test]
     fn parse_examples() {
-        for filename in MS_FILENAMES {
-            let unparsed_file =
-                fs::read_to_string(BASE_DIR.to_owned() + "/" + filename).expect("cannot read file");
-            let _list = MsParser::parse(MsRule::main, &unparsed_file)
+        for (filename, contents) in MS_FILES {
+            let _list = MsParser::parse(MsRule::main, contents)
                 .unwrap_or_else(|e| panic!("unsuccessful parse ({filename}) {e}"));
         }
     }

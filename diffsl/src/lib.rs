@@ -14,6 +14,7 @@ pub mod utils;
 pub use execution::compiler::Compiler;
 #[cfg(feature = "cranelift")]
 pub use execution::cranelift::codegen::{CraneliftJitModule, CraneliftObjectModule};
+pub use execution::external::ExternalModule;
 #[cfg(feature = "llvm")]
 pub use execution::llvm::codegen::LlvmModule;
 pub use execution::module::{

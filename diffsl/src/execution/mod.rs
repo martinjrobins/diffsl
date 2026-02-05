@@ -1,5 +1,6 @@
 #[cfg(feature = "cranelift")]
 pub mod cranelift;
+pub mod external;
 #[cfg(feature = "llvm")]
 pub mod llvm;
 pub mod object;

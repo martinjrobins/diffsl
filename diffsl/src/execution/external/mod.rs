@@ -329,13 +329,3 @@ impl_extern_symbols!(f32, f32_symbols, {
     "set_inputs_grad" => set_inputs_grad,
     "set_inputs_rgrad" => set_inputs_rgrad,
 });
-
-#[cfg(test)]
-mod tests {
-    use crate::execution::compiler::CompilerMode;
-    use crate::{Compiler, ExternalModule};
-
-    include!("../../../tests/support/external_test_macros.rs");
-
-    define_external_test!(f64, external_module_compiler_runs);
-}

@@ -49,7 +49,7 @@ jobs:
             - ubuntu-latest
             - macos-latest
           features:
-            - "rayon cranelift"
+            - "rayon cranelift external"
           experimental: 
             - false
           tests:
@@ -65,7 +65,7 @@ jobs:
             - toolchain: stable
               os: ubuntu-latest
               llvm: ["18.1", "18-1", "181"]
-              features: "rayon cranelift"
+              features: "rayon cranelift external"
               tests: true
               clippy: false
               rustdoc: false
@@ -75,7 +75,7 @@ jobs:
             - toolchain: stable
               os: macos-latest
               llvm: ["18.1", "18-1", "181"]
-              features: "rayon cranelift"
+              features: "rayon cranelift external"
               tests: true
               clippy: false
               rustdoc: false
@@ -85,7 +85,7 @@ jobs:
             - toolchain: stable
               os: windows-latest
               llvm: ""
-              features: "rayon cranelift"
+              features: "rayon cranelift external"
               tests: true
               clippy: false
               rustdoc: false
@@ -95,7 +95,7 @@ jobs:
             - toolchain: beta
               os: ubuntu-latest
               llvm: ["16.0", "16-0", "160"]
-              features: "rayon cranelift"
+              features: "rayon cranelift external"
               tests: true
               clippy: false
               rustdoc: false
@@ -105,7 +105,7 @@ jobs:
             - toolchain: nightly
               os: ubuntu-latest
               llvm: ["16.0", "16-0", "160"]
-              features: "rayon cranelift"
+              features: "rayon cranelift external"
               tests: true
               clippy: false
               rustdoc: false
@@ -125,7 +125,7 @@ jobs:
             - toolchain: stable
               os: ubuntu-latest
               llvm: ["16.0", "16-0", "160"]
-              features: "rayon cranelift"
+              features: "rayon cranelift external"
               tests: false
               clippy: true
               rustdoc: false
@@ -135,7 +135,7 @@ jobs:
             - toolchain: nightly 
               os: ubuntu-latest
               llvm: ["16.0", "16-0", "160"]
-              features: "rayon cranelift"
+              features: "rayon cranelift external"
               tests: false
               clippy: false
               rustdoc: true

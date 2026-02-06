@@ -1,3 +1,6 @@
+use diffsl::execution::compiler::CompilerMode;
+use diffsl::{Compiler, ExternalModule};
+
 macro_rules! define_external_test {
     ($ty:ty, $test_name:ident) => {
         const STATES: u32 = 1;

@@ -248,7 +248,7 @@ impl<T> Default for ExternalModule<T> {
 
 impl<T> CodegenModule for ExternalModule<T> where T: Send + Sync + 'static {}
 
-trait ExternSymbols {
+pub trait ExternSymbols {
     fn insert_symbols(symbols: &mut HashMap<String, *const u8>);
 }
 

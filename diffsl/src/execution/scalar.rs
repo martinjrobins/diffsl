@@ -17,20 +17,6 @@ impl RealType {
     }
 }
 
-#[cfg(feature = "external")]
-pub trait Scalar:
-    Copy
-    + FromPrimitive
-    + crate::execution::external::ExternSymbols
-    + Debug
-    + num_traits::Signed
-    + AbsDiffEq<Epsilon: Clone>
-    + Sync
-    + 'static
-{
-    fn as_real_type() -> RealType;
-}
-#[cfg(not(feature = "external"))]
 pub trait Scalar:
     Copy + FromPrimitive + Debug + num_traits::Signed + AbsDiffEq<Epsilon: Clone> + Sync + 'static
 {

@@ -225,7 +225,9 @@ macro_rules! define_symbol_module {
     };
 }
 
+#[cfg(feature = "external_f32")]
 define_symbol_module!(f32_symbols, f32);
+#[cfg(feature = "external_f64")]
 define_symbol_module!(f64_symbols, f64);
 
 pub struct ExternalModule<T> {
@@ -274,6 +276,7 @@ macro_rules! impl_extern_symbols {
     };
 }
 
+#[cfg(feature = "external_f64")]
 impl_extern_symbols!(f64, f64_symbols, {
     "barrier_init" => barrier_init,
     "set_constants" => set_constants,
@@ -302,6 +305,7 @@ impl_extern_symbols!(f64, f64_symbols, {
     "set_inputs_rgrad" => set_inputs_rgrad,
 });
 
+#[cfg(feature = "external_f32")]
 impl_extern_symbols!(f32, f32_symbols, {
     "barrier_init" => barrier_init,
     "set_constants" => set_constants,

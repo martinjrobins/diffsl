@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5f4161ac.js";
+            window.path_to_searchindex_js = "searchindex-b9047057.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-545c49d9.js"></script>
@@ -194,9 +194,9 @@ scalars and vectors of the users that are required to calculate \( F \) and \( M
 <p>$$
 \frac{\mathrm{d}N}{\mathrm{d}t} = r N (1 - N/K)
 $$</p>
-<p>where \( N \) is the population, \( r \) is the growth rate, and \( K \) is the carrying capacity.</p>
+<p>where \( N \) is the population, \( r \) is the growth rate, and \( k \) is the carrying capacity.</p>
 <p>To specify this model in DiffSL, we can write:</p>
-<pre><code>in = [r, k]
+<pre><code>in_i { r = 1.0, k = 10.0 }
 u_i {
   N = 0.0
 }

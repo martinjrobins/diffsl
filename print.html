@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5f4161ac.js";
+            window.path_to_searchindex_js = "searchindex-b9047057.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-545c49d9.js"></script>
@@ -195,9 +195,9 @@ scalars and vectors of the users that are required to calculate \( F \) and \( M
 <p>$$
 \frac{\mathrm{d}N}{\mathrm{d}t} = r N (1 - N/K)
 $$</p>
-<p>where \( N \) is the population, \( r \) is the growth rate, and \( K \) is the carrying capacity.</p>
+<p>where \( N \) is the population, \( r \) is the growth rate, and \( k \) is the carrying capacity.</p>
 <p>To specify this model in DiffSL, we can write:</p>
-<pre><code>in = [r, k]
+<pre><code>in_i { r = 1.0, k = 10.0 }
 u_i {
   N = 0.0
 }
@@ -469,22 +469,19 @@ In this section we will show how to specify inputs and outputs in the DiffSL lan
 <p>We can override the values of any scalar variables by specifying them as input
 variables.  To do this, we add a line at the top of the code to specify that
 these are input variables:</p>
-<pre><code>in = [k]
-k { 1.0 }
+<pre><code>in { k = 1.0 }
 u { 0.1 }
 F { k * u }
 </code></pre>
 <p>Here we have specified a single input parameter <code>k</code> that is used in the RHS function <code>F</code>.
 The value of <code>k</code> is set to <code>1.0</code> in the code, but this value is only a default, and can be overridden by passing in a value at solve time.</p>
 <p>We can use input parameters anywhere in the code, including in the definition of other input parameters.</p>
-<pre><code>in = [k]
-k { 1.0 }
+<pre><code>in { k = 1.0 }
 g { 2 * k }
 F { g * u }
 </code></pre>
 <p>or in the intial conditions of the state variables:</p>
-<pre><code>in = [k]
-k { 1.0 }
+<pre><code>in { k = 1.0 }
 u_i {
   x = k,
 }

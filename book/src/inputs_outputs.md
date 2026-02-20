@@ -10,8 +10,7 @@ variables.  To do this, we add a line at the top of the code to specify that
 these are input variables:
 
 ```
-in = [k]
-k { 1.0 }
+in { k = 1.0 }
 u { 0.1 }
 F { k * u }
 ```
@@ -22,8 +21,7 @@ The value of `k` is set to `1.0` in the code, but this value is only a default, 
 We can use input parameters anywhere in the code, including in the definition of other input parameters.
 
 ```
-in = [k]
-k { 1.0 }
+in { k = 1.0 }
 g { 2 * k }
 F { g * u }
 ```
@@ -31,8 +29,7 @@ F { g * u }
 or in the intial conditions of the state variables:
 
 ```
-in = [k]
-k { 1.0 }
+in { k = 1.0 }
 u_i {
   x = k,
 }

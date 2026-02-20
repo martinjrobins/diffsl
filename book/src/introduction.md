@@ -24,12 +24,12 @@ $$
 \frac{\mathrm{d}N}{\mathrm{d}t} = r N (1 - N/K)
 $$
 
-where \\( N \\) is the population, \\( r \\) is the growth rate, and \\( K \\) is the carrying capacity.
+where \\( N \\) is the population, \\( r \\) is the growth rate, and \\( k \\) is the carrying capacity.
 
 To specify this model in DiffSL, we can write:
 
 ```
-in = [r, k]
+in_i { r = 1.0, k = 10.0 }
 u_i {
   N = 0.0
 }
@@ -42,6 +42,3 @@ out_i {
 ```
 
 Here, we define the input parameters for our model as a vector `in` with the growth rate `r` and the carrying capacity `k`. We then define the state vector `u_i` with the population `N` initialized to `0.0`. Next, we define the RHS function `F_i` as the logistic growth equation. Finally, we define the output vector `out_i` with the population `N`.
-
-
-

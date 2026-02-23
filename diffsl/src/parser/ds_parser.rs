@@ -428,4 +428,64 @@ mod tests {
             "1"
         );
     }
+
+    #[test]
+    fn comments_are_ignored() {
+        const TEXT: &str = "
+            // leading comment
+            /* leading block comment */
+            a {
+                1, // trailing comment
+                // comment between elements
+                /* block comment between elements */
+                2
+            }
+            // comment between tensors
+            /* block comment between tensors */
+            b {
+                // assignment line comment
+                y = 3 /* trailing assignment block comment */
+            }
+            /* trailing block comment */
+            // trailing comment
+        ";
+        let model = parse_string(TEXT).unwrap();
+        assert_eq!(model.tensors.len(), 2);
+
+        let tensor_a = model.tensors[0].kind.as_tensor().unwrap();
+        assert_eq!(tensor_a.name(), "a");
+        assert_eq!(tensor_a.elmts().len(), 2);
+        assert_eq!(
+            tensor_a.elmts()[0]
+                .kind
+                .as_tensor_elmt()
+                .unwrap()
+                .expr
+                .to_string(),
+            "1"
+        );
+        assert_eq!(
+            tensor_a.elmts()[1]
+                .kind
+                .as_tensor_elmt()
+                .unwrap()
+                .expr
+                .to_string(),
+            "2"
+        );
+
+        let tensor_b = model.tensors[1].kind.as_tensor().unwrap();
+        assert_eq!(tensor_b.name(), "b");
+        assert_eq!(tensor_b.elmts().len(), 1);
+        let assignment = tensor_b.elmts()[0]
+            .kind
+            .as_tensor_elmt()
+            .unwrap()
+            .expr
+            .kind
+            .as_assignment()
+            .unwrap();
+        assert_eq!(assignment.name, "y");
+        assert_eq!(assignment.expr.to_string(), "3");
+    }
 }

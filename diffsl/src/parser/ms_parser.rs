@@ -444,4 +444,42 @@ mod tests {
             panic!("not an definition")
         }
     }
+
+    #[test]
+    fn comments_are_ignored() {
+        let text = "
+        // leading comment
+        /* leading block comment */
+        model test(x, y) { // trailing model comment
+            let a = 1 /* trailing definition block comment */
+            // comment between statements
+            /* block comment between statements */
+            x = a + y // trailing equation comment
+        }
+        /* trailing block comment */
+        // trailing comment
+        ";
+        let models: Vec<Model> = parse_string(text)
+            .unwrap()
+            .into_iter()
+            .map(ast_to_model)
+            .collect();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].name, "test");
+        assert_eq!(models[0].unknowns.len(), 2);
+        assert_eq!(models[0].statements.len(), 2);
+
+        if let AstKind::Definition(dfn) = &models[0].statements[0].kind {
+            assert_eq!(dfn.name, "a");
+            assert_eq!(dfn.rhs.to_string(), "1");
+        } else {
+            panic!("not a definition")
+        }
+        if let AstKind::Equation(eqn) = &models[0].statements[1].kind {
+            assert!(matches!(&eqn.lhs.kind, AstKind::Name(name) if name.name == "x"));
+            assert!(matches!(&eqn.rhs.kind, AstKind::Binop(binop) if binop.op == '+'));
+        } else {
+            panic!("not an equation")
+        }
+    }
 }

@@ -56,7 +56,29 @@ d_i { a_i + k }
 
 Here the scalar \\( k \\) is broadcast to the same shape as \\( \mathbf{a} \\) before the addition. The output vector \\( \mathbf{d} \\) will be \\( [4.0, 5.0] \\).
 
-DiffSL uses the same broadcasting rules as NumPy, and you can read more about this in the [NumPy documentation](https://numpy.org/doc/stable/user/basics.broadcasting.html).
+DiffSL broadcasting is index-based:
+
+1. Indices are aligned by name with respect to the output tensor.
+2. After index permutation, each axis must either have the same size as the target axis, or size `1`.
+3. Missing axes are treated as size `1`.
+
+This means broadcasting behavior depends on the index labels used in the expression, not only on raw tensor shapes.
+
+For example, the following is valid because `b` is indexed by `j`, so it broadcasts across the `i` axis:
+
+```
+A_ij { (0:3, 0:2): 1.0 }
+b_i { (0:2): 1.0 }
+c_ij { A_ij + b_j }
+```
+
+The following is invalid because `b_i` is aligned to the first axis (`i`) and cannot be broadcast to the matrix shape:
+
+```
+A_ij { (0:3, 0:2): 1.0 }
+b_i { (0:2): 1.0 }
+c_ij { A_ij + b_i }
+```
 
 ## Contractions
 

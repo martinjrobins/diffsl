@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b9047057.js";
+            window.path_to_searchindex_js = "searchindex-87f2ae87.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-545c49d9.js"></script>
@@ -211,7 +211,23 @@ k { 3.0 }
 d_i { a_i + k }
 </code></pre>
 <p>Here the scalar \( k \) is broadcast to the same shape as \( \mathbf{a} \) before the addition. The output vector \( \mathbf{d} \) will be \( [4.0, 5.0] \).</p>
-<p>DiffSL uses the same broadcasting rules as NumPy, and you can read more about this in the <a href="https://numpy.org/doc/stable/user/basics.broadcasting.html">NumPy documentation</a>.</p>
+<p>DiffSL broadcasting is index-based:</p>
+<ol>
+<li>Indices are aligned by name with respect to the output tensor.</li>
+<li>After index permutation, each axis must either have the same size as the target axis, or size <code>1</code>.</li>
+<li>Missing axes are treated as size <code>1</code>.</li>
+</ol>
+<p>This means broadcasting behavior depends on the index labels used in the expression, not only on raw tensor shapes.</p>
+<p>For example, the following is valid because <code>b</code> is indexed by <code>j</code>, so it broadcasts across the <code>i</code> axis:</p>
+<pre><code>A_ij { (0:3, 0:2): 1.0 }
+b_i { (0:2): 1.0 }
+c_ij { A_ij + b_j }
+</code></pre>
+<p>The following is invalid because <code>b_i</code> is aligned to the first axis (<code>i</code>) and cannot be broadcast to the matrix shape:</p>
+<pre><code>A_ij { (0:3, 0:2): 1.0 }
+b_i { (0:2): 1.0 }
+c_ij { A_ij + b_i }
+</code></pre>
 <h2 id="contractions"><a class="header" href="#contractions">Contractions</a></h2>
 <p>The DiffSL indexing notation allows for tensor contractions, which are operations that sum over one or more indices.
 The rule used is that any indices that do not appear in the output tensor will be summed over.</p>

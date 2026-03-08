@@ -132,6 +132,7 @@ impl<'s> DiscreteModel<'s> {
         let reserved_names = [
             "u0",
             "t",
+            "N",
             "data",
             "root",
             "thread_id",
@@ -1401,6 +1402,7 @@ mod tests {
 
     tensor_fail_tests!(
         error_scalar: "r {1, 2}" errors ["cannot have more than one element in a scalar",],
+        error_reserved_name_n: "N { 1 }" errors ["N is a reserved name",],
         error_cannot_find: "r { k }" errors ["cannot find variable k",],
         error_different_shape: "a_i { 1, 2 } b_i { 1, 2, 3 } c_i { a_i + b_i }" errors ["cannot broadcast shapes: [2], [3]",],
         too_many_indices: "A_i { 1, 2 } B_i { (0:2): A_ij }" errors ["too many permutation indices",],
@@ -1447,6 +1449,9 @@ mod tests {
         index: "A_i { 0.0, 1.0, 2.0 } B { A_i[1] }" expect "B" = "B { (): A_i[1] }",
         index2: "A_i { 0.0, 1.0, 2.0 } B_i { A_i[1:3] }" expect "B" = "B_i(2) { (0)(2):A_i[1:3](2) }",
         index3: "A_ij { (0:2, 0:2): 1 } g_i { 0, 1, 2 } b_i { A_ij * g_j[0:2] }" expect "b" = "b_i (2) { (0)(2): A_ij * g_j[0:2] (2, 2) }",
+        index_n_scalar: "A_i { 0.0, 1.0, 2.0 } B { A_i[N % 2] }" expect "B" = "B { (): A_i[N % 2] }",
+        index_n_range: "A_i { 0.0, 1.0, 2.0, 3.0 } B_i { A_i[N:N+2] }" expect "B" = "B_i(2) { (0)(2):A_i[N:N + 2](2) }",
+        index_n_range_contraction: "A_ij { (0:2, 0:2): 1 } g_i { 0, 1, 2 } b_i { A_ij * g_j[N:N+2] }" expect "b" = "b_i (2) { (0)(2): A_ij * g_j[N:N + 2] (2, 2) }",
         prefix_minus: "A { 1.0 / -2.0 }" expect "A" = "A { (): 1 / (-2) }",
         time: "A_i { t }" expect "A" = "A_i (1) { (0)(1):  t }",
         named_blk: "A_i { (0:3): y = 1, 2 }" expect "A" = "A_i (4) { (0)(3): y = 1, (3)(1): 2 }",

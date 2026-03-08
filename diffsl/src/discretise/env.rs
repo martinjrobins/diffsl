@@ -191,6 +191,19 @@ impl Env {
                 is_algebraic: true,
             },
         );
+        vars.insert(
+            "N".to_string(),
+            EnvVar {
+                layout: ArcLayout::new(Layout::new_scalar()),
+                // `N` varies per-model at runtime (from `model_index`), so definitions that
+                // depend on it must not be treated as compile-time constants.
+                is_time_dependent: true,
+                is_state_dependent: false,
+                is_dstatedt_dependent: false,
+                is_input_dependent: false,
+                is_algebraic: true,
+            },
+        );
         Env {
             errs: ValidationErrors::default(),
             vars,

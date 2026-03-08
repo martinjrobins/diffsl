@@ -2610,6 +2610,20 @@ impl<'ctx> CodeGen<'ctx> {
             }
             AstKind::Number(value) => Ok(self.real_type.const_float(*value)),
             AstKind::Name(iname) => {
+                if iname.name == "N" {
+                    if iname.is_tangent {
+                        return Ok(self.real_type.const_float(0.0));
+                    }
+                    let model_index = self
+                        .build_load(self.int_type, *self.get_param("model_index"), "model_index")?
+                        .into_int_value();
+                    let n_value = self.builder.build_signed_int_to_float(
+                        model_index,
+                        self.real_type,
+                        "n_as_real",
+                    )?;
+                    return Ok(n_value);
+                }
                 let ptr = *self.get_param(iname.name);
                 let layout = self.layout.get_layout(iname.name).unwrap().clone();
                 let iname_elmt_index = if layout.is_dense() {

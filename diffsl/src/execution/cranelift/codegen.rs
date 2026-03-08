@@ -1149,6 +1149,20 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             }
             AstKind::Number(value) => Ok(self.fconst(*value)),
             AstKind::Name(iname) => {
+                if iname.name == "N" {
+                    if iname.is_tangent {
+                        return Ok(self.fconst(0.0));
+                    }
+                    let var = self
+                        .variables
+                        .get("model_index")
+                        .ok_or_else(|| anyhow!("N used where model_index is unavailable"))?;
+                    let model_index = self.builder.use_var(*var);
+                    return Ok(self
+                        .builder
+                        .ins()
+                        .fcvt_from_sint(self.real_type, model_index));
+                }
                 let ptr = if iname.is_tangent {
                     // tangent of a constant is zero
                     if self.layout.is_constant(iname.name) {

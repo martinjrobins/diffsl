@@ -1867,6 +1867,8 @@ mod tests {
         abs_function: "r { abs(-2) }" expect "r" vec![f64::abs(-2.0)],
         min_function: "r { min(2, 3) }" expect "r" vec![2.0],
         max_function: "r { max(2, 3) }" expect "r" vec![3.0],
+        n_expression_scalar: "r { 2.0 * N + 1.0 }" expect "r" vec![1.0],
+        n_expression_vector: "r_i { 2.0 * N + 1.0, 3.0 * N + 2.0 }" expect "r" vec![1.0, 2.0],
         scalar: "r {2}" expect "r" vec![2.0,],
         constant: "r_i {2, 3}" expect "r" vec![2., 3.],
         derived: "r_i {2, 3} k_i { 2 * r_i }" expect "k" vec![4., 6.],

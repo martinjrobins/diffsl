@@ -580,7 +580,7 @@ impl<'a> Ast<'a> {
             }
             AstKind::CallArg(arg) => Self::new_call_arg(arg.name, arg.expression.tangent()),
             AstKind::Name(name) => {
-                if name.name == "t" {
+                if name.name == "t" || name.name == "N" {
                     Self::new_number(0.0)
                 } else {
                     Ast {

@@ -30,6 +30,7 @@ macro_rules! define_symbol_module {
                     u: *const $ty,
                     data: *mut $ty,
                     rr: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -42,6 +43,7 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     rr: *const $ty,
                     drr: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -54,6 +56,7 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     rr: *const $ty,
                     drr: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -65,6 +68,7 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     rr: *const $ty,
                     drr: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -76,6 +80,7 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     rr: *const $ty,
                     drr: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -133,6 +138,7 @@ macro_rules! define_symbol_module {
                     u: *const $ty,
                     data: *mut $ty,
                     out: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -145,6 +151,7 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     out: *const $ty,
                     dout: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -157,6 +164,7 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     out: *const $ty,
                     dout: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -168,6 +176,7 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     out: *const $ty,
                     dout: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -179,6 +188,7 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     out: *const $ty,
                     dout: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -188,6 +198,7 @@ macro_rules! define_symbol_module {
                     u: *const $ty,
                     data: *mut $ty,
                     root: *mut $ty,
+                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );

@@ -9,14 +9,20 @@ assignment = { name ~ "=" ~ expression }
 expression = { term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }
 factor     = { sign? ~ ( call | real | integer | name_ij_index | name_ij | "(" ~ expression ~ ")" ) }
+integer_expression = { integer_term ~ (term_op ~ integer_term)* }
+integer_term       = { integer_factor ~ (integer_factor_op ~ integer_factor)* }
+integer_factor     = { sign? ~ ( integer | integer_name | "(" ~ integer_expression ~ ")" ) }
 call       = { name ~ "(" ~ call_arg ~ ("," ~ call_arg )* ~ ")" }
 call_arg   = { expression }
 name_ij    = ${ name ~ ("_" ~ name)? }
-name_ij_index = ${ name_ij ~ "[" ~ indice ~ "]" }
+index_indice = { integer_expression ~ ( range_sep ~ integer_expression )? }
+name_ij_index = { name_ij ~ "[" ~ index_indice ~ "]" }
 range_sep  = @{ ".." | ":" }
 sign       = @{ ("-"|"+") }
 term_op    = @{ "-"|"+" }
 factor_op  = @{ "*"|"/" }
+integer_factor_op  = @{ "*"|"/"|"%" }
+integer_name = @{ "N" }
 name       = @{ ( 'a'..'z' | 'A'..'Z' ) ~ ('a'..'z' | 'A'..'Z' | '0'..'9' )* }
 integer    = @{ ('0'..'9')+ }
 real       = @{ ('0'..'9')+ ~ ( "." ~ ('0'..'9')* )? ~ ( "e" ~ sign? ~ integer )? }
@@ -26,4 +32,3 @@ COMMENT    = _{
     "/*" ~ (!"*/" ~ ANY)* ~ "*/"
     | "//" ~ (!NEWLINE ~ ANY)*
 }
-

@@ -62,7 +62,7 @@ fn execute<const N: usize, M: CodegenModuleCompile + CodegenModuleJit>(
     let t = 0.0;
 
     bencher.bench_local(|| {
-        compiler.rhs(t, &u, &mut data, &mut rr);
+        compiler.rhs(t, &u, &mut data, &mut rr, 0);
     });
 }
 

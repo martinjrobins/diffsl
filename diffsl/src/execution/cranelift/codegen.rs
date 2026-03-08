@@ -214,6 +214,7 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
         let arg_names = &[
             "t",
@@ -223,6 +224,7 @@ impl<M: Module> CraneliftModule<M> {
             "ddata",
             "out",
             "dout",
+            "model_index",
             "threadId",
             "threadDim",
         ];
@@ -250,6 +252,7 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
         let arg_names = &[
             "t",
@@ -259,6 +262,7 @@ impl<M: Module> CraneliftModule<M> {
             "ddata",
             "rr",
             "drr",
+            "model_index",
             "threadId",
             "threadDim",
         ];
@@ -525,8 +529,17 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "out", "threadId", "threadDim"];
+        let arg_names = &[
+            "t",
+            "u",
+            "data",
+            "out",
+            "model_index",
+            "threadId",
+            "threadDim",
+        ];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -568,8 +581,17 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "root", "threadId", "threadDim"];
+        let arg_names = &[
+            "t",
+            "u",
+            "data",
+            "root",
+            "model_index",
+            "threadId",
+            "threadDim",
+        ];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -611,8 +633,17 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "rr", "threadId", "threadDim"];
+        let arg_names = &[
+            "t",
+            "u",
+            "data",
+            "rr",
+            "model_index",
+            "threadId",
+            "threadDim",
+        ];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -634,7 +665,6 @@ impl<M: Module> CraneliftModule<M> {
             // F
             let res = *codegen.variables.get("rr").unwrap();
             codegen.jit_compile_tensor(model.rhs(), Some(res), false)?;
-
             codegen.builder.ins().return_(&[]);
             codegen.builder.finalize();
         }
@@ -1149,11 +1179,12 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                             .position(|x| x == c)
                             .unwrap_or(elmt.indices().len());
                         // if we are indexing, add the start indice to index[pi]
-                        if let Some(indice) =
-                            iname.indice.as_ref().map(|i| i.kind.as_indice().unwrap())
-                        {
-                            let start = indice.first.as_ref().kind.as_integer().unwrap();
-                            let start_intval = self.builder.ins().iconst(self.int_type, start);
+                        if let Some(indice_ast) = iname.indice.as_ref() {
+                            let Some(indice) = indice_ast.kind.as_indice() else {
+                                return Err(anyhow!("invalid index expression '{}'", indice_ast));
+                            };
+                            let start_intval =
+                                self.jit_compile_integer_expr(indice.first.as_ref())?;
                             // if we are indexing a single element, the index may be out of bounds
                             let index_pi = if pi >= index.len() {
                                 self.builder.ins().iconst(self.int_type, 0)
@@ -1163,7 +1194,12 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                             let index_pi = self.builder.ins().iadd(start_intval, index_pi);
                             iname_index.push(index_pi);
                         } else {
-                            iname_index.push(index[pi]);
+                            let index_pi = if pi >= index.len() {
+                                self.builder.ins().iconst(self.int_type, 0)
+                            } else {
+                                index[pi]
+                            };
+                            iname_index.push(index_pi);
                         }
                         no_transform = no_transform && pi == i;
                     }
@@ -1314,6 +1350,56 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             AstKind::Slice(_) => todo!(),
             AstKind::Integer(_) => todo!(),
             _ => panic!("unexprected astkind"),
+        }
+    }
+
+    fn jit_compile_integer_expr(&mut self, expr: &Ast) -> Result<Value> {
+        match &expr.kind {
+            AstKind::Integer(value) => Ok(self.builder.ins().iconst(self.int_type, *value)),
+            AstKind::Number(value) => {
+                if value.fract() != 0.0 {
+                    return Err(anyhow!(
+                        "non-integer value '{}' in integer expression",
+                        value
+                    ));
+                }
+                Ok(self.builder.ins().iconst(self.int_type, *value as i64))
+            }
+            AstKind::Name(iname) => {
+                if iname.name == "N" {
+                    let var = self
+                        .variables
+                        .get("model_index")
+                        .ok_or_else(|| anyhow!("N used where model_index is unavailable"))?;
+                    Ok(self.builder.use_var(*var))
+                } else {
+                    Err(anyhow!(
+                        "unsupported name '{}' in integer expression",
+                        iname.name
+                    ))
+                }
+            }
+            AstKind::Monop(monop) => {
+                let child = self.jit_compile_integer_expr(monop.child.as_ref())?;
+                match monop.op {
+                    '+' => Ok(child),
+                    '-' => Ok(self.builder.ins().ineg(child)),
+                    _ => Err(anyhow!("unknown integer unary op '{}'", monop.op)),
+                }
+            }
+            AstKind::Binop(binop) => {
+                let lhs = self.jit_compile_integer_expr(binop.left.as_ref())?;
+                let rhs = self.jit_compile_integer_expr(binop.right.as_ref())?;
+                match binop.op {
+                    '+' => Ok(self.builder.ins().iadd(lhs, rhs)),
+                    '-' => Ok(self.builder.ins().isub(lhs, rhs)),
+                    '*' => Ok(self.builder.ins().imul(lhs, rhs)),
+                    '/' => Ok(self.builder.ins().sdiv(lhs, rhs)),
+                    '%' => Ok(self.builder.ins().srem(lhs, rhs)),
+                    _ => Err(anyhow!("unknown integer binary op '{}'", binop.op)),
+                }
+            }
+            _ => Err(anyhow!("unsupported integer expression '{}'", expr)),
         }
     }
 

@@ -12,6 +12,7 @@ pub type StopFunc<T> = unsafe extern "C" fn(
     u: *const T,
     data: *mut T,
     root: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -20,6 +21,7 @@ pub type RhsFunc<T> = unsafe extern "C" fn(
     u: *const T,
     data: *mut T,
     rr: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -31,6 +33,7 @@ pub type RhsGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     rr: *const T,
     drr: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -42,6 +45,7 @@ pub type RhsRevGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     rr: *const T,
     drr: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -52,6 +56,7 @@ pub type RhsSensGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     rr: *const T,
     drr: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -62,6 +67,7 @@ pub type RhsSensRevGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     rr: *const T,
     drr: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -115,6 +121,7 @@ pub type CalcOutFunc<T> = unsafe extern "C" fn(
     u: *const T,
     data: *mut T,
     out: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -126,6 +133,7 @@ pub type CalcOutGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     out: *const T,
     dout: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -137,6 +145,7 @@ pub type CalcOutRevGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     out: *const T,
     dout: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -147,6 +156,7 @@ pub type CalcOutSensGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     out: *const T,
     dout: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -157,6 +167,7 @@ pub type CalcOutSensRevGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     out: *const T,
     dout: *mut T,
+    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );

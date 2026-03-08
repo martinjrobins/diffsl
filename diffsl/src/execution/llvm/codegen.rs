@@ -341,6 +341,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
             "rhs_grad",
@@ -353,6 +354,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -404,6 +406,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
             "rhs_rgrad",
@@ -415,6 +418,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -439,6 +443,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -467,6 +472,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::ForwardSens,
             "calc_out_sgrad",
@@ -478,6 +484,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -492,6 +499,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -2602,8 +2610,8 @@ impl<'ctx> CodeGen<'ctx> {
             }
             AstKind::Number(value) => Ok(self.real_type.const_float(*value)),
             AstKind::Name(iname) => {
-                let ptr = self.get_param(iname.name);
-                let layout = self.layout.get_layout(iname.name).unwrap();
+                let ptr = *self.get_param(iname.name);
+                let layout = self.layout.get_layout(iname.name).unwrap().clone();
                 let iname_elmt_index = if layout.is_dense() {
                     // permute indices based on the index chars of this tensor
                     let mut no_transform = true;
@@ -2617,14 +2625,12 @@ impl<'ctx> CodeGen<'ctx> {
                             .position(|x| x == c)
                             .unwrap_or(elmt.indices().len());
                         // if we are indexing, add the start indice to index[pi]
-                        if let Some(indice) =
-                            iname.indice.as_ref().map(|i| i.kind.as_indice().unwrap())
-                        {
-                            let start = indice.first.as_ref().kind.as_integer().unwrap();
-                            let start_intval = self
-                                .context
-                                .i32_type()
-                                .const_int(start.try_into().unwrap(), false);
+                        if let Some(indice_ast) = iname.indice.as_ref() {
+                            let Some(indice) = indice_ast.kind.as_indice() else {
+                                return Err(anyhow!("invalid index expression '{}'", indice_ast));
+                            };
+                            let start_intval =
+                                self.jit_compile_integer_expr(indice.first.as_ref(), name)?;
                             // if we are indexing a single element, the index may be out of bounds
                             let index_pi = if pi >= index.len() {
                                 self.context.i32_type().const_int(0, false)
@@ -2635,7 +2641,12 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.builder.build_int_add(index_pi, start_intval, name)?;
                             iname_index.push(index_pi);
                         } else {
-                            iname_index.push(index[pi]);
+                            let index_pi = if pi >= index.len() {
+                                self.context.i32_type().const_int(0, false)
+                            } else {
+                                index[pi]
+                            };
+                            iname_index.push(index_pi);
                         }
                         no_transform = no_transform && pi == i;
                     }
@@ -2677,7 +2688,7 @@ impl<'ctx> CodeGen<'ctx> {
                 } else if layout.is_sparse() || layout.is_diagonal() {
                     let expr_layout = elmt.expr_layout();
 
-                    if expr_layout != layout {
+                    if expr_layout != &layout {
                         // get correct index from binary layout map, ie. indices[ binary_layout_index + expr_index ]
                         // if its a -1 then return a 0
                         // ie. expr_index = binary_layout[expr_index]
@@ -2685,10 +2696,10 @@ impl<'ctx> CodeGen<'ctx> {
                         //.    otherwise load the value at that index
                         // we are doing an if statement so I think we need to return early here
                         let permutation =
-                            DataLayout::permutation(elmt, iname.indices.as_slice(), layout);
+                            DataLayout::permutation(elmt, iname.indices.as_slice(), &layout);
                         if let Some(base_binary_layout_index) =
                             self.layout
-                                .get_binary_layout_index(layout, expr_layout, permutation)
+                                .get_binary_layout_index(&layout, expr_layout, permutation)
                         {
                             let binary_layout_index = self.builder.build_int_add(
                                 self.int_type
@@ -2736,7 +2747,7 @@ impl<'ctx> CodeGen<'ctx> {
                             let value_ptr = Self::get_ptr_to_index(
                                 &self.builder,
                                 self.real_type,
-                                ptr,
+                                &ptr,
                                 mapped_index,
                                 name,
                             );
@@ -2767,7 +2778,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let value_ptr = Self::get_ptr_to_index(
                     &self.builder,
                     self.real_type,
-                    ptr,
+                    &ptr,
                     iname_elmt_index,
                     name,
                 );
@@ -2786,6 +2797,69 @@ impl<'ctx> CodeGen<'ctx> {
             AstKind::Slice(_) => todo!(),
             AstKind::Integer(_) => todo!(),
             _ => panic!("unexprected astkind"),
+        }
+    }
+
+    fn jit_compile_integer_expr(&mut self, expr: &Ast, name: &str) -> Result<IntValue<'ctx>> {
+        match &expr.kind {
+            AstKind::Integer(value) => Ok(self.int_type.const_int(*value as u64, true)),
+            AstKind::Number(value) => {
+                if value.fract() != 0.0 {
+                    return Err(anyhow!(
+                        "non-integer value '{}' in integer expression",
+                        value
+                    ));
+                }
+                Ok(self.int_type.const_int(*value as u64, true))
+            }
+            AstKind::Name(iname) => {
+                if iname.name == "N" {
+                    Ok(self
+                        .build_load(self.int_type, *self.get_param("model_index"), name)?
+                        .into_int_value())
+                } else {
+                    Err(anyhow!(
+                        "unsupported name '{}' in integer expression",
+                        iname.name
+                    ))
+                }
+            }
+            AstKind::Monop(monop) => {
+                let child = self.jit_compile_integer_expr(monop.child.as_ref(), name)?;
+                match monop.op {
+                    '+' => Ok(child),
+                    '-' => self.builder.build_int_neg(child, name).map_err(Into::into),
+                    _ => Err(anyhow!("unknown integer unary op '{}'", monop.op)),
+                }
+            }
+            AstKind::Binop(binop) => {
+                let lhs = self.jit_compile_integer_expr(binop.left.as_ref(), name)?;
+                let rhs = self.jit_compile_integer_expr(binop.right.as_ref(), name)?;
+                match binop.op {
+                    '+' => self
+                        .builder
+                        .build_int_add(lhs, rhs, name)
+                        .map_err(Into::into),
+                    '-' => self
+                        .builder
+                        .build_int_sub(lhs, rhs, name)
+                        .map_err(Into::into),
+                    '*' => self
+                        .builder
+                        .build_int_mul(lhs, rhs, name)
+                        .map_err(Into::into),
+                    '/' => self
+                        .builder
+                        .build_int_signed_div(lhs, rhs, name)
+                        .map_err(Into::into),
+                    '%' => self
+                        .builder
+                        .build_int_signed_rem(lhs, rhs, name)
+                        .map_err(Into::into),
+                    _ => Err(anyhow!("unknown integer binary op '{}'", binop.op)),
+                }
+            }
+            _ => Err(anyhow!("unsupported integer expression '{}'", expr)),
         }
     }
 
@@ -2808,6 +2882,9 @@ impl<'ctx> CodeGen<'ctx> {
             .into_float_value();
         let u = *self.get_param("u");
         let data = *self.get_param("data");
+        let model_index = self
+            .build_load(self.int_type, *self.get_param("model_index"), "model_index")?
+            .into_int_value();
         let thread_id = self
             .build_load(self.int_type, *self.get_param("thread_id"), "thread_id")?
             .into_int_value();
@@ -2822,6 +2899,7 @@ impl<'ctx> CodeGen<'ctx> {
                 t.into(),
                 u.into(),
                 data.into(),
+                model_index.into(),
                 thread_id.into(),
                 thread_dim.into(),
                 barrier_start.into(),
@@ -2969,7 +3047,15 @@ impl<'ctx> CodeGen<'ctx> {
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
         self.clear();
-        let fn_arg_names = &["t", "u", "data", "out", "thread_id", "thread_dim"];
+        let fn_arg_names = &[
+            "t",
+            "u",
+            "data",
+            "out",
+            "model_index",
+            "thread_id",
+            "thread_dim",
+        ];
         let function_name = if include_constants {
             "calc_out_full"
         } else {
@@ -2985,6 +3071,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
+                self.int_type.into(),
             ],
             None,
             false,
@@ -2993,7 +3080,7 @@ impl<'ctx> CodeGen<'ctx> {
         // add noalias
         let alias_id = Attribute::get_named_enum_kind_id("noalias");
         let noalign = self.context.create_enum_attribute(alias_id, 0);
-        for i in &[1, 2] {
+        for i in &[1, 2, 3] {
             function.add_attribute(AttributeLoc::Param(*i), noalign);
         }
 
@@ -3079,6 +3166,7 @@ impl<'ctx> CodeGen<'ctx> {
             "t",
             "u",
             "data",
+            "model_index",
             "thread_id",
             "thread_dim",
             "barrier_start",
@@ -3091,6 +3179,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
@@ -3169,7 +3258,15 @@ impl<'ctx> CodeGen<'ctx> {
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
         self.clear();
-        let fn_arg_names = &["t", "u", "data", "root", "thread_id", "thread_dim"];
+        let fn_arg_names = &[
+            "t",
+            "u",
+            "data",
+            "root",
+            "model_index",
+            "thread_id",
+            "thread_dim",
+        ];
         let function = self.add_function(
             "calc_stop",
             fn_arg_names,
@@ -3178,6 +3275,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3254,7 +3352,15 @@ impl<'ctx> CodeGen<'ctx> {
         let time_dep_fn = self.ensure_time_dep_fn(model, code)?;
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         self.clear();
-        let fn_arg_names = &["t", "u", "data", "rr", "thread_id", "thread_dim"];
+        let fn_arg_names = &[
+            "t",
+            "u",
+            "data",
+            "rr",
+            "model_index",
+            "thread_id",
+            "thread_dim",
+        ];
         let function_name = if include_constants { "rhs_full" } else { "rhs" };
         let function = self.add_function(
             function_name,
@@ -3264,6 +3370,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3319,8 +3426,8 @@ impl<'ctx> CodeGen<'ctx> {
         // F
         let res_ptr = self.get_param("rr");
         self.jit_compile_tensor(model.rhs(), Some(*res_ptr), code)?;
-        let barrier_num = self.int_type.const_int(nbarriers + 1, false);
         let total_barriers_val = self.int_type.const_int(total_barriers, false);
+        let barrier_num = self.int_type.const_int(nbarriers + 1, false);
         self.jit_compile_call_barrier(barrier_num, total_barriers_val);
 
         self.builder.build_return(None)?;
@@ -3439,7 +3546,8 @@ impl<'ctx> CodeGen<'ctx> {
         let mut start_param_index: Vec<u32> = Vec::new();
         let mut ptr_arg_indices: Vec<u32> = Vec::new();
         for (i, arg) in original_function.get_param_iter().enumerate() {
-            start_param_index.push(u32::try_from(fn_type.len()).unwrap());
+            let start_index = u32::try_from(fn_type.len()).unwrap();
+            start_param_index.push(start_index);
             let arg_type = arg.get_type();
             fn_type.push(arg_type.into());
 
@@ -3448,13 +3556,16 @@ impl<'ctx> CodeGen<'ctx> {
             enzyme_fn_type.push(arg.get_type().into());
 
             if arg_type.is_pointer_type() {
-                ptr_arg_indices.push(u32::try_from(i).unwrap());
+                ptr_arg_indices.push(start_index);
             }
 
             match args_type[i] {
                 CompileGradientArgType::Dup | CompileGradientArgType::DupNoNeed => {
                     fn_type.push(arg.get_type().into());
                     enzyme_fn_type.push(arg.get_type().into());
+                    if arg_type.is_pointer_type() {
+                        ptr_arg_indices.push(start_index + 1);
+                    }
                 }
                 CompileGradientArgType::Const => {}
             }

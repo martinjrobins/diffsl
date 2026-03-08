@@ -30,7 +30,6 @@ macro_rules! define_symbol_module {
                     u: *const $ty,
                     data: *mut $ty,
                     rr: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -43,7 +42,6 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     rr: *const $ty,
                     drr: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -56,7 +54,6 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     rr: *const $ty,
                     drr: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -68,7 +65,6 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     rr: *const $ty,
                     drr: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -80,7 +76,6 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     rr: *const $ty,
                     drr: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -138,7 +133,6 @@ macro_rules! define_symbol_module {
                     u: *const $ty,
                     data: *mut $ty,
                     out: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -151,7 +145,6 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     out: *const $ty,
                     dout: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -164,7 +157,6 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     out: *const $ty,
                     dout: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -176,7 +168,6 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     out: *const $ty,
                     dout: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -188,7 +179,6 @@ macro_rules! define_symbol_module {
                     ddata: *mut $ty,
                     out: *const $ty,
                     dout: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -198,7 +188,6 @@ macro_rules! define_symbol_module {
                     u: *const $ty,
                     data: *mut $ty,
                     root: *mut $ty,
-                    model_index: UIntType,
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
@@ -214,7 +203,7 @@ macro_rules! define_symbol_module {
                     has_mass: *mut UIntType,
                 );
                 #[link_name = "set_inputs"]
-                pub fn set_inputs(inputs: *const $ty, data: *mut $ty);
+                pub fn set_inputs(inputs: *const $ty, data: *mut $ty, model_index: UIntType);
                 #[link_name = "get_inputs"]
                 pub fn get_inputs(inputs: *mut $ty, data: *const $ty);
                 #[link_name = "set_inputs_grad"]
@@ -223,6 +212,7 @@ macro_rules! define_symbol_module {
                     dinputs: *const $ty,
                     data: *const $ty,
                     ddata: *mut $ty,
+                    model_index: UIntType,
                 );
                 #[link_name = "set_inputs_rgrad"]
                 pub fn set_inputs_rgrad(
@@ -230,6 +220,7 @@ macro_rules! define_symbol_module {
                     dinputs: *mut $ty,
                     data: *const $ty,
                     ddata: *mut $ty,
+                    model_index: UIntType,
                 );
             }
         }

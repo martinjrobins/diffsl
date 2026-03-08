@@ -12,7 +12,6 @@ pub type StopFunc<T> = unsafe extern "C" fn(
     u: *const T,
     data: *mut T,
     root: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -21,7 +20,6 @@ pub type RhsFunc<T> = unsafe extern "C" fn(
     u: *const T,
     data: *mut T,
     rr: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -33,7 +31,6 @@ pub type RhsGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     rr: *const T,
     drr: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -45,7 +42,6 @@ pub type RhsRevGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     rr: *const T,
     drr: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -56,7 +52,6 @@ pub type RhsSensGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     rr: *const T,
     drr: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -67,7 +62,6 @@ pub type RhsSensRevGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     rr: *const T,
     drr: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -121,7 +115,6 @@ pub type CalcOutFunc<T> = unsafe extern "C" fn(
     u: *const T,
     data: *mut T,
     out: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -133,7 +126,6 @@ pub type CalcOutGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     out: *const T,
     dout: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -145,7 +137,6 @@ pub type CalcOutRevGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     out: *const T,
     dout: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -156,7 +147,6 @@ pub type CalcOutSensGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     out: *const T,
     dout: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -167,7 +157,6 @@ pub type CalcOutSensRevGradFunc<T> = unsafe extern "C" fn(
     ddata: *mut T,
     out: *const T,
     dout: *mut T,
-    model_index: UIntType,
     thread_id: UIntType,
     thread_dim: UIntType,
 );
@@ -179,12 +168,23 @@ pub type GetDimsFunc = unsafe extern "C" fn(
     stop: *mut UIntType,
     has_mass: *mut UIntType,
 );
-pub type SetInputsFunc<T> = unsafe extern "C" fn(inputs: *const T, data: *mut T);
+pub type SetInputsFunc<T> =
+    unsafe extern "C" fn(inputs: *const T, data: *mut T, model_index: UIntType);
 pub type GetInputsFunc<T> = unsafe extern "C" fn(inputs: *mut T, data: *const T);
-pub type SetInputsGradFunc<T> =
-    unsafe extern "C" fn(inputs: *const T, dinputs: *const T, data: *const T, ddata: *mut T);
-pub type SetInputsRevGradFunc<T> =
-    unsafe extern "C" fn(inputs: *const T, dinputs: *mut T, data: *const T, ddata: *mut T);
+pub type SetInputsGradFunc<T> = unsafe extern "C" fn(
+    inputs: *const T,
+    dinputs: *const T,
+    data: *const T,
+    ddata: *mut T,
+    model_index: UIntType,
+);
+pub type SetInputsRevGradFunc<T> = unsafe extern "C" fn(
+    inputs: *const T,
+    dinputs: *mut T,
+    data: *const T,
+    ddata: *mut T,
+    model_index: UIntType,
+);
 pub type SetIdFunc<T> = unsafe extern "C" fn(id: *mut T);
 pub type GetTensorFunc<T> =
     unsafe extern "C" fn(data: *const T, tensor_data: *mut *mut T, tensor_size: *mut UIntType);

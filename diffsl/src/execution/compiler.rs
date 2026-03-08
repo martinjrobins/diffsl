@@ -410,7 +410,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         })
     }
 
-    pub fn calc_stop(&self, t: T, yy: &[T], data: &mut [T], stop: &mut [T], model_index: u32) {
+    pub fn calc_stop(&self, t: T, yy: &[T], data: &mut [T], stop: &mut [T]) {
         if self.number_of_stop == 0 {
             panic!("Model does not have a stop function");
         }
@@ -423,14 +423,13 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 yy.as_ptr(),
                 data.as_ptr() as *mut T,
                 stop.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn rhs(&self, t: T, yy: &[T], data: &mut [T], rr: &mut [T], model_index: u32) {
+    pub fn rhs(&self, t: T, yy: &[T], data: &mut [T], rr: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
         self.check_data_len(data, "data");
@@ -440,7 +439,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 yy.as_ptr(),
                 data.as_ptr() as *mut T,
                 rr.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
@@ -488,7 +486,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         rr: &[T],
         drr: &mut [T],
-        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -505,7 +502,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
                 drr.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
@@ -522,7 +518,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         rr: &[T],
         drr: &mut [T],
-        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -543,7 +538,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
                 drr.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
@@ -574,16 +568,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         });
     }
 
-    pub fn rhs_sgrad(
-        &self,
-        t: T,
-        yy: &[T],
-        data: &[T],
-        ddata: &mut [T],
-        rr: &[T],
-        drr: &mut [T],
-        model_index: u32,
-    ) {
+    pub fn rhs_sgrad(&self, t: T, yy: &[T], data: &[T], ddata: &mut [T], rr: &[T], drr: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
         self.check_state_len(drr, "drr");
@@ -601,23 +586,13 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
                 drr.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn rhs_srgrad(
-        &self,
-        t: T,
-        yy: &[T],
-        data: &[T],
-        ddata: &mut [T],
-        rr: &[T],
-        drr: &mut [T],
-        model_index: u32,
-    ) {
+    pub fn rhs_srgrad(&self, t: T, yy: &[T], data: &[T], ddata: &mut [T], rr: &[T], drr: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
         self.check_state_len(drr, "drr");
@@ -635,14 +610,13 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
                 drr.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn calc_out(&self, t: T, yy: &[T], data: &mut [T], out: &mut [T], model_index: u32) {
+    pub fn calc_out(&self, t: T, yy: &[T], data: &mut [T], out: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
         self.check_out_len(out, "out");
@@ -652,7 +626,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 yy.as_ptr(),
                 data.as_ptr() as *mut T,
                 out.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
@@ -669,7 +642,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         out: &[T],
         dout: &mut [T],
-        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -686,7 +658,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 out.as_ptr(),
                 dout.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
@@ -703,7 +674,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         out: &[T],
         dout: &mut [T],
-        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -724,7 +694,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 out.as_ptr(),
                 dout.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
@@ -739,7 +708,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         out: &[T],
         dout: &mut [T],
-        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
@@ -758,7 +726,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 out.as_ptr(),
                 dout.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
@@ -773,7 +740,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         out: &[T],
         dout: &mut [T],
-        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
@@ -792,7 +758,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 out.as_ptr(),
                 dout.as_ptr() as *mut T,
-                model_index,
                 i,
                 dim,
             )
@@ -831,10 +796,10 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         )
     }
 
-    pub fn set_inputs(&self, inputs: &[T], data: &mut [T]) {
+    pub fn set_inputs(&self, inputs: &[T], data: &mut [T], model_index: u32) {
         self.check_inputs_len(inputs, "inputs");
         self.check_data_len(data, "data");
-        unsafe { (self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr()) };
+        unsafe { (self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr(), model_index) };
     }
 
     pub fn get_inputs(&self, inputs: &mut [T], data: &[T]) {
@@ -843,7 +808,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         unsafe { (self.jit_functions.get_inputs)(inputs.as_mut_ptr(), data.as_ptr()) };
     }
 
-    pub fn set_inputs_grad(&self, inputs: &[T], dinputs: &[T], data: &[T], ddata: &mut [T]) {
+    pub fn set_inputs_grad(
+        &self,
+        inputs: &[T],
+        dinputs: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        model_index: u32,
+    ) {
         self.check_inputs_len(inputs, "inputs");
         self.check_inputs_len(dinputs, "dinputs");
         self.check_data_len(data, "data");
@@ -854,11 +826,19 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 dinputs.as_ptr(),
                 data.as_ptr(),
                 ddata.as_mut_ptr(),
+                model_index,
             )
         };
     }
 
-    pub fn set_inputs_rgrad(&self, inputs: &[T], dinputs: &mut [T], data: &[T], ddata: &mut [T]) {
+    pub fn set_inputs_rgrad(
+        &self,
+        inputs: &[T],
+        dinputs: &mut [T],
+        data: &[T],
+        ddata: &mut [T],
+        model_index: u32,
+    ) {
         self.check_inputs_len(inputs, "inputs");
         self.check_inputs_len(dinputs, "dinputs");
         self.check_data_len(data, "data");
@@ -873,6 +853,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 dinputs.as_mut_ptr(),
                 data.as_ptr(),
                 ddata.as_mut_ptr(),
+                model_index,
             )
         };
     }
@@ -982,7 +963,7 @@ mod tests {
         assert_relative_eq!(a2[0], T::zero());
         // set the inputs and u0
         let inputs = vec![T::one()];
-        compiler.set_inputs(&inputs, data.as_mut_slice());
+        compiler.set_inputs(&inputs, data.as_mut_slice(), 0);
         let mut u0 = vec![T::zero()];
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         // now a and a2 should be set
@@ -1029,7 +1010,6 @@ mod tests {
                 u0.as_slice(),
                 data.as_mut_slice(),
                 res.as_mut_slice(),
-                0,
             );
             assert_relative_eq!(res.as_slice(), vec![-T::one()].as_slice());
         }
@@ -1077,14 +1057,12 @@ mod tests {
             u0.as_slice(),
             data.as_mut_slice(),
             res.as_mut_slice(),
-            0,
         );
         compiler.calc_stop(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             stop.as_mut_slice(),
-            0,
         );
         assert_relative_eq!(stop[0], T::from_f64(0.5).unwrap());
         assert_eq!(stop.len(), 1);
@@ -1134,35 +1112,33 @@ mod tests {
         let mut stop1 = vec![T::zero(); 1];
         let mut data = compiler.get_new_data();
 
+        compiler.set_inputs(&[], data.as_mut_slice(), 0);
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             rr0.as_mut_slice(),
-            0,
         );
         compiler.calc_stop(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             stop0.as_mut_slice(),
-            0,
         );
 
+        compiler.set_inputs(&[], data.as_mut_slice(), 1);
         compiler.rhs(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             rr1.as_mut_slice(),
-            1,
         );
         compiler.calc_stop(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             stop1.as_mut_slice(),
-            1,
         );
 
         assert_relative_eq!(u0[0], T::from_f64(1.0).unwrap());
@@ -1208,20 +1184,20 @@ mod tests {
         let mut ddata0 = compiler.get_new_data();
         let mut ddata1 = compiler.get_new_data();
 
+        compiler.set_inputs(&[], data.as_mut_slice(), 0);
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             rr0.as_mut_slice(),
-            0,
         );
+        compiler.set_inputs(&[], data.as_mut_slice(), 1);
         compiler.rhs(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             rr1.as_mut_slice(),
-            1,
         );
 
         assert_relative_eq!(rr0[0], T::from_f64(3.0).unwrap());
@@ -1229,6 +1205,7 @@ mod tests {
 
         let dyy0 = vec![T::one(), T::zero()];
         let dyy1 = vec![T::zero(), T::one()];
+        compiler.set_inputs(&[], data.as_mut_slice(), 0);
         compiler.rhs_grad(
             T::zero(),
             u0.as_slice(),
@@ -1237,8 +1214,8 @@ mod tests {
             ddata0.as_mut_slice(),
             rr0.as_slice(),
             drr0.as_mut_slice(),
-            0,
         );
+        compiler.set_inputs(&[], data.as_mut_slice(), 1);
         compiler.rhs_grad(
             T::zero(),
             u0.as_slice(),
@@ -1247,7 +1224,6 @@ mod tests {
             ddata1.as_mut_slice(),
             rr1.as_slice(),
             drr1.as_mut_slice(),
-            1,
         );
 
         assert_relative_eq!(drr0[0], T::one());
@@ -1281,20 +1257,20 @@ mod tests {
         let mut rr1 = vec![T::zero(); 2];
         let mut data = compiler.get_new_data();
 
+        compiler.set_inputs(&[], data.as_mut_slice(), 0);
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             rr0.as_mut_slice(),
-            0,
         );
+        compiler.set_inputs(&[], data.as_mut_slice(), 1);
         compiler.rhs(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             rr1.as_mut_slice(),
-            1,
         );
 
         assert_relative_eq!(rr0[0], T::from_f64(-1.0).unwrap());
@@ -1333,7 +1309,6 @@ mod tests {
             u0.as_slice(),
             data.as_mut_slice(),
             out.as_mut_slice(),
-            0,
         );
         assert_relative_eq!(out[0], T::from_f64(2.).unwrap());
         u0[0] = T::from_f64(2.).unwrap();
@@ -1342,7 +1317,6 @@ mod tests {
             u0.as_slice(),
             data.as_mut_slice(),
             out.as_mut_slice(),
-            0,
         );
         assert_relative_eq!(out[0], T::from_f64(4.).unwrap());
         let mut stop = vec![T::zero()];
@@ -1351,7 +1325,6 @@ mod tests {
             u0.as_slice(),
             data.as_mut_slice(),
             stop.as_mut_slice(),
-            0,
         );
         assert_relative_eq!(stop[0], T::from_f64(3.5).unwrap());
         u0[0] = T::from_f64(0.5).unwrap();
@@ -1360,7 +1333,6 @@ mod tests {
             u0.as_slice(),
             data.as_mut_slice(),
             stop.as_mut_slice(),
-            0,
         );
         assert_relative_eq!(stop[0], T::from_f64(0.5).unwrap());
     }
@@ -1436,21 +1408,19 @@ mod tests {
         let mut results = Vec::new();
         let inputs = vec![T::one(); n_inputs];
         let mut out = vec![T::zero(); n_outputs];
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice(), 0);
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             res.as_mut_slice(),
-            0,
         );
         compiler.calc_out(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             out.as_mut_slice(),
-            0,
         );
         let (tensor_len, tensor_is_constant) =
             if let Some(tensor_data) = compiler.get_tensor_data(tensor_name, data.as_slice()) {
@@ -1480,6 +1450,7 @@ mod tests {
             dinputs.as_slice(),
             data.as_mut_slice(),
             ddata.as_mut_slice(),
+            0,
         );
         compiler.set_u0_grad(
             u0.as_mut_slice(),
@@ -1495,7 +1466,6 @@ mod tests {
             ddata.as_mut_slice(),
             res.as_mut_slice(),
             dres.as_mut_slice(),
-            0,
         );
         compiler.calc_out_grad(
             T::zero(),
@@ -1505,7 +1475,6 @@ mod tests {
             ddata.as_mut_slice(),
             out.as_slice(),
             dout.as_mut_slice(),
-            0,
         );
         if let Some(tensor_data) = compiler.get_tensor_data(tensor_name, ddata.as_slice()) {
             results.push(tensor_data.to_vec());
@@ -1534,7 +1503,6 @@ mod tests {
                 ddata.as_mut_slice(),
                 out.as_slice(),
                 dout.as_mut_slice(),
-                0,
             );
             compiler.rhs_rgrad(
                 T::zero(),
@@ -1544,7 +1512,6 @@ mod tests {
                 ddata.as_mut_slice(),
                 res.as_slice(),
                 dres.as_mut_slice(),
-                0,
             );
             compiler.set_u0_rgrad(
                 u0.as_mut_slice(),
@@ -1559,7 +1526,7 @@ mod tests {
             let mut ddata = compiler.get_new_data();
             let mut dres = vec![T::zero(); n_states];
             let dinputs = vec![T::one(); n_inputs];
-            compiler.set_inputs(dinputs.as_slice(), ddata.as_mut_slice());
+            compiler.set_inputs(dinputs.as_slice(), ddata.as_mut_slice(), 0);
             compiler.rhs_sgrad(
                 T::zero(),
                 u0.as_slice(),
@@ -1567,7 +1534,6 @@ mod tests {
                 ddata.as_mut_slice(),
                 res.as_slice(),
                 dres.as_mut_slice(),
-                0,
             );
             results.push(
                 compiler
@@ -1579,7 +1545,7 @@ mod tests {
             // forward mode sens (calc_out)
             let mut ddata = compiler.get_new_data();
             let dinputs = vec![T::one(); n_inputs];
-            compiler.set_inputs(dinputs.as_slice(), ddata.as_mut_slice());
+            compiler.set_inputs(dinputs.as_slice(), ddata.as_mut_slice(), 0);
             compiler.calc_out_sgrad(
                 T::zero(),
                 u0.as_slice(),
@@ -1587,7 +1553,6 @@ mod tests {
                 ddata.as_mut_slice(),
                 out.as_slice(),
                 dout.as_mut_slice(),
-                0,
             );
             results.push(
                 compiler
@@ -1611,13 +1576,13 @@ mod tests {
                 ddata.as_mut_slice(),
                 res.as_slice(),
                 dres.as_mut_slice(),
-                0,
             );
             compiler.set_inputs_rgrad(
                 inputs.as_slice(),
                 dinputs.as_mut_slice(),
                 data.as_slice(),
                 ddata.as_mut_slice(),
+                0,
             );
             results.push(dinputs.to_vec());
 
@@ -1635,13 +1600,13 @@ mod tests {
                 ddata.as_mut_slice(),
                 out.as_slice(),
                 dout.as_mut_slice(),
-                0,
             );
             compiler.set_inputs_rgrad(
                 inputs.as_slice(),
                 dinputs.as_mut_slice(),
                 data.as_slice(),
                 ddata.as_mut_slice(),
+                0,
             );
             results.push(dinputs.to_vec());
         } else {
@@ -2163,14 +2128,13 @@ mod tests {
         let mut ddata = compiler.get_new_data();
         let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
         let inputs = vec![T::from_f64(2.).unwrap(); n_inputs];
-        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice(), 0);
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(
             T::zero(),
             u0.as_slice(),
             data.as_mut_slice(),
             res.as_mut_slice(),
-            0,
         );
 
         for _i in 0..3 {
@@ -2180,6 +2144,7 @@ mod tests {
                 dinputs.as_slice(),
                 data.as_mut_slice(),
                 ddata.as_mut_slice(),
+                0,
             );
             compiler.set_u0_grad(
                 u0.as_mut_slice(),
@@ -2195,7 +2160,6 @@ mod tests {
                 ddata.as_mut_slice(),
                 res.as_mut_slice(),
                 dres.as_mut_slice(),
-                0,
             );
             assert_relative_eq!(dres.as_slice(), vec![T::from_f64(8.).unwrap()].as_slice());
         }
@@ -2257,21 +2221,9 @@ mod tests {
         let mut data = compiler.get_new_data();
         let (_n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
         compiler.set_u0(u.as_mut_slice(), data.as_mut_slice());
-        compiler.rhs(
-            0.0,
-            u.as_slice(),
-            data.as_mut_slice(),
-            res.as_mut_slice(),
-            0,
-        );
+        compiler.rhs(0.0, u.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         assert_relative_eq!(res.as_slice(), vec![3.0, 0.0, 0.0, 3.0].as_slice());
-        compiler.rhs(
-            0.0,
-            u.as_slice(),
-            data.as_mut_slice(),
-            res.as_mut_slice(),
-            0,
-        );
+        compiler.rhs(0.0, u.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         assert_relative_eq!(res.as_slice(), vec![3.0, 0.0, 0.0, 3.0].as_slice());
     }
 
@@ -2321,7 +2273,7 @@ mod tests {
 
             let mut data = compiler.get_new_data();
             let inputs = vec![1.1];
-            compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+            compiler.set_inputs(inputs.as_slice(), data.as_mut_slice(), 0);
 
             let inputs = compiler.get_tensor_data("in", data.as_slice()).unwrap();
             assert_relative_eq!(inputs, vec![1.1].as_slice());
@@ -2335,7 +2287,7 @@ mod tests {
             assert_relative_eq!(u.as_slice(), vec![1., 2.].as_slice());
 
             let mut rr = vec![1., 1.];
-            compiler.rhs(0., u.as_slice(), data.as_mut_slice(), rr.as_mut_slice(), 0);
+            compiler.rhs(0., u.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
             assert_relative_eq!(rr.as_slice(), vec![0., 0.].as_slice());
 
             let up = vec![2., 3.];
@@ -2344,7 +2296,7 @@ mod tests {
             assert_relative_eq!(rr.as_slice(), vec![2., 0.].as_slice());
 
             let mut out = vec![0.; 3];
-            compiler.calc_out(0., u.as_slice(), data.as_mut_slice(), out.as_mut_slice(), 0);
+            compiler.calc_out(0., u.as_slice(), data.as_mut_slice(), out.as_mut_slice());
             assert_relative_eq!(out.as_slice(), vec![1., 2., 4.].as_slice());
         }
     }
@@ -2372,7 +2324,7 @@ mod tests {
             .unwrap();
             let mut data = compiler.get_new_data();
             let inputs = vec![1.0, 2.0, 3.0, 4.0];
-            compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+            compiler.set_inputs(inputs.as_slice(), data.as_mut_slice(), 0);
 
             let inputs = compiler.get_tensor_data("in", data.as_slice()).unwrap();
             assert_relative_eq!(inputs, vec![1.0, 2.0, 3.0, 4.0].as_slice());
@@ -2388,7 +2340,7 @@ mod tests {
             .unwrap();
             let mut data = compiler.get_new_data();
             let inputs = vec![1.0, 2.0, 3.0, 4.0];
-            compiler.set_inputs(inputs.as_slice(), data.as_mut_slice());
+            compiler.set_inputs(inputs.as_slice(), data.as_mut_slice(), 0);
 
             let inputs = compiler.get_tensor_data("in", data.as_slice()).unwrap();
             assert_relative_eq!(inputs, vec![1.0, 2.0, 3.0, 4.0].as_slice());
@@ -2463,7 +2415,6 @@ mod tests {
                 u0.as_slice(),
                 data.as_mut_slice(),
                 res.as_mut_slice(),
-                0,
             );
             assert_relative_eq!(res.as_slice(), vec![-T::one()].as_slice());
         });
@@ -2497,12 +2448,13 @@ mod tests {
         let mut ddata = compiler.get_new_data();
         let a = vec![T::from_f64(0.6).unwrap()];
         let da = vec![T::one()];
-        compiler.set_inputs(a.as_slice(), data.as_mut_slice());
+        compiler.set_inputs(a.as_slice(), data.as_mut_slice(), 0);
         compiler.set_inputs_grad(
             a.as_slice(),
             da.as_slice(),
             data.as_slice(),
             ddata.as_mut_slice(),
+            0,
         );
         let mut u0 = vec![T::zero()];
         let mut du0 = vec![T::zero()];

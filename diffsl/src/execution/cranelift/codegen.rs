@@ -35,6 +35,7 @@ pub struct CraneliftModule<M: Module> {
 
     indices_id: DataId,
     constants_id: DataId,
+    model_index_id: DataId,
     thread_counter: Option<DataId>,
 
     //triple: Triple,
@@ -214,7 +215,6 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
-            self.int_type,
         ];
         let arg_names = &[
             "t",
@@ -224,7 +224,6 @@ impl<M: Module> CraneliftModule<M> {
             "ddata",
             "out",
             "dout",
-            "model_index",
             "threadId",
             "threadDim",
         ];
@@ -252,7 +251,6 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
-            self.int_type,
         ];
         let arg_names = &[
             "t",
@@ -262,7 +260,6 @@ impl<M: Module> CraneliftModule<M> {
             "ddata",
             "rr",
             "drr",
-            "model_index",
             "threadId",
             "threadDim",
         ];
@@ -304,10 +301,23 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.real_ptr_type,
             self.real_ptr_type,
+            self.int_type,
         ];
-        let arg_names = &["inputs", "dinputs", "data", "ddata"];
+        let arg_names = &["inputs", "dinputs", "data", "ddata", "model_index"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+            let model_index_ptr = codegen
+                .builder
+                .ins()
+                .global_value(codegen.int_ptr_type, codegen.model_index_global);
+            let model_index = codegen
+                .builder
+                .use_var(*codegen.variables.get("model_index").unwrap());
+            codegen
+                .builder
+                .ins()
+                .store(codegen.mem_flags, model_index, model_index_ptr, 0);
 
             let base_data_ptr = codegen.variables.get("ddata").unwrap();
             let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
@@ -430,6 +440,11 @@ impl<M: Module> CraneliftModule<M> {
         let indices_id = module.declare_data("indices", Linkage::Local, false, false)?;
         module.define_data(indices_id, &data_description)?;
 
+        let mut data_description = DataDescription::new();
+        data_description.define_zeroinit(int_type.bytes().try_into().unwrap());
+        let model_index_id = module.declare_data("model_index", Linkage::Local, true, false)?;
+        module.define_data(model_index_id, &data_description)?;
+
         let mut thread_counter = None;
         if threaded {
             let mut data_description = DataDescription::new();
@@ -446,6 +461,7 @@ impl<M: Module> CraneliftModule<M> {
             module: Mutex::new(module),
             indices_id,
             constants_id,
+            model_index_id,
             int_type,
             real_type: real_type_cranelift,
             real_ptr_type: ptr_type,
@@ -529,17 +545,8 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
-            self.int_type,
         ];
-        let arg_names = &[
-            "t",
-            "u",
-            "data",
-            "out",
-            "model_index",
-            "threadId",
-            "threadDim",
-        ];
+        let arg_names = &["t", "u", "data", "out", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -581,17 +588,8 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
-            self.int_type,
         ];
-        let arg_names = &[
-            "t",
-            "u",
-            "data",
-            "root",
-            "model_index",
-            "threadId",
-            "threadDim",
-        ];
+        let arg_names = &["t", "u", "data", "root", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -633,17 +631,8 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
-            self.int_type,
         ];
-        let arg_names = &[
-            "t",
-            "u",
-            "data",
-            "rr",
-            "model_index",
-            "threadId",
-            "threadDim",
-        ];
+        let arg_names = &["t", "u", "data", "rr", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -814,10 +803,22 @@ impl<M: Module> CraneliftModule<M> {
     }
 
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
-        let arg_types = &[self.real_ptr_type, self.real_ptr_type];
-        let arg_names = &["inputs", "data"];
+        let arg_types = &[self.real_ptr_type, self.real_ptr_type, self.int_type];
+        let arg_names = &["inputs", "data", "model_index"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+            let model_index_ptr = codegen
+                .builder
+                .ins()
+                .global_value(codegen.int_ptr_type, codegen.model_index_global);
+            let model_index = codegen
+                .builder
+                .use_var(*codegen.variables.get("model_index").unwrap());
+            codegen
+                .builder
+                .ins()
+                .store(codegen.mem_flags, model_index, model_index_ptr, 0);
 
             let base_data_ptr = codegen.variables.get("data").unwrap();
             let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
@@ -1055,6 +1056,7 @@ struct CraneliftCodeGen<'a, M: Module> {
     layout: &'a DataLayout,
     indices: GlobalValue,
     constants: GlobalValue,
+    model_index_global: GlobalValue,
     threaded: bool,
 }
 
@@ -2354,6 +2356,12 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             .unwrap()
             .declare_data_in_func(module.constants_id, builder.func);
 
+        let model_index_global = module
+            .module
+            .lock()
+            .unwrap()
+            .declare_data_in_func(module.model_index_id, builder.func);
+
         // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
 
@@ -2386,12 +2394,26 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             functions: HashMap::new(),
             layout: &module.layout,
             threaded: module.threaded,
+            model_index_global,
         };
 
         // insert arg vars
         for (i, (arg_name, arg_type)) in arg_names.iter().zip(arg_types.iter()).enumerate() {
             let val = codegen.builder.block_params(entry_block)[i];
             codegen.declare_variable(*arg_type, arg_name, val);
+        }
+
+        if !codegen.variables.contains_key("model_index") {
+            let model_index_ptr = codegen
+                .builder
+                .ins()
+                .global_value(codegen.int_ptr_type, codegen.model_index_global);
+            let model_index =
+                codegen
+                    .builder
+                    .ins()
+                    .load(codegen.int_type, codegen.mem_flags, model_index_ptr, 0);
+            codegen.declare_variable(codegen.int_type, "model_index", model_index);
         }
 
         // insert u if it exists in args

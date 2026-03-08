@@ -341,7 +341,6 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
             "rhs_grad",
@@ -356,7 +355,6 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
             "calc_out_grad",
@@ -366,6 +364,7 @@ impl CodegenModuleCompile for LlvmModule {
             &[
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
             "set_inputs_grad",
@@ -406,7 +405,6 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
             "rhs_rgrad",
@@ -420,7 +418,6 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
             "calc_out_rgrad",
@@ -431,6 +428,7 @@ impl CodegenModuleCompile for LlvmModule {
             &[
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
             "set_inputs_rgrad",
@@ -443,7 +441,6 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -472,7 +469,6 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
-                CompileGradientArgType::Const,
             ],
             CompileMode::ForwardSens,
             "calc_out_sgrad",
@@ -484,7 +480,6 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -499,7 +494,6 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -555,6 +549,7 @@ struct Globals<'ctx> {
     indices: Option<GlobalValue<'ctx>>,
     constants: Option<GlobalValue<'ctx>>,
     thread_counter: Option<GlobalValue<'ctx>>,
+    model_index: GlobalValue<'ctx>,
 }
 
 impl<'ctx> Globals<'ctx> {
@@ -620,10 +615,19 @@ impl<'ctx> Globals<'ctx> {
             indices.set_initializer(&indices_value);
             Some(indices)
         };
+        let model_index = module.add_global(
+            int_type,
+            Some(AddressSpace::default()),
+            "enzyme_const_model_index",
+        );
+        model_index.set_visibility(GlobalVisibility::Hidden);
+        model_index.set_constant(false);
+        model_index.set_initializer(&int_type.const_zero());
         Self {
             indices,
             thread_counter,
             constants,
+            model_index,
         }
     }
 }
@@ -1311,6 +1315,7 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn insert_data(&mut self, model: &DiscreteModel) {
+        self.insert_model_index();
         self.insert_constants(model);
 
         if let Some(input) = model.input() {
@@ -1349,6 +1354,10 @@ impl<'ctx> CodeGen<'ctx> {
             };
             self.variables.insert("indices".to_owned(), ptr);
         }
+    }
+
+    fn insert_model_index(&mut self) {
+        self.insert_param("model_index", self.globals.model_index.as_pointer_value());
     }
 
     fn insert_param(&mut self, name: &str, value: PointerValue<'ctx>) {
@@ -2896,9 +2905,6 @@ impl<'ctx> CodeGen<'ctx> {
             .into_float_value();
         let u = *self.get_param("u");
         let data = *self.get_param("data");
-        let model_index = self
-            .build_load(self.int_type, *self.get_param("model_index"), "model_index")?
-            .into_int_value();
         let thread_id = self
             .build_load(self.int_type, *self.get_param("thread_id"), "thread_id")?
             .into_int_value();
@@ -2913,7 +2919,6 @@ impl<'ctx> CodeGen<'ctx> {
                 t.into(),
                 u.into(),
                 data.into(),
-                model_index.into(),
                 thread_id.into(),
                 thread_dim.into(),
                 barrier_start.into(),
@@ -3061,15 +3066,7 @@ impl<'ctx> CodeGen<'ctx> {
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
         self.clear();
-        let fn_arg_names = &[
-            "t",
-            "u",
-            "data",
-            "out",
-            "model_index",
-            "thread_id",
-            "thread_dim",
-        ];
+        let fn_arg_names = &["t", "u", "data", "out", "thread_id", "thread_dim"];
         let function_name = if include_constants {
             "calc_out_full"
         } else {
@@ -3083,7 +3080,6 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
-                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3180,7 +3176,6 @@ impl<'ctx> CodeGen<'ctx> {
             "t",
             "u",
             "data",
-            "model_index",
             "thread_id",
             "thread_dim",
             "barrier_start",
@@ -3193,7 +3188,6 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
-                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
@@ -3272,15 +3266,7 @@ impl<'ctx> CodeGen<'ctx> {
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
         self.clear();
-        let fn_arg_names = &[
-            "t",
-            "u",
-            "data",
-            "root",
-            "model_index",
-            "thread_id",
-            "thread_dim",
-        ];
+        let fn_arg_names = &["t", "u", "data", "root", "thread_id", "thread_dim"];
         let function = self.add_function(
             "calc_stop",
             fn_arg_names,
@@ -3289,7 +3275,6 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
-                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3366,15 +3351,7 @@ impl<'ctx> CodeGen<'ctx> {
         let time_dep_fn = self.ensure_time_dep_fn(model, code)?;
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         self.clear();
-        let fn_arg_names = &[
-            "t",
-            "u",
-            "data",
-            "rr",
-            "model_index",
-            "thread_id",
-            "thread_dim",
-        ];
+        let fn_arg_names = &["t", "u", "data", "rr", "thread_id", "thread_dim"];
         let function_name = if include_constants { "rhs_full" } else { "rhs" };
         let function = self.add_function(
             function_name,
@@ -3384,7 +3361,6 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
-                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3993,20 +3969,35 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let function_name = if is_get { "get_inputs" } else { "set_inputs" };
-        let fn_arg_names = &["inputs", "data"];
-        let function = self.add_function(
-            function_name,
-            fn_arg_names,
-            &[self.real_ptr_type.into(), self.real_ptr_type.into()],
-            None,
-            false,
-        );
+        let fn_arg_names: &[&str] = if is_get {
+            &["inputs", "data"]
+        } else {
+            &["inputs", "data", "model_index"]
+        };
+        let fn_arg_types: &[BasicMetadataTypeEnum<'ctx>] = if is_get {
+            &[self.real_ptr_type.into(), self.real_ptr_type.into()]
+        } else {
+            &[
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.int_type.into(),
+            ]
+        };
+        let function = self.add_function(function_name, fn_arg_names, fn_arg_types, None, false);
         let block = self.start_function(function, None);
 
         for (i, arg) in function.get_param_iter().enumerate() {
             let name = fn_arg_names[i];
             let alloca = self.function_arg_alloca(name, arg);
             self.insert_param(name, alloca);
+        }
+
+        if !is_get {
+            let model_index = self
+                .build_load(self.int_type, *self.get_param("model_index"), "model_index")?
+                .into_int_value();
+            self.builder
+                .build_store(self.globals.model_index.as_pointer_value(), model_index)?;
         }
 
         if let Some(input) = model.input() {

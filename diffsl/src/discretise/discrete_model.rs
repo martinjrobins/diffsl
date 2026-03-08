@@ -503,7 +503,11 @@ impl<'s> DiscreteModel<'s> {
                                     let dependent_on_time = env_entry.is_time_dependent();
                                     let dependent_on_dudt = env_entry.is_dstatedt_dependent();
                                     let dependent_on_input = env_entry.is_input_dependent();
-                                    if !dependent_on_time && !dependent_on_input {
+                                    let dependent_on_model = env_entry.is_model_dependent();
+                                    if !dependent_on_time
+                                        && !dependent_on_input
+                                        && !dependent_on_model
+                                    {
                                         ret.constant_defns.push(built);
                                     } else if !dependent_on_time {
                                         ret.input_dep_defns.push(built);

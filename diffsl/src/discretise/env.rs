@@ -19,6 +19,7 @@ pub struct EnvVar {
     is_state_dependent: bool,
     is_dstatedt_dependent: bool,
     is_input_dependent: bool,
+    is_model_dependent: bool,
     is_algebraic: bool,
 }
 
@@ -41,6 +42,10 @@ impl EnvVar {
 
     pub fn is_input_dependent(&self) -> bool {
         self.is_input_dependent
+    }
+
+    pub fn is_model_dependent(&self) -> bool {
+        self.is_model_dependent
     }
 
     pub fn layout(&self) -> &Layout {
@@ -188,6 +193,7 @@ impl Env {
                 is_state_dependent: false,
                 is_dstatedt_dependent: false,
                 is_input_dependent: false,
+                is_model_dependent: false,
                 is_algebraic: true,
             },
         );
@@ -195,12 +201,11 @@ impl Env {
             "N".to_string(),
             EnvVar {
                 layout: ArcLayout::new(Layout::new_scalar()),
-                // `N` varies per-model at runtime (from `model_index`), so definitions that
-                // depend on it must not be treated as compile-time constants.
-                is_time_dependent: true,
+                is_time_dependent: false,
                 is_state_dependent: false,
                 is_dstatedt_dependent: false,
                 is_input_dependent: false,
+                is_model_dependent: true,
                 is_algebraic: true,
             },
         );
@@ -243,6 +248,19 @@ impl Env {
         self.is_tensor_dependent_on(tensor, "in")
     }
 
+    pub fn is_tensor_model_dependent(&self, tensor: &Tensor) -> bool {
+        if tensor.name() == "N" {
+            return true;
+        }
+        tensor.elmts().iter().any(|block| {
+            block
+                .expr()
+                .get_dependents()
+                .iter()
+                .any(|&dep| dep == "N" || self.vars[dep].is_model_dependent())
+        })
+    }
+
     pub fn is_tensor_dstatedt_dependent(&self, tensor: &Tensor) -> bool {
         self.is_tensor_dependent_on(tensor, "dudt")
     }
@@ -275,6 +293,7 @@ impl Env {
                 is_state_dependent: self.is_tensor_state_dependent(var),
                 is_dstatedt_dependent: self.is_tensor_dstatedt_dependent(var),
                 is_input_dependent: self.is_tensor_input_dependent(var),
+                is_model_dependent: self.is_tensor_model_dependent(var),
             },
         );
     }
@@ -289,6 +308,7 @@ impl Env {
                 is_state_dependent: self.is_tensor_state_dependent(var),
                 is_dstatedt_dependent: self.is_tensor_dstatedt_dependent(var),
                 is_input_dependent: self.is_tensor_input_dependent(var),
+                is_model_dependent: self.is_tensor_model_dependent(var),
             },
         );
     }

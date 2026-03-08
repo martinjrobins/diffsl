@@ -55,14 +55,14 @@ fn execute<const N: usize, M: CodegenModuleCompile + CodegenModuleJit>(
     let n = N;
     let compiler = setup::<M>(n, f_text, "execute");
     let mut data = compiler.get_new_data();
-    compiler.set_inputs(&[], data.as_mut_slice());
+    compiler.set_inputs(&[], data.as_mut_slice(), 0);
     let mut u = vec![1.0; n];
     compiler.set_u0(u.as_mut_slice(), data.as_mut_slice());
     let mut rr = vec![0.0; n];
     let t = 0.0;
 
     bencher.bench_local(|| {
-        compiler.rhs(t, &u, &mut data, &mut rr, 0);
+        compiler.rhs(t, &u, &mut data, &mut rr);
     });
 }
 

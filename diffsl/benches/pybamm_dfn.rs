@@ -35,7 +35,6 @@ fn pybamm_dfn_execute_rhs_grad<M: CodegenModuleCompile + CodegenModuleJit>(bench
             ddata.as_mut_slice(),
             rr.as_mut_slice(),
             drr.as_mut_slice(),
-            0,
         );
     });
 }
@@ -68,7 +67,7 @@ fn pybamm_dfn_execute_rhs<M: CodegenModuleCompile + CodegenModuleJit>(bencher: B
     let mut data = compiler.get_new_data();
     let mut rr = vec![0.0; n_states];
     bencher.bench_local(move || {
-        compiler.rhs(t, y.as_slice(), data.as_mut_slice(), rr.as_mut_slice(), 0);
+        compiler.rhs(t, y.as_slice(), data.as_mut_slice(), rr.as_mut_slice());
     });
 }
 

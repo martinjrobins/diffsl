@@ -37,8 +37,9 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
         pos_end: pair.as_span().end(),
     });
     match pair.as_rule() {
-        // name       = @{ 'a'..'z' ~ ("_" | 'a'..'z' | 'A'..'Z' | '0'..'9')* }
-        Rule::name => Ast {
+        // name         = @{ ... }
+        // integer_name = @{ "N" }
+        Rule::name | Rule::integer_name => Ast {
             kind: AstKind::Name(ast::Name {
                 name: pair.as_str(),
                 indice: None,
@@ -85,12 +86,13 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             }
         }
 
-        //expression = { term ~ (term_op ~ term)* }
-        Rule::expression => {
+        // expression = { term ~ (term_op ~ term)* }
+        // integer_expression = { integer_term ~ (term_op ~ integer_term)* }
+        Rule::expression | Rule::integer_expression => {
             let mut inner = pair.into_inner();
             let mut head_term = parse_value(inner.next().unwrap());
             while inner.peek().is_some() {
-                //term_op    = @{ "-"|"+" }
+                // term_op = @{ "-"|"+" }
                 let term_op = parse_sign(inner.next().unwrap());
                 let rhs_term = parse_value(inner.next().unwrap());
                 let subspan = Some(StringSpan {
@@ -109,8 +111,9 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             head_term
         }
 
-        //term       = { factor ~ (factor_op ~ factor)* }
-        Rule::term => {
+        // term = { factor ~ (factor_op ~ factor)* }
+        // integer_term = { integer_factor ~ (integer_factor_op ~ integer_factor)* }
+        Rule::term | Rule::integer_term => {
             let mut inner = pair.into_inner();
             let mut head_factor = parse_value(inner.next().unwrap());
             while inner.peek().is_some() {
@@ -132,8 +135,9 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             head_factor
         }
 
-        // factor     = { sign? ~ (call | name | real | integer | "(" ~ expression ~ ")" ) }
-        Rule::factor => {
+        // factor = { sign? ~ (call | real | integer | name_ij_index | name_ij | "(" ~ expression ~ ")" ) }
+        // integer_factor = { sign? ~ ( integer | name | "(" ~ integer_expression ~ ")" ) }
+        Rule::factor | Rule::integer_factor => {
             let mut inner = pair.into_inner();
             let sign = if inner.peek().unwrap().as_rule() == Rule::sign {
                 Some(parse_sign(inner.next().unwrap()))
@@ -152,7 +156,7 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
             }
         }
 
-        // name_ij_index = ${ name_ij ~ "[" ~ indice ~ "]" }
+        // name_ij_index = ${ name_ij ~ "[" ~ index_indice ~ "]" }
         Rule::name_ij_index => {
             let mut inner = pair.into_inner();
             let mut name_ij = parse_value(inner.next().unwrap());
@@ -232,7 +236,8 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
         }
 
         // indice      = { integer ~ ( range_sep ~ integer )? }
-        Rule::indice => {
+        // index_indice = { integer_expression ~ ( range_sep ~ integer_expression )? }
+        Rule::indice | Rule::index_indice => {
             let mut inner = pair.into_inner();
             let first = Box::new(parse_value(inner.next().unwrap()));
             if inner.peek().is_some() {
@@ -487,5 +492,65 @@ mod tests {
             .unwrap();
         assert_eq!(assignment.name, "y");
         assert_eq!(assignment.expr.to_string(), "3");
+    }
+
+    #[test]
+    fn index_expression_with_modulo() {
+        const TEXT: &str = "
+            amp_i { 0, 10 }
+            u_i { x = 1, tclock = 0 }
+            F_i { amp_i[((N + 4 / 2) * 3 - 1) % 2] - x, 1 }
+            stop_i { 10 - tclock }
+        ";
+        let model = parse_string(TEXT).unwrap();
+        assert_eq!(model.tensors.len(), 4);
+        let f_tensor = model.tensors[2].kind.as_tensor().unwrap();
+        let f_expr = f_tensor.elmts()[0]
+            .kind
+            .as_tensor_elmt()
+            .unwrap()
+            .expr
+            .to_string();
+        assert!(f_expr.contains("%"));
+    }
+
+    #[test]
+    fn float_not_allowed_in_integer_expression_index() {
+        const TEXT: &str = "
+            amp_i { 0, 10 }
+            u_i { x = 1, tclock = 0 }
+            F_i { amp_i[N % 1.1] - x, 1 }
+            stop_i { 10 - tclock }
+        ";
+        assert!(parse_string(TEXT).is_err());
+    }
+
+    #[test]
+    fn non_n_name_not_allowed_in_integer_expression_index() {
+        const TEXT: &str = "
+            amp_i { 0, 10 }
+            u_i { x = 1, tclock = 0 }
+            F_i { amp_i[x % 2] - x, 1 }
+            stop_i { 10 - tclock }
+        ";
+        assert!(parse_string(TEXT).is_err());
+    }
+
+    #[test]
+    fn slice_index_still_parses() {
+        const TEXT: &str = "
+            a_i { 0.0, 1.0, 2.0, 3.0 }
+            r_i { a_i[1:3] }
+        ";
+        let model = parse_string(TEXT).unwrap();
+        assert_eq!(model.tensors.len(), 2);
+        let r_tensor = model.tensors[1].kind.as_tensor().unwrap();
+        let expr = r_tensor.elmts()[0]
+            .kind
+            .as_tensor_elmt()
+            .unwrap()
+            .expr
+            .to_string();
+        assert!(expr.contains("[1:3]"));
     }
 }

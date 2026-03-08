@@ -333,7 +333,7 @@ macro_rules! define_external_test {
         }
 
         #[no_mangle]
-        pub unsafe extern "C" fn set_inputs(inputs: *const $ty, data: *mut $ty) {
+        pub unsafe extern "C" fn set_inputs(inputs: *const $ty, data: *mut $ty, _model_index: u32) {
             if inputs.is_null() || data.is_null() {
                 return;
             }
@@ -354,6 +354,7 @@ macro_rules! define_external_test {
             dinputs: *const $ty,
             _data: *const $ty,
             ddata: *mut $ty,
+            _model_index: u32,
         ) {
             if dinputs.is_null() || ddata.is_null() {
                 return;
@@ -367,6 +368,7 @@ macro_rules! define_external_test {
             dinputs: *mut $ty,
             _data: *const $ty,
             ddata: *mut $ty,
+            _model_index: u32,
         ) {
             if dinputs.is_null() || ddata.is_null() {
                 return;
@@ -390,7 +392,7 @@ macro_rules! define_external_test {
 
             let mut data = vec![-1.0 as $ty; n_data];
             let inputs = vec![1.0 as $ty; n_inputs];
-            compiler.set_inputs(&inputs, &mut data);
+            compiler.set_inputs(&inputs, &mut data, 0);
 
             let mut inputs_out = vec![-2.0 as $ty; n_inputs];
             compiler.get_inputs(&mut inputs_out, &data);
@@ -433,21 +435,13 @@ macro_rules! define_external_test {
             assert_eq!(ddata[0], 0.0 as $ty);
 
             let mut dinputs = vec![1.0 as $ty; n_inputs];
-            compiler.set_inputs_grad(&inputs, &dinputs, &data, &mut ddata);
+            compiler.set_inputs_grad(&inputs, &dinputs, &data, &mut ddata, 0);
             assert_eq!(ddata[0], 1.0 as $ty);
 
             let mut du_rev = vec![-11.0 as $ty; n_states];
             let mut ddata_rev = vec![-12.0 as $ty; n_data];
             let mut drr_rev = vec![1.0 as $ty; n_states];
-            compiler.rhs_rgrad(
-                0.0 as $ty,
-                &u,
-                &mut du_rev,
-                &data,
-                &mut ddata_rev,
-                &rr,
-                &mut drr_rev,
-            );
+            compiler.rhs_rgrad(0.0 as $ty, &u, &mut du_rev, &data, &mut ddata_rev, &rr, &mut drr_rev);
             assert_eq!(du_rev[0], -12.0 as $ty);
             assert_eq!(ddata_rev[0], -12.0 as $ty);
 
@@ -457,18 +451,10 @@ macro_rules! define_external_test {
             assert_eq!(dv[0], -12.0 as $ty);
 
             let mut dout_rev = vec![1.0 as $ty; n_outputs];
-            compiler.calc_out_rgrad(
-                0.0 as $ty,
-                &u,
-                &mut du_rev,
-                &data,
-                &mut ddata_rev,
-                &out,
-                &mut dout_rev,
-            );
+            compiler.calc_out_rgrad(0.0 as $ty, &u, &mut du_rev, &data, &mut ddata_rev, &out, &mut dout_rev);
             assert_eq!(du_rev[0], -11.0 as $ty);
 
-            compiler.set_inputs_rgrad(&inputs, &mut dinputs, &data, &mut ddata_rev);
+            compiler.set_inputs_rgrad(&inputs, &mut dinputs, &data, &mut ddata_rev, 0);
             assert_eq!(dinputs[0], -11.0 as $ty);
 
             let mut ddata_s = vec![-14.0 as $ty; n_data];

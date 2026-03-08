@@ -19,6 +19,7 @@ pub struct EnvVar {
     is_state_dependent: bool,
     is_dstatedt_dependent: bool,
     is_input_dependent: bool,
+    is_model_dependent: bool,
     is_algebraic: bool,
 }
 
@@ -43,6 +44,10 @@ impl EnvVar {
         self.is_input_dependent
     }
 
+    pub fn is_model_dependent(&self) -> bool {
+        self.is_model_dependent
+    }
+
     pub fn layout(&self) -> &Layout {
         self.layout.as_ref()
     }
@@ -57,6 +62,127 @@ pub struct Env {
 }
 
 impl Env {
+    fn eval_const_integer_expr(expr: &Ast) -> Option<i64> {
+        match &expr.kind {
+            AstKind::Integer(v) => Some(*v),
+            AstKind::Number(v) => {
+                if v.fract() == 0.0 {
+                    Some(*v as i64)
+                } else {
+                    None
+                }
+            }
+            AstKind::Monop(op) => {
+                let child = Self::eval_const_integer_expr(op.child.as_ref())?;
+                match op.op {
+                    '+' => Some(child),
+                    '-' => child.checked_neg(),
+                    _ => None,
+                }
+            }
+            AstKind::Binop(op) => {
+                let left = Self::eval_const_integer_expr(op.left.as_ref())?;
+                let right = Self::eval_const_integer_expr(op.right.as_ref())?;
+                match op.op {
+                    '+' => left.checked_add(right),
+                    '-' => left.checked_sub(right),
+                    '*' => left.checked_mul(right),
+                    '/' => {
+                        if right == 0 {
+                            None
+                        } else {
+                            Some(left / right)
+                        }
+                    }
+                    '%' => {
+                        if right == 0 {
+                            None
+                        } else {
+                            Some(left % right)
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn eval_integer_expr_with_n(expr: &Ast, n: i64) -> Option<i64> {
+        match &expr.kind {
+            AstKind::Integer(v) => Some(*v),
+            AstKind::Number(v) => {
+                if v.fract() == 0.0 {
+                    Some(*v as i64)
+                } else {
+                    None
+                }
+            }
+            AstKind::Name(name) => {
+                if name.name == "N" {
+                    Some(n)
+                } else {
+                    None
+                }
+            }
+            AstKind::Monop(op) => {
+                let child = Self::eval_integer_expr_with_n(op.child.as_ref(), n)?;
+                match op.op {
+                    '+' => Some(child),
+                    '-' => child.checked_neg(),
+                    _ => None,
+                }
+            }
+            AstKind::Binop(op) => {
+                let left = Self::eval_integer_expr_with_n(op.left.as_ref(), n)?;
+                let right = Self::eval_integer_expr_with_n(op.right.as_ref(), n)?;
+                match op.op {
+                    '+' => left.checked_add(right),
+                    '-' => left.checked_sub(right),
+                    '*' => left.checked_mul(right),
+                    '/' => {
+                        if right == 0 {
+                            None
+                        } else {
+                            Some(left / right)
+                        }
+                    }
+                    '%' => {
+                        if right == 0 {
+                            None
+                        } else {
+                            Some(left % right)
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn eval_constant_range_width(start: &Ast, end: &Ast) -> Option<i64> {
+        if let (Some(first), Some(last)) = (
+            Self::eval_const_integer_expr(start),
+            Self::eval_const_integer_expr(end),
+        ) {
+            return last.checked_sub(first);
+        }
+
+        let mut width = None;
+        for n in [0_i64, 1, 2, 3, 7, 16] {
+            let first_n = Self::eval_integer_expr_with_n(start, n)?;
+            let last_n = Self::eval_integer_expr_with_n(end, n)?;
+            let width_n = last_n.checked_sub(first_n)?;
+            match width {
+                Some(prev) if prev != width_n => return None,
+                Some(_) => {}
+                None => width = Some(width_n),
+            }
+        }
+        width
+    }
+
     pub fn new() -> Self {
         let mut vars = HashMap::new();
         vars.insert(
@@ -67,6 +193,19 @@ impl Env {
                 is_state_dependent: false,
                 is_dstatedt_dependent: false,
                 is_input_dependent: false,
+                is_model_dependent: false,
+                is_algebraic: true,
+            },
+        );
+        vars.insert(
+            "N".to_string(),
+            EnvVar {
+                layout: ArcLayout::new(Layout::new_scalar()),
+                is_time_dependent: false,
+                is_state_dependent: false,
+                is_dstatedt_dependent: false,
+                is_input_dependent: false,
+                is_model_dependent: true,
                 is_algebraic: true,
             },
         );
@@ -109,6 +248,19 @@ impl Env {
         self.is_tensor_dependent_on(tensor, "in")
     }
 
+    pub fn is_tensor_model_dependent(&self, tensor: &Tensor) -> bool {
+        if tensor.name() == "N" {
+            return true;
+        }
+        tensor.elmts().iter().any(|block| {
+            block
+                .expr()
+                .get_dependents()
+                .iter()
+                .any(|&dep| dep == "N" || self.vars[dep].is_model_dependent())
+        })
+    }
+
     pub fn is_tensor_dstatedt_dependent(&self, tensor: &Tensor) -> bool {
         self.is_tensor_dependent_on(tensor, "dudt")
     }
@@ -141,6 +293,7 @@ impl Env {
                 is_state_dependent: self.is_tensor_state_dependent(var),
                 is_dstatedt_dependent: self.is_tensor_dstatedt_dependent(var),
                 is_input_dependent: self.is_tensor_input_dependent(var),
+                is_model_dependent: self.is_tensor_model_dependent(var),
             },
         );
     }
@@ -155,6 +308,7 @@ impl Env {
                 is_state_dependent: self.is_tensor_state_dependent(var),
                 is_dstatedt_dependent: self.is_tensor_dstatedt_dependent(var),
                 is_input_dependent: self.is_tensor_input_dependent(var),
+                is_model_dependent: self.is_tensor_model_dependent(var),
             },
         );
     }
@@ -280,32 +434,79 @@ impl Env {
             // if the indice is a single integer then the resulting layout is a scalar
             if indice.sep.is_none() {
                 let mut new_layout = Layout::new_scalar();
-                let first = indice.first.kind.as_integer().unwrap();
-                let last = first + 1;
+                let (first, last) =
+                    if let Some(first) = Self::eval_const_integer_expr(indice.first.as_ref()) {
+                        (first, first + 1)
+                    } else {
+                        // Dynamic integer indices (e.g. involving N) cannot be resolved at compile time.
+                        // Conservatively keep dependencies for the full 1D extent.
+                        let axis = layout_permuted
+                            .shape()
+                            .iter()
+                            .position(|&d| d != 1)
+                            .unwrap_or(0);
+                        let dim = *layout_permuted.shape().get(axis).unwrap_or(&1);
+                        (0, i64::try_from(dim).unwrap())
+                    };
                 new_layout.filter_deps_from(layout_permuted, first, last);
                 return Some(new_layout);
             } else {
                 // if the indice is a range then the resulting layout is a dense layout with shape given by the range
                 // along the only non-unit dimension of the variable
-                let first = indice.first.kind.as_integer().unwrap();
-                let last = indice.last.as_ref().unwrap().kind.as_integer().unwrap();
-                // make sure the range is valid
-                if last < first {
+                let end_expr = indice.last.as_ref().unwrap().as_ref();
+                let Some(width) = Self::eval_constant_range_width(indice.first.as_ref(), end_expr)
+                else {
                     self.errs.push(ValidationError::new(
-                        format!(
-                            "invalid range indice: start {} is greater than end {}",
-                            first, last
-                        ),
+                        "range indice width must be an integer constant (independent of N)"
+                            .to_string(),
+                        ast.span,
+                    ));
+                    return None;
+                };
+                // make sure the range is valid
+                if width < 0 {
+                    self.errs.push(ValidationError::new(
+                        format!("invalid range indice: width {} is negative", width),
                         ast.span,
                     ));
                     return None;
                 }
-                let dim = usize::try_from(last - first).unwrap();
+                let dim = usize::try_from(width).unwrap();
                 let shape = layout_permuted
                     .shape()
                     .map(|&d| if d != 1 { dim } else { 1 });
                 let mut new_layout = Layout::new_dense(Shape::from(shape));
-                new_layout.filter_deps_from(layout_permuted, first, last);
+                let first_const = Self::eval_const_integer_expr(indice.first.as_ref());
+                if let Some(first) = first_const {
+                    let last = first + width;
+                    new_layout.filter_deps_from(layout_permuted, first, last);
+                } else if dim != 0 {
+                    // For dynamic starts (e.g. N:N+2), union dependencies over all valid windows.
+                    let axis = layout_permuted
+                        .shape()
+                        .iter()
+                        .position(|&d| d != 1)
+                        .unwrap_or(0);
+                    let source_dim =
+                        i64::try_from(*layout_permuted.shape().get(axis).unwrap_or(&1)).unwrap();
+                    let max_start = source_dim.saturating_sub(width);
+                    let mut merged_layout: Option<Layout> = None;
+                    for start in 0..=max_start {
+                        let mut window_layout = Layout::new_dense(new_layout.shape().clone());
+                        window_layout.filter_deps_from(
+                            layout_permuted.clone(),
+                            start,
+                            start + width,
+                        );
+                        merged_layout = Some(match merged_layout {
+                            Some(accumulated) => accumulated.union(window_layout),
+                            None => window_layout,
+                        });
+                    }
+                    if let Some(merged_layout) = merged_layout {
+                        new_layout = merged_layout;
+                    }
+                }
                 return Some(new_layout);
             }
         }

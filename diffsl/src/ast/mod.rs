@@ -580,10 +580,18 @@ impl<'a> Ast<'a> {
             }
             AstKind::CallArg(arg) => Self::new_call_arg(arg.name, arg.expression.tangent()),
             AstKind::Name(name) => {
-                if name.name == "t" {
+                if name.name == "t" || name.name == "N" {
                     Self::new_number(0.0)
                 } else {
-                    Self::new_name(name.name, name.indices.clone(), true)
+                    Ast {
+                        kind: AstKind::Name(Name {
+                            name: name.name,
+                            indices: name.indices.clone(),
+                            indice: name.indice.clone(),
+                            is_tangent: true,
+                        }),
+                        span: self.span,
+                    }
                 }
             }
             AstKind::Number(_) => Self::new_number(0.0),
@@ -883,9 +891,10 @@ impl<'a> Ast<'a> {
             AstKind::Name(found_name) => {
                 // if the name is indexed by a single indice, don't add that index to the list
                 if let Some(indice) = &found_name.indice {
-                    let indice = indice.as_ref().kind.as_indice().unwrap();
-                    if indice.sep.is_none() || indice.last.is_none() {
-                        return;
+                    if let Some(indice) = indice.as_ref().kind.as_indice() {
+                        if indice.sep.is_none() || indice.last.is_none() {
+                            return;
+                        }
                     }
                 }
                 indices.extend(found_name.indices.iter().cloned());

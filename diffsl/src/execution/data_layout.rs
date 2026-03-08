@@ -44,6 +44,12 @@ impl DataLayout {
         // add layout info for "t"
         let t_layout = ArcLayout::new(Layout::new_scalar());
         layout_map.insert("t".to_string(), t_layout);
+        is_constant_map.insert("t".to_string(), false);
+
+        // add layout info for model index "N"
+        let n_layout = ArcLayout::new(Layout::new_scalar());
+        layout_map.insert("N".to_string(), n_layout);
+        is_constant_map.insert("N".to_string(), false);
 
         let mut add_tensor = |tensor: &Tensor, in_data: bool, in_constants: bool| {
             // insert the data (non-zeros) for each tensor

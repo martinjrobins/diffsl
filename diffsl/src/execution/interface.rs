@@ -168,12 +168,23 @@ pub type GetDimsFunc = unsafe extern "C" fn(
     stop: *mut UIntType,
     has_mass: *mut UIntType,
 );
-pub type SetInputsFunc<T> = unsafe extern "C" fn(inputs: *const T, data: *mut T);
+pub type SetInputsFunc<T> =
+    unsafe extern "C" fn(inputs: *const T, data: *mut T, model_index: UIntType);
 pub type GetInputsFunc<T> = unsafe extern "C" fn(inputs: *mut T, data: *const T);
-pub type SetInputsGradFunc<T> =
-    unsafe extern "C" fn(inputs: *const T, dinputs: *const T, data: *const T, ddata: *mut T);
-pub type SetInputsRevGradFunc<T> =
-    unsafe extern "C" fn(inputs: *const T, dinputs: *mut T, data: *const T, ddata: *mut T);
+pub type SetInputsGradFunc<T> = unsafe extern "C" fn(
+    inputs: *const T,
+    dinputs: *const T,
+    data: *const T,
+    ddata: *mut T,
+    model_index: UIntType,
+);
+pub type SetInputsRevGradFunc<T> = unsafe extern "C" fn(
+    inputs: *const T,
+    dinputs: *mut T,
+    data: *const T,
+    ddata: *mut T,
+    model_index: UIntType,
+);
 pub type SetIdFunc<T> = unsafe extern "C" fn(id: *mut T);
 pub type GetTensorFunc<T> =
     unsafe extern "C" fn(data: *const T, tensor_data: *mut *mut T, tensor_size: *mut UIntType);

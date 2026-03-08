@@ -35,6 +35,7 @@ pub struct CraneliftModule<M: Module> {
 
     indices_id: DataId,
     constants_id: DataId,
+    model_index_id: DataId,
     thread_counter: Option<DataId>,
 
     //triple: Triple,
@@ -300,10 +301,23 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.real_ptr_type,
             self.real_ptr_type,
+            self.int_type,
         ];
-        let arg_names = &["inputs", "dinputs", "data", "ddata"];
+        let arg_names = &["inputs", "dinputs", "data", "ddata", "model_index"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+            let model_index_ptr = codegen
+                .builder
+                .ins()
+                .global_value(codegen.int_ptr_type, codegen.model_index_global);
+            let model_index = codegen
+                .builder
+                .use_var(*codegen.variables.get("model_index").unwrap());
+            codegen
+                .builder
+                .ins()
+                .store(codegen.mem_flags, model_index, model_index_ptr, 0);
 
             let base_data_ptr = codegen.variables.get("ddata").unwrap();
             let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
@@ -426,6 +440,11 @@ impl<M: Module> CraneliftModule<M> {
         let indices_id = module.declare_data("indices", Linkage::Local, false, false)?;
         module.define_data(indices_id, &data_description)?;
 
+        let mut data_description = DataDescription::new();
+        data_description.define_zeroinit(int_type.bytes().try_into().unwrap());
+        let model_index_id = module.declare_data("model_index", Linkage::Local, true, false)?;
+        module.define_data(model_index_id, &data_description)?;
+
         let mut thread_counter = None;
         if threaded {
             let mut data_description = DataDescription::new();
@@ -442,6 +461,7 @@ impl<M: Module> CraneliftModule<M> {
             module: Mutex::new(module),
             indices_id,
             constants_id,
+            model_index_id,
             int_type,
             real_type: real_type_cranelift,
             real_ptr_type: ptr_type,
@@ -634,7 +654,6 @@ impl<M: Module> CraneliftModule<M> {
             // F
             let res = *codegen.variables.get("rr").unwrap();
             codegen.jit_compile_tensor(model.rhs(), Some(res), false)?;
-
             codegen.builder.ins().return_(&[]);
             codegen.builder.finalize();
         }
@@ -784,10 +803,22 @@ impl<M: Module> CraneliftModule<M> {
     }
 
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
-        let arg_types = &[self.real_ptr_type, self.real_ptr_type];
-        let arg_names = &["inputs", "data"];
+        let arg_types = &[self.real_ptr_type, self.real_ptr_type, self.int_type];
+        let arg_names = &["inputs", "data", "model_index"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+            let model_index_ptr = codegen
+                .builder
+                .ins()
+                .global_value(codegen.int_ptr_type, codegen.model_index_global);
+            let model_index = codegen
+                .builder
+                .use_var(*codegen.variables.get("model_index").unwrap());
+            codegen
+                .builder
+                .ins()
+                .store(codegen.mem_flags, model_index, model_index_ptr, 0);
 
             let base_data_ptr = codegen.variables.get("data").unwrap();
             let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
@@ -1025,6 +1056,7 @@ struct CraneliftCodeGen<'a, M: Module> {
     layout: &'a DataLayout,
     indices: GlobalValue,
     constants: GlobalValue,
+    model_index_global: GlobalValue,
     threaded: bool,
 }
 
@@ -1119,6 +1151,20 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             }
             AstKind::Number(value) => Ok(self.fconst(*value)),
             AstKind::Name(iname) => {
+                if iname.name == "N" {
+                    if iname.is_tangent {
+                        return Ok(self.fconst(0.0));
+                    }
+                    let var = self
+                        .variables
+                        .get("model_index")
+                        .ok_or_else(|| anyhow!("N used where model_index is unavailable"))?;
+                    let model_index = self.builder.use_var(*var);
+                    return Ok(self
+                        .builder
+                        .ins()
+                        .fcvt_from_sint(self.real_type, model_index));
+                }
                 let ptr = if iname.is_tangent {
                     // tangent of a constant is zero
                     if self.layout.is_constant(iname.name) {
@@ -1149,11 +1195,12 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                             .position(|x| x == c)
                             .unwrap_or(elmt.indices().len());
                         // if we are indexing, add the start indice to index[pi]
-                        if let Some(indice) =
-                            iname.indice.as_ref().map(|i| i.kind.as_indice().unwrap())
-                        {
-                            let start = indice.first.as_ref().kind.as_integer().unwrap();
-                            let start_intval = self.builder.ins().iconst(self.int_type, start);
+                        if let Some(indice_ast) = iname.indice.as_ref() {
+                            let Some(indice) = indice_ast.kind.as_indice() else {
+                                return Err(anyhow!("invalid index expression '{}'", indice_ast));
+                            };
+                            let start_intval =
+                                self.jit_compile_integer_expr(indice.first.as_ref())?;
                             // if we are indexing a single element, the index may be out of bounds
                             let index_pi = if pi >= index.len() {
                                 self.builder.ins().iconst(self.int_type, 0)
@@ -1163,7 +1210,12 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                             let index_pi = self.builder.ins().iadd(start_intval, index_pi);
                             iname_index.push(index_pi);
                         } else {
-                            iname_index.push(index[pi]);
+                            let index_pi = if pi >= index.len() {
+                                self.builder.ins().iconst(self.int_type, 0)
+                            } else {
+                                index[pi]
+                            };
+                            iname_index.push(index_pi);
                         }
                         no_transform = no_transform && pi == i;
                     }
@@ -1314,6 +1366,56 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             AstKind::Slice(_) => todo!(),
             AstKind::Integer(_) => todo!(),
             _ => panic!("unexprected astkind"),
+        }
+    }
+
+    fn jit_compile_integer_expr(&mut self, expr: &Ast) -> Result<Value> {
+        match &expr.kind {
+            AstKind::Integer(value) => Ok(self.builder.ins().iconst(self.int_type, *value)),
+            AstKind::Number(value) => {
+                if value.fract() != 0.0 {
+                    return Err(anyhow!(
+                        "non-integer value '{}' in integer expression",
+                        value
+                    ));
+                }
+                Ok(self.builder.ins().iconst(self.int_type, *value as i64))
+            }
+            AstKind::Name(iname) => {
+                if iname.name == "N" {
+                    let var = self
+                        .variables
+                        .get("model_index")
+                        .ok_or_else(|| anyhow!("N used where model_index is unavailable"))?;
+                    Ok(self.builder.use_var(*var))
+                } else {
+                    Err(anyhow!(
+                        "unsupported name '{}' in integer expression",
+                        iname.name
+                    ))
+                }
+            }
+            AstKind::Monop(monop) => {
+                let child = self.jit_compile_integer_expr(monop.child.as_ref())?;
+                match monop.op {
+                    '+' => Ok(child),
+                    '-' => Ok(self.builder.ins().ineg(child)),
+                    _ => Err(anyhow!("unknown integer unary op '{}'", monop.op)),
+                }
+            }
+            AstKind::Binop(binop) => {
+                let lhs = self.jit_compile_integer_expr(binop.left.as_ref())?;
+                let rhs = self.jit_compile_integer_expr(binop.right.as_ref())?;
+                match binop.op {
+                    '+' => Ok(self.builder.ins().iadd(lhs, rhs)),
+                    '-' => Ok(self.builder.ins().isub(lhs, rhs)),
+                    '*' => Ok(self.builder.ins().imul(lhs, rhs)),
+                    '/' => Ok(self.builder.ins().sdiv(lhs, rhs)),
+                    '%' => Ok(self.builder.ins().srem(lhs, rhs)),
+                    _ => Err(anyhow!("unknown integer binary op '{}'", binop.op)),
+                }
+            }
+            _ => Err(anyhow!("unsupported integer expression '{}'", expr)),
         }
     }
 
@@ -2254,6 +2356,12 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             .unwrap()
             .declare_data_in_func(module.constants_id, builder.func);
 
+        let model_index_global = module
+            .module
+            .lock()
+            .unwrap()
+            .declare_data_in_func(module.model_index_id, builder.func);
+
         // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
 
@@ -2286,12 +2394,26 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             functions: HashMap::new(),
             layout: &module.layout,
             threaded: module.threaded,
+            model_index_global,
         };
 
         // insert arg vars
         for (i, (arg_name, arg_type)) in arg_names.iter().zip(arg_types.iter()).enumerate() {
             let val = codegen.builder.block_params(entry_block)[i];
             codegen.declare_variable(*arg_type, arg_name, val);
+        }
+
+        if !codegen.variables.contains_key("model_index") {
+            let model_index_ptr = codegen
+                .builder
+                .ins()
+                .global_value(codegen.int_ptr_type, codegen.model_index_global);
+            let model_index =
+                codegen
+                    .builder
+                    .ins()
+                    .load(codegen.int_type, codegen.mem_flags, model_index_ptr, 0);
+            codegen.declare_variable(codegen.int_type, "model_index", model_index);
         }
 
         // insert u if it exists in args

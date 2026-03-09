@@ -297,6 +297,21 @@ macro_rules! define_external_test {
         }
 
         #[no_mangle]
+        pub unsafe extern "C" fn reset(
+            _time: $ty,
+            u: *const $ty,
+            _data: *mut $ty,
+            reset: *mut $ty,
+            _thread_id: u32,
+            _thread_dim: u32,
+        ) {
+            if u.is_null() || reset.is_null() {
+                return;
+            }
+            *reset = (2.0 as $ty) * *u;
+        }
+
+        #[no_mangle]
         pub unsafe extern "C" fn set_id(id: *mut $ty) {
             if !id.is_null() {
                 *id = 42.0 as $ty;
@@ -413,6 +428,10 @@ macro_rules! define_external_test {
             let mut stop = vec![-5.0 as $ty; n_stop];
             compiler.calc_stop(0.0 as $ty, &u, &mut data, &mut stop);
             assert_eq!(stop[0], 0.5 as $ty);
+
+            let mut reset = vec![-5.5 as $ty; n_states];
+            compiler.reset(0.0 as $ty, &u, &mut data, &mut reset);
+            assert_eq!(reset[0], 2.0 as $ty);
 
             let mut mv = vec![-6.0 as $ty; n_states];
             compiler.mass(0.0 as $ty, &u, &mut data, &mut mv);

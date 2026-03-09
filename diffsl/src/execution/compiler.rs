@@ -429,6 +429,26 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         });
     }
 
+    pub fn reset(&self, t: T, yy: &[T], data: &mut [T], reset: &mut [T]) {
+        if reset.is_empty() {
+            return;
+        }
+
+        self.check_state_len(yy, "yy");
+        self.check_state_len(reset, "reset");
+        self.check_data_len(data, "data");
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_functions.reset)(
+                t,
+                yy.as_ptr(),
+                data.as_ptr() as *mut T,
+                reset.as_ptr() as *mut T,
+                i,
+                dim,
+            )
+        });
+    }
+
     pub fn rhs(&self, t: T, yy: &[T], data: &mut [T], rr: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
@@ -1016,6 +1036,8 @@ mod tests {
     }
 
     generate_tests!(test_stop);
+    generate_tests!(test_reset);
+    generate_tests!(test_reset_without_reset_tensor_is_noop);
 
     #[allow(dead_code)]
     fn test_stop<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>() {
@@ -1066,6 +1088,103 @@ mod tests {
         );
         assert_relative_eq!(stop[0], T::from_f64(0.5).unwrap());
         assert_eq!(stop.len(), 1);
+    }
+
+    #[allow(dead_code)]
+    fn test_reset<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>() {
+        let full_text = "
+        u_i {
+            y = 1,
+            z = 2,
+        }
+        dudt_i {
+            dydt = 0,
+            dzdt = 0,
+        }
+        M_i {
+            dydt,
+            dzdt,
+        }
+        F_i {
+            y,
+            z,
+        }
+        reset_i {
+            2 * y,
+            z + 10,
+        }
+        stop_i {
+            y - 0.5,
+        }
+        out_i {
+            y,
+            z,
+        }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
+
+        let mut u0 = vec![T::zero(), T::zero()];
+        let mut reset = vec![T::zero(), T::zero()];
+        let mut data = compiler.get_new_data();
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        compiler.reset(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            reset.as_mut_slice(),
+        );
+
+        assert_relative_eq!(u0[0], T::from_f64(1.0).unwrap());
+        assert_relative_eq!(u0[1], T::from_f64(2.0).unwrap());
+        assert_relative_eq!(reset[0], T::from_f64(2.0).unwrap());
+        assert_relative_eq!(reset[1], T::from_f64(12.0).unwrap());
+        assert_eq!(reset.len(), 2);
+    }
+
+    #[allow(dead_code)]
+    fn test_reset_without_reset_tensor_is_noop<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq,
+    >() {
+        let full_text = "
+        u_i {
+            y = 1,
+        }
+        F_i {
+            y,
+        }
+        out_i {
+            y,
+        }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
+
+        let mut u0 = vec![T::zero()];
+        let mut reset: Vec<T> = vec![];
+        let mut data = compiler.get_new_data();
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+
+        compiler.reset(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            reset.as_mut_slice(),
+        );
+        assert_eq!(reset.len(), 0);
     }
 
     generate_tests!(test_out_depends_on_internal_tensor);

@@ -477,6 +477,7 @@ impl<M: Module> CraneliftModule<M> {
 
         let set_u0 = ret.compile_set_u0(model)?;
         let _calc_stop = ret.compile_calc_stop(model)?;
+        let _reset = ret.compile_reset(model)?;
         let rhs = ret.compile_rhs(model)?;
         let _mass = ret.compile_mass(model)?;
         let calc_out = ret.compile_calc_out(model)?;
@@ -621,6 +622,47 @@ impl<M: Module> CraneliftModule<M> {
             codegen.builder.finalize();
         }
         self.declare_function("calc_stop")
+    }
+
+    fn compile_reset(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+        let arg_types = &[
+            self.real_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.int_type,
+            self.int_type,
+        ];
+        let arg_names = &["t", "u", "data", "reset", "threadId", "threadDim"];
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+            if let Some(reset) = model.reset() {
+                let mut nbarrier = 0;
+                for tensor in model.time_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                for tensor in model.state_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+                for tensor in model.state_dep_post_f_defns() {
+                    codegen.jit_compile_tensor(tensor, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                let reset_ptr = *codegen.variables.get("reset").unwrap();
+                codegen.jit_compile_tensor(reset, Some(reset_ptr), false)?;
+            }
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
+        }
+        self.declare_function("reset")
     }
 
     fn compile_rhs(&mut self, model: &DiscreteModel) -> Result<FuncId> {

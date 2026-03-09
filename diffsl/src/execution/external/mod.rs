@@ -24,6 +24,15 @@ macro_rules! define_symbol_module {
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
+                #[link_name = "reset"]
+                pub fn reset(
+                    time: $ty,
+                    u: *const $ty,
+                    data: *mut $ty,
+                    reset: *mut $ty,
+                    thread_id: UIntType,
+                    thread_dim: UIntType,
+                );
                 #[link_name = "rhs"]
                 pub fn rhs(
                     time: $ty,
@@ -283,6 +292,7 @@ impl_extern_symbols!(f64, f64_symbols, {
     "barrier_init" => barrier_init,
     "set_constants" => set_constants,
     "set_u0" => set_u0,
+    "reset" => reset,
     "rhs" => rhs,
     "rhs_grad" => rhs_grad,
     "rhs_rgrad" => rhs_rgrad,
@@ -312,6 +322,7 @@ impl_extern_symbols!(f32, f32_symbols, {
     "barrier_init" => barrier_init,
     "set_constants" => set_constants,
     "set_u0" => set_u0,
+    "reset" => reset,
     "rhs" => rhs,
     "rhs_grad" => rhs_grad,
     "rhs_rgrad" => rhs_rgrad,

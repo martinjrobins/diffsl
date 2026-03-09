@@ -43,6 +43,7 @@ pub struct DiscreteModel<'s> {
     state: Tensor<'s>,
     state_dot: Option<Tensor<'s>>,
     is_algebraic: Vec<bool>,
+    reset: Option<Tensor<'s>>,
     stop: Option<Tensor<'s>>,
     state0_input_deps: Vec<(usize, usize)>,
     dstate0_input_deps: Vec<(usize, usize)>,
@@ -82,6 +83,9 @@ impl fmt::Display for DiscreteModel<'_> {
         for defn in &self.state_dep_post_f_defns {
             writeln!(f, "{defn}")?;
         }
+        if let Some(reset) = &self.reset {
+            writeln!(f, "{reset}")?;
+        }
         if let Some(stop) = &self.stop {
             writeln!(f, "{stop}")?;
         }
@@ -111,6 +115,7 @@ impl<'s> DiscreteModel<'s> {
             state: Tensor::new_empty("u"),
             state_dot: None,
             is_algebraic: Vec::new(),
+            reset: None,
             stop: None,
             state0_input_deps: Vec::new(),
             dstate0_input_deps: Vec::new(),
@@ -317,6 +322,7 @@ impl<'s> DiscreteModel<'s> {
         let mut read_state = false;
         let mut span_f = None;
         let mut span_m = None;
+        let mut span_reset = None;
         let mut seen_f = false;
         for tensor_ast in model.tensors.iter() {
             env.set_current_span(tensor_ast.span);
@@ -420,6 +426,29 @@ impl<'s> DiscreteModel<'s> {
                                     env.errs_mut().push(ValidationError::new(
                                         "M must not be dependent on u".to_string(),
                                         span,
+                                    ));
+                                }
+                            }
+                        }
+                        "reset" => {
+                            if let Some(built) =
+                                Self::build_array(tensor, &mut env, TensorType::Other)
+                            {
+                                if !built.is_dense() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "reset must have a dense layout".to_string(),
+                                        span,
+                                    ));
+                                }
+                                span_reset = Some(span);
+                                ret.reset = Some(built);
+                            }
+
+                            if let Some(reset) = env.get("reset") {
+                                if reset.is_dstatedt_dependent() {
+                                    env.errs_mut().push(ValidationError::new(
+                                        "reset must not be dependent on dudt".to_string(),
+                                        tensor_ast.span,
                                     ));
                                 }
                             }
@@ -580,6 +609,11 @@ impl<'s> DiscreteModel<'s> {
         }
         if let Some(span) = span_m {
             Self::check_match(ret.lhs.as_ref().unwrap(), &ret.state, span, &mut env);
+        }
+        if let Some(span) = span_reset {
+            if let Some(reset) = ret.reset.as_ref() {
+                Self::check_match(reset, &ret.state, span, &mut env);
+            }
         }
 
         let map_dep = |deps: &Vec<NonZero>| -> Vec<(usize, usize)> {
@@ -820,6 +854,7 @@ impl<'s> DiscreteModel<'s> {
         let lhs = Tensor::new_no_layout("M", m_elmts, vec!['i']);
         let rhs = Tensor::new_no_layout("F", f_elmts, vec!['i']);
         let name = model.name;
+        let reset = None;
         let stop = None;
         let dstate_dep_defns = Vec::new();
         let state_dep_post_f_defns = Vec::new();
@@ -838,6 +873,7 @@ impl<'s> DiscreteModel<'s> {
             state_dep_post_f_defns,
             dstate_dep_defns,
             is_algebraic,
+            reset,
             stop,
             state0_input_deps: Vec::new(),
             dstate0_input_deps: Vec::new(),
@@ -906,6 +942,10 @@ impl<'s> DiscreteModel<'s> {
 
     pub fn stop(&self) -> Option<&Tensor<'_>> {
         self.stop.as_ref()
+    }
+
+    pub fn reset(&self) -> Option<&Tensor<'_>> {
+        self.reset.as_ref()
     }
 
     pub fn take_state0_input_deps(&mut self) -> Vec<(usize, usize)> {
@@ -1633,6 +1673,53 @@ mod tests {
         );
         assert_eq!(model.stop().unwrap().name(), "stop");
         assert_eq!(model.stop().unwrap().elmts().len(), 1);
+    }
+
+    #[test]
+    fn test_reset_requires_same_shape_as_state() {
+        let text = "
+        u_i {
+            y = 1,
+            z = 2,
+        }
+        F_i {
+            y,
+            z,
+        }
+        reset_i {
+            2 * y,
+        }
+        ";
+        let model_ds = parse_ds_string(text).unwrap();
+        let model = DiscreteModel::build("$name", &model_ds);
+        assert!(
+            model.is_err(),
+            "reset_i should be required to match the shape of u_i and F_i"
+        );
+    }
+
+    #[test]
+    fn test_reset_must_not_depend_on_dudt() {
+        let text = "
+        u_i {
+            y = 1,
+        }
+        dudt_i {
+            dydt = 0,
+        }
+        F_i {
+            y,
+        }
+        reset_i {
+            dydt,
+        }
+        ";
+        let model_ds = parse_ds_string(text).unwrap();
+        let model = DiscreteModel::build("$name", &model_ds);
+        assert!(
+            model.is_err(),
+            "reset_i should be state-dependent and must not depend on dudt_i"
+        );
     }
 
     #[test]

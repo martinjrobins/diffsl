@@ -15,6 +15,14 @@ pub type StopFunc<T> = unsafe extern "C" fn(
     thread_id: UIntType,
     thread_dim: UIntType,
 );
+pub type ResetFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *mut T,
+    reset: *mut T,
+    thread_id: UIntType,
+    thread_dim: UIntType,
+);
 pub type RhsFunc<T> = unsafe extern "C" fn(
     time: T,
     u: *const T,
@@ -193,6 +201,7 @@ pub type GetConstantFunc<T> =
 
 pub(crate) struct JitFunctions<T> {
     pub(crate) set_u0: U0Func<T>,
+    pub(crate) reset: ResetFunc<T>,
     pub(crate) rhs: RhsFunc<T>,
     pub(crate) mass: MassFunc<T>,
     pub(crate) calc_out: CalcOutFunc<T>,
@@ -211,6 +220,7 @@ impl<T> JitFunctions<T> {
         // check if all required symbols are present
         let required_symbols = [
             "set_u0",
+            "reset",
             "rhs",
             "mass",
             "calc_out",
@@ -227,6 +237,7 @@ impl<T> JitFunctions<T> {
             }
         }
         let set_u0 = unsafe { std::mem::transmute::<*const u8, U0Func<T>>(symbol_map["set_u0"]) };
+        let reset = unsafe { std::mem::transmute::<*const u8, ResetFunc<T>>(symbol_map["reset"]) };
         let rhs = unsafe { std::mem::transmute::<*const u8, RhsFunc<T>>(symbol_map["rhs"]) };
         let mass = unsafe { std::mem::transmute::<*const u8, MassFunc<T>>(symbol_map["mass"]) };
         let calc_out =
@@ -250,6 +261,7 @@ impl<T> JitFunctions<T> {
 
         Ok(Self {
             set_u0,
+            reset,
             rhs,
             mass,
             calc_out,

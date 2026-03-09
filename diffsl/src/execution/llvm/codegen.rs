@@ -290,6 +290,7 @@ impl CodegenModuleCompile for LlvmModule {
 
         let set_u0 = module.codegen_mut().compile_set_u0(model, code)?;
         let _calc_stop = module.codegen_mut().compile_calc_stop(model, code)?;
+        let _reset = module.codegen_mut().compile_reset(model, code)?;
         let rhs = module.codegen_mut().compile_rhs(model, false, code)?;
         let rhs_full = module.codegen_mut().compile_rhs(model, true, code)?;
         let mass = module.codegen_mut().compile_mass(model, code)?;
@@ -3326,6 +3327,88 @@ impl<'ctx> CodeGen<'ctx> {
 
             let res_ptr = self.get_param("root");
             self.jit_compile_tensor(stop, Some(*res_ptr), code)?;
+            let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+            self.jit_compile_call_barrier(barrier_num, total_barriers_val);
+        }
+        self.builder.build_return(None)?;
+
+        if function.verify(true) {
+            Ok(function)
+        } else {
+            function.print_to_stderr();
+            unsafe {
+                function.delete();
+            }
+            Err(anyhow!("Invalid generated function."))
+        }
+    }
+
+    pub fn compile_reset<'m>(
+        &mut self,
+        model: &'m DiscreteModel,
+        code: Option<&str>,
+    ) -> Result<FunctionValue<'ctx>> {
+        let time_dep_fn = self.ensure_time_dep_fn(model, code)?;
+        let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
+        let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
+        self.clear();
+        let fn_arg_names = &["t", "u", "data", "reset", "thread_id", "thread_dim"];
+        let function = self.add_function(
+            "reset",
+            fn_arg_names,
+            &[
+                self.real_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.real_ptr_type.into(),
+                self.int_type.into(),
+                self.int_type.into(),
+            ],
+            None,
+            false,
+        );
+
+        let alias_id = Attribute::get_named_enum_kind_id("noalias");
+        let noalign = self.context.create_enum_attribute(alias_id, 0);
+        for i in &[1, 2, 3] {
+            function.add_attribute(AttributeLoc::Param(*i), noalign);
+        }
+
+        let _basic_block = self.start_function(function, code);
+
+        for (i, arg) in function.get_param_iter().enumerate() {
+            let name = fn_arg_names[i];
+            let alloca = self.function_arg_alloca(name, arg);
+            self.insert_param(name, alloca);
+        }
+
+        self.insert_state(model.state());
+        self.insert_data(model);
+        self.insert_indices();
+
+        if let Some(reset) = model.reset() {
+            let mut nbarriers = 0;
+            let total_barriers = (model.time_dep_defns().len()
+                + model.state_dep_defns().len()
+                + model.state_dep_post_f_defns().len()
+                + 1) as u64;
+            let total_barriers_val = self.int_type.const_int(total_barriers, false);
+            if !model.time_dep_defns().is_empty() {
+                self.build_dep_call(time_dep_fn, "time_dep", nbarriers, total_barriers)?;
+                nbarriers += model.time_dep_defns().len() as u64;
+            }
+
+            if !model.state_dep_defns().is_empty() {
+                self.build_dep_call(state_dep_fn, "state_dep", nbarriers, total_barriers)?;
+                nbarriers += model.state_dep_defns().len() as u64;
+            }
+            if !model.state_dep_post_f_defns().is_empty() {
+                self.build_dep_call(state_dep_post_f_fn, "state_dep", nbarriers, total_barriers)?;
+                nbarriers += model.state_dep_post_f_defns().len() as u64;
+            }
+
+            let res_ptr = self.get_param("reset");
+            self.jit_compile_tensor(reset, Some(*res_ptr), code)?;
             let barrier_num = self.int_type.const_int(nbarriers + 1, false);
             self.jit_compile_call_barrier(barrier_num, total_barriers_val);
         }

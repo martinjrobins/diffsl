@@ -326,6 +326,7 @@ macro_rules! define_external_test {
             data: *mut u32,
             stop: *mut u32,
             has_mass: *mut u32,
+            has_reset: *mut u32,
         ) {
             if !states.is_null() {
                 *states = STATES;
@@ -344,6 +345,9 @@ macro_rules! define_external_test {
             }
             if !has_mass.is_null() {
                 *has_mass = 1;
+            }
+            if !has_reset.is_null() {
+                *has_reset = 1;
             }
         }
 
@@ -397,13 +401,15 @@ macro_rules! define_external_test {
             let compiler = Compiler::from_codegen_module(module, CompilerMode::SingleThreaded)
                 .expect("compiler should build");
 
-            let (n_states, n_inputs, n_outputs, n_data, n_stop, has_mass) = compiler.get_dims();
+            let (n_states, n_inputs, n_outputs, n_data, n_stop, has_mass, has_reset) =
+                compiler.get_dims();
             assert_eq!(n_states, STATES as usize);
             assert_eq!(n_inputs, INPUTS as usize);
             assert_eq!(n_outputs, OUTPUTS as usize);
             assert_eq!(n_data, DATA as usize);
             assert_eq!(n_stop, STOP as usize);
             assert!(has_mass);
+            assert!(has_reset);
 
             let mut data = vec![-1.0 as $ty; n_data];
             let inputs = vec![1.0 as $ty; n_inputs];

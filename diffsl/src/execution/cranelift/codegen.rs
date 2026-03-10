@@ -751,8 +751,17 @@ impl<M: Module> CraneliftModule<M> {
             self.int_ptr_type,
             self.int_ptr_type,
             self.int_ptr_type,
+            self.int_ptr_type,
         ];
-        let arg_names = &["states", "inputs", "outputs", "data", "stop", "has_mass"];
+        let arg_names = &[
+            "states",
+            "inputs",
+            "outputs",
+            "data",
+            "stop",
+            "has_mass",
+            "has_reset",
+        ];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -772,6 +781,10 @@ impl<M: Module> CraneliftModule<M> {
                 true => 1,
                 false => 0,
             };
+            let has_reset = match model.reset().is_some() {
+                true => 1,
+                false => 0,
+            };
             let data_len = i64::try_from(codegen.layout.data().len()).unwrap();
 
             for (val, name) in [
@@ -781,6 +794,7 @@ impl<M: Module> CraneliftModule<M> {
                 (data_len, "data"),
                 (number_of_stop, "stop"),
                 (has_mass, "has_mass"),
+                (has_reset, "has_reset"),
             ] {
                 let val = codegen.builder.ins().iconst(codegen.int_type, val);
                 let ptr = codegen.variables.get(name).unwrap();

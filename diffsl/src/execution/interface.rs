@@ -175,6 +175,7 @@ pub type GetDimsFunc = unsafe extern "C" fn(
     data: *mut UIntType,
     stop: *mut UIntType,
     has_mass: *mut UIntType,
+    has_reset: *mut UIntType,
 );
 pub type SetInputsFunc<T> =
     unsafe extern "C" fn(inputs: *const T, data: *mut T, model_index: UIntType);

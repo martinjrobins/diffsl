@@ -3873,11 +3873,20 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_get_dims(&mut self, model: &DiscreteModel) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let fn_arg_names = &["states", "inputs", "outputs", "data", "stop", "has_mass"];
+        let fn_arg_names = &[
+            "states",
+            "inputs",
+            "outputs",
+            "data",
+            "stop",
+            "has_mass",
+            "has_reset",
+        ];
         let function = self.add_function(
             "get_dims",
             fn_arg_names,
             &[
+                self.int_ptr_type.into(),
                 self.int_ptr_type.into(),
                 self.int_ptr_type.into(),
                 self.int_ptr_type.into(),
@@ -3913,6 +3922,10 @@ impl<'ctx> CodeGen<'ctx> {
             true => 1u64,
             false => 0u64,
         };
+        let has_reset = match model.reset().is_some() {
+            true => 1u64,
+            false => 0u64,
+        };
         let data_len = self.layout.data().len() as u64;
         self.builder.build_store(
             *self.get_param("states"),
@@ -3937,6 +3950,10 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.build_store(
             *self.get_param("has_mass"),
             self.int_type.const_int(has_mass, false),
+        )?;
+        self.builder.build_store(
+            *self.get_param("has_reset"),
+            self.int_type.const_int(has_reset, false),
         )?;
         self.builder.build_return(None)?;
 

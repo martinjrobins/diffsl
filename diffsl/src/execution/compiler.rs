@@ -29,6 +29,7 @@ pub struct Compiler<M: CodegenModule, T: Scalar> {
     number_of_stop: usize,
     data_size: usize,
     has_mass: bool,
+    has_reset: bool,
     #[cfg(feature = "rayon")]
     thread_pool: Option<ThreadPool>,
     #[cfg(not(feature = "rayon"))]
@@ -101,6 +102,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
             number_of_stop: 0,
             data_size: 0,
             has_mass: false,
+            has_reset: false,
             thread_pool: None,
             thread_lock: None,
             _module: module,
@@ -113,12 +115,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
             data_size,
             number_of_stops,
             has_mass,
+            has_reset,
         ) = ret.get_dims();
         ret.number_of_states = number_of_states;
         ret.number_of_parameters = number_of_parameters;
         ret.number_of_outputs = number_of_outputs;
         ret.number_of_stop = number_of_stops;
         ret.has_mass = has_mass;
+        ret.has_reset = has_reset;
         ret.data_size = data_size;
 
         let thread_dim = mode.thread_dim(number_of_states);
@@ -469,6 +473,10 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         self.has_mass
     }
 
+    pub fn has_reset(&self) -> bool {
+        self.has_reset
+    }
+
     pub fn mass(&self, t: T, v: &[T], data: &mut [T], mv: &mut [T]) {
         if !self.has_mass {
             panic!("Model does not have a mass function");
@@ -788,14 +796,15 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     ///
     /// # Returns
     ///
-    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data, n_stop, has_mass)`
-    pub fn get_dims(&self) -> (usize, usize, usize, usize, usize, bool) {
+    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data, n_stop, has_mass, has_reset)`
+    pub fn get_dims(&self) -> (usize, usize, usize, usize, usize, bool, bool) {
         let mut n_states = 0u32;
         let mut n_inputs = 0u32;
         let mut n_outputs = 0u32;
         let mut n_data = 0u32;
         let mut n_stop = 0u32;
         let mut has_mass = 0u32;
+        let mut has_reset = 0u32;
         unsafe {
             (self.jit_functions.get_dims)(
                 &mut n_states,
@@ -804,6 +813,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 &mut n_data,
                 &mut n_stop,
                 &mut has_mass,
+                &mut has_reset,
             )
         };
         (
@@ -813,6 +823,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
             n_data as usize,
             n_stop as usize,
             has_mass != 0,
+            has_reset != 0,
         )
     }
 
@@ -879,7 +890,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     }
 
     pub fn set_id(&self, id: &mut [T]) {
-        let (n_states, _, _, _, _, _) = self.get_dims();
+        let (n_states, _, _, _, _, _, _) = self.get_dims();
         if n_states != id.len() {
             panic!("Expected {} states, got {}", n_states, id.len());
         }
@@ -1013,12 +1024,14 @@ mod tests {
         ";
         for text in [text2, text1] {
             let compiler = Compiler::<M, T>::from_discrete_str(text, Default::default()).unwrap();
-            let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
+            let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass, has_reset) =
+                compiler.get_dims();
             assert_eq!(n_states, 1);
             assert_eq!(n_inputs, 0);
             assert_eq!(n_outputs, 1);
             assert_eq!(n_stop, 0);
             assert!(!has_mass);
+            assert!(!has_reset);
 
             let mut u0 = vec![T::zero()];
             let mut res = vec![T::zero()];
@@ -1129,6 +1142,10 @@ mod tests {
             Some(full_text),
         )
         .unwrap();
+
+        let (_n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass, has_reset) =
+            compiler.get_dims();
+        assert!(has_reset);
 
         let mut u0 = vec![T::zero(), T::zero()];
         let mut reset = vec![T::zero(), T::zero()];
@@ -1520,7 +1537,8 @@ mod tests {
         compiler: Compiler<M, T>,
         tensor_name: &str,
     ) -> Vec<Vec<T>> {
-        let (n_states, n_inputs, n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+        let (n_states, n_inputs, n_outputs, _n_data, _n_stop, _has_mass, _has_reset) =
+            compiler.get_dims();
         let mut u0 = vec![T::one(); n_states];
         let mut res = vec![T::zero(); n_states];
         let mut data = compiler.get_new_data();
@@ -2245,7 +2263,8 @@ mod tests {
         let mut dres = vec![T::zero()];
         let mut data = compiler.get_new_data();
         let mut ddata = compiler.get_new_data();
-        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass, _has_reset) =
+            compiler.get_dims();
         let inputs = vec![T::from_f64(2.).unwrap(); n_inputs];
         compiler.set_inputs(inputs.as_slice(), data.as_mut_slice(), 0);
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
@@ -2338,7 +2357,8 @@ mod tests {
         let mut u = vec![0.0; 4];
         let mut res = vec![0.0; 4];
         let mut data = compiler.get_new_data();
-        let (_n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+        let (_n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass, _has_reset) =
+            compiler.get_dims();
         compiler.set_u0(u.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(0.0, u.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         assert_relative_eq!(res.as_slice(), vec![3.0, 0.0, 0.0, 3.0].as_slice());
@@ -2384,7 +2404,8 @@ mod tests {
                 Some(full_text),
             )
             .unwrap();
-            let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass) = compiler.get_dims();
+            let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass, _has_reset) =
+                compiler.get_dims();
             assert_eq!(n_states, 2);
             assert_eq!(n_inputs, 1);
             assert_eq!(n_outputs, 3);

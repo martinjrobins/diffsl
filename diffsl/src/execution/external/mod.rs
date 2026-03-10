@@ -210,6 +210,7 @@ macro_rules! define_symbol_module {
                     data: *mut UIntType,
                     stop: *mut UIntType,
                     has_mass: *mut UIntType,
+                    has_reset: *mut UIntType,
                 );
                 #[link_name = "set_inputs"]
                 pub fn set_inputs(inputs: *const $ty, data: *mut $ty, model_index: UIntType);

@@ -32,7 +32,7 @@ fn test_dfn_model_initialization<M: CodegenModuleJit + CodegenModuleCompile>() {
     )
     .unwrap();
     let mut data = compiler.get_new_data();
-    let (n_states, n_inputs, _, _, _, _) = compiler.get_dims();
+    let (n_states, n_inputs, _, _, _, _, _) = compiler.get_dims();
     let inputs = vec![1.0; n_inputs];
     compiler.set_inputs(&inputs, &mut data, 0);
     let mut u = vec![0.0; n_states];

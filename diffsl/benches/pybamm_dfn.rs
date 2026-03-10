@@ -18,7 +18,8 @@ fn pybamm_dfn_execute_rhs_grad<M: CodegenModuleCompile + CodegenModuleJit>(bench
         Some(full_text.as_str()),
     )
     .unwrap();
-    let (n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+    let (n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass, _has_reset) =
+        compiler.get_dims();
     let t = 0.0;
     let y = vec![1.0; n_states];
     let dy = vec![0.1; n_states];
@@ -61,7 +62,8 @@ fn pybamm_dfn_execute_rhs<M: CodegenModuleCompile + CodegenModuleJit>(bencher: B
         Some(full_text.as_str()),
     )
     .unwrap();
-    let (n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+    let (n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass, _has_reset) =
+        compiler.get_dims();
     let t = 0.0;
     let y = vec![1.0; n_states];
     let mut data = compiler.get_new_data();

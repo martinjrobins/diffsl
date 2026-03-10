@@ -312,6 +312,80 @@ macro_rules! define_external_test {
         }
 
         #[no_mangle]
+        pub unsafe extern "C" fn reset_grad(
+            _time: $ty,
+            _u: *const $ty,
+            du: *const $ty,
+            _data: *const $ty,
+            ddata: *mut $ty,
+            _reset: *const $ty,
+            dreset: *mut $ty,
+            _thread_id: u32,
+            _thread_dim: u32,
+        ) {
+            if du.is_null() || ddata.is_null() || dreset.is_null() {
+                return;
+            }
+            *dreset = (2.0 as $ty) * *du;
+            *ddata = 0.0 as $ty;
+        }
+
+        #[no_mangle]
+        pub unsafe extern "C" fn reset_rgrad(
+            _time: $ty,
+            _u: *const $ty,
+            du: *mut $ty,
+            _data: *const $ty,
+            ddata: *mut $ty,
+            _reset: *const $ty,
+            dreset: *mut $ty,
+            _thread_id: u32,
+            _thread_dim: u32,
+        ) {
+            if du.is_null() || ddata.is_null() || dreset.is_null() {
+                return;
+            }
+            *du += (2.0 as $ty) * *dreset;
+            *ddata += 0.0 as $ty;
+        }
+
+        #[no_mangle]
+        pub unsafe extern "C" fn reset_sgrad(
+            _time: $ty,
+            _u: *const $ty,
+            _data: *const $ty,
+            ddata: *mut $ty,
+            _reset: *const $ty,
+            dreset: *mut $ty,
+            _thread_id: u32,
+            _thread_dim: u32,
+        ) {
+            if ddata.is_null() || dreset.is_null() {
+                return;
+            }
+            *dreset = 0.0 as $ty;
+            *ddata = 0.0 as $ty;
+        }
+
+        #[no_mangle]
+        pub unsafe extern "C" fn reset_srgrad(
+            _time: $ty,
+            _u: *const $ty,
+            _data: *const $ty,
+            ddata: *mut $ty,
+            _reset: *const $ty,
+            dreset: *mut $ty,
+            _thread_id: u32,
+            _thread_dim: u32,
+        ) {
+            if ddata.is_null() || dreset.is_null() {
+                return;
+            }
+            *dreset = 0.0 as $ty;
+            *ddata = 0.0 as $ty;
+        }
+
+        #[no_mangle]
         pub unsafe extern "C" fn set_id(id: *mut $ty) {
             if !id.is_null() {
                 *id = 42.0 as $ty;
@@ -326,6 +400,7 @@ macro_rules! define_external_test {
             data: *mut u32,
             stop: *mut u32,
             has_mass: *mut u32,
+            has_reset: *mut u32,
         ) {
             if !states.is_null() {
                 *states = STATES;
@@ -344,6 +419,9 @@ macro_rules! define_external_test {
             }
             if !has_mass.is_null() {
                 *has_mass = 1;
+            }
+            if !has_reset.is_null() {
+                *has_reset = 1;
             }
         }
 
@@ -397,13 +475,15 @@ macro_rules! define_external_test {
             let compiler = Compiler::from_codegen_module(module, CompilerMode::SingleThreaded)
                 .expect("compiler should build");
 
-            let (n_states, n_inputs, n_outputs, n_data, n_stop, has_mass) = compiler.get_dims();
+            let (n_states, n_inputs, n_outputs, n_data, n_stop, has_mass, has_reset) =
+                compiler.get_dims();
             assert_eq!(n_states, STATES as usize);
             assert_eq!(n_inputs, INPUTS as usize);
             assert_eq!(n_outputs, OUTPUTS as usize);
             assert_eq!(n_data, DATA as usize);
             assert_eq!(n_stop, STOP as usize);
             assert!(has_mass);
+            assert!(has_reset);
 
             let mut data = vec![-1.0 as $ty; n_data];
             let inputs = vec![1.0 as $ty; n_inputs];
@@ -433,6 +513,50 @@ macro_rules! define_external_test {
             compiler.reset(0.0 as $ty, &u, &mut data, &mut reset);
             assert_eq!(reset[0], 2.0 as $ty);
 
+            let du = vec![1.0 as $ty; n_states];
+            let mut ddata = vec![-8.0 as $ty; n_data];
+            let mut dreset = vec![-5.75 as $ty; n_states];
+            compiler.reset_grad(0.0 as $ty, &u, &du, &data, &mut ddata, &reset, &mut dreset);
+            assert_eq!(dreset[0], 2.0 as $ty);
+
+            let mut du_reset_rev = vec![-5.85 as $ty; n_states];
+            let mut ddata_reset_rev = vec![-5.95 as $ty; n_data];
+            let mut dreset_rev = vec![1.0 as $ty; n_states];
+            compiler.reset_rgrad(
+                0.0 as $ty,
+                &u,
+                &mut du_reset_rev,
+                &data,
+                &mut ddata_reset_rev,
+                &reset,
+                &mut dreset_rev,
+            );
+            assert!((du_reset_rev[0] - (-3.85 as $ty)).abs() < (1e-6 as $ty));
+
+            let mut ddata_reset_s = vec![-6.05 as $ty; n_data];
+            let mut dreset_s = vec![-6.15 as $ty; n_states];
+            compiler.reset_sgrad(
+                0.0 as $ty,
+                &u,
+                &data,
+                &mut ddata_reset_s,
+                &reset,
+                &mut dreset_s,
+            );
+            assert_eq!(dreset_s[0], 0.0 as $ty);
+
+            let mut ddata_reset_sr = vec![-6.25 as $ty; n_data];
+            let mut dreset_sr = vec![1.0 as $ty; n_states];
+            compiler.reset_srgrad(
+                0.0 as $ty,
+                &u,
+                &data,
+                &mut ddata_reset_sr,
+                &reset,
+                &mut dreset_sr,
+            );
+            assert_eq!(dreset_sr[0], 0.0 as $ty);
+
             let mut mv = vec![-6.0 as $ty; n_states];
             compiler.mass(0.0 as $ty, &u, &mut data, &mut mv);
             assert_eq!(mv[0], 1.0 as $ty);
@@ -441,8 +565,6 @@ macro_rules! define_external_test {
             compiler.set_id(&mut id);
             assert_eq!(id[0], 42.0 as $ty);
 
-            let du = vec![1.0 as $ty; n_states];
-            let mut ddata = vec![-8.0 as $ty; n_data];
             let mut drr = vec![-9.0 as $ty; n_states];
             compiler.rhs_grad(0.0 as $ty, &u, &du, &data, &mut ddata, &rr, &mut drr);
             assert_eq!(drr[0], -1.0 as $ty);

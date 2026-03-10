@@ -29,6 +29,7 @@ pub struct Compiler<M: CodegenModule, T: Scalar> {
     number_of_stop: usize,
     data_size: usize,
     has_mass: bool,
+    has_reset: bool,
     #[cfg(feature = "rayon")]
     thread_pool: Option<ThreadPool>,
     #[cfg(not(feature = "rayon"))]
@@ -101,6 +102,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
             number_of_stop: 0,
             data_size: 0,
             has_mass: false,
+            has_reset: false,
             thread_pool: None,
             thread_lock: None,
             _module: module,
@@ -113,12 +115,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
             data_size,
             number_of_stops,
             has_mass,
+            has_reset,
         ) = ret.get_dims();
         ret.number_of_states = number_of_states;
         ret.number_of_parameters = number_of_parameters;
         ret.number_of_outputs = number_of_outputs;
         ret.number_of_stop = number_of_stops;
         ret.has_mass = has_mass;
+        ret.has_reset = has_reset;
         ret.data_size = data_size;
 
         let thread_dim = mode.thread_dim(number_of_states);
@@ -449,6 +453,154 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn reset_grad(
+        &self,
+        t: T,
+        yy: &[T],
+        dyy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        reset: &[T],
+        dreset: &mut [T],
+    ) {
+        if dreset.is_empty() {
+            return;
+        }
+
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_state_len(reset, "reset");
+        self.check_state_len(dreset, "dreset");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_grad_functions.reset_grad)(
+                t,
+                yy.as_ptr(),
+                dyy.as_ptr(),
+                data.as_ptr(),
+                ddata.as_ptr() as *mut T,
+                reset.as_ptr(),
+                dreset.as_ptr() as *mut T,
+                i,
+                dim,
+            )
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reset_rgrad(
+        &self,
+        t: T,
+        yy: &[T],
+        dyy: &mut [T],
+        data: &[T],
+        ddata: &mut [T],
+        reset: &[T],
+        dreset: &mut [T],
+    ) {
+        if dreset.is_empty() {
+            return;
+        }
+
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_state_len(reset, "reset");
+        self.check_state_len(dreset, "dreset");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .reset_rgrad)(
+                t,
+                yy.as_ptr(),
+                dyy.as_ptr() as *mut T,
+                data.as_ptr(),
+                ddata.as_ptr() as *mut T,
+                reset.as_ptr(),
+                dreset.as_ptr() as *mut T,
+                i,
+                dim,
+            )
+        });
+    }
+
+    pub fn reset_sgrad(
+        &self,
+        t: T,
+        yy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        reset: &[T],
+        dreset: &mut [T],
+    ) {
+        if dreset.is_empty() {
+            return;
+        }
+
+        self.check_state_len(yy, "yy");
+        self.check_state_len(reset, "reset");
+        self.check_state_len(dreset, "dreset");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_sens_grad_functions
+                .as_ref()
+                .expect("module does not support sens autograd")
+                .reset_sgrad)(
+                t,
+                yy.as_ptr(),
+                data.as_ptr(),
+                ddata.as_ptr() as *mut T,
+                reset.as_ptr(),
+                dreset.as_ptr() as *mut T,
+                i,
+                dim,
+            )
+        });
+    }
+
+    pub fn reset_srgrad(
+        &self,
+        t: T,
+        yy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        reset: &[T],
+        dreset: &mut [T],
+    ) {
+        if dreset.is_empty() {
+            return;
+        }
+
+        self.check_state_len(yy, "yy");
+        self.check_state_len(reset, "reset");
+        self.check_state_len(dreset, "dreset");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_sens_rev_grad_functions
+                .as_ref()
+                .expect("module does not support sens autograd")
+                .reset_rgrad)(
+                t,
+                yy.as_ptr(),
+                data.as_ptr(),
+                ddata.as_ptr() as *mut T,
+                reset.as_ptr(),
+                dreset.as_ptr() as *mut T,
+                i,
+                dim,
+            )
+        });
+    }
+
     pub fn rhs(&self, t: T, yy: &[T], data: &mut [T], rr: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
@@ -467,6 +619,10 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
 
     pub fn has_mass(&self) -> bool {
         self.has_mass
+    }
+
+    pub fn has_reset(&self) -> bool {
+        self.has_reset
     }
 
     pub fn mass(&self, t: T, v: &[T], data: &mut [T], mv: &mut [T]) {
@@ -788,14 +944,15 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     ///
     /// # Returns
     ///
-    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data, n_stop, has_mass)`
-    pub fn get_dims(&self) -> (usize, usize, usize, usize, usize, bool) {
+    /// A tuple of the form `(n_states, n_inputs, n_outputs, n_data, n_stop, has_mass, has_reset)`
+    pub fn get_dims(&self) -> (usize, usize, usize, usize, usize, bool, bool) {
         let mut n_states = 0u32;
         let mut n_inputs = 0u32;
         let mut n_outputs = 0u32;
         let mut n_data = 0u32;
         let mut n_stop = 0u32;
         let mut has_mass = 0u32;
+        let mut has_reset = 0u32;
         unsafe {
             (self.jit_functions.get_dims)(
                 &mut n_states,
@@ -804,6 +961,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 &mut n_data,
                 &mut n_stop,
                 &mut has_mass,
+                &mut has_reset,
             )
         };
         (
@@ -813,6 +971,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
             n_data as usize,
             n_stop as usize,
             has_mass != 0,
+            has_reset != 0,
         )
     }
 
@@ -879,7 +1038,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     }
 
     pub fn set_id(&self, id: &mut [T]) {
-        let (n_states, _, _, _, _, _) = self.get_dims();
+        let (n_states, _, _, _, _, _, _) = self.get_dims();
         if n_states != id.len() {
             panic!("Expected {} states, got {}", n_states, id.len());
         }
@@ -1013,12 +1172,14 @@ mod tests {
         ";
         for text in [text2, text1] {
             let compiler = Compiler::<M, T>::from_discrete_str(text, Default::default()).unwrap();
-            let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass) = compiler.get_dims();
+            let (n_states, n_inputs, n_outputs, _n_data, n_stop, has_mass, has_reset) =
+                compiler.get_dims();
             assert_eq!(n_states, 1);
             assert_eq!(n_inputs, 0);
             assert_eq!(n_outputs, 1);
             assert_eq!(n_stop, 0);
             assert!(!has_mass);
+            assert!(!has_reset);
 
             let mut u0 = vec![T::zero()];
             let mut res = vec![T::zero()];
@@ -1037,6 +1198,7 @@ mod tests {
 
     generate_tests!(test_stop);
     generate_tests!(test_reset);
+    generate_tests!(test_reset_gradients);
     generate_tests!(test_reset_without_reset_tensor_is_noop);
 
     #[allow(dead_code)]
@@ -1130,6 +1292,10 @@ mod tests {
         )
         .unwrap();
 
+        let (_n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass, has_reset) =
+            compiler.get_dims();
+        assert!(has_reset);
+
         let mut u0 = vec![T::zero(), T::zero()];
         let mut reset = vec![T::zero(), T::zero()];
         let mut data = compiler.get_new_data();
@@ -1146,6 +1312,142 @@ mod tests {
         assert_relative_eq!(reset[0], T::from_f64(2.0).unwrap());
         assert_relative_eq!(reset[1], T::from_f64(12.0).unwrap());
         assert_eq!(reset.len(), 2);
+    }
+
+    #[allow(dead_code)]
+    fn test_reset_gradients<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>() {
+        let full_text = "
+        in {
+            a = 1,
+        }
+        u_i {
+            y = a,
+            z = 2,
+        }
+        F_i {
+            y,
+            z,
+        }
+        reset_i {
+            2 * y + a,
+            z + a,
+        }
+        out_i {
+            y,
+            z,
+        }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
+
+        let mut data = compiler.get_new_data();
+        let inputs = vec![T::from_f64(3.0).unwrap()];
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice(), 0);
+
+        let mut yy = vec![T::zero(), T::zero()];
+        compiler.set_u0(yy.as_mut_slice(), data.as_mut_slice());
+
+        let mut reset = vec![T::zero(), T::zero()];
+        compiler.reset(
+            T::zero(),
+            yy.as_slice(),
+            data.as_mut_slice(),
+            reset.as_mut_slice(),
+        );
+        assert_relative_eq!(reset[0], T::from_f64(9.0).unwrap());
+        assert_relative_eq!(reset[1], T::from_f64(5.0).unwrap());
+
+        let mut ddata = compiler.get_new_data();
+        let dinputs = vec![T::one()];
+        compiler.set_inputs_grad(
+            inputs.as_slice(),
+            dinputs.as_slice(),
+            data.as_slice(),
+            ddata.as_mut_slice(),
+            0,
+        );
+        let dyy = vec![T::one(), T::zero()];
+        let mut dreset = vec![T::zero(), T::zero()];
+        compiler.reset_grad(
+            T::zero(),
+            yy.as_slice(),
+            dyy.as_slice(),
+            data.as_slice(),
+            ddata.as_mut_slice(),
+            reset.as_slice(),
+            dreset.as_mut_slice(),
+        );
+        assert_relative_eq!(dreset[0], T::from_f64(3.0).unwrap());
+        assert_relative_eq!(dreset[1], T::from_f64(1.0).unwrap());
+
+        if compiler.supports_reverse_autodiff() {
+            let mut dyy_rev = vec![T::zero(), T::zero()];
+            let mut ddata_rev = compiler.get_new_data();
+            let mut dreset_rev = vec![T::one(), T::one()];
+            compiler.reset_rgrad(
+                T::zero(),
+                yy.as_slice(),
+                dyy_rev.as_mut_slice(),
+                data.as_slice(),
+                ddata_rev.as_mut_slice(),
+                reset.as_slice(),
+                dreset_rev.as_mut_slice(),
+            );
+            assert_relative_eq!(dyy_rev[0], T::from_f64(2.0).unwrap());
+            assert_relative_eq!(dyy_rev[1], T::one());
+
+            let mut dinputs_rev = vec![T::zero(); inputs.len()];
+            compiler.set_inputs_rgrad(
+                inputs.as_slice(),
+                dinputs_rev.as_mut_slice(),
+                data.as_slice(),
+                ddata_rev.as_mut_slice(),
+                0,
+            );
+            assert_relative_eq!(dinputs_rev[0], T::from_f64(2.0).unwrap());
+
+            let mut ddata_s = compiler.get_new_data();
+            let dinputs_s = vec![T::one(); inputs.len()];
+            compiler.set_inputs(dinputs_s.as_slice(), ddata_s.as_mut_slice(), 0);
+            let mut dreset_s = vec![T::zero(), T::zero()];
+            compiler.reset_sgrad(
+                T::zero(),
+                yy.as_slice(),
+                data.as_slice(),
+                ddata_s.as_mut_slice(),
+                reset.as_slice(),
+                dreset_s.as_mut_slice(),
+            );
+            assert_relative_eq!(dreset_s[0], T::one());
+            assert_relative_eq!(dreset_s[1], T::one());
+
+            let mut ddata_sr = compiler.get_new_data();
+            let mut dreset_sr = vec![T::one(), T::one()];
+            compiler.reset_srgrad(
+                T::zero(),
+                yy.as_slice(),
+                data.as_slice(),
+                ddata_sr.as_mut_slice(),
+                reset.as_slice(),
+                dreset_sr.as_mut_slice(),
+            );
+
+            let mut dinputs_sr = vec![T::zero(); inputs.len()];
+            compiler.set_inputs_rgrad(
+                inputs.as_slice(),
+                dinputs_sr.as_mut_slice(),
+                data.as_slice(),
+                ddata_sr.as_mut_slice(),
+                0,
+            );
+            assert_relative_eq!(dinputs_sr[0], T::from_f64(2.0).unwrap());
+        }
     }
 
     #[allow(dead_code)]
@@ -1520,7 +1822,8 @@ mod tests {
         compiler: Compiler<M, T>,
         tensor_name: &str,
     ) -> Vec<Vec<T>> {
-        let (n_states, n_inputs, n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+        let (n_states, n_inputs, n_outputs, _n_data, _n_stop, _has_mass, _has_reset) =
+            compiler.get_dims();
         let mut u0 = vec![T::one(); n_states];
         let mut res = vec![T::zero(); n_states];
         let mut data = compiler.get_new_data();
@@ -2245,7 +2548,8 @@ mod tests {
         let mut dres = vec![T::zero()];
         let mut data = compiler.get_new_data();
         let mut ddata = compiler.get_new_data();
-        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+        let (_n_states, n_inputs, _n_outputs, _n_data, _n_stop, _has_mass, _has_reset) =
+            compiler.get_dims();
         let inputs = vec![T::from_f64(2.).unwrap(); n_inputs];
         compiler.set_inputs(inputs.as_slice(), data.as_mut_slice(), 0);
         compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
@@ -2338,7 +2642,8 @@ mod tests {
         let mut u = vec![0.0; 4];
         let mut res = vec![0.0; 4];
         let mut data = compiler.get_new_data();
-        let (_n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass) = compiler.get_dims();
+        let (_n_states, _n_inputs, _n_outputs, _n_data, _n_stop, _has_mass, _has_reset) =
+            compiler.get_dims();
         compiler.set_u0(u.as_mut_slice(), data.as_mut_slice());
         compiler.rhs(0.0, u.as_slice(), data.as_mut_slice(), res.as_mut_slice());
         assert_relative_eq!(res.as_slice(), vec![3.0, 0.0, 0.0, 3.0].as_slice());
@@ -2384,7 +2689,8 @@ mod tests {
                 Some(full_text),
             )
             .unwrap();
-            let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass) = compiler.get_dims();
+            let (n_states, n_inputs, n_outputs, n_data, _n_stop, _has_mass, _has_reset) =
+                compiler.get_dims();
             assert_eq!(n_states, 2);
             assert_eq!(n_inputs, 1);
             assert_eq!(n_outputs, 3);

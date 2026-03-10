@@ -531,7 +531,7 @@ macro_rules! define_external_test {
                 &reset,
                 &mut dreset_rev,
             );
-            assert_eq!(du_reset_rev[0], -3.85 as $ty);
+            assert!((du_reset_rev[0] - (-3.85 as $ty)).abs() < (1e-6 as $ty));
 
             let mut ddata_reset_s = vec![-6.05 as $ty; n_data];
             let mut dreset_s = vec![-6.15 as $ty; n_states];

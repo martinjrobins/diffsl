@@ -33,6 +33,52 @@ macro_rules! define_symbol_module {
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
+                #[link_name = "reset_grad"]
+                pub fn reset_grad(
+                    time: $ty,
+                    u: *const $ty,
+                    du: *const $ty,
+                    data: *const $ty,
+                    ddata: *mut $ty,
+                    reset: *const $ty,
+                    dreset: *mut $ty,
+                    thread_id: UIntType,
+                    thread_dim: UIntType,
+                );
+                #[link_name = "reset_rgrad"]
+                pub fn reset_rgrad(
+                    time: $ty,
+                    u: *const $ty,
+                    du: *mut $ty,
+                    data: *const $ty,
+                    ddata: *mut $ty,
+                    reset: *const $ty,
+                    dreset: *mut $ty,
+                    thread_id: UIntType,
+                    thread_dim: UIntType,
+                );
+                #[link_name = "reset_sgrad"]
+                pub fn reset_sgrad(
+                    time: $ty,
+                    u: *const $ty,
+                    data: *const $ty,
+                    ddata: *mut $ty,
+                    reset: *const $ty,
+                    dreset: *mut $ty,
+                    thread_id: UIntType,
+                    thread_dim: UIntType,
+                );
+                #[link_name = "reset_srgrad"]
+                pub fn reset_srgrad(
+                    time: $ty,
+                    u: *const $ty,
+                    data: *const $ty,
+                    ddata: *mut $ty,
+                    reset: *const $ty,
+                    dreset: *mut $ty,
+                    thread_id: UIntType,
+                    thread_dim: UIntType,
+                );
                 #[link_name = "rhs"]
                 pub fn rhs(
                     time: $ty,
@@ -294,6 +340,10 @@ impl_extern_symbols!(f64, f64_symbols, {
     "set_constants" => set_constants,
     "set_u0" => set_u0,
     "reset" => reset,
+    "reset_grad" => reset_grad,
+    "reset_rgrad" => reset_rgrad,
+    "reset_sgrad" => reset_sgrad,
+    "reset_srgrad" => reset_srgrad,
     "rhs" => rhs,
     "rhs_grad" => rhs_grad,
     "rhs_rgrad" => rhs_rgrad,
@@ -324,6 +374,10 @@ impl_extern_symbols!(f32, f32_symbols, {
     "set_constants" => set_constants,
     "set_u0" => set_u0,
     "reset" => reset,
+    "reset_grad" => reset_grad,
+    "reset_rgrad" => reset_rgrad,
+    "reset_sgrad" => reset_sgrad,
+    "reset_srgrad" => reset_srgrad,
     "rhs" => rhs,
     "rhs_grad" => rhs_grad,
     "rhs_rgrad" => rhs_rgrad,

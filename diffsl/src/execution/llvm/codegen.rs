@@ -290,7 +290,7 @@ impl CodegenModuleCompile for LlvmModule {
 
         let set_u0 = module.codegen_mut().compile_set_u0(model, code)?;
         let _calc_stop = module.codegen_mut().compile_calc_stop(model, code)?;
-        let _reset = module.codegen_mut().compile_reset(model, code)?;
+        let reset = module.codegen_mut().compile_reset(model, code)?;
         let rhs = module.codegen_mut().compile_rhs(model, false, code)?;
         let rhs_full = module.codegen_mut().compile_rhs(model, true, code)?;
         let mass = module.codegen_mut().compile_mass(model, code)?;
@@ -345,6 +345,20 @@ impl CodegenModuleCompile for LlvmModule {
             ],
             CompileMode::Forward,
             "rhs_grad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            reset,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Forward,
+            "reset_grad",
         )?;
 
         module.codegen_mut().compile_gradient(
@@ -411,6 +425,19 @@ impl CodegenModuleCompile for LlvmModule {
             "rhs_rgrad",
         )?;
         module.codegen_mut().compile_gradient(
+            reset,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::Reverse,
+            "reset_rgrad",
+        )?;
+        module.codegen_mut().compile_gradient(
             calc_out,
             &[
                 CompileGradientArgType::Const,
@@ -447,6 +474,20 @@ impl CodegenModuleCompile for LlvmModule {
             ],
             CompileMode::ForwardSens,
             "rhs_sgrad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            reset,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::ForwardSens,
+            "reset_sgrad",
         )?;
 
         module.codegen_mut().compile_gradient(
@@ -500,6 +541,20 @@ impl CodegenModuleCompile for LlvmModule {
             ],
             CompileMode::ReverseSens,
             "rhs_srgrad",
+        )?;
+
+        module.codegen_mut().compile_gradient(
+            reset,
+            &[
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
+            ],
+            CompileMode::ReverseSens,
+            "reset_srgrad",
         )?;
 
         module.post_autodiff_optimisation()?;

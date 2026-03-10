@@ -23,6 +23,48 @@ pub type ResetFunc<T> = unsafe extern "C" fn(
     thread_id: UIntType,
     thread_dim: UIntType,
 );
+pub type ResetGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    du: *const T,
+    data: *const T,
+    ddata: *mut T,
+    reset: *const T,
+    dreset: *mut T,
+    thread_id: UIntType,
+    thread_dim: UIntType,
+);
+pub type ResetRevGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    du: *mut T,
+    data: *const T,
+    ddata: *mut T,
+    reset: *const T,
+    dreset: *mut T,
+    thread_id: UIntType,
+    thread_dim: UIntType,
+);
+pub type ResetSensGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *const T,
+    ddata: *mut T,
+    reset: *const T,
+    dreset: *mut T,
+    thread_id: UIntType,
+    thread_dim: UIntType,
+);
+pub type ResetSensRevGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *const T,
+    ddata: *mut T,
+    reset: *const T,
+    dreset: *mut T,
+    thread_id: UIntType,
+    thread_dim: UIntType,
+);
 pub type RhsFunc<T> = unsafe extern "C" fn(
     time: T,
     u: *const T,
@@ -279,6 +321,7 @@ impl<T> JitFunctions<T> {
 
 pub(crate) struct JitGradFunctions<T> {
     pub(crate) set_u0_grad: U0GradFunc<T>,
+    pub(crate) reset_grad: ResetGradFunc<T>,
     pub(crate) rhs_grad: RhsGradFunc<T>,
     pub(crate) calc_out_grad: CalcOutGradFunc<T>,
     pub(crate) set_inputs_grad: SetInputsGradFunc<T>,
@@ -289,6 +332,7 @@ impl<T> JitGradFunctions<T> {
         // check if all required symbols are present
         let required_symbols = [
             "set_u0_grad",
+            "reset_grad",
             "rhs_grad",
             "calc_out_grad",
             "set_inputs_grad",
@@ -300,6 +344,8 @@ impl<T> JitGradFunctions<T> {
         }
         let set_u0_grad =
             unsafe { std::mem::transmute::<*const u8, U0GradFunc<T>>(symbol_map["set_u0_grad"]) };
+        let reset_grad =
+            unsafe { std::mem::transmute::<*const u8, ResetGradFunc<T>>(symbol_map["reset_grad"]) };
         let rhs_grad =
             unsafe { std::mem::transmute::<*const u8, RhsGradFunc<T>>(symbol_map["rhs_grad"]) };
         let calc_out_grad = unsafe {
@@ -311,6 +357,7 @@ impl<T> JitGradFunctions<T> {
 
         Ok(Self {
             set_u0_grad,
+            reset_grad,
             rhs_grad,
             calc_out_grad,
             set_inputs_grad,
@@ -320,6 +367,7 @@ impl<T> JitGradFunctions<T> {
 
 pub(crate) struct JitGradRFunctions<T> {
     pub(crate) set_u0_rgrad: U0RevGradFunc<T>,
+    pub(crate) reset_rgrad: ResetRevGradFunc<T>,
     pub(crate) rhs_rgrad: RhsRevGradFunc<T>,
     pub(crate) mass_rgrad: MassRevGradFunc<T>,
     pub(crate) calc_out_rgrad: CalcOutRevGradFunc<T>,
@@ -330,6 +378,7 @@ impl<T> JitGradRFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
         let required_symbols = [
             "set_u0_rgrad",
+            "reset_rgrad",
             "rhs_rgrad",
             "mass_rgrad",
             "calc_out_rgrad",
@@ -342,6 +391,9 @@ impl<T> JitGradRFunctions<T> {
         }
         let set_u0_rgrad = unsafe {
             std::mem::transmute::<*const u8, U0RevGradFunc<T>>(symbol_map["set_u0_rgrad"])
+        };
+        let reset_rgrad = unsafe {
+            std::mem::transmute::<*const u8, ResetRevGradFunc<T>>(symbol_map["reset_rgrad"])
         };
         let rhs_rgrad =
             unsafe { std::mem::transmute::<*const u8, RhsRevGradFunc<T>>(symbol_map["rhs_rgrad"]) };
@@ -359,6 +411,7 @@ impl<T> JitGradRFunctions<T> {
 
         Ok(Self {
             set_u0_rgrad,
+            reset_rgrad,
             rhs_rgrad,
             mass_rgrad,
             calc_out_rgrad,
@@ -369,13 +422,14 @@ impl<T> JitGradRFunctions<T> {
 
 pub(crate) struct JitSensGradFunctions<T> {
     pub(crate) set_u0_sgrad: U0SensGradFunc<T>,
+    pub(crate) reset_sgrad: ResetSensGradFunc<T>,
     pub(crate) rhs_sgrad: RhsSensGradFunc<T>,
     pub(crate) calc_out_sgrad: CalcOutSensGradFunc<T>,
 }
 
 impl<T> JitSensGradFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
-        let required_symbols = ["rhs_sgrad", "calc_out_sgrad", "set_u0_sgrad"];
+        let required_symbols = ["rhs_sgrad", "calc_out_sgrad", "set_u0_sgrad", "reset_sgrad"];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
@@ -390,28 +444,36 @@ impl<T> JitSensGradFunctions<T> {
         let set_u0_sgrad = unsafe {
             std::mem::transmute::<*const u8, U0SensGradFunc<T>>(symbol_map["set_u0_sgrad"])
         };
+        let reset_sgrad = unsafe {
+            std::mem::transmute::<*const u8, ResetSensGradFunc<T>>(symbol_map["reset_sgrad"])
+        };
 
         Ok(Self {
             rhs_sgrad,
             calc_out_sgrad,
             set_u0_sgrad,
+            reset_sgrad,
         })
     }
 }
 
 pub(crate) struct JitSensRevGradFunctions<T> {
+    pub(crate) reset_rgrad: ResetSensRevGradFunc<T>,
     pub(crate) rhs_rgrad: RhsSensRevGradFunc<T>,
     pub(crate) calc_out_rgrad: CalcOutSensRevGradFunc<T>,
 }
 
 impl<T> JitSensRevGradFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
-        let required_symbols = ["rhs_srgrad", "calc_out_srgrad"];
+        let required_symbols = ["rhs_srgrad", "calc_out_srgrad", "reset_srgrad"];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
             }
         }
+        let reset_rgrad = unsafe {
+            std::mem::transmute::<*const u8, ResetSensRevGradFunc<T>>(symbol_map["reset_srgrad"])
+        };
         let rhs_rgrad = unsafe {
             std::mem::transmute::<*const u8, RhsSensRevGradFunc<T>>(symbol_map["rhs_srgrad"])
         };
@@ -422,6 +484,7 @@ impl<T> JitSensRevGradFunctions<T> {
         };
 
         Ok(Self {
+            reset_rgrad,
             rhs_rgrad,
             calc_out_rgrad,
         })

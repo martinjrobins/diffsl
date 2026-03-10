@@ -453,6 +453,154 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn reset_grad(
+        &self,
+        t: T,
+        yy: &[T],
+        dyy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        reset: &[T],
+        dreset: &mut [T],
+    ) {
+        if dreset.is_empty() {
+            return;
+        }
+
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_state_len(reset, "reset");
+        self.check_state_len(dreset, "dreset");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self.jit_grad_functions.reset_grad)(
+                t,
+                yy.as_ptr(),
+                dyy.as_ptr(),
+                data.as_ptr(),
+                ddata.as_ptr() as *mut T,
+                reset.as_ptr(),
+                dreset.as_ptr() as *mut T,
+                i,
+                dim,
+            )
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reset_rgrad(
+        &self,
+        t: T,
+        yy: &[T],
+        dyy: &mut [T],
+        data: &[T],
+        ddata: &mut [T],
+        reset: &[T],
+        dreset: &mut [T],
+    ) {
+        if dreset.is_empty() {
+            return;
+        }
+
+        self.check_state_len(yy, "yy");
+        self.check_state_len(dyy, "dyy");
+        self.check_state_len(reset, "reset");
+        self.check_state_len(dreset, "dreset");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_grad_r_functions
+                .as_ref()
+                .expect("module does not support reverse autograd")
+                .reset_rgrad)(
+                t,
+                yy.as_ptr(),
+                dyy.as_ptr() as *mut T,
+                data.as_ptr(),
+                ddata.as_ptr() as *mut T,
+                reset.as_ptr(),
+                dreset.as_ptr() as *mut T,
+                i,
+                dim,
+            )
+        });
+    }
+
+    pub fn reset_sgrad(
+        &self,
+        t: T,
+        yy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        reset: &[T],
+        dreset: &mut [T],
+    ) {
+        if dreset.is_empty() {
+            return;
+        }
+
+        self.check_state_len(yy, "yy");
+        self.check_state_len(reset, "reset");
+        self.check_state_len(dreset, "dreset");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_sens_grad_functions
+                .as_ref()
+                .expect("module does not support sens autograd")
+                .reset_sgrad)(
+                t,
+                yy.as_ptr(),
+                data.as_ptr(),
+                ddata.as_ptr() as *mut T,
+                reset.as_ptr(),
+                dreset.as_ptr() as *mut T,
+                i,
+                dim,
+            )
+        });
+    }
+
+    pub fn reset_srgrad(
+        &self,
+        t: T,
+        yy: &[T],
+        data: &[T],
+        ddata: &mut [T],
+        reset: &[T],
+        dreset: &mut [T],
+    ) {
+        if dreset.is_empty() {
+            return;
+        }
+
+        self.check_state_len(yy, "yy");
+        self.check_state_len(reset, "reset");
+        self.check_state_len(dreset, "dreset");
+        self.check_data_len(data, "data");
+        self.check_data_len(ddata, "ddata");
+        self.with_threading(|i, dim| unsafe {
+            (self
+                .jit_sens_rev_grad_functions
+                .as_ref()
+                .expect("module does not support sens autograd")
+                .reset_rgrad)(
+                t,
+                yy.as_ptr(),
+                data.as_ptr(),
+                ddata.as_ptr() as *mut T,
+                reset.as_ptr(),
+                dreset.as_ptr() as *mut T,
+                i,
+                dim,
+            )
+        });
+    }
+
     pub fn rhs(&self, t: T, yy: &[T], data: &mut [T], rr: &mut [T]) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
@@ -1050,6 +1198,7 @@ mod tests {
 
     generate_tests!(test_stop);
     generate_tests!(test_reset);
+    generate_tests!(test_reset_gradients);
     generate_tests!(test_reset_without_reset_tensor_is_noop);
 
     #[allow(dead_code)]
@@ -1163,6 +1312,142 @@ mod tests {
         assert_relative_eq!(reset[0], T::from_f64(2.0).unwrap());
         assert_relative_eq!(reset[1], T::from_f64(12.0).unwrap());
         assert_eq!(reset.len(), 2);
+    }
+
+    #[allow(dead_code)]
+    fn test_reset_gradients<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>() {
+        let full_text = "
+        in {
+            a = 1,
+        }
+        u_i {
+            y = a,
+            z = 2,
+        }
+        F_i {
+            y,
+            z,
+        }
+        reset_i {
+            2 * y + a,
+            z + a,
+        }
+        out_i {
+            y,
+            z,
+        }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
+
+        let mut data = compiler.get_new_data();
+        let inputs = vec![T::from_f64(3.0).unwrap()];
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice(), 0);
+
+        let mut yy = vec![T::zero(), T::zero()];
+        compiler.set_u0(yy.as_mut_slice(), data.as_mut_slice());
+
+        let mut reset = vec![T::zero(), T::zero()];
+        compiler.reset(
+            T::zero(),
+            yy.as_slice(),
+            data.as_mut_slice(),
+            reset.as_mut_slice(),
+        );
+        assert_relative_eq!(reset[0], T::from_f64(9.0).unwrap());
+        assert_relative_eq!(reset[1], T::from_f64(5.0).unwrap());
+
+        let mut ddata = compiler.get_new_data();
+        let dinputs = vec![T::one()];
+        compiler.set_inputs_grad(
+            inputs.as_slice(),
+            dinputs.as_slice(),
+            data.as_slice(),
+            ddata.as_mut_slice(),
+            0,
+        );
+        let dyy = vec![T::one(), T::zero()];
+        let mut dreset = vec![T::zero(), T::zero()];
+        compiler.reset_grad(
+            T::zero(),
+            yy.as_slice(),
+            dyy.as_slice(),
+            data.as_slice(),
+            ddata.as_mut_slice(),
+            reset.as_slice(),
+            dreset.as_mut_slice(),
+        );
+        assert_relative_eq!(dreset[0], T::from_f64(3.0).unwrap());
+        assert_relative_eq!(dreset[1], T::from_f64(1.0).unwrap());
+
+        if compiler.supports_reverse_autodiff() {
+            let mut dyy_rev = vec![T::zero(), T::zero()];
+            let mut ddata_rev = compiler.get_new_data();
+            let mut dreset_rev = vec![T::one(), T::one()];
+            compiler.reset_rgrad(
+                T::zero(),
+                yy.as_slice(),
+                dyy_rev.as_mut_slice(),
+                data.as_slice(),
+                ddata_rev.as_mut_slice(),
+                reset.as_slice(),
+                dreset_rev.as_mut_slice(),
+            );
+            assert_relative_eq!(dyy_rev[0], T::from_f64(2.0).unwrap());
+            assert_relative_eq!(dyy_rev[1], T::one());
+
+            let mut dinputs_rev = vec![T::zero(); inputs.len()];
+            compiler.set_inputs_rgrad(
+                inputs.as_slice(),
+                dinputs_rev.as_mut_slice(),
+                data.as_slice(),
+                ddata_rev.as_mut_slice(),
+                0,
+            );
+            assert_relative_eq!(dinputs_rev[0], T::from_f64(2.0).unwrap());
+
+            let mut ddata_s = compiler.get_new_data();
+            let dinputs_s = vec![T::one(); inputs.len()];
+            compiler.set_inputs(dinputs_s.as_slice(), ddata_s.as_mut_slice(), 0);
+            let mut dreset_s = vec![T::zero(), T::zero()];
+            compiler.reset_sgrad(
+                T::zero(),
+                yy.as_slice(),
+                data.as_slice(),
+                ddata_s.as_mut_slice(),
+                reset.as_slice(),
+                dreset_s.as_mut_slice(),
+            );
+            assert_relative_eq!(dreset_s[0], T::one());
+            assert_relative_eq!(dreset_s[1], T::one());
+
+            let mut ddata_sr = compiler.get_new_data();
+            let mut dreset_sr = vec![T::one(), T::one()];
+            compiler.reset_srgrad(
+                T::zero(),
+                yy.as_slice(),
+                data.as_slice(),
+                ddata_sr.as_mut_slice(),
+                reset.as_slice(),
+                dreset_sr.as_mut_slice(),
+            );
+
+            let mut dinputs_sr = vec![T::zero(); inputs.len()];
+            compiler.set_inputs_rgrad(
+                inputs.as_slice(),
+                dinputs_sr.as_mut_slice(),
+                data.as_slice(),
+                ddata_sr.as_mut_slice(),
+                0,
+            );
+            assert_relative_eq!(dinputs_sr[0], T::from_f64(2.0).unwrap());
+        }
     }
 
     #[allow(dead_code)]

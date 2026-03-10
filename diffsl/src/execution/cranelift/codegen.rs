@@ -291,6 +291,62 @@ impl<M: Module> CraneliftModule<M> {
         self.declare_function("rhs_grad")
     }
 
+    fn compile_reset_grad(&mut self, _func_id: &FuncId, model: &DiscreteModel) -> Result<FuncId> {
+        let arg_types = &[
+            self.real_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.real_ptr_type,
+            self.int_type,
+            self.int_type,
+        ];
+        let arg_names = &[
+            "t",
+            "u",
+            "du",
+            "data",
+            "ddata",
+            "reset",
+            "dreset",
+            "threadId",
+            "threadDim",
+        ];
+        {
+            let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
+
+            if let Some(reset) = model.reset() {
+                let mut nbarrier = 0;
+                for tensor in model.time_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, true)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                for tensor in model.state_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, true)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                for tensor in model.state_dep_post_f_defns() {
+                    codegen.jit_compile_tensor(tensor, None, true)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                let dreset_ptr = *codegen.variables.get("dreset").unwrap();
+                codegen.jit_compile_tensor(reset, Some(dreset_ptr), true)?;
+            }
+
+            codegen.builder.ins().return_(&[]);
+            codegen.builder.finalize();
+        }
+        self.declare_function("reset_grad")
+    }
+
     fn compile_set_inputs_grad(
         &mut self,
         _func_id: &FuncId,
@@ -477,7 +533,7 @@ impl<M: Module> CraneliftModule<M> {
 
         let set_u0 = ret.compile_set_u0(model)?;
         let _calc_stop = ret.compile_calc_stop(model)?;
-        let _reset = ret.compile_reset(model)?;
+        let reset = ret.compile_reset(model)?;
         let rhs = ret.compile_rhs(model)?;
         let _mass = ret.compile_mass(model)?;
         let calc_out = ret.compile_calc_out(model)?;
@@ -500,6 +556,7 @@ impl<M: Module> CraneliftModule<M> {
         }
         let _set_u0_grad = ret.compile_set_u0_grad(&set_u0, model)?;
         let _rhs_grad = ret.compile_rhs_grad(&rhs, model)?;
+        let _reset_grad = ret.compile_reset_grad(&reset, model)?;
         let _calc_out_grad = ret.compile_calc_out_grad(&calc_out, model)?;
         let _set_inputs_grad = ret.compile_set_inputs_grad(&set_inputs, model)?;
         Ok(ret)

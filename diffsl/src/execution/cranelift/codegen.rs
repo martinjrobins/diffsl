@@ -224,7 +224,7 @@ impl<M: Module> CraneliftModule<M> {
             "ddata",
             "out",
             "dout",
-            "model_index",
+            "model",
             "threadId",
             "threadDim",
         ];
@@ -286,7 +286,7 @@ impl<M: Module> CraneliftModule<M> {
             "ddata",
             "rr",
             "drr",
-            "model_index",
+            "model",
             "threadId",
             "threadDim",
         ];
@@ -345,7 +345,7 @@ impl<M: Module> CraneliftModule<M> {
             "ddata",
             "reset",
             "dreset",
-            "model_index",
+            "model",
             "threadId",
             "threadDim",
         ];
@@ -444,7 +444,7 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["u0", "du0", "data", "ddata", "model_index", "threadId", "threadDim"];
+        let arg_names = &["u0", "du0", "data", "ddata", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -599,7 +599,7 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["u0", "data", "model_index", "threadId", "threadDim"];
+        let arg_names = &["u0", "data", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -641,7 +641,7 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "out", "model_index", "threadId", "threadDim"];
+        let arg_names = &["t", "u", "data", "out", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -691,7 +691,7 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "root", "model_index", "threadId", "threadDim"];
+        let arg_names = &["t", "u", "data", "root", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -741,7 +741,7 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "reset", "model_index", "threadId", "threadDim"];
+        let arg_names = &["t", "u", "data", "reset", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -789,7 +789,7 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "rr", "model_index", "threadId", "threadDim"];
+        let arg_names = &["t", "u", "data", "rr", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -833,7 +833,7 @@ impl<M: Module> CraneliftModule<M> {
             self.int_type,
             self.int_type,
         ];
-        let arg_names = &["t", "dudt", "data", "rr", "model_index", "threadId", "threadDim"];
+        let arg_names = &["t", "dudt", "data", "rr", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -1328,13 +1328,13 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                     }
                     let var = self
                         .variables
-                        .get("model_index")
-                        .ok_or_else(|| anyhow!("N used where model_index is unavailable"))?;
-                    let model_index = self.builder.use_var(*var);
+                        .get("model")
+                        .ok_or_else(|| anyhow!("N used where model is unavailable"))?;
+                    let model = self.builder.use_var(*var);
                     return Ok(self
                         .builder
                         .ins()
-                        .fcvt_from_sint(self.real_type, model_index));
+                        .fcvt_from_sint(self.real_type, model));
                 }
                 let ptr = if iname.is_tangent {
                     // tangent of a constant is zero
@@ -1556,8 +1556,8 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                 if iname.name == "N" {
                     let var = self
                         .variables
-                        .get("model_index")
-                        .ok_or_else(|| anyhow!("N used where model_index is unavailable"))?;
+                        .get("model")
+                        .ok_or_else(|| anyhow!("N used where model is unavailable"))?;
                     Ok(self.builder.use_var(*var))
                 } else {
                     Err(anyhow!(

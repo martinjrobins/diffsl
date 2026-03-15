@@ -2681,11 +2681,11 @@ impl<'ctx> CodeGen<'ctx> {
                     if iname.is_tangent {
                         return Ok(self.real_type.const_float(0.0));
                     }
-                    let model_index = self
-                        .build_load(self.int_type, *self.get_param("model_index"), "model_index")?
+                    let model = self
+                        .build_load(self.int_type, *self.get_param("model"), "model")?
                         .into_int_value();
                     let n_value = self.builder.build_signed_int_to_float(
-                        model_index,
+                        model,
                         self.real_type,
                         "n_as_real",
                     )?;
@@ -2896,7 +2896,7 @@ impl<'ctx> CodeGen<'ctx> {
             AstKind::Name(iname) => {
                 if iname.name == "N" {
                     Ok(self
-                        .build_load(self.int_type, *self.get_param("model_index"), name)?
+                        .build_load(self.int_type, *self.get_param("model"), name)?
                         .into_int_value())
                 } else {
                     Err(anyhow!(
@@ -2963,8 +2963,8 @@ impl<'ctx> CodeGen<'ctx> {
             .into_float_value();
         let u = *self.get_param("u");
         let data = *self.get_param("data");
-        let model_index = self
-            .build_load(self.int_type, *self.get_param("model_index"), "model_index")?
+        let model = self
+            .build_load(self.int_type, *self.get_param("model"), "model")?
             .into_int_value();
         let thread_id = self
             .build_load(self.int_type, *self.get_param("thread_id"), "thread_id")?
@@ -2980,7 +2980,7 @@ impl<'ctx> CodeGen<'ctx> {
                 t.into(),
                 u.into(),
                 data.into(),
-                model_index.into(),
+                model.into(),
                 thread_id.into(),
                 thread_dim.into(),
                 barrier_start.into(),
@@ -3069,7 +3069,7 @@ impl<'ctx> CodeGen<'ctx> {
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let fn_arg_names = &["u0", "data", "model_index", "thread_id", "thread_dim"];
+        let fn_arg_names = &["u0", "data", "model", "thread_id", "thread_dim"];
         let function = self.add_function(
             "set_u0",
             fn_arg_names,
@@ -3154,7 +3154,7 @@ impl<'ctx> CodeGen<'ctx> {
             "u",
             "data",
             "out",
-            "model_index",
+            "model",
             "thread_id",
             "thread_dim",
         ];
@@ -3274,7 +3274,7 @@ impl<'ctx> CodeGen<'ctx> {
             "t",
             "u",
             "data",
-            "model_index",
+            "model",
             "thread_id",
             "thread_dim",
             "barrier_start",
@@ -3372,7 +3372,7 @@ impl<'ctx> CodeGen<'ctx> {
             "u",
             "data",
             "root",
-            "model_index",
+            "model",
             "thread_id",
             "thread_dim",
         ];
@@ -3472,7 +3472,7 @@ impl<'ctx> CodeGen<'ctx> {
             "u",
             "data",
             "reset",
-            "model_index",
+            "model",
             "thread_id",
             "thread_dim",
         ];
@@ -3569,7 +3569,7 @@ impl<'ctx> CodeGen<'ctx> {
             "u",
             "data",
             "rr",
-            "model_index",
+            "model",
             "thread_id",
             "thread_dim",
         ];
@@ -3673,7 +3673,7 @@ impl<'ctx> CodeGen<'ctx> {
             "dudt",
             "data",
             "rr",
-            "model_index",
+            "model",
             "thread_id",
             "thread_dim",
         ];

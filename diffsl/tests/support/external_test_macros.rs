@@ -19,7 +19,7 @@ macro_rules! define_external_test {
         pub unsafe extern "C" fn set_u0(
             u: *mut $ty,
             _data: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -34,7 +34,7 @@ macro_rules! define_external_test {
             u: *const $ty,
             data: *mut $ty,
             rr: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -55,7 +55,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _rr: *const $ty,
             drr: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -78,7 +78,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _rr: *const $ty,
             drr: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -99,7 +99,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _rr: *const $ty,
             drr: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -119,7 +119,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _rr: *const $ty,
             drr: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -137,7 +137,7 @@ macro_rules! define_external_test {
             v: *const $ty,
             _data: *mut $ty,
             mv: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -156,7 +156,7 @@ macro_rules! define_external_test {
             _ddata: *mut $ty,
             _mv: *const $ty,
             dmv: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -172,7 +172,7 @@ macro_rules! define_external_test {
             _du: *mut $ty,
             _data: *const $ty,
             _ddata: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -184,7 +184,7 @@ macro_rules! define_external_test {
             _du: *mut $ty,
             _data: *const $ty,
             _ddata: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -196,7 +196,7 @@ macro_rules! define_external_test {
             _du: *mut $ty,
             _data: *const $ty,
             _ddata: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -208,7 +208,7 @@ macro_rules! define_external_test {
             u: *const $ty,
             _data: *mut $ty,
             out: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -227,7 +227,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _out: *const $ty,
             dout: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -247,7 +247,7 @@ macro_rules! define_external_test {
             _ddata: *mut $ty,
             _out: *const $ty,
             dout: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -265,7 +265,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _out: *const $ty,
             dout: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -285,7 +285,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _out: *const $ty,
             dout: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -303,7 +303,7 @@ macro_rules! define_external_test {
             u: *const $ty,
             _data: *mut $ty,
             root: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -319,7 +319,7 @@ macro_rules! define_external_test {
             u: *const $ty,
             _data: *mut $ty,
             reset: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -338,7 +338,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _reset: *const $ty,
             dreset: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -358,7 +358,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _reset: *const $ty,
             dreset: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -377,7 +377,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _reset: *const $ty,
             dreset: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -396,7 +396,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _reset: *const $ty,
             dreset: *mut $ty,
-            _model_index: u32,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {

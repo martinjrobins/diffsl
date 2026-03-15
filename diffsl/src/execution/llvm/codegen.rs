@@ -328,6 +328,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
             "set_u0_grad",
@@ -340,6 +341,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -356,6 +358,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
             "reset_grad",
@@ -370,6 +373,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
             "calc_out_grad",
@@ -379,7 +383,6 @@ impl CodegenModuleCompile for LlvmModule {
             &[
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
             ],
             CompileMode::Forward,
             "set_inputs_grad",
@@ -390,6 +393,7 @@ impl CodegenModuleCompile for LlvmModule {
             &[
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -406,6 +410,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
             "mass_rgrad",
@@ -418,6 +423,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -433,6 +439,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
             "reset_rgrad",
@@ -446,6 +453,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
             "calc_out_rgrad",
@@ -456,7 +464,6 @@ impl CodegenModuleCompile for LlvmModule {
             &[
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
-                CompileGradientArgType::Const,
             ],
             CompileMode::Reverse,
             "set_inputs_rgrad",
@@ -469,6 +476,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -485,6 +493,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::ForwardSens,
             "reset_sgrad",
@@ -495,6 +504,7 @@ impl CodegenModuleCompile for LlvmModule {
             &[
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -511,6 +521,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::ForwardSens,
             "calc_out_sgrad",
@@ -522,6 +533,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -538,6 +550,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
+                CompileGradientArgType::Const,
             ],
             CompileMode::ReverseSens,
             "rhs_srgrad",
@@ -550,6 +563,7 @@ impl CodegenModuleCompile for LlvmModule {
                 CompileGradientArgType::Const,
                 CompileGradientArgType::DupNoNeed,
                 CompileGradientArgType::DupNoNeed,
+                CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
                 CompileGradientArgType::Const,
             ],
@@ -605,7 +619,6 @@ struct Globals<'ctx> {
     indices: Option<GlobalValue<'ctx>>,
     constants: Option<GlobalValue<'ctx>>,
     thread_counter: Option<GlobalValue<'ctx>>,
-    model_index: GlobalValue<'ctx>,
 }
 
 impl<'ctx> Globals<'ctx> {
@@ -671,19 +684,10 @@ impl<'ctx> Globals<'ctx> {
             indices.set_initializer(&indices_value);
             Some(indices)
         };
-        let model_index = module.add_global(
-            int_type,
-            Some(AddressSpace::default()),
-            "enzyme_const_model_index",
-        );
-        model_index.set_visibility(GlobalVisibility::Hidden);
-        model_index.set_constant(false);
-        model_index.set_initializer(&int_type.const_zero());
         Self {
             indices,
             thread_counter,
             constants,
-            model_index,
         }
     }
 }
@@ -1371,13 +1375,15 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn insert_data(&mut self, model: &DiscreteModel) {
-        self.insert_model_index();
         self.insert_constants(model);
 
         if let Some(input) = model.input() {
             self.insert_tensor(input, false);
         }
         for tensor in model.input_dep_defns() {
+            self.insert_tensor(tensor, false);
+        }
+        for tensor in model.model_dep_defns() {
             self.insert_tensor(tensor, false);
         }
         for tensor in model.time_dep_defns() {
@@ -1410,13 +1416,6 @@ impl<'ctx> CodeGen<'ctx> {
             };
             self.variables.insert("indices".to_owned(), ptr);
         }
-    }
-
-    fn insert_model_index(&mut self) {
-        if self.variables.contains_key("model_index") {
-            return;
-        }
-        self.insert_param("model_index", self.globals.model_index.as_pointer_value());
     }
 
     fn insert_param(&mut self, name: &str, value: PointerValue<'ctx>) {
@@ -2964,6 +2963,9 @@ impl<'ctx> CodeGen<'ctx> {
             .into_float_value();
         let u = *self.get_param("u");
         let data = *self.get_param("data");
+        let model_index = self
+            .build_load(self.int_type, *self.get_param("model_index"), "model_index")?
+            .into_int_value();
         let thread_id = self
             .build_load(self.int_type, *self.get_param("thread_id"), "thread_id")?
             .into_int_value();
@@ -2978,6 +2980,7 @@ impl<'ctx> CodeGen<'ctx> {
                 t.into(),
                 u.into(),
                 data.into(),
+                model_index.into(),
                 thread_id.into(),
                 thread_dim.into(),
                 barrier_start.into(),
@@ -2997,6 +3000,17 @@ impl<'ctx> CodeGen<'ctx> {
             return Ok(function);
         }
         self.compile_dep_defns(model, "calc_time_dep", model.time_dep_defns(), code)
+    }
+
+    fn ensure_model_dep_fn<'m>(
+        &mut self,
+        model: &'m DiscreteModel,
+        code: Option<&str>,
+    ) -> Result<FunctionValue<'ctx>> {
+        if let Some(function) = self.module.get_function("calc_model_dep") {
+            return Ok(function);
+        }
+        self.compile_dep_defns(model, "calc_model_dep", model.model_dep_defns(), code)
     }
 
     fn ensure_state_dep_fn<'m>(
@@ -3055,13 +3069,14 @@ impl<'ctx> CodeGen<'ctx> {
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let fn_arg_names = &["u0", "data", "thread_id", "thread_dim"];
+        let fn_arg_names = &["u0", "data", "model_index", "thread_id", "thread_dim"];
         let function = self.add_function(
             "set_u0",
             fn_arg_names,
             &[
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3088,10 +3103,18 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_indices();
 
         let mut nbarriers = 0;
-        let total_barriers = (model.input_dep_defns().len() + 1) as u64;
+        let total_barriers =
+            (model.input_dep_defns().len() + model.model_dep_defns().len() + 1) as u64;
         let total_barriers_val = self.int_type.const_int(total_barriers, false);
         #[allow(clippy::explicit_counter_loop)]
         for a in model.input_dep_defns() {
+            self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
+            let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+            self.jit_compile_call_barrier(barrier_num, total_barriers_val);
+            nbarriers += 1;
+        }
+
+        for a in model.model_dep_defns() {
             self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
             let barrier_num = self.int_type.const_int(nbarriers + 1, false);
             self.jit_compile_call_barrier(barrier_num, total_barriers_val);
@@ -3121,11 +3144,20 @@ impl<'ctx> CodeGen<'ctx> {
         include_constants: bool,
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
+        let model_dep_fn = self.ensure_model_dep_fn(model, code)?;
         let time_dep_fn = self.ensure_time_dep_fn(model, code)?;
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
         self.clear();
-        let fn_arg_names = &["t", "u", "data", "out", "thread_id", "thread_dim"];
+        let fn_arg_names = &[
+            "t",
+            "u",
+            "data",
+            "out",
+            "model_index",
+            "thread_id",
+            "thread_dim",
+        ];
         let function_name = if include_constants {
             "calc_out_full"
         } else {
@@ -3139,6 +3171,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3172,7 +3205,8 @@ impl<'ctx> CodeGen<'ctx> {
         //self.compile_print_value("thread_dim", PrintValue::Int(thread_dim.into_int_value()))?;
         if let Some(out) = model.out() {
             let mut nbarriers = 0;
-            let mut total_barriers = (model.time_dep_defns().len()
+            let mut total_barriers = (model.model_dep_defns().len()
+                + model.time_dep_defns().len()
                 + model.state_dep_defns().len()
                 + model.state_dep_post_f_defns().len()
                 + 1) as u64;
@@ -3188,6 +3222,11 @@ impl<'ctx> CodeGen<'ctx> {
                     self.jit_compile_call_barrier(barrier_num, total_barriers_val);
                     nbarriers += 1;
                 }
+            }
+
+            if !model.model_dep_defns().is_empty() {
+                self.build_dep_call(model_dep_fn, "model_dep", nbarriers, total_barriers)?;
+                nbarriers += model.model_dep_defns().len() as u64;
             }
 
             // calculate time dependant definitions
@@ -3235,6 +3274,7 @@ impl<'ctx> CodeGen<'ctx> {
             "t",
             "u",
             "data",
+            "model_index",
             "thread_id",
             "thread_dim",
             "barrier_start",
@@ -3247,6 +3287,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
@@ -3321,11 +3362,20 @@ impl<'ctx> CodeGen<'ctx> {
         model: &'m DiscreteModel,
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
+        let model_dep_fn = self.ensure_model_dep_fn(model, code)?;
         let time_dep_fn = self.ensure_time_dep_fn(model, code)?;
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
         self.clear();
-        let fn_arg_names = &["t", "u", "data", "root", "thread_id", "thread_dim"];
+        let fn_arg_names = &[
+            "t",
+            "u",
+            "data",
+            "root",
+            "model_index",
+            "thread_id",
+            "thread_dim",
+        ];
         let function = self.add_function(
             "calc_stop",
             fn_arg_names,
@@ -3334,6 +3384,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3363,11 +3414,16 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(stop) = model.stop() {
             // calculate time dependant definitions
             let mut nbarriers = 0;
-            let total_barriers = (model.time_dep_defns().len()
+            let total_barriers = (model.model_dep_defns().len()
+                + model.time_dep_defns().len()
                 + model.state_dep_defns().len()
                 + model.state_dep_post_f_defns().len()
                 + 1) as u64;
             let total_barriers_val = self.int_type.const_int(total_barriers, false);
+            if !model.model_dep_defns().is_empty() {
+                self.build_dep_call(model_dep_fn, "model_dep", nbarriers, total_barriers)?;
+                nbarriers += model.model_dep_defns().len() as u64;
+            }
             if !model.time_dep_defns().is_empty() {
                 self.build_dep_call(time_dep_fn, "time_dep", nbarriers, total_barriers)?;
                 nbarriers += model.time_dep_defns().len() as u64;
@@ -3406,11 +3462,20 @@ impl<'ctx> CodeGen<'ctx> {
         model: &'m DiscreteModel,
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
+        let model_dep_fn = self.ensure_model_dep_fn(model, code)?;
         let time_dep_fn = self.ensure_time_dep_fn(model, code)?;
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         let state_dep_post_f_fn = self.ensure_state_dep_post_f_fn(model, code)?;
         self.clear();
-        let fn_arg_names = &["t", "u", "data", "reset", "thread_id", "thread_dim"];
+        let fn_arg_names = &[
+            "t",
+            "u",
+            "data",
+            "reset",
+            "model_index",
+            "thread_id",
+            "thread_dim",
+        ];
         let function = self.add_function(
             "reset",
             fn_arg_names,
@@ -3419,6 +3484,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3446,11 +3512,16 @@ impl<'ctx> CodeGen<'ctx> {
 
         if let Some(reset) = model.reset() {
             let mut nbarriers = 0;
-            let total_barriers = (model.time_dep_defns().len()
+            let total_barriers = (model.model_dep_defns().len()
+                + model.time_dep_defns().len()
                 + model.state_dep_defns().len()
                 + model.state_dep_post_f_defns().len()
                 + 1) as u64;
             let total_barriers_val = self.int_type.const_int(total_barriers, false);
+            if !model.model_dep_defns().is_empty() {
+                self.build_dep_call(model_dep_fn, "model_dep", nbarriers, total_barriers)?;
+                nbarriers += model.model_dep_defns().len() as u64;
+            }
             if !model.time_dep_defns().is_empty() {
                 self.build_dep_call(time_dep_fn, "time_dep", nbarriers, total_barriers)?;
                 nbarriers += model.time_dep_defns().len() as u64;
@@ -3489,10 +3560,19 @@ impl<'ctx> CodeGen<'ctx> {
         include_constants: bool,
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
+        let model_dep_fn = self.ensure_model_dep_fn(model, code)?;
         let time_dep_fn = self.ensure_time_dep_fn(model, code)?;
         let state_dep_fn = self.ensure_state_dep_fn(model, code)?;
         self.clear();
-        let fn_arg_names = &["t", "u", "data", "rr", "thread_id", "thread_dim"];
+        let fn_arg_names = &[
+            "t",
+            "u",
+            "data",
+            "rr",
+            "model_index",
+            "thread_id",
+            "thread_dim",
+        ];
         let function_name = if include_constants { "rhs_full" } else { "rhs" };
         let function = self.add_function(
             function_name,
@@ -3502,6 +3582,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3529,8 +3610,10 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_indices();
 
         let mut nbarriers = 0;
-        let mut total_barriers =
-            (model.time_dep_defns().len() + model.state_dep_defns().len() + 1) as u64;
+        let mut total_barriers = (model.model_dep_defns().len()
+            + model.time_dep_defns().len()
+            + model.state_dep_defns().len()
+            + 1) as u64;
         if include_constants {
             total_barriers += model.input_dep_defns().len() as u64;
             // calculate constant definitions
@@ -3541,6 +3624,11 @@ impl<'ctx> CodeGen<'ctx> {
                 self.jit_compile_call_barrier(barrier_num, total_barriers_val);
                 nbarriers += 1;
             }
+        }
+
+        if !model.model_dep_defns().is_empty() {
+            self.build_dep_call(model_dep_fn, "model_dep", nbarriers, total_barriers)?;
+            nbarriers += model.model_dep_defns().len() as u64;
         }
 
         // calculate time dependant definitions
@@ -3580,7 +3668,15 @@ impl<'ctx> CodeGen<'ctx> {
         code: Option<&str>,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
-        let fn_arg_names = &["t", "dudt", "data", "rr", "thread_id", "thread_dim"];
+        let fn_arg_names = &[
+            "t",
+            "dudt",
+            "data",
+            "rr",
+            "model_index",
+            "thread_id",
+            "thread_dim",
+        ];
         let function = self.add_function(
             "mass",
             fn_arg_names,
@@ -3589,6 +3685,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
                 self.real_ptr_type.into(),
+                self.int_type.into(),
                 self.int_type.into(),
                 self.int_type.into(),
             ],
@@ -3622,9 +3719,17 @@ impl<'ctx> CodeGen<'ctx> {
 
             // calculate time dependant definitions
             let mut nbarriers = 0;
-            let total_barriers =
-                (model.time_dep_defns().len() + model.dstate_dep_defns().len() + 1) as u64;
+            let total_barriers = (model.model_dep_defns().len()
+                + model.time_dep_defns().len()
+                + model.dstate_dep_defns().len()
+                + 1) as u64;
             let total_barriers_val = self.int_type.const_int(total_barriers, false);
+            for tensor in model.model_dep_defns() {
+                self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
+                let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+                self.jit_compile_call_barrier(barrier_num, total_barriers_val);
+                nbarriers += 1;
+            }
             for tensor in model.time_dep_defns() {
                 self.jit_compile_tensor(tensor, Some(*self.get_var(tensor)), code)?;
                 let barrier_num = self.int_type.const_int(nbarriers + 1, false);
@@ -4127,20 +4232,9 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let function_name = if is_get { "get_inputs" } else { "set_inputs" };
-        let fn_arg_names: &[&str] = if is_get {
-            &["inputs", "data"]
-        } else {
-            &["inputs", "data", "model_index"]
-        };
-        let fn_arg_types: &[BasicMetadataTypeEnum<'ctx>] = if is_get {
-            &[self.real_ptr_type.into(), self.real_ptr_type.into()]
-        } else {
-            &[
-                self.real_ptr_type.into(),
-                self.real_ptr_type.into(),
-                self.int_type.into(),
-            ]
-        };
+        let fn_arg_names: &[&str] = &["inputs", "data"];
+        let fn_arg_types: &[BasicMetadataTypeEnum<'ctx>] =
+            &[self.real_ptr_type.into(), self.real_ptr_type.into()];
         let function = self.add_function(function_name, fn_arg_names, fn_arg_types, None, false);
         let block = self.start_function(function, None);
 
@@ -4148,14 +4242,6 @@ impl<'ctx> CodeGen<'ctx> {
             let name = fn_arg_names[i];
             let alloca = self.function_arg_alloca(name, arg);
             self.insert_param(name, alloca);
-        }
-
-        if !is_get {
-            let model_index = self
-                .build_load(self.int_type, *self.get_param("model_index"), "model_index")?
-                .into_int_value();
-            self.builder
-                .build_store(self.globals.model_index.as_pointer_value(), model_index)?;
         }
 
         if let Some(input) = model.input() {

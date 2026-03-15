@@ -34,17 +34,17 @@ fn test_dfn_model_initialization<M: CodegenModuleJit + CodegenModuleCompile>() {
     let mut data = compiler.get_new_data();
     let (n_states, n_inputs, _, _, _, _, _) = compiler.get_dims();
     let inputs = vec![1.0; n_inputs];
-    compiler.set_inputs(&inputs, &mut data, 0);
+    compiler.set_inputs(&inputs, &mut data);
     let mut u = vec![0.0; n_states];
-    compiler.set_u0(&mut u, &mut data);
+    compiler.set_u0(&mut u, &mut data, 0);
     let mut rr = vec![0.0; n_states];
     let t = 0.0;
-    compiler.rhs(t, &u, &mut data, &mut rr);
+    compiler.rhs(t, &u, &mut data, &mut rr, 0);
     let v = vec![1.; n_states];
     let mut drr = vec![0.0; n_states];
     let mut ddata = compiler.get_new_data();
     println!("Computing rhs grad...");
     // flush stdout to ensure the print appears before any potential panic
     std::io::stdout().flush().unwrap();
-    compiler.rhs_grad(t, &u, &v, &data, &mut ddata, &rr, &mut drr);
+    compiler.rhs_grad(t, &u, &v, &data, &mut ddata, &rr, &mut drr, 0);
 }

@@ -35,6 +35,7 @@ pub struct DiscreteModel<'s> {
     out: Option<Tensor<'s>>,
     constant_defns: Vec<Tensor<'s>>,
     input_dep_defns: Vec<Tensor<'s>>,
+    model_dep_defns: Vec<Tensor<'s>>,
     time_dep_defns: Vec<Tensor<'s>>,
     state_dep_defns: Vec<Tensor<'s>>,
     state_dep_post_f_defns: Vec<Tensor<'s>>,
@@ -64,6 +65,9 @@ impl fmt::Display for DiscreteModel<'_> {
             writeln!(f, "{defn}")?;
         }
         for defn in &self.input_dep_defns {
+            writeln!(f, "{defn}")?;
+        }
+        for defn in &self.model_dep_defns {
             writeln!(f, "{defn}")?;
         }
         for defn in &self.time_dep_defns {
@@ -107,6 +111,7 @@ impl<'s> DiscreteModel<'s> {
             out: None,
             constant_defns: Vec::new(),
             input_dep_defns: Vec::new(),
+            model_dep_defns: Vec::new(),
             time_dep_defns: Vec::new(),
             state_dep_defns: Vec::new(),
             state_dep_post_f_defns: Vec::new(),
@@ -538,6 +543,12 @@ impl<'s> DiscreteModel<'s> {
                                         && !dependent_on_model
                                     {
                                         ret.constant_defns.push(built);
+                                    } else if dependent_on_model
+                                        && !dependent_on_time
+                                        && !dependent_on_state
+                                        && !dependent_on_dudt
+                                    {
+                                        ret.model_dep_defns.push(built);
                                     } else if !dependent_on_time {
                                         ret.input_dep_defns.push(built);
                                     } else if !dependent_on_state && !dependent_on_dudt {
@@ -868,6 +879,7 @@ impl<'s> DiscreteModel<'s> {
             out: Some(out_array),
             constant_defns,
             input_dep_defns: Vec::new(), // todo: need to implement
+            model_dep_defns: Vec::new(),
             time_dep_defns,
             state_dep_defns,
             state_dep_post_f_defns,
@@ -896,6 +908,10 @@ impl<'s> DiscreteModel<'s> {
 
     pub fn input_dep_defns(&self) -> &[Tensor<'_>] {
         self.input_dep_defns.as_ref()
+    }
+
+    pub fn model_dep_defns(&self) -> &[Tensor<'_>] {
+        self.model_dep_defns.as_ref()
     }
 
     pub fn time_dep_defns(&self) -> &[Tensor<'_>] {

@@ -170,6 +170,11 @@ impl DataLayout {
             .for_each(|i| add_tensor(i, true, false));
 
         model
+            .model_dep_defns()
+            .iter()
+            .for_each(|i| add_tensor(i, true, false));
+
+        model
             .time_dep_defns()
             .iter()
             .for_each(|i| add_tensor(i, true, false));

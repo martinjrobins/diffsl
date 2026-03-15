@@ -1413,6 +1413,9 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn insert_model_index(&mut self) {
+        if self.variables.contains_key("model_index") {
+            return;
+        }
         self.insert_param("model_index", self.globals.model_index.as_pointer_value());
     }
 

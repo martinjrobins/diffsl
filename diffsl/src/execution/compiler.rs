@@ -346,14 +346,20 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         });
     }
 
-    pub fn set_u0(&self, yy: &mut [T], data: &mut [T]) {
+    pub fn set_u0(&self, yy: &mut [T], data: &mut [T], model_index: u32) {
         self.check_state_len(yy, "yy");
         self.with_threading(|i, dim| unsafe {
-            (self.jit_functions.set_u0)(yy.as_ptr() as *mut T, data.as_ptr() as *mut T, i, dim);
+            (self.jit_functions.set_u0)(
+                yy.as_ptr() as *mut T,
+                data.as_ptr() as *mut T,
+                model_index,
+                i,
+                dim,
+            );
         });
     }
 
-    pub fn set_u0_sgrad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T]) {
+    pub fn set_u0_sgrad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T], model_index: u32) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
@@ -368,13 +374,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 dyy.as_ptr() as *mut T,
                 data.as_ptr(),
                 ddata.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             );
         });
     }
 
-    pub fn set_u0_rgrad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T]) {
+    pub fn set_u0_rgrad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T], model_index: u32) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
@@ -389,13 +396,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 dyy.as_ptr() as *mut T,
                 data.as_ptr(),
                 ddata.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             );
         });
     }
 
-    pub fn set_u0_grad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T]) {
+    pub fn set_u0_grad(&self, yy: &[T], dyy: &mut [T], data: &[T], ddata: &mut [T], model_index: u32) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
         self.check_data_len(data, "data");
@@ -407,6 +415,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                     dyy.as_ptr() as *mut T,
                     data.as_ptr(),
                     ddata.as_ptr() as *mut T,
+                    model_index,
                     i,
                     dim,
                 )
@@ -414,7 +423,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         })
     }
 
-    pub fn calc_stop(&self, t: T, yy: &[T], data: &mut [T], stop: &mut [T]) {
+    pub fn calc_stop(&self, t: T, yy: &[T], data: &mut [T], stop: &mut [T], model_index: u32) {
         if self.number_of_stop == 0 {
             panic!("Model does not have a stop function");
         }
@@ -427,13 +436,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 yy.as_ptr(),
                 data.as_ptr() as *mut T,
                 stop.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn reset(&self, t: T, yy: &[T], data: &mut [T], reset: &mut [T]) {
+    pub fn reset(&self, t: T, yy: &[T], data: &mut [T], reset: &mut [T], model_index: u32) {
         if reset.is_empty() {
             return;
         }
@@ -447,6 +457,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 yy.as_ptr(),
                 data.as_ptr() as *mut T,
                 reset.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -463,6 +474,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         reset: &[T],
         dreset: &mut [T],
+        model_index: u32,
     ) {
         if dreset.is_empty() {
             return;
@@ -483,6 +495,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 reset.as_ptr(),
                 dreset.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -499,6 +512,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         reset: &[T],
         dreset: &mut [T],
+        model_index: u32,
     ) {
         if dreset.is_empty() {
             return;
@@ -523,6 +537,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 reset.as_ptr(),
                 dreset.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -537,6 +552,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         reset: &[T],
         dreset: &mut [T],
+        model_index: u32,
     ) {
         if dreset.is_empty() {
             return;
@@ -559,6 +575,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 reset.as_ptr(),
                 dreset.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -573,6 +590,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         reset: &[T],
         dreset: &mut [T],
+        model_index: u32,
     ) {
         if dreset.is_empty() {
             return;
@@ -595,13 +613,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 reset.as_ptr(),
                 dreset.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn rhs(&self, t: T, yy: &[T], data: &mut [T], rr: &mut [T]) {
+    pub fn rhs(&self, t: T, yy: &[T], data: &mut [T], rr: &mut [T], model_index: u32) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
         self.check_data_len(data, "data");
@@ -611,6 +630,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 yy.as_ptr(),
                 data.as_ptr() as *mut T,
                 rr.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -625,7 +645,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         self.has_reset
     }
 
-    pub fn mass(&self, t: T, v: &[T], data: &mut [T], mv: &mut [T]) {
+    pub fn mass(&self, t: T, v: &[T], data: &mut [T], mv: &mut [T], model_index: u32) {
         if !self.has_mass {
             panic!("Model does not have a mass function");
         }
@@ -638,6 +658,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 v.as_ptr(),
                 data.as_ptr() as *mut T,
                 mv.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -662,6 +683,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         rr: &[T],
         drr: &mut [T],
+        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -678,6 +700,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
                 drr.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -694,6 +717,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         rr: &[T],
         drr: &mut [T],
+        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -714,13 +738,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
                 drr.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn mass_rgrad(&self, t: T, dv: &mut [T], data: &[T], ddata: &mut [T], dmv: &mut [T]) {
+    pub fn mass_rgrad(&self, t: T, dv: &mut [T], data: &[T], ddata: &mut [T], dmv: &mut [T], model_index: u32) {
         self.check_state_len(dv, "dv");
         self.check_state_len(dmv, "dmv");
         self.check_data_len(data, "data");
@@ -738,13 +763,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 std::ptr::null(),
                 dmv.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn rhs_sgrad(&self, t: T, yy: &[T], data: &[T], ddata: &mut [T], rr: &[T], drr: &mut [T]) {
+    pub fn rhs_sgrad(&self, t: T, yy: &[T], data: &[T], ddata: &mut [T], rr: &[T], drr: &mut [T], model_index: u32) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
         self.check_state_len(drr, "drr");
@@ -762,13 +788,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
                 drr.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn rhs_srgrad(&self, t: T, yy: &[T], data: &[T], ddata: &mut [T], rr: &[T], drr: &mut [T]) {
+    pub fn rhs_srgrad(&self, t: T, yy: &[T], data: &[T], ddata: &mut [T], rr: &[T], drr: &mut [T], model_index: u32) {
         self.check_state_len(yy, "yy");
         self.check_state_len(rr, "rr");
         self.check_state_len(drr, "drr");
@@ -786,13 +813,14 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 rr.as_ptr(),
                 drr.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
         });
     }
 
-    pub fn calc_out(&self, t: T, yy: &[T], data: &mut [T], out: &mut [T]) {
+    pub fn calc_out(&self, t: T, yy: &[T], data: &mut [T], out: &mut [T], model_index: u32) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
         self.check_out_len(out, "out");
@@ -802,6 +830,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 yy.as_ptr(),
                 data.as_ptr() as *mut T,
                 out.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -818,6 +847,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         out: &[T],
         dout: &mut [T],
+        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -834,6 +864,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 out.as_ptr(),
                 dout.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -850,6 +881,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         out: &[T],
         dout: &mut [T],
+        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_state_len(dyy, "dyy");
@@ -870,6 +902,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 out.as_ptr(),
                 dout.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -884,6 +917,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         out: &[T],
         dout: &mut [T],
+        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
@@ -902,6 +936,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 out.as_ptr(),
                 dout.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -916,6 +951,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ddata: &mut [T],
         out: &[T],
         dout: &mut [T],
+        model_index: u32,
     ) {
         self.check_state_len(yy, "yy");
         self.check_data_len(data, "data");
@@ -934,6 +970,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 ddata.as_ptr() as *mut T,
                 out.as_ptr(),
                 dout.as_ptr() as *mut T,
+                model_index,
                 i,
                 dim,
             )
@@ -975,10 +1012,10 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         )
     }
 
-    pub fn set_inputs(&self, inputs: &[T], data: &mut [T], model_index: u32) {
+    pub fn set_inputs(&self, inputs: &[T], data: &mut [T]) {
         self.check_inputs_len(inputs, "inputs");
         self.check_data_len(data, "data");
-        unsafe { (self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr(), model_index) };
+        unsafe { (self.jit_functions.set_inputs)(inputs.as_ptr(), data.as_mut_ptr()) };
     }
 
     pub fn get_inputs(&self, inputs: &mut [T], data: &[T]) {
@@ -993,7 +1030,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         dinputs: &[T],
         data: &[T],
         ddata: &mut [T],
-        model_index: u32,
     ) {
         self.check_inputs_len(inputs, "inputs");
         self.check_inputs_len(dinputs, "dinputs");
@@ -1005,7 +1041,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 dinputs.as_ptr(),
                 data.as_ptr(),
                 ddata.as_mut_ptr(),
-                model_index,
             )
         };
     }
@@ -1016,7 +1051,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         dinputs: &mut [T],
         data: &[T],
         ddata: &mut [T],
-        model_index: u32,
     ) {
         self.check_inputs_len(inputs, "inputs");
         self.check_inputs_len(dinputs, "dinputs");
@@ -1032,7 +1066,6 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
                 dinputs.as_mut_ptr(),
                 data.as_ptr(),
                 ddata.as_mut_ptr(),
-                model_index,
             )
         };
     }

@@ -4,13 +4,13 @@ The primary goal of the DiffSL language is to define a system of ODEs in the fol
 
 $$
 \begin{align*}
-M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} &= F(\mathbf{u}, t) \\\\
+M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} &= F_N(\mathbf{u}, \mathbf{p}, t) \\\\
 \mathbf{u}(0) &= \mathbf{u}_0
 \end{align*}
 $$
 
-where \\( \mathbf{u} \\) is the vector of state variables, \\( \mathbf{u}_0 \\) is the initial condition, \\( F \\) is the RHS function, and \\( M \\) is the mass matrix. 
-The DSL allows the user to specify the state vector \\( \mathbf{u} \\) and the RHS function \\( F \\). 
+where \\( \mathbf{u} \\) is the vector of state variables, \\( \mathbf{u}_0 \\) is the initial condition, \\( \mathbf{p} \\) is the parameter vector, \\( F_N \\) is the model-indexed RHS function, and \\( M \\) is the mass matrix.
+The DSL allows the user to specify the state vector \\( \mathbf{u} \\), parameter vector \\( \mathbf{p} \\), and RHS function \\( F_N \\).
 
 Optionally, the user can also define the derivative of the state vector \\( \mathrm{d}\mathbf{u}/\mathrm{d}t \\) and the mass matrix \\( M \\) as a function of \\( \mathrm{d}\mathbf{u}/\mathrm{d}t \\) 
 (note that this function should be linear!). 
@@ -77,6 +77,81 @@ We write:
 ```
 u_i { x = 1, y = 0 }
 F_i { y, -x }
+```
+
+## Using the Ode system index `N`
+
+The index `N` is used to define multiple ODE systems in the same file, indexed by the non-negative integer `N`.
+This allows us to define multiple ODE systems in the same file. Combined with the stop and reset functions (see below), 
+this also allows us to define hybrid switching systems where we can switch between different ODE systems at different times during the simulation.
+
+The model index `N` can be used in any of the equations, and it can be used to index into any of the tensors that we have defined.
+
+For example, we can define two ODE systems, one with exponential growth and one with exponential decay, by
+defining a `g_i` vector variable that contains the growth/decay rate for each system, and then using this variable in the definition of the RHS function `F_i`:
+
+```
+u_i { x = 1 }
+g_i { 0.1, -0.1 }
+F_i { g_i[N] * x }
+```
+
+## Stopping and resetting the ODE system
+
+The `stop` and `reset` functions are standard tensors that can be used to stop and reset the ODE system at a given time, as long as the runtime supports this feature.
+
+The `reset` tensor should be the same shape (i.e. a vector with the same number of elements) as the state vector `u_i`, whereas the `stop` tensor can be any length vector.
+During the solve, whenever any element of the `stop` tensor is equal to zero, the ODE system will stop and, if the runtime supports hybrid models, the state of the 
+ODE system will be reset to the values defined in the `reset` tensor, and the ODE system will continue to solve from there.
+
+The classic example of this type of hybrid model is a bouncing ball, where the ODE system is stopped when the ball hits the ground (\(x \leq 0\)), and then the state of the system is reset to a new value that corresponds to the ball bouncing back up.
+
+```
+u_i {
+ x = 0,
+ v = 10,
+}
+F_i {
+ v,
+ -9.81,
+}
+stop {
+ x,
+}
+reset {
+ 0,
+ -0.8 * v,
+}
+```
+
+Another example is a system that is periodicall forced, for example dosing into a pharmacokinetic model, where the ODE system is stopped at regular intervals (e.g. every 24 hours), and the state of the system is reset to a new value that corresponds to the dose being administered.
+
+```
+u_i {
+ x = 0,
+}
+F_i {
+ -0.1 * x,
+}
+stop {
+ t - 24,
+}
+reset {
+ x + 10,
+}
+```
+
+## Hybrid models with multiple ODE systems
+
+The `stop` and `reset` functions can also be used to switch between different ODE systems defined in the same file using the model index `N`.
+For example, we can define a system that switches between exponential growth and exponential decay every 24 hours by defining two ODE systems, one with exponential growth and one with exponential decay, and then using the `stop` and `reset` functions to switch between them:
+
+```
+u_i { x = 1 }
+g_i { 0.1, -0.1 }
+F_i { g_i[N] * x }
+stop { t - 24 }
+reset { 0 }
 ```
 
 ## Defining the mass matrix

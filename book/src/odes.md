@@ -17,10 +17,10 @@ Optionally, the user can also define the derivative of the state vector \\( \mat
 The user is also free to define an arbitrary number of intermediate tensors that are required to calculate \\( F \\) and \\( M \\). 
 
 
-## Defining state variables
+## Defining the state vector
 
-To define the state variables \\(\mathbf{u} \\), we create a special
-vector variable `u_i`. Note the particular name `u` is used to indicate that this
+To define the state vector \\(\mathbf{u} \\), we create a special
+vector tensor `u_i`. Note the particular name `u` is used to indicate that this
 is the state vector.
 
 The values that we use for `u_i` are the initial values of the state variables
@@ -35,6 +35,12 @@ u_i {
 ```
 
 Since we will often use the individual elements of the state vector in the RHS function, it is useful to define them as separate variables as well.
+
+The state tensor `u` must be either be a scalar or a vector. So, if we only had a single state variable, we could define it as a scalar without the index `i` as follows:
+
+```
+u { x = 1 }
+```
 
 We can optionally define the time derivatives of the state variables,
 \\( \mathbf{\dot{u}} \\) as well:
@@ -81,6 +87,8 @@ F_i { y, -x }
 
 ## Using the Ode system index `N`
 
+**Note: hybrid ODEs using `N` and `reset` are not yet supported in the current version of diffsol or pydiffsol, please check back for updates**
+
 The index `N` is used to define multiple ODE systems in the same file, indexed by the non-negative integer `N`.
 This allows us to define multiple ODE systems in the same file. Combined with the stop and reset functions (see below), 
 this also allows us to define hybrid switching systems where we can switch between different ODE systems at different times during the simulation.
@@ -124,7 +132,7 @@ reset {
 }
 ```
 
-Another example is a system that is periodicall forced, for example dosing into a pharmacokinetic model, where the ODE system is stopped at regular intervals (e.g. every 24 hours), and the state of the system is reset to a new value that corresponds to the dose being administered.
+Another example is a system that is periodically forced, for example dosing into a pharmacokinetic model, where the ODE system is stopped at regular intervals (e.g. every 24 hours), and the state of the system is reset to a new value that corresponds to the dose being administered.
 
 ```
 u_i {
@@ -143,15 +151,17 @@ reset {
 
 ## Hybrid models with multiple ODE systems
 
-The `stop` and `reset` functions can also be used to switch between different ODE systems defined in the same file using the model index `N`.
-For example, we can define a system that switches between exponential growth and exponential decay every 24 hours by defining two ODE systems, one with exponential growth and one with exponential decay, and then using the `stop` and `reset` functions to switch between them:
+The `stop` and `reset` functions can also be used to switch between different ODE systems defined in the same file using the model index `N`. The model index starts at `N = 0`, and every time a reset is triggered, the model index is set to the index of the `stop` that triggered the reset. This allows us to define hybrid models where we can switch between different ODE systems at different times during the simulation.
+
+For example, we can define a system that starts with exponential growth, and then switches to exponential decay after 24 hours, and then switches back to exponential growth after another 24 hours, by defining two ODE systems as before, and then using the `stop` and `reset` functions to switch between them:
+
 
 ```
 u_i { x = 1 }
 g_i { 0.1, -0.1 }
 F_i { g_i[N] * x }
-stop { t - 24 }
-reset { 0 }
+stop { t - 48, t - 24 }
+reset { 1 }
 ```
 
 ## Defining the mass matrix

@@ -19,6 +19,7 @@ macro_rules! define_external_test {
         pub unsafe extern "C" fn set_u0(
             u: *mut $ty,
             _data: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -33,6 +34,7 @@ macro_rules! define_external_test {
             u: *const $ty,
             data: *mut $ty,
             rr: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -53,6 +55,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _rr: *const $ty,
             drr: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -75,6 +78,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _rr: *const $ty,
             drr: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -95,6 +99,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _rr: *const $ty,
             drr: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -114,6 +119,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _rr: *const $ty,
             drr: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -131,6 +137,7 @@ macro_rules! define_external_test {
             v: *const $ty,
             _data: *mut $ty,
             mv: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -149,6 +156,7 @@ macro_rules! define_external_test {
             _ddata: *mut $ty,
             _mv: *const $ty,
             dmv: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -164,6 +172,7 @@ macro_rules! define_external_test {
             _du: *mut $ty,
             _data: *const $ty,
             _ddata: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -175,6 +184,7 @@ macro_rules! define_external_test {
             _du: *mut $ty,
             _data: *const $ty,
             _ddata: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -186,6 +196,7 @@ macro_rules! define_external_test {
             _du: *mut $ty,
             _data: *const $ty,
             _ddata: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -197,6 +208,7 @@ macro_rules! define_external_test {
             u: *const $ty,
             _data: *mut $ty,
             out: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -215,6 +227,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _out: *const $ty,
             dout: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -234,6 +247,7 @@ macro_rules! define_external_test {
             _ddata: *mut $ty,
             _out: *const $ty,
             dout: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -251,6 +265,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _out: *const $ty,
             dout: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -270,6 +285,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _out: *const $ty,
             dout: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -287,6 +303,7 @@ macro_rules! define_external_test {
             u: *const $ty,
             _data: *mut $ty,
             root: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -302,6 +319,7 @@ macro_rules! define_external_test {
             u: *const $ty,
             _data: *mut $ty,
             reset: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -320,6 +338,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _reset: *const $ty,
             dreset: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -339,6 +358,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _reset: *const $ty,
             dreset: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -357,6 +377,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _reset: *const $ty,
             dreset: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -375,6 +396,7 @@ macro_rules! define_external_test {
             ddata: *mut $ty,
             _reset: *const $ty,
             dreset: *mut $ty,
+            _model: u32,
             _thread_id: u32,
             _thread_dim: u32,
         ) {
@@ -426,7 +448,7 @@ macro_rules! define_external_test {
         }
 
         #[no_mangle]
-        pub unsafe extern "C" fn set_inputs(inputs: *const $ty, data: *mut $ty, _model_index: u32) {
+        pub unsafe extern "C" fn set_inputs(inputs: *const $ty, data: *mut $ty) {
             if inputs.is_null() || data.is_null() {
                 return;
             }
@@ -447,7 +469,6 @@ macro_rules! define_external_test {
             dinputs: *const $ty,
             _data: *const $ty,
             ddata: *mut $ty,
-            _model_index: u32,
         ) {
             if dinputs.is_null() || ddata.is_null() {
                 return;
@@ -461,7 +482,6 @@ macro_rules! define_external_test {
             dinputs: *mut $ty,
             _data: *const $ty,
             ddata: *mut $ty,
-            _model_index: u32,
         ) {
             if dinputs.is_null() || ddata.is_null() {
                 return;
@@ -487,36 +507,45 @@ macro_rules! define_external_test {
 
             let mut data = vec![-1.0 as $ty; n_data];
             let inputs = vec![1.0 as $ty; n_inputs];
-            compiler.set_inputs(&inputs, &mut data, 0);
+            compiler.set_inputs(&inputs, &mut data);
 
             let mut inputs_out = vec![-2.0 as $ty; n_inputs];
             compiler.get_inputs(&mut inputs_out, &data);
             assert_eq!(inputs_out, inputs);
 
             let mut u = vec![-2.0 as $ty; n_states];
-            compiler.set_u0(&mut u, &mut data);
+            compiler.set_u0(&mut u, &mut data, 0);
             assert_eq!(u[0], 1.0 as $ty);
 
             let mut out = vec![-3.0 as $ty; n_outputs];
-            compiler.calc_out(0.0 as $ty, &u, &mut data, &mut out);
+            compiler.calc_out(0.0 as $ty, &u, &mut data, &mut out, 0);
             assert_eq!(out[0], u[0]);
 
             let mut rr = vec![-4.0 as $ty; n_states];
-            compiler.rhs(0.0 as $ty, &u, &mut data, &mut rr);
+            compiler.rhs(0.0 as $ty, &u, &mut data, &mut rr, 0);
             assert_eq!(rr[0], 0.0 as $ty);
 
             let mut stop = vec![-5.0 as $ty; n_stop];
-            compiler.calc_stop(0.0 as $ty, &u, &mut data, &mut stop);
+            compiler.calc_stop(0.0 as $ty, &u, &mut data, &mut stop, 0);
             assert_eq!(stop[0], 0.5 as $ty);
 
             let mut reset = vec![-5.5 as $ty; n_states];
-            compiler.reset(0.0 as $ty, &u, &mut data, &mut reset);
+            compiler.reset(0.0 as $ty, &u, &mut data, &mut reset, 0);
             assert_eq!(reset[0], 2.0 as $ty);
 
             let du = vec![1.0 as $ty; n_states];
             let mut ddata = vec![-8.0 as $ty; n_data];
             let mut dreset = vec![-5.75 as $ty; n_states];
-            compiler.reset_grad(0.0 as $ty, &u, &du, &data, &mut ddata, &reset, &mut dreset);
+            compiler.reset_grad(
+                0.0 as $ty,
+                &u,
+                &du,
+                &data,
+                &mut ddata,
+                &reset,
+                &mut dreset,
+                0,
+            );
             assert_eq!(dreset[0], 2.0 as $ty);
 
             let mut du_reset_rev = vec![-5.85 as $ty; n_states];
@@ -530,6 +559,7 @@ macro_rules! define_external_test {
                 &mut ddata_reset_rev,
                 &reset,
                 &mut dreset_rev,
+                0,
             );
             assert!((du_reset_rev[0] - (-3.85 as $ty)).abs() < (1e-6 as $ty));
 
@@ -542,6 +572,7 @@ macro_rules! define_external_test {
                 &mut ddata_reset_s,
                 &reset,
                 &mut dreset_s,
+                0,
             );
             assert_eq!(dreset_s[0], 0.0 as $ty);
 
@@ -554,11 +585,12 @@ macro_rules! define_external_test {
                 &mut ddata_reset_sr,
                 &reset,
                 &mut dreset_sr,
+                0,
             );
             assert_eq!(dreset_sr[0], 0.0 as $ty);
 
             let mut mv = vec![-6.0 as $ty; n_states];
-            compiler.mass(0.0 as $ty, &u, &mut data, &mut mv);
+            compiler.mass(0.0 as $ty, &u, &mut data, &mut mv, 0);
             assert_eq!(mv[0], 1.0 as $ty);
 
             let mut id = vec![-7.0 as $ty; n_states];
@@ -566,56 +598,74 @@ macro_rules! define_external_test {
             assert_eq!(id[0], 42.0 as $ty);
 
             let mut drr = vec![-9.0 as $ty; n_states];
-            compiler.rhs_grad(0.0 as $ty, &u, &du, &data, &mut ddata, &rr, &mut drr);
+            compiler.rhs_grad(0.0 as $ty, &u, &du, &data, &mut ddata, &rr, &mut drr, 0);
             assert_eq!(drr[0], -1.0 as $ty);
             assert_eq!(ddata[0], 0.0 as $ty);
 
             let mut dout = vec![-10.0 as $ty; n_outputs];
-            compiler.calc_out_grad(0.0 as $ty, &u, &du, &data, &mut ddata, &out, &mut dout);
+            compiler.calc_out_grad(0.0 as $ty, &u, &du, &data, &mut ddata, &out, &mut dout, 0);
             assert_eq!(dout[0], 1.0 as $ty);
             assert_eq!(ddata[0], 0.0 as $ty);
 
             let mut dinputs = vec![1.0 as $ty; n_inputs];
-            compiler.set_inputs_grad(&inputs, &dinputs, &data, &mut ddata, 0);
+            compiler.set_inputs_grad(&inputs, &dinputs, &data, &mut ddata);
             assert_eq!(ddata[0], 1.0 as $ty);
 
             let mut du_rev = vec![-11.0 as $ty; n_states];
             let mut ddata_rev = vec![-12.0 as $ty; n_data];
             let mut drr_rev = vec![1.0 as $ty; n_states];
-            compiler.rhs_rgrad(0.0 as $ty, &u, &mut du_rev, &data, &mut ddata_rev, &rr, &mut drr_rev);
+            compiler.rhs_rgrad(
+                0.0 as $ty,
+                &u,
+                &mut du_rev,
+                &data,
+                &mut ddata_rev,
+                &rr,
+                &mut drr_rev,
+                0,
+            );
             assert_eq!(du_rev[0], -12.0 as $ty);
             assert_eq!(ddata_rev[0], -12.0 as $ty);
 
             let mut dv = vec![-13.0 as $ty; n_states];
             let mut dmv = vec![1.0 as $ty; n_states];
-            compiler.mass_rgrad(0.0 as $ty, &mut dv, &data, &mut ddata_rev, &mut dmv);
+            compiler.mass_rgrad(0.0 as $ty, &mut dv, &data, &mut ddata_rev, &mut dmv, 0);
             assert_eq!(dv[0], -12.0 as $ty);
 
             let mut dout_rev = vec![1.0 as $ty; n_outputs];
-            compiler.calc_out_rgrad(0.0 as $ty, &u, &mut du_rev, &data, &mut ddata_rev, &out, &mut dout_rev);
+            compiler.calc_out_rgrad(
+                0.0 as $ty,
+                &u,
+                &mut du_rev,
+                &data,
+                &mut ddata_rev,
+                &out,
+                &mut dout_rev,
+                0,
+            );
             assert_eq!(du_rev[0], -11.0 as $ty);
 
-            compiler.set_inputs_rgrad(&inputs, &mut dinputs, &data, &mut ddata_rev, 0);
+            compiler.set_inputs_rgrad(&inputs, &mut dinputs, &data, &mut ddata_rev);
             assert_eq!(dinputs[0], -11.0 as $ty);
 
             let mut ddata_s = vec![-14.0 as $ty; n_data];
             let mut drr_s = vec![-15.0 as $ty; n_states];
-            compiler.rhs_sgrad(0.0 as $ty, &u, &data, &mut ddata_s, &rr, &mut drr_s);
+            compiler.rhs_sgrad(0.0 as $ty, &u, &data, &mut ddata_s, &rr, &mut drr_s, 0);
             assert_eq!(drr_s[0], 0.0 as $ty);
             assert_eq!(ddata_s[0], 0.0 as $ty);
 
             let mut dout_s = vec![-16.0 as $ty; n_outputs];
-            compiler.calc_out_sgrad(0.0 as $ty, &u, &data, &mut ddata_s, &out, &mut dout_s);
+            compiler.calc_out_sgrad(0.0 as $ty, &u, &data, &mut ddata_s, &out, &mut dout_s, 0);
             assert_eq!(dout_s[0], 0.0 as $ty);
 
             let mut ddata_sr = vec![-17.0 as $ty; n_data];
             let mut drr_sr = vec![-18.0 as $ty; n_states];
-            compiler.rhs_srgrad(0.0 as $ty, &u, &data, &mut ddata_sr, &rr, &mut drr_sr);
+            compiler.rhs_srgrad(0.0 as $ty, &u, &data, &mut ddata_sr, &rr, &mut drr_sr, 0);
             assert_eq!(drr_sr[0], 0.0 as $ty);
             assert_eq!(ddata_sr[0], 0.0 as $ty);
 
             let mut dout_sr = vec![-19.0 as $ty; n_outputs];
-            compiler.calc_out_srgrad(0.0 as $ty, &u, &data, &mut ddata_sr, &out, &mut dout_sr);
+            compiler.calc_out_srgrad(0.0 as $ty, &u, &data, &mut ddata_sr, &out, &mut dout_sr, 0);
             assert_eq!(dout_sr[0], 0.0 as $ty);
         }
     };

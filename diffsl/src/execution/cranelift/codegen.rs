@@ -35,7 +35,6 @@ pub struct CraneliftModule<M: Module> {
 
     indices_id: DataId,
     constants_id: DataId,
-    model_index_id: DataId,
     thread_counter: Option<DataId>,
 
     //triple: Triple,
@@ -215,6 +214,7 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
         let arg_names = &[
             "t",
@@ -224,6 +224,7 @@ impl<M: Module> CraneliftModule<M> {
             "ddata",
             "out",
             "dout",
+            "model",
             "threadId",
             "threadDim",
         ];
@@ -231,6 +232,30 @@ impl<M: Module> CraneliftModule<M> {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
             if let Some(out) = model.out() {
+                let mut nbarrier = 0;
+                for tensor in model.model_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, true)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                for tensor in model.time_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, true)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
+                for tensor in model.state_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, true)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+                for tensor in model.state_dep_post_f_defns() {
+                    codegen.jit_compile_tensor(tensor, None, true)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
                 codegen.jit_compile_tensor(out, None, true)?;
             }
             codegen.builder.ins().return_(&[]);
@@ -251,6 +276,7 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
         let arg_names = &[
             "t",
@@ -260,6 +286,7 @@ impl<M: Module> CraneliftModule<M> {
             "ddata",
             "rr",
             "drr",
+            "model",
             "threadId",
             "threadDim",
         ];
@@ -268,6 +295,12 @@ impl<M: Module> CraneliftModule<M> {
 
             // calculate time dependant definitions
             let mut nbarrier = 0;
+            for tensor in model.model_dep_defns() {
+                codegen.jit_compile_tensor(tensor, None, true)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+
             for tensor in model.time_dep_defns() {
                 codegen.jit_compile_tensor(tensor, None, true)?;
                 codegen.jit_compile_call_barrier(nbarrier);
@@ -302,6 +335,7 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
         let arg_names = &[
             "t",
@@ -311,6 +345,7 @@ impl<M: Module> CraneliftModule<M> {
             "ddata",
             "reset",
             "dreset",
+            "model",
             "threadId",
             "threadDim",
         ];
@@ -319,6 +354,12 @@ impl<M: Module> CraneliftModule<M> {
 
             if let Some(reset) = model.reset() {
                 let mut nbarrier = 0;
+                for tensor in model.model_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, true)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
                 for tensor in model.time_dep_defns() {
                     codegen.jit_compile_tensor(tensor, None, true)?;
                     codegen.jit_compile_call_barrier(nbarrier);
@@ -357,23 +398,10 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.real_ptr_type,
             self.real_ptr_type,
-            self.int_type,
         ];
-        let arg_names = &["inputs", "dinputs", "data", "ddata", "model_index"];
+        let arg_names = &["inputs", "dinputs", "data", "ddata"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
-
-            let model_index_ptr = codegen
-                .builder
-                .ins()
-                .global_value(codegen.int_ptr_type, codegen.model_index_global);
-            let model_index = codegen
-                .builder
-                .use_var(*codegen.variables.get("model_index").unwrap());
-            codegen
-                .builder
-                .ins()
-                .store(codegen.mem_flags, model_index, model_index_ptr, 0);
 
             let base_data_ptr = codegen.variables.get("ddata").unwrap();
             let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
@@ -414,14 +442,21 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
-        let arg_names = &["u0", "du0", "data", "ddata", "threadId", "threadDim"];
+        let arg_names = &["u0", "du0", "data", "ddata", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
             let mut nbarrier = 0;
             #[allow(clippy::explicit_counter_loop)]
             for a in model.input_dep_defns() {
+                codegen.jit_compile_tensor(a, None, true)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+
+            for a in model.model_dep_defns() {
                 codegen.jit_compile_tensor(a, None, true)?;
                 codegen.jit_compile_call_barrier(nbarrier);
                 nbarrier += 1;
@@ -496,11 +531,6 @@ impl<M: Module> CraneliftModule<M> {
         let indices_id = module.declare_data("indices", Linkage::Local, false, false)?;
         module.define_data(indices_id, &data_description)?;
 
-        let mut data_description = DataDescription::new();
-        data_description.define_zeroinit(int_type.bytes().try_into().unwrap());
-        let model_index_id = module.declare_data("model_index", Linkage::Local, true, false)?;
-        module.define_data(model_index_id, &data_description)?;
-
         let mut thread_counter = None;
         if threaded {
             let mut data_description = DataDescription::new();
@@ -517,7 +547,6 @@ impl<M: Module> CraneliftModule<M> {
             module: Mutex::new(module),
             indices_id,
             constants_id,
-            model_index_id,
             int_type,
             real_type: real_type_cranelift,
             real_ptr_type: ptr_type,
@@ -568,14 +597,21 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
-        let arg_names = &["u0", "data", "threadId", "threadDim"];
+        let arg_names = &["u0", "data", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
             let mut nbarrier = 0;
             #[allow(clippy::explicit_counter_loop)]
             for a in model.input_dep_defns() {
+                codegen.jit_compile_tensor(a, None, false)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+
+            for a in model.model_dep_defns() {
                 codegen.jit_compile_tensor(a, None, false)?;
                 codegen.jit_compile_call_barrier(nbarrier);
                 nbarrier += 1;
@@ -603,14 +639,21 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "out", "threadId", "threadDim"];
+        let arg_names = &["t", "u", "data", "out", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
             if let Some(out) = model.out() {
                 // calculate time dependant definitions
                 let mut nbarrier = 0;
+                for tensor in model.model_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
                 for tensor in model.time_dep_defns() {
                     codegen.jit_compile_tensor(tensor, None, false)?;
                     codegen.jit_compile_call_barrier(nbarrier);
@@ -646,14 +689,21 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "root", "threadId", "threadDim"];
+        let arg_names = &["t", "u", "data", "root", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
             if let Some(stop) = model.stop() {
                 // calculate time dependant definitions
                 let mut nbarrier = 0;
+                for tensor in model.model_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
                 for tensor in model.time_dep_defns() {
                     codegen.jit_compile_tensor(tensor, None, false)?;
                     codegen.jit_compile_call_barrier(nbarrier);
@@ -689,13 +739,20 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "reset", "threadId", "threadDim"];
+        let arg_names = &["t", "u", "data", "reset", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
             if let Some(reset) = model.reset() {
                 let mut nbarrier = 0;
+                for tensor in model.model_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
                 for tensor in model.time_dep_defns() {
                     codegen.jit_compile_tensor(tensor, None, false)?;
                     codegen.jit_compile_call_barrier(nbarrier);
@@ -730,13 +787,20 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
-        let arg_names = &["t", "u", "data", "rr", "threadId", "threadDim"];
+        let arg_names = &["t", "u", "data", "rr", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
             // calculate time dependant definitions
             let mut nbarrier = 0;
+            for tensor in model.model_dep_defns() {
+                codegen.jit_compile_tensor(tensor, None, false)?;
+                codegen.jit_compile_call_barrier(nbarrier);
+                nbarrier += 1;
+            }
+
             for tensor in model.time_dep_defns() {
                 codegen.jit_compile_tensor(tensor, None, false)?;
                 codegen.jit_compile_call_barrier(nbarrier);
@@ -767,8 +831,9 @@ impl<M: Module> CraneliftModule<M> {
             self.real_ptr_type,
             self.int_type,
             self.int_type,
+            self.int_type,
         ];
-        let arg_names = &["t", "dudt", "data", "rr", "threadId", "threadDim"];
+        let arg_names = &["t", "dudt", "data", "rr", "model", "threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
@@ -776,6 +841,12 @@ impl<M: Module> CraneliftModule<M> {
             if model.state_dot().is_some() && model.lhs().is_some() {
                 // calculate time dependant definitions
                 let mut nbarrier = 0;
+                for tensor in model.model_dep_defns() {
+                    codegen.jit_compile_tensor(tensor, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
+
                 for tensor in model.time_dep_defns() {
                     codegen.jit_compile_tensor(tensor, None, false)?;
                     codegen.jit_compile_call_barrier(nbarrier);
@@ -916,22 +987,10 @@ impl<M: Module> CraneliftModule<M> {
     }
 
     fn compile_set_inputs(&mut self, model: &DiscreteModel) -> Result<FuncId> {
-        let arg_types = &[self.real_ptr_type, self.real_ptr_type, self.int_type];
-        let arg_names = &["inputs", "data", "model_index"];
+        let arg_types = &[self.real_ptr_type, self.real_ptr_type];
+        let arg_names = &["inputs", "data"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
-
-            let model_index_ptr = codegen
-                .builder
-                .ins()
-                .global_value(codegen.int_ptr_type, codegen.model_index_global);
-            let model_index = codegen
-                .builder
-                .use_var(*codegen.variables.get("model_index").unwrap());
-            codegen
-                .builder
-                .ins()
-                .store(codegen.mem_flags, model_index, model_index_ptr, 0);
 
             let base_data_ptr = codegen.variables.get("data").unwrap();
             let base_data_ptr = codegen.builder.use_var(*base_data_ptr);
@@ -1169,7 +1228,6 @@ struct CraneliftCodeGen<'a, M: Module> {
     layout: &'a DataLayout,
     indices: GlobalValue,
     constants: GlobalValue,
-    model_index_global: GlobalValue,
     threaded: bool,
 }
 
@@ -1270,13 +1328,13 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                     }
                     let var = self
                         .variables
-                        .get("model_index")
-                        .ok_or_else(|| anyhow!("N used where model_index is unavailable"))?;
-                    let model_index = self.builder.use_var(*var);
+                        .get("model")
+                        .ok_or_else(|| anyhow!("N used where model is unavailable"))?;
+                    let model = self.builder.use_var(*var);
                     return Ok(self
                         .builder
                         .ins()
-                        .fcvt_from_sint(self.real_type, model_index));
+                        .fcvt_from_sint(self.real_type, model));
                 }
                 let ptr = if iname.is_tangent {
                     // tangent of a constant is zero
@@ -1498,8 +1556,8 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                 if iname.name == "N" {
                     let var = self
                         .variables
-                        .get("model_index")
-                        .ok_or_else(|| anyhow!("N used where model_index is unavailable"))?;
+                        .get("model")
+                        .ok_or_else(|| anyhow!("N used where model is unavailable"))?;
                     Ok(self.builder.use_var(*var))
                 } else {
                     Err(anyhow!(
@@ -2469,12 +2527,6 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             .unwrap()
             .declare_data_in_func(module.constants_id, builder.func);
 
-        let model_index_global = module
-            .module
-            .lock()
-            .unwrap()
-            .declare_data_in_func(module.model_index_id, builder.func);
-
         // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
 
@@ -2507,26 +2559,12 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             functions: HashMap::new(),
             layout: &module.layout,
             threaded: module.threaded,
-            model_index_global,
         };
 
         // insert arg vars
         for (i, (arg_name, arg_type)) in arg_names.iter().zip(arg_types.iter()).enumerate() {
             let val = codegen.builder.block_params(entry_block)[i];
             codegen.declare_variable(*arg_type, arg_name, val);
-        }
-
-        if !codegen.variables.contains_key("model_index") {
-            let model_index_ptr = codegen
-                .builder
-                .ins()
-                .global_value(codegen.int_ptr_type, codegen.model_index_global);
-            let model_index =
-                codegen
-                    .builder
-                    .ins()
-                    .load(codegen.int_type, codegen.mem_flags, model_index_ptr, 0);
-            codegen.declare_variable(codegen.int_type, "model_index", model_index);
         }
 
         // insert u if it exists in args
@@ -2579,6 +2617,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         // insert all tensors in data if it exists in args
         let tensors = model.input().into_iter();
         let tensors = tensors.chain(model.input_dep_defns().iter());
+        let tensors = tensors.chain(model.model_dep_defns().iter());
         let tensors = tensors.chain(model.time_dep_defns().iter());
         let tensors = tensors.chain(model.state_dep_defns().iter());
         let tensors = tensors.chain(model.state_dep_post_f_defns().iter());

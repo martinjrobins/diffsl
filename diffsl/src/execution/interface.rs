@@ -15,6 +15,48 @@ pub type StopFunc<T> = unsafe extern "C" fn(
     thread_id: UIntType,
     thread_dim: UIntType,
 );
+pub type StopGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    du: *const T,
+    data: *const T,
+    ddata: *mut T,
+    root: *const T,
+    droot: *mut T,
+    thread_id: UIntType,
+    thread_dim: UIntType,
+);
+pub type StopRevGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    du: *mut T,
+    data: *const T,
+    ddata: *mut T,
+    root: *const T,
+    droot: *mut T,
+    thread_id: UIntType,
+    thread_dim: UIntType,
+);
+pub type StopSensGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *const T,
+    ddata: *mut T,
+    root: *const T,
+    droot: *mut T,
+    thread_id: UIntType,
+    thread_dim: UIntType,
+);
+pub type StopSensRevGradFunc<T> = unsafe extern "C" fn(
+    time: T,
+    u: *const T,
+    data: *const T,
+    ddata: *mut T,
+    root: *const T,
+    droot: *mut T,
+    thread_id: UIntType,
+    thread_dim: UIntType,
+);
 pub type ResetFunc<T> = unsafe extern "C" fn(
     time: T,
     u: *const T,
@@ -321,6 +363,7 @@ impl<T> JitFunctions<T> {
 
 pub(crate) struct JitGradFunctions<T> {
     pub(crate) set_u0_grad: U0GradFunc<T>,
+    pub(crate) stop_grad: StopGradFunc<T>,
     pub(crate) reset_grad: ResetGradFunc<T>,
     pub(crate) rhs_grad: RhsGradFunc<T>,
     pub(crate) calc_out_grad: CalcOutGradFunc<T>,
@@ -332,6 +375,7 @@ impl<T> JitGradFunctions<T> {
         // check if all required symbols are present
         let required_symbols = [
             "set_u0_grad",
+            "calc_stop_grad",
             "reset_grad",
             "rhs_grad",
             "calc_out_grad",
@@ -344,6 +388,9 @@ impl<T> JitGradFunctions<T> {
         }
         let set_u0_grad =
             unsafe { std::mem::transmute::<*const u8, U0GradFunc<T>>(symbol_map["set_u0_grad"]) };
+        let stop_grad = unsafe {
+            std::mem::transmute::<*const u8, StopGradFunc<T>>(symbol_map["calc_stop_grad"])
+        };
         let reset_grad =
             unsafe { std::mem::transmute::<*const u8, ResetGradFunc<T>>(symbol_map["reset_grad"]) };
         let rhs_grad =
@@ -357,6 +404,7 @@ impl<T> JitGradFunctions<T> {
 
         Ok(Self {
             set_u0_grad,
+            stop_grad,
             reset_grad,
             rhs_grad,
             calc_out_grad,
@@ -367,6 +415,7 @@ impl<T> JitGradFunctions<T> {
 
 pub(crate) struct JitGradRFunctions<T> {
     pub(crate) set_u0_rgrad: U0RevGradFunc<T>,
+    pub(crate) stop_rgrad: StopRevGradFunc<T>,
     pub(crate) reset_rgrad: ResetRevGradFunc<T>,
     pub(crate) rhs_rgrad: RhsRevGradFunc<T>,
     pub(crate) mass_rgrad: MassRevGradFunc<T>,
@@ -378,6 +427,7 @@ impl<T> JitGradRFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
         let required_symbols = [
             "set_u0_rgrad",
+            "calc_stop_rgrad",
             "reset_rgrad",
             "rhs_rgrad",
             "mass_rgrad",
@@ -391,6 +441,9 @@ impl<T> JitGradRFunctions<T> {
         }
         let set_u0_rgrad = unsafe {
             std::mem::transmute::<*const u8, U0RevGradFunc<T>>(symbol_map["set_u0_rgrad"])
+        };
+        let stop_rgrad = unsafe {
+            std::mem::transmute::<*const u8, StopRevGradFunc<T>>(symbol_map["calc_stop_rgrad"])
         };
         let reset_rgrad = unsafe {
             std::mem::transmute::<*const u8, ResetRevGradFunc<T>>(symbol_map["reset_rgrad"])
@@ -411,6 +464,7 @@ impl<T> JitGradRFunctions<T> {
 
         Ok(Self {
             set_u0_rgrad,
+            stop_rgrad,
             reset_rgrad,
             rhs_rgrad,
             mass_rgrad,
@@ -422,6 +476,7 @@ impl<T> JitGradRFunctions<T> {
 
 pub(crate) struct JitSensGradFunctions<T> {
     pub(crate) set_u0_sgrad: U0SensGradFunc<T>,
+    pub(crate) stop_sgrad: StopSensGradFunc<T>,
     pub(crate) reset_sgrad: ResetSensGradFunc<T>,
     pub(crate) rhs_sgrad: RhsSensGradFunc<T>,
     pub(crate) calc_out_sgrad: CalcOutSensGradFunc<T>,
@@ -429,7 +484,13 @@ pub(crate) struct JitSensGradFunctions<T> {
 
 impl<T> JitSensGradFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
-        let required_symbols = ["rhs_sgrad", "calc_out_sgrad", "set_u0_sgrad", "reset_sgrad"];
+        let required_symbols = [
+            "rhs_sgrad",
+            "calc_out_sgrad",
+            "set_u0_sgrad",
+            "calc_stop_sgrad",
+            "reset_sgrad",
+        ];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
@@ -444,6 +505,9 @@ impl<T> JitSensGradFunctions<T> {
         let set_u0_sgrad = unsafe {
             std::mem::transmute::<*const u8, U0SensGradFunc<T>>(symbol_map["set_u0_sgrad"])
         };
+        let stop_sgrad = unsafe {
+            std::mem::transmute::<*const u8, StopSensGradFunc<T>>(symbol_map["calc_stop_sgrad"])
+        };
         let reset_sgrad = unsafe {
             std::mem::transmute::<*const u8, ResetSensGradFunc<T>>(symbol_map["reset_sgrad"])
         };
@@ -452,12 +516,14 @@ impl<T> JitSensGradFunctions<T> {
             rhs_sgrad,
             calc_out_sgrad,
             set_u0_sgrad,
+            stop_sgrad,
             reset_sgrad,
         })
     }
 }
 
 pub(crate) struct JitSensRevGradFunctions<T> {
+    pub(crate) stop_rgrad: StopSensRevGradFunc<T>,
     pub(crate) reset_rgrad: ResetSensRevGradFunc<T>,
     pub(crate) rhs_rgrad: RhsSensRevGradFunc<T>,
     pub(crate) calc_out_rgrad: CalcOutSensRevGradFunc<T>,
@@ -465,7 +531,12 @@ pub(crate) struct JitSensRevGradFunctions<T> {
 
 impl<T> JitSensRevGradFunctions<T> {
     pub(crate) fn new(symbol_map: &HashMap<String, *const u8>) -> Result<Self> {
-        let required_symbols = ["rhs_srgrad", "calc_out_srgrad", "reset_srgrad"];
+        let required_symbols = [
+            "rhs_srgrad",
+            "calc_out_srgrad",
+            "calc_stop_srgrad",
+            "reset_srgrad",
+        ];
         for symbol in &required_symbols {
             if !symbol_map.contains_key(*symbol) {
                 return Err(anyhow!("Missing required symbol: {}", symbol));
@@ -473,6 +544,9 @@ impl<T> JitSensRevGradFunctions<T> {
         }
         let reset_rgrad = unsafe {
             std::mem::transmute::<*const u8, ResetSensRevGradFunc<T>>(symbol_map["reset_srgrad"])
+        };
+        let stop_rgrad = unsafe {
+            std::mem::transmute::<*const u8, StopSensRevGradFunc<T>>(symbol_map["calc_stop_srgrad"])
         };
         let rhs_rgrad = unsafe {
             std::mem::transmute::<*const u8, RhsSensRevGradFunc<T>>(symbol_map["rhs_srgrad"])
@@ -484,6 +558,7 @@ impl<T> JitSensRevGradFunctions<T> {
         };
 
         Ok(Self {
+            stop_rgrad,
             reset_rgrad,
             rhs_rgrad,
             calc_out_rgrad,

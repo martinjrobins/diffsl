@@ -615,6 +615,12 @@ impl<'s> DiscreteModel<'s> {
                 Self::check_match(reset, &ret.state, span, &mut env);
             }
         }
+        if ret.reset.is_some() && ret.stop.is_none() {
+            env.errs_mut().push(ValidationError::new(
+                "reset requires stop to also be defined".to_string(),
+                span_reset.flatten(),
+            ));
+        }
 
         let map_dep = |deps: &Vec<NonZero>| -> Vec<(usize, usize)> {
             deps.iter()
@@ -1719,6 +1725,32 @@ mod tests {
         assert!(
             model.is_err(),
             "reset_i should be state-dependent and must not depend on dudt_i"
+        );
+    }
+
+    #[test]
+    fn test_reset_requires_stop() {
+        let text = "
+        u_i {
+            y = 1,
+        }
+        F_i {
+            y,
+        }
+        reset_i {
+            2 * y,
+        }
+        ";
+        let model_ds = parse_ds_string(text).unwrap();
+        let model = DiscreteModel::build("$name", &model_ds);
+        assert!(
+            model.is_err(),
+            "reset_i should require stop_i to also be defined"
+        );
+        let errs = model.unwrap_err();
+        assert!(
+            errs.has_error_contains("reset requires stop to also be defined"),
+            "expected missing stop validation error"
         );
     }
 

@@ -297,6 +297,80 @@ macro_rules! define_external_test {
         }
 
         #[no_mangle]
+        pub unsafe extern "C" fn calc_stop_grad(
+            _time: $ty,
+            _u: *const $ty,
+            du: *const $ty,
+            _data: *const $ty,
+            ddata: *mut $ty,
+            _root: *const $ty,
+            droot: *mut $ty,
+            _thread_id: u32,
+            _thread_dim: u32,
+        ) {
+            if du.is_null() || ddata.is_null() || droot.is_null() {
+                return;
+            }
+            *droot = *du;
+            *ddata = 0.0 as $ty;
+        }
+
+        #[no_mangle]
+        pub unsafe extern "C" fn calc_stop_rgrad(
+            _time: $ty,
+            _u: *const $ty,
+            du: *mut $ty,
+            _data: *const $ty,
+            ddata: *mut $ty,
+            _root: *const $ty,
+            droot: *mut $ty,
+            _thread_id: u32,
+            _thread_dim: u32,
+        ) {
+            if du.is_null() || ddata.is_null() || droot.is_null() {
+                return;
+            }
+            *du += *droot;
+            *ddata += 0.0 as $ty;
+        }
+
+        #[no_mangle]
+        pub unsafe extern "C" fn calc_stop_sgrad(
+            _time: $ty,
+            _u: *const $ty,
+            _data: *const $ty,
+            ddata: *mut $ty,
+            _root: *const $ty,
+            droot: *mut $ty,
+            _thread_id: u32,
+            _thread_dim: u32,
+        ) {
+            if ddata.is_null() || droot.is_null() {
+                return;
+            }
+            *droot = 0.0 as $ty;
+            *ddata = 0.0 as $ty;
+        }
+
+        #[no_mangle]
+        pub unsafe extern "C" fn calc_stop_srgrad(
+            _time: $ty,
+            _u: *const $ty,
+            _data: *const $ty,
+            ddata: *mut $ty,
+            _root: *const $ty,
+            droot: *mut $ty,
+            _thread_id: u32,
+            _thread_dim: u32,
+        ) {
+            if ddata.is_null() || droot.is_null() {
+                return;
+            }
+            *droot = 0.0 as $ty;
+            *ddata = 0.0 as $ty;
+        }
+
+        #[no_mangle]
         pub unsafe extern "C" fn reset(
             _time: $ty,
             u: *const $ty,
@@ -508,6 +582,58 @@ macro_rules! define_external_test {
             let mut stop = vec![-5.0 as $ty; n_stop];
             compiler.calc_stop(0.0 as $ty, &u, &mut data, &mut stop);
             assert_eq!(stop[0], 0.5 as $ty);
+
+            let du_stop = vec![1.0 as $ty; n_states];
+            let mut ddata_stop = vec![-5.15 as $ty; n_data];
+            let mut dstop = vec![-5.25 as $ty; n_stop];
+            compiler.calc_stop_grad(
+                0.0 as $ty,
+                &u,
+                &du_stop,
+                &data,
+                &mut ddata_stop,
+                &stop,
+                &mut dstop,
+            );
+            assert_eq!(dstop[0], 1.0 as $ty);
+
+            let mut du_stop_rev = vec![-5.35 as $ty; n_states];
+            let mut ddata_stop_rev = vec![-5.45 as $ty; n_data];
+            let mut dstop_rev = vec![1.0 as $ty; n_stop];
+            compiler.calc_stop_rgrad(
+                0.0 as $ty,
+                &u,
+                &mut du_stop_rev,
+                &data,
+                &mut ddata_stop_rev,
+                &stop,
+                &mut dstop_rev,
+            );
+            assert!((du_stop_rev[0] - (-4.35 as $ty)).abs() < (1e-6 as $ty));
+
+            let mut ddata_stop_s = vec![-5.55 as $ty; n_data];
+            let mut dstop_s = vec![-5.65 as $ty; n_stop];
+            compiler.calc_stop_sgrad(
+                0.0 as $ty,
+                &u,
+                &data,
+                &mut ddata_stop_s,
+                &stop,
+                &mut dstop_s,
+            );
+            assert_eq!(dstop_s[0], 0.0 as $ty);
+
+            let mut ddata_stop_sr = vec![-5.75 as $ty; n_data];
+            let mut dstop_sr = vec![1.0 as $ty; n_stop];
+            compiler.calc_stop_srgrad(
+                0.0 as $ty,
+                &u,
+                &data,
+                &mut ddata_stop_sr,
+                &stop,
+                &mut dstop_sr,
+            );
+            assert_eq!(dstop_sr[0], 0.0 as $ty);
 
             let mut reset = vec![-5.5 as $ty; n_states];
             compiler.reset(0.0 as $ty, &u, &mut data, &mut reset);

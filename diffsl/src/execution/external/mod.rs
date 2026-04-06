@@ -246,6 +246,52 @@ macro_rules! define_symbol_module {
                     thread_id: UIntType,
                     thread_dim: UIntType,
                 );
+                #[link_name = "calc_stop_grad"]
+                pub fn calc_stop_grad(
+                    time: $ty,
+                    u: *const $ty,
+                    du: *const $ty,
+                    data: *const $ty,
+                    ddata: *mut $ty,
+                    root: *const $ty,
+                    droot: *mut $ty,
+                    thread_id: UIntType,
+                    thread_dim: UIntType,
+                );
+                #[link_name = "calc_stop_rgrad"]
+                pub fn calc_stop_rgrad(
+                    time: $ty,
+                    u: *const $ty,
+                    du: *mut $ty,
+                    data: *const $ty,
+                    ddata: *mut $ty,
+                    root: *const $ty,
+                    droot: *mut $ty,
+                    thread_id: UIntType,
+                    thread_dim: UIntType,
+                );
+                #[link_name = "calc_stop_sgrad"]
+                pub fn calc_stop_sgrad(
+                    time: $ty,
+                    u: *const $ty,
+                    data: *const $ty,
+                    ddata: *mut $ty,
+                    root: *const $ty,
+                    droot: *mut $ty,
+                    thread_id: UIntType,
+                    thread_dim: UIntType,
+                );
+                #[link_name = "calc_stop_srgrad"]
+                pub fn calc_stop_srgrad(
+                    time: $ty,
+                    u: *const $ty,
+                    data: *const $ty,
+                    ddata: *mut $ty,
+                    root: *const $ty,
+                    droot: *mut $ty,
+                    thread_id: UIntType,
+                    thread_dim: UIntType,
+                );
                 #[link_name = "set_id"]
                 pub fn set_id(id: *mut $ty);
                 #[link_name = "get_dims"]
@@ -360,6 +406,10 @@ impl_extern_symbols!(f64, f64_symbols, {
     "calc_out_sgrad" => calc_out_sgrad,
     "calc_out_srgrad" => calc_out_srgrad,
     "calc_stop" => calc_stop,
+    "calc_stop_grad" => calc_stop_grad,
+    "calc_stop_rgrad" => calc_stop_rgrad,
+    "calc_stop_sgrad" => calc_stop_sgrad,
+    "calc_stop_srgrad" => calc_stop_srgrad,
     "set_id" => set_id,
     "get_dims" => get_dims,
     "set_inputs" => set_inputs,
@@ -394,6 +444,10 @@ impl_extern_symbols!(f32, f32_symbols, {
     "calc_out_sgrad" => calc_out_sgrad,
     "calc_out_srgrad" => calc_out_srgrad,
     "calc_stop" => calc_stop,
+    "calc_stop_grad" => calc_stop_grad,
+    "calc_stop_rgrad" => calc_stop_rgrad,
+    "calc_stop_sgrad" => calc_stop_sgrad,
+    "calc_stop_srgrad" => calc_stop_srgrad,
     "set_id" => set_id,
     "get_dims" => get_dims,
     "set_inputs" => set_inputs,

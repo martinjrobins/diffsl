@@ -33,7 +33,7 @@ jobs:
   unit-tests:
     name: ${{ matrix.basename }} - ${{ matrix.os }} - ${{ matrix.llvm[0] }} - ${{ matrix.features }}
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental || matrix.llvm[0] == '21.1' || matrix.llvm[0] == '18.1' }}
+    continue-on-error: ${{ matrix.experimental || matrix.llvm[0] != '17.0' }}
     strategy:
         matrix:
           llvm:

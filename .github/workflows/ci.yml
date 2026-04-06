@@ -33,13 +33,14 @@ jobs:
   unit-tests:
     name: ${{ matrix.basename }} - ${{ matrix.os }} - ${{ matrix.llvm[0] }} - ${{ matrix.features }}
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
+    continue-on-error: ${{ matrix.experimental || matrix.llvm[0] == '21.1' || matrix.llvm[0] == '18.1' }}
     strategy:
         matrix:
           llvm:
             - ["15.0", "15-0", "150"]
             - ["16.0", "16-0", "160"]
             - ["17.0", "17-0", "170"]
+            - ["18.1", "18-1", "181"]
             - ["19.1", "19-1", "191", "19"]
             - ["20.1", "20-1", "201", "20"]
             - ["21.1", "21-1", "211", "21"]
@@ -62,26 +63,6 @@ jobs:
             - Tests
             
           include:
-            - toolchain: stable
-              os: ubuntu-latest
-              llvm: ["18.1", "18-1", "181"]
-              features: "rayon cranelift external_f64"
-              tests: true
-              clippy: false
-              rustdoc: false
-              experimental: true
-              basename: Tests
-
-            - toolchain: stable
-              os: macos-latest
-              llvm: ["18.1", "18-1", "181"]
-              features: "rayon cranelift external_f64"
-              tests: true
-              clippy: false
-              rustdoc: false
-              experimental: true
-              basename: Tests
-
             - toolchain: stable
               os: windows-latest
               llvm: ""

@@ -1613,6 +1613,10 @@ mod tests {
             2 * y + a,
             z + a,
         }
+        stop_i {
+            y - 0.5,
+            z - 1,
+        }
         out_i {
             y,
             z,

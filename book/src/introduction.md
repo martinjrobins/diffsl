@@ -42,3 +42,5 @@ out_i {
 ```
 
 Here, we define the input parameters for our model as a vector `in` with the growth rate `r` and the carrying capacity `k`. We then define the state vector `u_i` with the population `N` initialized to `0.0`. Next, we define the RHS function `F_i` as the logistic growth equation. Finally, we define the output vector `out_i` with the population `N`.
+
+*For an LLM-oriented summary and index of this documentation, see [llms.txt](./llms.txt).*

@@ -1,0 +1,84 @@
+DiffSL Language Documentation (LLMs)
+
+Site: https://martinjrobins.github.io/diffsl/
+Source Book: mdBook in book/src
+
+Summary
+DiffSL is a domain-specific language for defining systems of ordinary differential equations (ODEs), including differential-algebraic systems via a mass-matrix form. A DiffSL model describes state variables, right-hand side equations, parameters, optional mass-matrix terms, and optional stop/reset tensors for hybrid behavior.
+
+Conceptually, models are written in the form:
+M(t) * du/dt = F(u, p, t)
+u(0) = u0
+
+Core language ideas:
+- A model is a sequence of tensor definitions, optionally preceded by an input name list.
+- Variables are tensors (scalar, vector, matrix, higher-rank) identified by a name with optional index suffix (example: u_i, A_ij).
+- Tensor elements can be direct expressions or named assignments (example: x = 1.0).
+- Expressions support arithmetic, function calls, broadcasting-by-index, and selected contractions.
+- Ranges and sparse/diagonal element patterns are used to define tensor structure concisely.
+
+Grammar
+The grammar below summarizes the currently implemented DiffSL parser (based on ds_grammar.pest):
+
+main       = SOI model EOI
+model      = inputs? tensor*
+inputs     = "in" "=" "[" name? ("," name)* ","? "]"
+
+tensor     = name_ij "{" tensor_elmt? ("," tensor_elmt)* ","? "}"
+tensor_elmt = indices? (assignment | expression)
+assignment = name "=" expression
+
+indices    = "(" indice ("," indice)* ")" ":"
+indice     = integer (range_sep integer)?
+range_sep  = ".." | ":"
+
+expression = term (("+" | "-") term)*
+term       = factor (("*" | "/") factor)*
+factor     = sign? (call | real | integer | name_ij_index | name_ij | "(" expression ")")
+sign       = "+" | "-"
+
+call       = name "(" expression ("," expression)* ")"
+name_ij    = name ("_" name)?
+name_ij_index = name_ij "[" index_indice "]"
+index_indice = integer_expression (range_sep integer_expression)?
+
+integer_expression = integer_term (("+" | "-") integer_term)*
+integer_term       = integer_factor ((("*" | "/" | "%") integer_factor))*
+integer_factor     = sign? (integer | integer_name | "(" integer_expression ")")
+integer_name       = "N"
+
+name       = letter (letter | digit)*
+integer    = digit+
+real       = digit+ ("." digit*)? ("e" sign? integer)?
+
+Notes:
+- The special integer symbol N is available for model-indexed expressions.
+- name_ij supports an optional suffix after '_' (for example i, ij, abc).
+- name_ij_index supports single index and slice-like forms via index_indice.
+
+mdBook Index
+Each page in the public docs with a one-line description:
+
+1) DiffSL Language
+   URL: https://martinjrobins.github.io/diffsl/introduction.html
+   Description: High-level introduction to DiffSL with a minimal working example.
+
+2) Tensor Variables
+   URL: https://martinjrobins.github.io/diffsl/tensors.html
+   Description: Tensor definitions, indices, ranges, labels, and sparse/diagonal structure.
+
+3) Tensor Operations
+   URL: https://martinjrobins.github.io/diffsl/operations.html
+   Description: Arithmetic on tensors, index-aware broadcasting, contractions, and vector indexing.
+
+4) Defining ODEs
+   URL: https://martinjrobins.github.io/diffsl/odes.html
+   Description: ODE/DAE model construction with u, F, optional dudt and M, and hybrid stop/reset behavior.
+
+5) Inputs and Outputs
+   URL: https://martinjrobins.github.io/diffsl/inputs_outputs.html
+   Description: Declaring overridable input parameters and selecting model outputs.
+
+6) Predefined functions
+   URL: https://martinjrobins.github.io/diffsl/functions.html
+   Description: Built-in math functions and the predefined time variable t.

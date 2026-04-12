@@ -373,14 +373,7 @@ macro_rules! impl_extern_symbols {
     ($ty:ty, $sym:path) => {
         impl ExternSymbols for $ty {
             fn insert_symbols(symbols: &mut HashMap<String, *const u8>) {
-                macro_rules! insert {
-                    ($($name:literal => $func:ident,)+) => {
-                        use $sym as sym;
-                        $(symbols.insert($name.to_string(), sym::$func as *const u8);)+
-                    };
-                }
-
-                crate::execution::external_interface::for_each_external_symbol!(insert);
+                crate::execution::external_interface::insert_external_symbols!(symbols, $sym);
             }
         }
     };

@@ -100,7 +100,7 @@ impl DynamicLibrary {
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
         let handle = unsafe { LoadLibraryW(wide_path.as_ptr()) };
-        if handle == 0 {
+        if handle.is_null() {
             return Err(anyhow!(
                 "Failed to load dynamic library {}: {}",
                 path.display(),
@@ -129,8 +129,10 @@ impl DynamicLibrary {
 #[cfg(all(windows, not(target_arch = "wasm32")))]
 impl Drop for DynamicLibrary {
     fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::FreeLibrary;
+
         unsafe {
-            windows_sys::Win32::System::LibraryLoader::FreeLibrary(self.handle);
+            FreeLibrary(self.handle);
         }
     }
 }

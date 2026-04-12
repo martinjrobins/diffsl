@@ -69,20 +69,47 @@ macro_rules! insert_external_symbols {
         $symbols.insert("set_u0_sgrad".to_string(), sym::set_u0_sgrad as *const u8);
         $symbols.insert("calc_out".to_string(), sym::calc_out as *const u8);
         $symbols.insert("calc_out_grad".to_string(), sym::calc_out_grad as *const u8);
-        $symbols.insert("calc_out_rgrad".to_string(), sym::calc_out_rgrad as *const u8);
-        $symbols.insert("calc_out_sgrad".to_string(), sym::calc_out_sgrad as *const u8);
-        $symbols.insert("calc_out_srgrad".to_string(), sym::calc_out_srgrad as *const u8);
+        $symbols.insert(
+            "calc_out_rgrad".to_string(),
+            sym::calc_out_rgrad as *const u8,
+        );
+        $symbols.insert(
+            "calc_out_sgrad".to_string(),
+            sym::calc_out_sgrad as *const u8,
+        );
+        $symbols.insert(
+            "calc_out_srgrad".to_string(),
+            sym::calc_out_srgrad as *const u8,
+        );
         $symbols.insert("calc_stop".to_string(), sym::calc_stop as *const u8);
-        $symbols.insert("calc_stop_grad".to_string(), sym::calc_stop_grad as *const u8);
-        $symbols.insert("calc_stop_rgrad".to_string(), sym::calc_stop_rgrad as *const u8);
-        $symbols.insert("calc_stop_sgrad".to_string(), sym::calc_stop_sgrad as *const u8);
-        $symbols.insert("calc_stop_srgrad".to_string(), sym::calc_stop_srgrad as *const u8);
+        $symbols.insert(
+            "calc_stop_grad".to_string(),
+            sym::calc_stop_grad as *const u8,
+        );
+        $symbols.insert(
+            "calc_stop_rgrad".to_string(),
+            sym::calc_stop_rgrad as *const u8,
+        );
+        $symbols.insert(
+            "calc_stop_sgrad".to_string(),
+            sym::calc_stop_sgrad as *const u8,
+        );
+        $symbols.insert(
+            "calc_stop_srgrad".to_string(),
+            sym::calc_stop_srgrad as *const u8,
+        );
         $symbols.insert("set_id".to_string(), sym::set_id as *const u8);
         $symbols.insert("get_dims".to_string(), sym::get_dims as *const u8);
         $symbols.insert("set_inputs".to_string(), sym::set_inputs as *const u8);
         $symbols.insert("get_inputs".to_string(), sym::get_inputs as *const u8);
-        $symbols.insert("set_inputs_grad".to_string(), sym::set_inputs_grad as *const u8);
-        $symbols.insert("set_inputs_rgrad".to_string(), sym::set_inputs_rgrad as *const u8);
+        $symbols.insert(
+            "set_inputs_grad".to_string(),
+            sym::set_inputs_grad as *const u8,
+        );
+        $symbols.insert(
+            "set_inputs_rgrad".to_string(),
+            sym::set_inputs_rgrad as *const u8,
+        );
     }};
 }
 

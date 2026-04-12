@@ -7,6 +7,6 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-diffsl = { path = "../../../", features = ["external"] }
+diffsl = { path = "../../../", features = ["external_f32"] }
 
 [workspace]

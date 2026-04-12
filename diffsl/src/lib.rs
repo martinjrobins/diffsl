@@ -16,6 +16,8 @@ pub use execution::compiler::Compiler;
 pub use execution::cranelift::codegen::{CraneliftJitModule, CraneliftObjectModule};
 #[cfg(feature = "external")]
 pub use execution::external::ExternalModule;
+#[cfg(feature = "external_dynamic")]
+pub use execution::external_dynamic::ExternalDynModule;
 #[cfg(feature = "llvm")]
 pub use execution::llvm::codegen::LlvmModule;
 pub use execution::module::{

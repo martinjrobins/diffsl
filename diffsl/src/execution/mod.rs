@@ -2,6 +2,10 @@
 pub mod cranelift;
 #[cfg(feature = "external")]
 pub mod external;
+#[cfg(feature = "external_dynamic")]
+pub mod external_dynamic;
+#[cfg(any(feature = "external", feature = "external_dynamic"))]
+pub(crate) mod external_interface;
 #[cfg(feature = "llvm")]
 pub mod llvm;
 pub mod object;

@@ -1,5 +1,7 @@
 /target
 /Cargo.lock
+/diffsl/tests/fixtures/*/Cargo.lock
+/diffsl/target
 env
 *.o
 .vscode

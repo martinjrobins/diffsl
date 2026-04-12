@@ -370,88 +370,24 @@ where
 }
 
 macro_rules! impl_extern_symbols {
-    ($ty:ty, $sym:path, { $($name:literal => $func:ident),+ $(,)? }) => {
+    ($ty:ty, $sym:path) => {
         impl ExternSymbols for $ty {
             fn insert_symbols(symbols: &mut HashMap<String, *const u8>) {
-                use $sym as sym;
-                $(symbols.insert($name.to_string(), sym::$func as *const u8);)+
+                macro_rules! insert {
+                    ($($name:literal => $func:ident,)+) => {
+                        use $sym as sym;
+                        $(symbols.insert($name.to_string(), sym::$func as *const u8);)+
+                    };
+                }
+
+                crate::execution::external_interface::for_each_external_symbol!(insert);
             }
         }
     };
 }
 
 #[cfg(feature = "external_f64")]
-impl_extern_symbols!(f64, f64_symbols, {
-    "barrier_init" => barrier_init,
-    "set_constants" => set_constants,
-    "set_u0" => set_u0,
-    "reset" => reset,
-    "reset_grad" => reset_grad,
-    "reset_rgrad" => reset_rgrad,
-    "reset_sgrad" => reset_sgrad,
-    "reset_srgrad" => reset_srgrad,
-    "rhs" => rhs,
-    "rhs_grad" => rhs_grad,
-    "rhs_rgrad" => rhs_rgrad,
-    "rhs_sgrad" => rhs_sgrad,
-    "rhs_srgrad" => rhs_srgrad,
-    "mass" => mass,
-    "mass_rgrad" => mass_rgrad,
-    "set_u0_grad" => set_u0_grad,
-    "set_u0_rgrad" => set_u0_rgrad,
-    "set_u0_sgrad" => set_u0_sgrad,
-    "calc_out" => calc_out,
-    "calc_out_grad" => calc_out_grad,
-    "calc_out_rgrad" => calc_out_rgrad,
-    "calc_out_sgrad" => calc_out_sgrad,
-    "calc_out_srgrad" => calc_out_srgrad,
-    "calc_stop" => calc_stop,
-    "calc_stop_grad" => calc_stop_grad,
-    "calc_stop_rgrad" => calc_stop_rgrad,
-    "calc_stop_sgrad" => calc_stop_sgrad,
-    "calc_stop_srgrad" => calc_stop_srgrad,
-    "set_id" => set_id,
-    "get_dims" => get_dims,
-    "set_inputs" => set_inputs,
-    "get_inputs" => get_inputs,
-    "set_inputs_grad" => set_inputs_grad,
-    "set_inputs_rgrad" => set_inputs_rgrad,
-});
+impl_extern_symbols!(f64, f64_symbols);
 
 #[cfg(feature = "external_f32")]
-impl_extern_symbols!(f32, f32_symbols, {
-    "barrier_init" => barrier_init,
-    "set_constants" => set_constants,
-    "set_u0" => set_u0,
-    "reset" => reset,
-    "reset_grad" => reset_grad,
-    "reset_rgrad" => reset_rgrad,
-    "reset_sgrad" => reset_sgrad,
-    "reset_srgrad" => reset_srgrad,
-    "rhs" => rhs,
-    "rhs_grad" => rhs_grad,
-    "rhs_rgrad" => rhs_rgrad,
-    "rhs_sgrad" => rhs_sgrad,
-    "rhs_srgrad" => rhs_srgrad,
-    "mass" => mass,
-    "mass_rgrad" => mass_rgrad,
-    "set_u0_grad" => set_u0_grad,
-    "set_u0_rgrad" => set_u0_rgrad,
-    "set_u0_sgrad" => set_u0_sgrad,
-    "calc_out" => calc_out,
-    "calc_out_grad" => calc_out_grad,
-    "calc_out_rgrad" => calc_out_rgrad,
-    "calc_out_sgrad" => calc_out_sgrad,
-    "calc_out_srgrad" => calc_out_srgrad,
-    "calc_stop" => calc_stop,
-    "calc_stop_grad" => calc_stop_grad,
-    "calc_stop_rgrad" => calc_stop_rgrad,
-    "calc_stop_sgrad" => calc_stop_sgrad,
-    "calc_stop_srgrad" => calc_stop_srgrad,
-    "set_id" => set_id,
-    "get_dims" => get_dims,
-    "set_inputs" => set_inputs,
-    "get_inputs" => get_inputs,
-    "set_inputs_grad" => set_inputs_grad,
-    "set_inputs_rgrad" => set_inputs_rgrad,
-});
+impl_extern_symbols!(f32, f32_symbols);

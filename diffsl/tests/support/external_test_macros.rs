@@ -1,4 +1,6 @@
+#[allow(unused_imports)]
 use diffsl::execution::compiler::CompilerMode;
+#[allow(unused_imports)]
 use diffsl::{Compiler, ExternalModule};
 
 macro_rules! define_external_test {
@@ -541,6 +543,33 @@ macro_rules! define_external_test {
                 return;
             }
             *dinputs += *ddata;
+        }
+
+        static CONSTANT_RATE: [$ty; 1] = [3.0 as $ty];
+
+        #[no_mangle]
+        pub unsafe extern "C" fn get_tensor_in(
+            data: *const $ty,
+            tensor_data: *mut *mut $ty,
+            tensor_size: *mut u32,
+        ) {
+            if data.is_null() || tensor_data.is_null() || tensor_size.is_null() {
+                return;
+            }
+            *tensor_data = data.cast_mut();
+            *tensor_size = INPUTS;
+        }
+
+        #[no_mangle]
+        pub unsafe extern "C" fn get_constant_rate(
+            tensor_data: *mut *const $ty,
+            tensor_size: *mut u32,
+        ) {
+            if tensor_data.is_null() || tensor_size.is_null() {
+                return;
+            }
+            *tensor_data = CONSTANT_RATE.as_ptr();
+            *tensor_size = CONSTANT_RATE.len() as u32;
         }
 
         #[test]

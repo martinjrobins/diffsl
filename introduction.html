@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-40b3c83f.js";
+            window.path_to_searchindex_js = "searchindex-e97ea9e3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-545c49d9.js"></script>
@@ -181,22 +181,22 @@
 ODE systems and is based on the idea that a ODE system can be specified by a set
 of equations of the form:</p>
 <p>$$
-M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} = F(\mathbf{u}, t)
+M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} = F(\mathbf{u}, \mathbf{p}, t)
 $$</p>
-<p>where \( \mathbf{u} \) is the vector of state variables and \( t \) is the time. The DSL
+<p>where \( \mathbf{u} \) is the vector of state variables, \( \mathbf{p} \) is the vector of parameters, and \( t \) is the time. The DSL
 allows the user to specify the state vector \( \mathbf{u} \) and the RHS function \( F \).
 Optionally, the user can also define the derivative of the state vector \( \mathrm{d}\mathbf{u}/\mathrm{d}t \)
 and the mass matrix \( M \) as a function of \( \mathrm{d}\mathbf{u}/\mathrm{d}t \) (note that this function should be linear!).</p>
 <p>The user is also free to define an arbitrary number of intermediate
 scalars and vectors of the users that are required to calculate \( F \) and \( M \).</p>
 <h2 id="a-simple-example"><a class="header" href="#a-simple-example">A Simple Example</a></h2>
-<p>To illustrate the language, consider the following simple example of a logistic growth model:</p>
+<p>To illustrate the language, consider the following example of a logistic growth model:</p>
 <p>$$
 \frac{\mathrm{d}N}{\mathrm{d}t} = r N (1 - N/K)
 $$</p>
 <p>where \( N \) is the population, \( r \) is the growth rate, and \( k \) is the carrying capacity.</p>
 <p>To specify this model in DiffSL, we can write:</p>
-<pre><code>in_i { r = 1.0, k = 10.0 }
+<pre><code class="language-diffsl">in_i { r = 1.0, k = 10.0 }
 u_i {
   N = 0.0
 }

@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-40b3c83f.js";
+            window.path_to_searchindex_js = "searchindex-e97ea9e3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-545c49d9.js"></script>
@@ -177,28 +177,26 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="inputs--outputs"><a class="header" href="#inputs--outputs">Inputs &amp; Outputs</a></h1>
-<p>Often it is useful to parameterize the system of equations using a set of input parameters. It is also useful to be able to extract certain variables from the system for further analysis.
+<p>Often it is useful to parameterize the system of equations using a set of input parameters. It is also useful to be able to extract certain outputs from the system for further analysis.
 In this section we will show how to specify inputs and outputs in the DiffSL language.</p>
 <h2 id="specifying-inputs"><a class="header" href="#specifying-inputs">Specifying inputs</a></h2>
 <p>We can override the values of any scalar variables by specifying them as input
 variables.  To do this, we add a line at the top of the code to specify that
 these are input variables:</p>
-<pre><code>in { k = 1.0 }
+<pre><code class="language-diffsl">in { k = 1.0 }
 u { 0.1 }
 F { k * u }
 </code></pre>
 <p>Here we have specified a single input parameter <code>k</code> that is used in the RHS function <code>F</code>.
-The value of <code>k</code> is set to <code>1.0</code> in the code, but this value is only a default, and can be overridden by passing in a value at solve time.</p>
+The value of <code>k</code> is set to <code>1.0</code> in the code, but this value is only there to specify the shape of the element, and will be overridden by passing in a value at solve time.</p>
 <p>We can use input parameters anywhere in the code, including in the definition of other input parameters.</p>
-<pre><code>in { k = 1.0 }
+<pre><code class="language-diffsl">in { k = 1.0 }
 g { 2 * k }
 F { g * u }
 </code></pre>
 <p>or in the intial conditions of the state variables:</p>
-<pre><code>in { k = 1.0 }
-u_i {
-  x = k,
-}
+<pre><code class="language-diffsl">in { k = 1.0 }
+u_i { x = k }
 F { u }
 </code></pre>
 <h2 id="specifying-outputs"><a class="header" href="#specifying-outputs">Specifying outputs</a></h2>
@@ -206,7 +204,7 @@ F { u }
 variables themselves, or they might be other variables that are calculated from
 the state variables.</p>
 <p>Here is an example where we simply output the elements of the state vector:</p>
-<pre><code>u_i {
+<pre><code class="language-diffsl">u_i {
   x = 1.0,
   y = 2.0,
   z = 3.0,
@@ -214,7 +212,7 @@ the state variables.</p>
 out_i { x, y, z }
 </code></pre>
 <p>or we can derive additional outputs from the state variables:</p>
-<pre><code>u_i {
+<pre><code class="language-diffsl">u_i {
   x = 1.0,
   y = 2.0,
   z = 3.0,

@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-40b3c83f.js";
+            window.path_to_searchindex_js = "searchindex-e97ea9e3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-545c49d9.js"></script>
@@ -182,22 +182,22 @@
 ODE systems and is based on the idea that a ODE system can be specified by a set
 of equations of the form:</p>
 <p>$$
-M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} = F(\mathbf{u}, t)
+M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} = F(\mathbf{u}, \mathbf{p}, t)
 $$</p>
-<p>where \( \mathbf{u} \) is the vector of state variables and \( t \) is the time. The DSL
+<p>where \( \mathbf{u} \) is the vector of state variables, \( \mathbf{p} \) is the vector of parameters, and \( t \) is the time. The DSL
 allows the user to specify the state vector \( \mathbf{u} \) and the RHS function \( F \).
 Optionally, the user can also define the derivative of the state vector \( \mathrm{d}\mathbf{u}/\mathrm{d}t \)
 and the mass matrix \( M \) as a function of \( \mathrm{d}\mathbf{u}/\mathrm{d}t \) (note that this function should be linear!).</p>
 <p>The user is also free to define an arbitrary number of intermediate
 scalars and vectors of the users that are required to calculate \( F \) and \( M \).</p>
 <h2 id="a-simple-example"><a class="header" href="#a-simple-example">A Simple Example</a></h2>
-<p>To illustrate the language, consider the following simple example of a logistic growth model:</p>
+<p>To illustrate the language, consider the following example of a logistic growth model:</p>
 <p>$$
 \frac{\mathrm{d}N}{\mathrm{d}t} = r N (1 - N/K)
 $$</p>
 <p>where \( N \) is the population, \( r \) is the growth rate, and \( k \) is the carrying capacity.</p>
 <p>To specify this model in DiffSL, we can write:</p>
-<pre><code>in_i { r = 1.0, k = 10.0 }
+<pre><code class="language-diffsl">in_i { r = 1.0, k = 10.0 }
 u_i {
   N = 0.0
 }
@@ -215,12 +215,12 @@ out_i {
 <p>The DiffSL language only has a single type of variable, which is a n-dimensional tensor filled with double precision floating point numbers.
 These tensors can be dense, sparse or diagonal, and the compiler will try to choose the representation that is most efficient, preferring diagonal and then sparse matrices over dense.</p>
 <p>The simplest tensor is a 0th dimensional scalar. For example, to define a scalar variable \( k \) with value 1.0, we write:</p>
-<pre><code>k { 1.0 }
+<pre><code class="language-diffsl">k { 1.0 }
 </code></pre>
 <p>Here <code>k</code> is the <em>label</em> for the tensor, which we can later use to refer to it in expressions. In the curly brackets we have one or more <em>elements</em> of the tensor,
 and here <code>k</code> only has a single element, which is a constant value 1.</p>
 <p>Lets now define a 1-dimensional vector variable \( \mathbf{v} \) with 3 elements:</p>
-<pre><code>v_i {
+<pre><code class="language-diffsl">v_i {
  1.0,
  2.0,
  3.0,
@@ -228,32 +228,38 @@ and here <code>k</code> only has a single element, which is a constant value 1.<
 </code></pre>
 <p>The list of elements within a tensor are deliniated with a comma <code>,</code> and the trailing comma at the end of the list is optional.
 Whitespace is ignored so you can also write this tensor all on the one line:</p>
-<pre><code>v_i { 1.0, 2.0, 3.0 }
+<pre><code class="language-diffsl">v_i { 1.0, 2.0, 3.0 }
 </code></pre>
 <h2 id="subscripts"><a class="header" href="#subscripts">Subscripts</a></h2>
 <p>In the previous vector <code>v_i</code>, the subscript <code>_i</code> indicates that this is a 1D vector. Each subscript is a single character,
 and the number of subscripts indicates the number of dimensions of the tensor. You can use any character for the subscript,</p>
-<pre><code>v_x { 1.0, 2.0, 3.0 }
+<pre><code class="language-diffsl">v_x { 1.0, 2.0, 3.0 }
 w_a { 2.0, 3.0 }
 v_i { 1.0, 2.0, 3.0, 4.0 }
+</code></pre>
+<p>If we wanted to define a 2D matrix, we would need to use two subscripts, for example:</p>
+<pre><code class="language-diffsl">A_ij { (0:2, 0:3): 1.0 }
+</code></pre>
+<p>If we wanted to define a 0D scalar, we would simply not use any subscripts:</p>
+<pre><code class="language-diffsl">k { 1.0 }
 </code></pre>
 <h2 id="ranges"><a class="header" href="#ranges">Ranges</a></h2>
 <p>Each element of a tensor can optionally give a <em>range</em> of index numbers, which is used by the compiler to determine the extent of each element.
 This is useful when defining higher dimensional tensors, such as matrices. For example, to define a 2x3 matrix \( A \) with all elements set to <code>1.0</code>, we write:</p>
-<pre><code>A_ij {
+<pre><code class="language-diffsl">A_ij {
  (0:2, 0:3): 1.0,
 }
 </code></pre>
 <p>Note the two subscript to indicate that this is a 2D tensor. The size of the
 single element is given in the brackets, we have two ranges <code>0:2</code> and <code>0:3</code> that correspond to the two dimensions of the matrix.</p>
 <p>Here is another example of a 4x2 matrix \( B \) with rows 0 to 2 set to <code>1.0</code> and rows 3 to 4 set to <code>2.0</code>:</p>
-<pre><code>A_ij {
+<pre><code class="language-diffsl">A_ij {
  (0:2, 0:3): 1.0,
  (3:4, 0:3): 2.0,
 }
 </code></pre>
 <p>For specifying a single index, you can simply write the index number without the colon, for example to define a 3x3 identity matrix $I$:</p>
-<pre><code>I_ij {
+<pre><code class="language-diffsl">I_ij {
  (0, 0): 1.0,
  (1, 1): 1.0,
  (2, 2): 1.0,
@@ -263,79 +269,80 @@ single element is given in the brackets, we have two ranges <code>0:2</code> and
 Since the maximum index in the range is 2, the compiler will infer that the size of the tensor is 3x3.</p>
 <p>Notice also that we have not defined all the elements of the matrix, only the non-zero elements. The compiler will assume that all other elements are zero.</p>
 <p>Finally, you can also use the <code>..</code> operator to specify a <em>diagonal</em> range of indices. For example, to define a 3x3 matrix \( D \) with the diagonal elements set to <code>1.0</code>:</p>
-<pre><code>D_ij {
+<pre><code class="language-diffsl">D_ij {
  (0..2, 0..2): 1.0,
 }
 </code></pre>
 <h2 id="sparse-and-diagonal-matrices"><a class="header" href="#sparse-and-diagonal-matrices">Sparse and diagonal matrices</a></h2>
 <p>We can automatically define a sparse matrix \( B \) by simply specifying the non-zero elements:</p>
-<pre><code>B_ij {
+<pre><code class="language-diffsl">B_ij {
  (0, 0): 1.0,
  (0, 1): 2.0,
  (1, 1): 3.0,
 }
 </code></pre>
-<p>The compiler will infer that this is a 2x2 matrix, and will automatically represent it as a sparse matrix.
-We can force the compiler to use a dense representation by specifying the zeros explicitly:</p>
-<pre><code>B_ij {
- (0, 0): 1.0,
- (0, 1): 2.0,
- (1, 0): 0.0,
- (1, 1): 3.0,
+<p>The compiler will infer that this is a 2x2 matrix, and will automatically represent it as a sparse matrix.</p>
+<p>Any zero-value elements will automatically be filtered from the matrix, this is useful for specifying the sizes of
+sparse matrices if the last row or column is zero. For example, to define a 3x3 matrix \( C \) with the first two rows set to <code>1.0</code>:</p>
+<pre><code class="language-diffsl">C_ij {
+ (0:2, 0:3): 1.0,
+ (2, 2): 0.0,
 }
 </code></pre>
+<p>Without the zero element, the compiler would infer that this is a 2x3 matrix, but with the zero element it will infer that this is a 3x3 matrix with the last row set to zero.
+The sparsity of the matrix will be preserved in the internal representation, so the zero elements will not take up any memory or computational resources.</p>
 <p>As well as specifying a sparse matrix, we can also define a diagonal matrix by specifying the diagonal elements:</p>
-<pre><code>D_ij {
+<pre><code class="language-diffsl">D_ij {
  (0, 0): 1.0,
  (1, 1): 2.0,
  (2, 2): 3.0,
 }
 </code></pre>
 <p>The compiler will infer that this is a 3x3 matrix, and will automatically represent it as a diagonal matrix.</p>
-<h2 id="labels"><a class="header" href="#labels">Labels</a></h2>
+<h2 id="element-labels"><a class="header" href="#element-labels">Element Labels</a></h2>
 <p>Each element of a tensor can optionally be given a name or <em>label</em> that can be used to refer to the element in expressions.</p>
 <p>For example, to define a vector with two named elements:</p>
-<pre><code>v_i {
+<pre><code class="language-diffsl">v_i {
  x = 1.0,
  y = 2.0,
 }
 </code></pre>
 <p>Here we have defined a single tensor <code>v_i</code> with two named elements <code>x</code> and <code>y</code>. We can then refer to the individual elements in expressions, where they will act as if they were separate variables:</p>
-<pre><code>v_i { x = 1.0, y = 2.0 }
+<pre><code class="language-diffsl">v_i { x = 1.0, y = 2.0 }
 w_i { 2 * y, 3 * x }
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="tensor-operations"><a class="header" href="#tensor-operations">Tensor Operations</a></h1>
-<p>We can use standard algebraic operations on variables. To refer to previously
-defined variables, we use the variable name, making sure to use the correct
+<p>We can use standard algebraic operations on tensors. To refer to previously
+defined variables, we use the tensor name, making sure to use the correct
 subscript if it is a vector or tensor.</p>
-<p>For example, to define a scalar variable \( a \) as the sum of two other scalar
-variables \( b \) and \( c \), we write:</p>
-<pre><code>b { 1.0 }
+<p>For example, to define a scalar \( a \) as the sum of two other scalars
+\( b \) and \( c \), we write:</p>
+<pre><code class="language-diffsl">b { 1.0 }
 c { 2.0 }
 a { b + c }
 </code></pre>
 <p>The scalar <code>a</code> will therefore be equal to 3.0.</p>
-<p>To define a vector variable \( \mathbf{v} \) as the sum of two other vector
-variables \( \mathbf{u} \) and \( \mathbf{w} \), we write:</p>
-<pre><code>u_i { 1.0, 2.0 }
+<p>To define a vector \( \mathbf{v} \) as the sum of two other vectors
+\( \mathbf{u} \) and \( \mathbf{w} \), we write:</p>
+<pre><code class="language-diffsl">u_i { 1.0, 2.0 }
 w_i { 3.0, 4.0 }
 v_i { u_i + w_i }
 </code></pre>
 <p>Notice that the index of the vectors within the expression must match the index of the output vector <code>v_i</code>.
 So if we defined <code>v_a</code> instead of <code>v_i</code>, the expression would be:</p>
-<pre><code>v_a { u_a + w_a }
+<pre><code class="language-diffsl">v_a { u_a + w_a }
 </code></pre>
 <h2 id="translations"><a class="header" href="#translations">Translations</a></h2>
 <p>For higher-dimensional tensors, the order of the indices in the expression relative to the output tensor is important.</p>
 <p>For example, we can use the indices to define a translation of a matrix. Here we define a new matrix \( C \) that is the sum of \( A \) and \( B^T \),
 where \( B^T \) is the transpose of \( B \)</p>
-<pre><code>C_ij { A_ij + B_ji }
+<pre><code class="language-diffsl">C_ij { A_ij + B_ji }
 </code></pre>
 <p>Notice that the indices of \( B^T \) are reversed in the expression compared to the output tensor \( C \), indicating that we are indexing the rows of \( B \) with <code>j</code> and the columns with <code>i</code> when we calculate the <code>(i, j)</code> element of \( C \).</p>
 <h2 id="broadcasting"><a class="header" href="#broadcasting">Broadcasting</a></h2>
 <p>Broadcasting is supported in the language, so you can perform element-wise operations on tensors of different shapes. For example, the following will define a new vector \( \mathbf{d} \) that is the sum of \( \mathbf{a} \) and a scalar \( k \):</p>
-<pre><code>a_i { 1.0, 2.0 }
+<pre><code class="language-diffsl">a_i { 1.0, 2.0 }
 k { 3.0 }
 d_i { a_i + k }
 </code></pre>
@@ -347,44 +354,47 @@ d_i { a_i + k }
 <li>Missing axes are treated as size <code>1</code>.</li>
 </ol>
 <p>This means broadcasting behavior depends on the index labels used in the expression, not only on raw tensor shapes.</p>
-<p>For example, the following is valid because <code>b</code> is indexed by <code>j</code>, so it broadcasts across the <code>i</code> axis:</p>
-<pre><code>A_ij { (0:3, 0:2): 1.0 }
+<p>For example, the following example defined a 3x2 matrix <code>A_ij</code> and a vector <code>b_i</code> of length 3. Given these shapes, the following definition
+of <code>c_ij</code> is valid because <code>b</code> is indexed by <code>j</code> in the expression <code>A_ij + b_j</code>. Since the number of <em>rows</em> in <code>b</code> matches the <em>columns</em> of <code>A</code>,
+this is a valid broadcasting operation.</p>
+<pre><code class="language-diffsl">A_ij { (0:3, 0:2): 1.0 }
 b_i { (0:2): 1.0 }
 c_ij { A_ij + b_j }
 </code></pre>
-<p>The following is invalid because <code>b_i</code> is aligned to the first axis (<code>i</code>) and cannot be broadcast to the matrix shape:</p>
-<pre><code>A_ij { (0:3, 0:2): 1.0 }
+<p>However, if <code>b</code> is instead indexed by <code>i</code>, the broadcasting is invalid because <code>b_i</code> is aligned to the <em>rows</em> (the <code>i</code> axis) of <code>A</code>, which are a different length, so the broadcasting cannot be performed and a compiler error will be raised.</p>
+<pre><code class="language-diffsl">A_ij { (0:3, 0:2): 1.0 }
 b_i { (0:2): 1.0 }
 c_ij { A_ij + b_i }
 </code></pre>
 <h2 id="contractions"><a class="header" href="#contractions">Contractions</a></h2>
 <p>The DiffSL indexing notation allows for tensor contractions, which are operations that sum over one or more indices.
 The rule used is that any indices that do not appear in the output tensor will be summed over.</p>
-<p>For example, the following defines a new vector \( \mathbf{v} \) that is the sum of the rows of a matrix \( A \):</p>
-<pre><code>v_i { A_ij }
+<p>For example, the following defines a new vector \( \mathbf{v} \) that is the sum of each individual row of matrix \( A \) (i.e. the sum is taken over the <code>j</code> index of <code>A</code>):</p>
+<pre><code class="language-diffsl">v_i { A_ij }
 </code></pre>
 <p>The above expression sums over the <code>j</code> index of the matrix <code>A</code>, resulting in a vector <code>v</code> where each element <code>v_i</code> is the sum of the elements in the <code>i</code>-th row of <code>A</code>.
-At the moment only 2d to 1d contractions are supported in order to enable matrix-vector multiplication, please open an issue if you need more general contraction support.</p>
-<p>We can also define a matrix-vector multiplication, the following will define a new vector \( \mathbf{v} \) that is
+At the moment only 2d to 1d contractions are supported in order to enable matrix-vector multiplication, please comment on <a href="https://github.com/martinjrobins/diffsl/issues/76">this issue</a> if you need more general contraction support.</p>
+<p>Using a contraction we can define the popular matrix-vector multiplication operation. The following will define a new vector \( \mathbf{v} \) that is
 the result of a matrix-vector multiplication of a matrix \( A \) and a vector \( \mathbf{u} \):</p>
-<pre><code>v_i { A_ij * u_j }
+<pre><code class="language-diffsl">v_i { A_ij * u_j }
 </code></pre>
 <p>This operation is actually a combination of a broadcast <code>A_ij * u_j</code>, followed by a contraction over the <code>j</code> index,
 the <code>A_ij * u_j</code> expression broadcasts the vector <code>u</code> to the same shape as <code>A</code>, forming a new 2D tensor, and
 the output vector <code>v_i</code> implicitly sums over the missing <code>j</code> index to form the final output vector.
 To illustrate this further, lets manually break this matrix-vector multiplication into two steps using an intermediary tensor <code>M_ij</code>:</p>
-<pre><code>M_ij { A_ij * u_j }
+<pre><code class="language-diffsl">M_ij { A_ij * u_j }
 v_i { M_ij }
 </code></pre>
 <p>The first step calculates the element-wise product of <code>A</code> and <code>u</code> using broadcasting into the 2D tensor <code>M</code>, and the second step uses a contraction to sum over the <code>j</code> index to form the output vector <code>v</code>.</p>
 <h2 id="indexing"><a class="header" href="#indexing">Indexing</a></h2>
-<p>Indexing a 1D dense tensor (vector) is supported using square brackets. You can use either single indexing to extract a single element, or range indexing to extract a sub-vector.</p>
-<p>For example, to extract the third element of a vector \( \mathbf{a} \) and assign it to a scalar \( r \), you can write:</p>
-<pre><code>a_i { 0.0, 1.0, 2.0, 3.0 }
+<p>Indexing a 1D dense tensor (vector) is supported using square brackets. If you need more general indexing capabilities, please comment on <a href="https://github.com/martinjrobins/diffsl/issues/77">this issue</a>.</p>
+<p>You can use either single indexing to extract a single element, or range indexing to extract a sub-vector.
+For example, to extract the third element of a vector \( \mathbf{a} \) and assign it to a scalar \( r \), you can write:</p>
+<pre><code class="language-diffsl">a_i { 0.0, 1.0, 2.0, 3.0 }
 r { a_i[2] }
 </code></pre>
 <p>To extract a sub-vector containing the second and third elements of \( \mathbf{a} \) and assign it to a new vector \( \mathbf{r} \), you can write:</p>
-<pre><code>a_i { 0.0, 1.0, 2.0, 3.0 }
+<pre><code class="language-diffsl">a_i { 0.0, 1.0, 2.0, 3.0 }
 r_i { a_i[1:3] }
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -404,36 +414,33 @@ The user is also free to define an arbitrary number of intermediate tensors that
 <h2 id="defining-the-state-vector"><a class="header" href="#defining-the-state-vector">Defining the state vector</a></h2>
 <p>To define the state vector \(\mathbf{u} \), we create a special
 vector tensor <code>u_i</code>. Note the particular name <code>u</code> is used to indicate that this
-is the state vector.</p>
+is the state vector, and cannot be used for any othr purpose.</p>
 <p>The values that we use for <code>u_i</code> are the initial values of the state variables
 at \( t=0 \), so an initial condition \( \mathbf{u}(t=0) = [x(0), y(0), z(0)] = [1, 0, 0] \) is defined as:</p>
-<pre><code>u_i {
+<pre><code class="language-diffsl">u_i {
   x = 1,
   y = 0,
   z = 0,
 }
 </code></pre>
-<p>Since we will often use the individual elements of the state vector in the RHS function, it is useful to define them as separate variables as well.</p>
+<p>Since we will often use the individual elements of the state vector in the RHS function, it is useful to define them using labels (<code>x</code>, <code>y</code>, <code>z</code>) so we can use them later.</p>
 <p>The state tensor <code>u</code> must be either be a scalar or a vector. So, if we only had a single state variable, we could define it as a scalar without the index <code>i</code> as follows:</p>
-<pre><code>u { x = 1 }
+<pre><code class="language-diffsl">u { x = 1 }
 </code></pre>
 <p>We can optionally define the time derivatives of the state variables,
 \( \mathbf{\dot{u}} \) as well:</p>
-<pre><code>dudt_i {
+<pre><code class="language-diffsl">dudt_i {
   dxdt = 1,
   dydt = 0,
   dzdt = 0,
 }
 </code></pre>
-<p>Here the initial values of the time derivatives are given.
-In many cases any values can be given here as the time derivatives of the state variables are calculated from the RHS.
-However, if there are any algebraic variables in the equations then these values can be used
-used as a starting point to calculate a set of consistent initial values for the
-state variables.</p>
+<p>Here the initial values of the time derivatives are given. These values are simply placeholders and are only used
+to specify the shape of each element, for example they do not need to be consistent with the RHS function <code>F_i</code> that we will define later.</p>
 <p>Note that there is no need to define <code>dudt</code> if you do not define a mass matrix \( M \).</p>
 <h2 id="defining-the-ode-system-equations"><a class="header" href="#defining-the-ode-system-equations">Defining the ODE system equations</a></h2>
 <p>We now define the right-hand-side  function \( F \) that we want to solve, using the
-variables that we have defined earlier. We do this by defining a vector variable
+variables that we have defined earlier. We do this by defining a vector (or scalar)
 <code>F_i</code> that corresponds to the RHS of the equations.</p>
 <p>For example, to define a simple system of ODEs:</p>
 <p>$$
@@ -445,18 +452,18 @@ y(0) &amp;= 0 \\
 \end{align*}
 $$</p>
 <p>We write:</p>
-<pre><code>u_i { x = 1, y = 0 }
+<pre><code class="language-diffsl">u_i { x = 1, y = 0 }
 F_i { y, -x }
 </code></pre>
-<h2 id="using-the-ode-system-index-n"><a class="header" href="#using-the-ode-system-index-n">Using the Ode system index <code>N</code></a></h2>
-<p><strong>Note: hybrid ODEs using <code>N</code> and <code>reset</code> are not yet supported in the current version of diffsol or pydiffsol, please check back for updates</strong></p>
+<h2 id="the-system-index-n"><a class="header" href="#the-system-index-n">The system index <code>N</code></a></h2>
+<p><strong>Note: hybrid ODEs using <code>N</code> and <code>reset</code> are only supported in the current version of diffsol or pydiffsol, please check back for updates</strong></p>
 <p>The index <code>N</code> is used to define multiple ODE systems in the same file, indexed by the non-negative integer <code>N</code>.
 This allows us to define multiple ODE systems in the same file. Combined with the stop and reset functions (see below),
 this also allows us to define hybrid switching systems where we can switch between different ODE systems at different times during the simulation.</p>
-<p>The model index <code>N</code> can be used in any of the equations, and it can be used to index into any of the tensors that we have defined.</p>
+<p>The model index <code>N</code> can be used in any of the equations, and it can be used to index into any vectors that we have defined.</p>
 <p>For example, we can define two ODE systems, one with exponential growth and one with exponential decay, by
 defining a <code>g_i</code> vector variable that contains the growth/decay rate for each system, and then using this variable in the definition of the RHS function <code>F_i</code>:</p>
-<pre><code>u_i { x = 1 }
+<pre><code class="language-diffsl">u_i { x = 1 }
 g_i { 0.1, -0.1 }
 F_i { g_i[N] * x }
 </code></pre>
@@ -466,42 +473,23 @@ F_i { g_i[N] * x }
 During the solve, whenever any element of the <code>stop</code> tensor is equal to zero, the ODE system will stop and, if the runtime supports hybrid models, the state of the
 ODE system will be reset to the values defined in the <code>reset</code> tensor, and the ODE system will continue to solve from there.</p>
 <p>The classic example of this type of hybrid model is a bouncing ball, where the ODE system is stopped when the ball hits the ground ((x \leq 0)), and then the state of the system is reset to a new value that corresponds to the ball bouncing back up.</p>
-<pre><code>u_i {
- x = 0,
- v = 10,
-}
-F_i {
- v,
- -9.81,
-}
-stop {
- x,
-}
-reset {
- 0,
- -0.8 * v,
-}
+<pre><code class="language-diffsl">u_i { x = 0, v = 10 }
+F_i { v, -9.81 }
+stop { x }
+reset { 0, -0.8 * v }
 </code></pre>
 <p>Another example is a system that is periodically forced, for example dosing into a pharmacokinetic model, where the ODE system is stopped at regular intervals (e.g. every 24 hours), and the state of the system is reset to a new value that corresponds to the dose being administered.</p>
-<pre><code>u_i {
- x = 0,
-}
-F_i {
- -0.1 * x,
-}
-stop {
- t - 24,
-}
-reset {
- x + 10,
-}
+<pre><code class="language-diffsl">u { x = 0 }
+F { -0.1 * x }
+stop { t - 24 }
+reset { x + 10 }
 </code></pre>
 <h2 id="hybrid-models-with-multiple-ode-systems"><a class="header" href="#hybrid-models-with-multiple-ode-systems">Hybrid models with multiple ODE systems</a></h2>
 <p>The <code>stop</code> and <code>reset</code> functions can also be used to switch between different ODE systems defined in the same file using the model index <code>N</code>. The model index starts at <code>N = 0</code>, and every time a reset is triggered, the model index is set to the index of the <code>stop</code> that triggered the reset. This allows us to define hybrid models where we can switch between different ODE systems at different times during the simulation.</p>
 <p>For example, we can define a system that starts with exponential growth, and then switches to exponential decay after 24 hours, and then switches back to exponential growth after another 24 hours, by defining two ODE systems as before, and then using the <code>stop</code> and <code>reset</code> functions to switch between them:</p>
-<pre><code>u_i { x = 1 }
+<pre><code class="language-diffsl">u { x = 1 }
 g_i { 0.1, -0.1 }
-F_i { g_i[N] * x }
+F { g_i[N] * x }
 stop { t - 48, t - 24 }
 reset { 1 }
 </code></pre>
@@ -521,47 +509,33 @@ y(0) &amp;= 0 \\
 \end{align*}
 $$</p>
 <p>We write:</p>
-<pre><code>u_i {
- x = 1,
- y = 0,
-}
-dudt_i {
- dxdt = 0,
- dydt = 1,
-}
-M_i {
- dxdt,
- 0,
-}
-F_i {
- x,
- y-x,
-}
+<pre><code class="language-diffsl">u_i { x = 1, y = 0 }
+dudt_i { dxdt = 0, dydt = 1 }
+M_i { dxdt, 0 }
+F_i { x, y-x }
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="inputs--outputs"><a class="header" href="#inputs--outputs">Inputs &amp; Outputs</a></h1>
-<p>Often it is useful to parameterize the system of equations using a set of input parameters. It is also useful to be able to extract certain variables from the system for further analysis.
+<p>Often it is useful to parameterize the system of equations using a set of input parameters. It is also useful to be able to extract certain outputs from the system for further analysis.
 In this section we will show how to specify inputs and outputs in the DiffSL language.</p>
 <h2 id="specifying-inputs"><a class="header" href="#specifying-inputs">Specifying inputs</a></h2>
 <p>We can override the values of any scalar variables by specifying them as input
 variables.  To do this, we add a line at the top of the code to specify that
 these are input variables:</p>
-<pre><code>in { k = 1.0 }
+<pre><code class="language-diffsl">in { k = 1.0 }
 u { 0.1 }
 F { k * u }
 </code></pre>
 <p>Here we have specified a single input parameter <code>k</code> that is used in the RHS function <code>F</code>.
-The value of <code>k</code> is set to <code>1.0</code> in the code, but this value is only a default, and can be overridden by passing in a value at solve time.</p>
+The value of <code>k</code> is set to <code>1.0</code> in the code, but this value is only there to specify the shape of the element, and will be overridden by passing in a value at solve time.</p>
 <p>We can use input parameters anywhere in the code, including in the definition of other input parameters.</p>
-<pre><code>in { k = 1.0 }
+<pre><code class="language-diffsl">in { k = 1.0 }
 g { 2 * k }
 F { g * u }
 </code></pre>
 <p>or in the intial conditions of the state variables:</p>
-<pre><code>in { k = 1.0 }
-u_i {
-  x = k,
-}
+<pre><code class="language-diffsl">in { k = 1.0 }
+u_i { x = k }
 F { u }
 </code></pre>
 <h2 id="specifying-outputs"><a class="header" href="#specifying-outputs">Specifying outputs</a></h2>
@@ -569,7 +543,7 @@ F { u }
 variables themselves, or they might be other variables that are calculated from
 the state variables.</p>
 <p>Here is an example where we simply output the elements of the state vector:</p>
-<pre><code>u_i {
+<pre><code class="language-diffsl">u_i {
   x = 1.0,
   y = 2.0,
   z = 3.0,
@@ -577,7 +551,7 @@ the state variables.</p>
 out_i { x, y, z }
 </code></pre>
 <p>or we can derive additional outputs from the state variables:</p>
-<pre><code>u_i {
+<pre><code class="language-diffsl">u_i {
   x = 1.0,
   y = 2.0,
   z = 3.0,
@@ -585,7 +559,8 @@ out_i { x, y, z }
 out { x + y + z }
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="pre-defined-functions"><a class="header" href="#pre-defined-functions">Pre-defined functions</a></h1>
+<h1 id="pre-defined-functions--variables"><a class="header" href="#pre-defined-functions--variables">Pre-defined functions &amp; variables</a></h1>
+<h2 id="pre-defined-functions"><a class="header" href="#pre-defined-functions">Pre-defined functions</a></h2>
 <p>The DiffSL supports the following mathematical functions that can be used in an expression:</p>
 <ul>
 <li><code>pow(x, y)</code> - x raised to the power of y</li>
@@ -593,21 +568,28 @@ out { x + y + z }
 <li><code>cos(x)</code> - cosine of x</li>
 <li><code>tan(x)</code> - tangent of x</li>
 <li><code>exp(x)</code> - exponential of x</li>
+<li><code>tanh(x)</code> - hyperbolic tangent of x</li>
+<li><code>sinh(x)</code> - hyperbolic sine of x</li>
+<li><code>cosh(x)</code> - hyperbolic cosine of x</li>
+<li><code>arcsinh(x)</code> - inverse hyperbolic sine of x</li>
+<li><code>arccosh(x)</code> - inverse hyperbolic cosine of x</li>
 <li><code>log(x)</code> - natural logarithm of x</li>
+<li><code>log10(x)</code> - base-10 logarithm of x</li>
 <li><code>sqrt(x)</code> - square root of x</li>
 <li><code>abs(x)</code> - absolute value of x</li>
 <li><code>sigmoid(x)</code> - sigmoid function of x</li>
 <li><code>heaviside(x)</code> - Heaviside step function of x</li>
 </ul>
 <p>You can use these functions as part of an expression in the DSL. For example, to define a variable <code>a</code> that is the sine of another variable <code>b</code>, you can write:</p>
-<pre><code>b { 1.0 }
+<pre><code class="language-diffsl">b { 1.0 }
 a { sin(b) }
 </code></pre>
-<h1 id="pre-defined-variables"><a class="header" href="#pre-defined-variables">Pre-defined variables</a></h1>
-<p>The only predefined variable is the scalar <code>t</code> which is the current time, this allows the equations to be written as functions of time. For example</p>
-<pre><code>F_i {
-  t + sin(t)
-}
+<h2 id="pre-defined-variables"><a class="header" href="#pre-defined-variables">Pre-defined variables</a></h2>
+<p>There are two predefined variables in DiffSL. The first is the scalar <code>t</code> which is the current time, this allows the equations to be written as functions of time. For example</p>
+<pre><code class="language-diffsl">F_i { t + sin(t) }
+</code></pre>
+<p>The second is the scalar <code>N</code> which is the current model index, this allows us to write hybrid models with multiple ODE systems in the same file. For example</p>
+<pre><code class="language-diffsl">F_i { g_i[N] * x }
 </code></pre>
 
                     </main>

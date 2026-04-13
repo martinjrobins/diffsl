@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-40b3c83f.js";
+            window.path_to_searchindex_js = "searchindex-e97ea9e3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-545c49d9.js"></script>
@@ -176,7 +176,8 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="pre-defined-functions"><a class="header" href="#pre-defined-functions">Pre-defined functions</a></h1>
+                        <h1 id="pre-defined-functions--variables"><a class="header" href="#pre-defined-functions--variables">Pre-defined functions &amp; variables</a></h1>
+<h2 id="pre-defined-functions"><a class="header" href="#pre-defined-functions">Pre-defined functions</a></h2>
 <p>The DiffSL supports the following mathematical functions that can be used in an expression:</p>
 <ul>
 <li><code>pow(x, y)</code> - x raised to the power of y</li>
@@ -184,21 +185,28 @@
 <li><code>cos(x)</code> - cosine of x</li>
 <li><code>tan(x)</code> - tangent of x</li>
 <li><code>exp(x)</code> - exponential of x</li>
+<li><code>tanh(x)</code> - hyperbolic tangent of x</li>
+<li><code>sinh(x)</code> - hyperbolic sine of x</li>
+<li><code>cosh(x)</code> - hyperbolic cosine of x</li>
+<li><code>arcsinh(x)</code> - inverse hyperbolic sine of x</li>
+<li><code>arccosh(x)</code> - inverse hyperbolic cosine of x</li>
 <li><code>log(x)</code> - natural logarithm of x</li>
+<li><code>log10(x)</code> - base-10 logarithm of x</li>
 <li><code>sqrt(x)</code> - square root of x</li>
 <li><code>abs(x)</code> - absolute value of x</li>
 <li><code>sigmoid(x)</code> - sigmoid function of x</li>
 <li><code>heaviside(x)</code> - Heaviside step function of x</li>
 </ul>
 <p>You can use these functions as part of an expression in the DSL. For example, to define a variable <code>a</code> that is the sine of another variable <code>b</code>, you can write:</p>
-<pre><code>b { 1.0 }
+<pre><code class="language-diffsl">b { 1.0 }
 a { sin(b) }
 </code></pre>
-<h1 id="pre-defined-variables"><a class="header" href="#pre-defined-variables">Pre-defined variables</a></h1>
-<p>The only predefined variable is the scalar <code>t</code> which is the current time, this allows the equations to be written as functions of time. For example</p>
-<pre><code>F_i {
-  t + sin(t)
-}
+<h2 id="pre-defined-variables"><a class="header" href="#pre-defined-variables">Pre-defined variables</a></h2>
+<p>There are two predefined variables in DiffSL. The first is the scalar <code>t</code> which is the current time, this allows the equations to be written as functions of time. For example</p>
+<pre><code class="language-diffsl">F_i { t + sin(t) }
+</code></pre>
+<p>The second is the scalar <code>N</code> which is the current model index, this allows us to write hybrid models with multiple ODE systems in the same file. For example</p>
+<pre><code class="language-diffsl">F_i { g_i[N] * x }
 </code></pre>
 
                     </main>

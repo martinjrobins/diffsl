@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-40b3c83f.js";
+            window.path_to_searchindex_js = "searchindex-e97ea9e3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-545c49d9.js"></script>
@@ -192,36 +192,33 @@ The user is also free to define an arbitrary number of intermediate tensors that
 <h2 id="defining-the-state-vector"><a class="header" href="#defining-the-state-vector">Defining the state vector</a></h2>
 <p>To define the state vector \(\mathbf{u} \), we create a special
 vector tensor <code>u_i</code>. Note the particular name <code>u</code> is used to indicate that this
-is the state vector.</p>
+is the state vector, and cannot be used for any othr purpose.</p>
 <p>The values that we use for <code>u_i</code> are the initial values of the state variables
 at \( t=0 \), so an initial condition \( \mathbf{u}(t=0) = [x(0), y(0), z(0)] = [1, 0, 0] \) is defined as:</p>
-<pre><code>u_i {
+<pre><code class="language-diffsl">u_i {
   x = 1,
   y = 0,
   z = 0,
 }
 </code></pre>
-<p>Since we will often use the individual elements of the state vector in the RHS function, it is useful to define them as separate variables as well.</p>
+<p>Since we will often use the individual elements of the state vector in the RHS function, it is useful to define them using labels (<code>x</code>, <code>y</code>, <code>z</code>) so we can use them later.</p>
 <p>The state tensor <code>u</code> must be either be a scalar or a vector. So, if we only had a single state variable, we could define it as a scalar without the index <code>i</code> as follows:</p>
-<pre><code>u { x = 1 }
+<pre><code class="language-diffsl">u { x = 1 }
 </code></pre>
 <p>We can optionally define the time derivatives of the state variables,
 \( \mathbf{\dot{u}} \) as well:</p>
-<pre><code>dudt_i {
+<pre><code class="language-diffsl">dudt_i {
   dxdt = 1,
   dydt = 0,
   dzdt = 0,
 }
 </code></pre>
-<p>Here the initial values of the time derivatives are given.
-In many cases any values can be given here as the time derivatives of the state variables are calculated from the RHS.
-However, if there are any algebraic variables in the equations then these values can be used
-used as a starting point to calculate a set of consistent initial values for the
-state variables.</p>
+<p>Here the initial values of the time derivatives are given. These values are simply placeholders and are only used
+to specify the shape of each element, for example they do not need to be consistent with the RHS function <code>F_i</code> that we will define later.</p>
 <p>Note that there is no need to define <code>dudt</code> if you do not define a mass matrix \( M \).</p>
 <h2 id="defining-the-ode-system-equations"><a class="header" href="#defining-the-ode-system-equations">Defining the ODE system equations</a></h2>
 <p>We now define the right-hand-side  function \( F \) that we want to solve, using the
-variables that we have defined earlier. We do this by defining a vector variable
+variables that we have defined earlier. We do this by defining a vector (or scalar)
 <code>F_i</code> that corresponds to the RHS of the equations.</p>
 <p>For example, to define a simple system of ODEs:</p>
 <p>$$
@@ -233,18 +230,18 @@ y(0) &amp;= 0 \\
 \end{align*}
 $$</p>
 <p>We write:</p>
-<pre><code>u_i { x = 1, y = 0 }
+<pre><code class="language-diffsl">u_i { x = 1, y = 0 }
 F_i { y, -x }
 </code></pre>
-<h2 id="using-the-ode-system-index-n"><a class="header" href="#using-the-ode-system-index-n">Using the Ode system index <code>N</code></a></h2>
-<p><strong>Note: hybrid ODEs using <code>N</code> and <code>reset</code> are not yet supported in the current version of diffsol or pydiffsol, please check back for updates</strong></p>
+<h2 id="the-system-index-n"><a class="header" href="#the-system-index-n">The system index <code>N</code></a></h2>
+<p><strong>Note: hybrid ODEs using <code>N</code> and <code>reset</code> are only supported in the current version of diffsol or pydiffsol, please check back for updates</strong></p>
 <p>The index <code>N</code> is used to define multiple ODE systems in the same file, indexed by the non-negative integer <code>N</code>.
 This allows us to define multiple ODE systems in the same file. Combined with the stop and reset functions (see below),
 this also allows us to define hybrid switching systems where we can switch between different ODE systems at different times during the simulation.</p>
-<p>The model index <code>N</code> can be used in any of the equations, and it can be used to index into any of the tensors that we have defined.</p>
+<p>The model index <code>N</code> can be used in any of the equations, and it can be used to index into any vectors that we have defined.</p>
 <p>For example, we can define two ODE systems, one with exponential growth and one with exponential decay, by
 defining a <code>g_i</code> vector variable that contains the growth/decay rate for each system, and then using this variable in the definition of the RHS function <code>F_i</code>:</p>
-<pre><code>u_i { x = 1 }
+<pre><code class="language-diffsl">u_i { x = 1 }
 g_i { 0.1, -0.1 }
 F_i { g_i[N] * x }
 </code></pre>
@@ -254,42 +251,23 @@ F_i { g_i[N] * x }
 During the solve, whenever any element of the <code>stop</code> tensor is equal to zero, the ODE system will stop and, if the runtime supports hybrid models, the state of the
 ODE system will be reset to the values defined in the <code>reset</code> tensor, and the ODE system will continue to solve from there.</p>
 <p>The classic example of this type of hybrid model is a bouncing ball, where the ODE system is stopped when the ball hits the ground ((x \leq 0)), and then the state of the system is reset to a new value that corresponds to the ball bouncing back up.</p>
-<pre><code>u_i {
- x = 0,
- v = 10,
-}
-F_i {
- v,
- -9.81,
-}
-stop {
- x,
-}
-reset {
- 0,
- -0.8 * v,
-}
+<pre><code class="language-diffsl">u_i { x = 0, v = 10 }
+F_i { v, -9.81 }
+stop { x }
+reset { 0, -0.8 * v }
 </code></pre>
 <p>Another example is a system that is periodically forced, for example dosing into a pharmacokinetic model, where the ODE system is stopped at regular intervals (e.g. every 24 hours), and the state of the system is reset to a new value that corresponds to the dose being administered.</p>
-<pre><code>u_i {
- x = 0,
-}
-F_i {
- -0.1 * x,
-}
-stop {
- t - 24,
-}
-reset {
- x + 10,
-}
+<pre><code class="language-diffsl">u { x = 0 }
+F { -0.1 * x }
+stop { t - 24 }
+reset { x + 10 }
 </code></pre>
 <h2 id="hybrid-models-with-multiple-ode-systems"><a class="header" href="#hybrid-models-with-multiple-ode-systems">Hybrid models with multiple ODE systems</a></h2>
 <p>The <code>stop</code> and <code>reset</code> functions can also be used to switch between different ODE systems defined in the same file using the model index <code>N</code>. The model index starts at <code>N = 0</code>, and every time a reset is triggered, the model index is set to the index of the <code>stop</code> that triggered the reset. This allows us to define hybrid models where we can switch between different ODE systems at different times during the simulation.</p>
 <p>For example, we can define a system that starts with exponential growth, and then switches to exponential decay after 24 hours, and then switches back to exponential growth after another 24 hours, by defining two ODE systems as before, and then using the <code>stop</code> and <code>reset</code> functions to switch between them:</p>
-<pre><code>u_i { x = 1 }
+<pre><code class="language-diffsl">u { x = 1 }
 g_i { 0.1, -0.1 }
-F_i { g_i[N] * x }
+F { g_i[N] * x }
 stop { t - 48, t - 24 }
 reset { 1 }
 </code></pre>
@@ -309,22 +287,10 @@ y(0) &amp;= 0 \\
 \end{align*}
 $$</p>
 <p>We write:</p>
-<pre><code>u_i {
- x = 1,
- y = 0,
-}
-dudt_i {
- dxdt = 0,
- dydt = 1,
-}
-M_i {
- dxdt,
- 0,
-}
-F_i {
- x,
- y-x,
-}
+<pre><code class="language-diffsl">u_i { x = 1, y = 0 }
+dudt_i { dxdt = 0, dydt = 1 }
+M_i { dxdt, 0 }
+F_i { x, y-x }
 </code></pre>
 
                     </main>

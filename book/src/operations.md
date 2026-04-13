@@ -1,13 +1,13 @@
 # Tensor Operations
 
-We can use standard algebraic operations on variables. To refer to previously
-defined variables, we use the variable name, making sure to use the correct
+We can use standard algebraic operations on tensors. To refer to previously
+defined variables, we use the tensor name, making sure to use the correct
 subscript if it is a vector or tensor.
 
-For example, to define a scalar variable \\( a \\) as the sum of two other scalar
-variables \\( b \\) and \\( c \\), we write:
+For example, to define a scalar \\( a \\) as the sum of two other scalars
+\\( b \\) and \\( c \\), we write:
 
-```
+```diffsl
 b { 1.0 }
 c { 2.0 }
 a { b + c }
@@ -15,10 +15,10 @@ a { b + c }
 
 The scalar `a` will therefore be equal to 3.0.
 
-To define a vector variable \\( \mathbf{v} \\) as the sum of two other vector
-variables \\( \mathbf{u} \\) and \\( \mathbf{w} \\), we write:
+To define a vector \\( \mathbf{v} \\) as the sum of two other vectors
+\\( \mathbf{u} \\) and \\( \mathbf{w} \\), we write:
 
-```
+```diffsl
 u_i { 1.0, 2.0 }
 w_i { 3.0, 4.0 }
 v_i { u_i + w_i }
@@ -27,7 +27,7 @@ v_i { u_i + w_i }
 Notice that the index of the vectors within the expression must match the index of the output vector `v_i`.
 So if we defined `v_a` instead of `v_i`, the expression would be:
 
-```
+```diffsl
 v_a { u_a + w_a }
 ```
 
@@ -38,7 +38,7 @@ For higher-dimensional tensors, the order of the indices in the expression relat
 For example, we can use the indices to define a translation of a matrix. Here we define a new matrix \\( C \\) that is the sum of \\( A \\) and \\( B^T \\),
 where \\( B^T \\) is the transpose of \\( B \\)
 
-```
+```diffsl
 C_ij { A_ij + B_ji }
 ```
 
@@ -48,7 +48,7 @@ Notice that the indices of \\( B^T \\) are reversed in the expression compared t
 
 Broadcasting is supported in the language, so you can perform element-wise operations on tensors of different shapes. For example, the following will define a new vector \\( \mathbf{d} \\) that is the sum of \\( \mathbf{a} \\) and a scalar \\( k \\):
 
-```
+```diffsl
 a_i { 1.0, 2.0 }
 k { 3.0 }
 d_i { a_i + k }
@@ -64,17 +64,19 @@ DiffSL broadcasting is index-based:
 
 This means broadcasting behavior depends on the index labels used in the expression, not only on raw tensor shapes.
 
-For example, the following is valid because `b` is indexed by `j`, so it broadcasts across the `i` axis:
+For example, the following example defined a 3x2 matrix `A_ij` and a vector `b_i` of length 3. Given these shapes, the following definition
+of `c_ij` is valid because `b` is indexed by `j` in the expression `A_ij + b_j`. Since the number of *rows* in `b` matches the *columns* of `A`,
+this is a valid broadcasting operation.
 
-```
+```diffsl
 A_ij { (0:3, 0:2): 1.0 }
 b_i { (0:2): 1.0 }
 c_ij { A_ij + b_j }
 ```
 
-The following is invalid because `b_i` is aligned to the first axis (`i`) and cannot be broadcast to the matrix shape:
+However, if `b` is instead indexed by `i`, the broadcasting is invalid because `b_i` is aligned to the *rows* (the `i` axis) of `A`, which are a different length, so the broadcasting cannot be performed and a compiler error will be raised.
 
-```
+```diffsl
 A_ij { (0:3, 0:2): 1.0 }
 b_i { (0:2): 1.0 }
 c_ij { A_ij + b_i }
@@ -82,52 +84,52 @@ c_ij { A_ij + b_i }
 
 ## Contractions
 
-The DiffSL indexing notation allows for tensor contractions, which are operations that sum over one or more indices. 
-The rule used is that any indices that do not appear in the output tensor will be summed over. 
+The DiffSL indexing notation allows for tensor contractions, which are operations that sum over one or more indices.
+The rule used is that any indices that do not appear in the output tensor will be summed over.
 
-For example, the following defines a new vector \\( \mathbf{v} \\) that is the sum of the rows of a matrix \\( A \\):
+For example, the following defines a new vector \\( \mathbf{v} \\) that is the sum of each individual row of matrix \\( A \\) (i.e. the sum is taken over the `j` index of `A`):
 
-```
+```diffsl
 v_i { A_ij }
 ```
 
 The above expression sums over the `j` index of the matrix `A`, resulting in a vector `v` where each element `v_i` is the sum of the elements in the `i`-th row of `A`.
-At the moment only 2d to 1d contractions are supported in order to enable matrix-vector multiplication, please open an issue if you need more general contraction support.
+At the moment only 2d to 1d contractions are supported in order to enable matrix-vector multiplication, please comment on [this issue](https://github.com/martinjrobins/diffsl/issues/76) if you need more general contraction support.
 
-We can also define a matrix-vector multiplication, the following will define a new vector \\( \mathbf{v} \\) that is
+Using a contraction we can define the popular matrix-vector multiplication operation. The following will define a new vector \\( \mathbf{v} \\) that is
 the result of a matrix-vector multiplication of a matrix \\( A \\) and a vector \\( \mathbf{u} \\):
 
-```
+```diffsl
 v_i { A_ij * u_j }
 ```
 
-This operation is actually a combination of a broadcast `A_ij * u_j`, followed by a contraction over the `j` index, 
-the `A_ij * u_j` expression broadcasts the vector `u` to the same shape as `A`, forming a new 2D tensor, and 
-the output vector `v_i` implicitly sums over the missing `j` index to form the final output vector. 
+This operation is actually a combination of a broadcast `A_ij * u_j`, followed by a contraction over the `j` index,
+the `A_ij * u_j` expression broadcasts the vector `u` to the same shape as `A`, forming a new 2D tensor, and
+the output vector `v_i` implicitly sums over the missing `j` index to form the final output vector.
 To illustrate this further, lets manually break this matrix-vector multiplication into two steps using an intermediary tensor `M_ij`:
 
-```
+```diffsl
 M_ij { A_ij * u_j }
 v_i { M_ij }
 ```
 
 The first step calculates the element-wise product of `A` and `u` using broadcasting into the 2D tensor `M`, and the second step uses a contraction to sum over the `j` index to form the output vector `v`.
 
-
 ## Indexing
 
-Indexing a 1D dense tensor (vector) is supported using square brackets. You can use either single indexing to extract a single element, or range indexing to extract a sub-vector.
+Indexing a 1D dense tensor (vector) is supported using square brackets. If you need more general indexing capabilities, please comment on [this issue](https://github.com/martinjrobins/diffsl/issues/77).
 
+You can use either single indexing to extract a single element, or range indexing to extract a sub-vector.
 For example, to extract the third element of a vector \\( \mathbf{a} \\) and assign it to a scalar \\( r \\), you can write:
 
-```
+```diffsl
 a_i { 0.0, 1.0, 2.0, 3.0 }
 r { a_i[2] }
 ```
 
 To extract a sub-vector containing the second and third elements of \\( \mathbf{a} \\) and assign it to a new vector \\( \mathbf{r} \\), you can write:
 
-```
+```diffsl
 a_i { 0.0, 1.0, 2.0, 3.0 }
 r_i { a_i[1:3] }
 ```

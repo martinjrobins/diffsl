@@ -5,10 +5,10 @@ ODE systems and is based on the idea that a ODE system can be specified by a set
 of equations of the form:
 
 $$
-M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} = F(\mathbf{u}, t)
+M(t) \frac{\mathrm{d}\mathbf{u}}{\mathrm{d}t} = F(\mathbf{u}, \mathbf{p}, t)
 $$
 
-where \\( \mathbf{u} \\) is the vector of state variables and \\( t \\) is the time. The DSL
+where \\( \mathbf{u} \\) is the vector of state variables, \\( \mathbf{p} \\) is the vector of parameters, and \\( t \\) is the time. The DSL
 allows the user to specify the state vector \\( \mathbf{u} \\) and the RHS function \\( F \\).
 Optionally, the user can also define the derivative of the state vector \\( \mathrm{d}\mathbf{u}/\mathrm{d}t \\)
 and the mass matrix \\( M \\) as a function of \\( \mathrm{d}\mathbf{u}/\mathrm{d}t \\) (note that this function should be linear!).
@@ -18,7 +18,7 @@ scalars and vectors of the users that are required to calculate \\( F \\) and \\
 
 ## A Simple Example
 
-To illustrate the language, consider the following simple example of a logistic growth model:
+To illustrate the language, consider the following example of a logistic growth model:
 
 $$
 \frac{\mathrm{d}N}{\mathrm{d}t} = r N (1 - N/K)
@@ -28,7 +28,7 @@ where \\( N \\) is the population, \\( r \\) is the growth rate, and \\( k \\) i
 
 To specify this model in DiffSL, we can write:
 
-```
+```diffsl
 in_i { r = 1.0, k = 10.0 }
 u_i {
   N = 0.0

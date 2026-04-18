@@ -1,3 +1,7 @@
+#[cfg(any(
+    all(feature = "llvm", not(target_arch = "wasm32")),
+    all(feature = "cranelift", not(target_arch = "wasm32"))
+))]
 fn model_code() -> &'static str {
     r#"
         u { y = 1 }
@@ -6,6 +10,10 @@ fn model_code() -> &'static str {
     "#
 }
 
+#[cfg(any(
+    all(feature = "llvm", not(target_arch = "wasm32")),
+    all(feature = "cranelift", not(target_arch = "wasm32"))
+))]
 fn unique_stamp() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,6 +23,10 @@ fn unique_stamp() -> u128 {
         .as_nanos()
 }
 
+#[cfg(any(
+    all(feature = "llvm", not(target_arch = "wasm32")),
+    all(feature = "cranelift", not(target_arch = "wasm32"))
+))]
 fn assert_rhs_works<M: diffsl::execution::module::CodegenModule>(
     compiler: &diffsl::Compiler<M, f64>,
 ) {

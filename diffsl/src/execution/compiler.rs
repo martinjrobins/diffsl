@@ -198,6 +198,10 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         self.jit_grad_r_functions.is_some()
     }
 
+    pub fn module(&self) -> &M {
+        &self._module
+    }
+
     pub fn get_tensors(&self) -> Vec<String> {
         self.jit_get_tensor_functions
             .data_map

@@ -6,7 +6,16 @@ use diffsl::{
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 
-#[cfg(all(feature = "llvm", not(target_arch = "wasm32")))]
+#[cfg(all(
+    any(
+        feature = "llvm15-0",
+        feature = "llvm16-0",
+        feature = "llvm17-0",
+        feature = "llvm18-1",
+        feature = "llvm19-1"
+    ),
+    not(target_arch = "wasm32")
+))]
 #[test]
 fn test_dfn_model_initialization_llvm() {
     test_dfn_model_initialization::<diffsl::LlvmModule>();

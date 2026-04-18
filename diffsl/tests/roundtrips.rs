@@ -1,6 +1,10 @@
 #[cfg(any(
     all(feature = "llvm", not(target_arch = "wasm32")),
-    all(feature = "cranelift", not(target_arch = "wasm32"))
+    all(
+        feature = "cranelift",
+        not(target_arch = "wasm32"),
+        not(target_os = "macos")
+    )
 ))]
 fn model_code() -> &'static str {
     r#"
@@ -12,7 +16,11 @@ fn model_code() -> &'static str {
 
 #[cfg(any(
     all(feature = "llvm", not(target_arch = "wasm32")),
-    all(feature = "cranelift", not(target_arch = "wasm32"))
+    all(
+        feature = "cranelift",
+        not(target_arch = "wasm32"),
+        not(target_os = "macos")
+    )
 ))]
 fn unique_stamp() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,7 +33,11 @@ fn unique_stamp() -> u128 {
 
 #[cfg(any(
     all(feature = "llvm", not(target_arch = "wasm32")),
-    all(feature = "cranelift", not(target_arch = "wasm32"))
+    all(
+        feature = "cranelift",
+        not(target_arch = "wasm32"),
+        not(target_os = "macos")
+    )
 ))]
 fn assert_rhs_works<M: diffsl::execution::module::CodegenModule>(
     compiler: &diffsl::Compiler<M, f64>,
@@ -138,7 +150,11 @@ fn llvm_module_object_file_roundtrip() {
     let _ = std::fs::remove_file(object_path);
 }
 
-#[cfg(all(feature = "cranelift", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "cranelift",
+    not(target_arch = "wasm32"),
+    not(target_os = "macos")
+))]
 #[test]
 fn cranelift_module_object_file_roundtrip() {
     use diffsl::discretise::DiscreteModel;

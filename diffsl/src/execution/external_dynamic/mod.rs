@@ -79,7 +79,7 @@ fn discover_symbols(path: &Path, library: &DynamicLibrary) -> Result<HashMap<Str
         ));
     }
 
-    for symbol_name in super::external_interface::EXTERNAL_SYMBOL_NAMES {
+    for symbol_name in super::external_interface::REQUIRED_EXTERNAL_SYMBOL_NAMES {
         if !discovered.contains_key(*symbol_name) {
             return Err(anyhow!(
                 "Missing required symbol: {} in dynamic library {}",

@@ -124,6 +124,42 @@ macro_rules! collect_external_symbol_names {
 
 for_each_external_symbol!(collect_external_symbol_names);
 
+pub(crate) const REQUIRED_EXTERNAL_SYMBOL_NAMES: &[&str] = &[
+    "set_constants",
+    "set_u0",
+    "reset",
+    "reset_grad",
+    "reset_rgrad",
+    "reset_sgrad",
+    "reset_srgrad",
+    "rhs",
+    "rhs_grad",
+    "rhs_rgrad",
+    "rhs_sgrad",
+    "rhs_srgrad",
+    "mass",
+    "mass_rgrad",
+    "set_u0_grad",
+    "set_u0_rgrad",
+    "set_u0_sgrad",
+    "calc_out",
+    "calc_out_grad",
+    "calc_out_rgrad",
+    "calc_out_sgrad",
+    "calc_out_srgrad",
+    "calc_stop",
+    "calc_stop_grad",
+    "calc_stop_rgrad",
+    "calc_stop_sgrad",
+    "calc_stop_srgrad",
+    "set_id",
+    "get_dims",
+    "set_inputs",
+    "get_inputs",
+    "set_inputs_grad",
+    "set_inputs_rgrad",
+];
+
 pub(crate) fn normalize_symbol_name(name: &str) -> &str {
     name.strip_prefix('_').unwrap_or(name)
 }

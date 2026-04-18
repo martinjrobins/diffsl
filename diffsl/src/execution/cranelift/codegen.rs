@@ -540,13 +540,13 @@ impl<M: Module> CraneliftModule<M> {
                     Endianness::Little => elemi64.to_le_bytes(),
                     Endianness::Big => elemi64.to_be_bytes(),
                 };
-                vec8.extend(conv.into_iter());
+                vec8.extend(conv);
             } else {
                 let conv = match triple.endianness().unwrap() {
                     Endianness::Little => elem.to_le_bytes(),
                     Endianness::Big => elem.to_be_bytes(),
                 };
-                vec8.extend(conv.into_iter());
+                vec8.extend(conv);
             };
         }
 

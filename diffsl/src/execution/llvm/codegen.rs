@@ -266,6 +266,102 @@ impl LlvmModule {
     fn codegen(&self) -> &CodeGen<'static> {
         self.inner.as_ref().get_ref().codegen.as_ref().unwrap()
     }
+
+    pub fn to_dynamic_library(self, output_path: impl Into<std::path::PathBuf>) -> Result<()> {
+        use std::fs;
+        use std::process::Command;
+
+        let output_path = output_path.into();
+        let object_buffer = self.to_object()?;
+
+        // Create a temporary object file.
+        let temp_dir = std::env::temp_dir();
+        let obj_path = temp_dir.join("diffsl_temp_object.o");
+        fs::write(&obj_path, object_buffer)
+            .map_err(|e| anyhow!("Failed to write temporary object file: {}", e))?;
+
+        let lld = option_env!("DIFFSL_LLVM_LLD")
+            .ok_or_else(|| anyhow!("DIFFSL_LLVM_LLD not set by build script"))?;
+        let linker_name = std::path::Path::new(lld)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(lld);
+        let is_clang_driver = linker_name.starts_with("clang");
+
+        let mut command = Command::new(lld);
+        if cfg!(target_os = "windows") {
+            if is_clang_driver {
+                command.arg("-shared");
+                command.arg("-o");
+                command.arg(&output_path);
+                command.arg(&obj_path);
+            } else {
+                command.arg("-flavor").arg("link");
+                command.arg("/DLL");
+                command.arg(format!("/OUT:{}", output_path.display()));
+                command.arg(&obj_path);
+            }
+        } else if cfg!(target_os = "macos") {
+            if !lld.ends_with("ld64.lld") && !is_clang_driver {
+                command.arg("-flavor").arg("darwin");
+            }
+            let arch = if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else if cfg!(target_arch = "x86_64") {
+                "x86_64"
+            } else {
+                return Err(anyhow!("Unsupported macOS architecture for lld invocation"));
+            };
+            let deployment_target =
+                std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| "11.0".to_string());
+            if is_clang_driver {
+                command.arg("-dynamiclib");
+                command.arg("-arch");
+                command.arg(arch);
+                command.arg(format!("-mmacosx-version-min={deployment_target}"));
+                command.arg("-o");
+                command.arg(&output_path);
+                command.arg(&obj_path);
+            } else {
+                command.arg("-arch");
+                command.arg(arch);
+                command.arg("-platform_version");
+                command.arg("macos");
+                command.arg(&deployment_target);
+                command.arg(&deployment_target);
+                command.arg("-dylib");
+                command.arg("-o");
+                command.arg(&output_path);
+                command.arg(&obj_path);
+            }
+        } else {
+            if is_clang_driver {
+                command.arg("-shared");
+                command.arg("-o");
+                command.arg(&output_path);
+                command.arg(&obj_path);
+            } else {
+                command.arg("-flavor").arg("gnu");
+                command.arg("-shared");
+                command.arg("-o");
+                command.arg(&output_path);
+                command.arg(&obj_path);
+            }
+        }
+
+        let status = command
+            .status()
+            .map_err(|e| anyhow!("Failed to invoke lld: {}", e))?;
+        if !status.success() {
+            return Err(anyhow!(
+                "Dynamic library link failed with status: {}",
+                status
+            ));
+        }
+
+        let _ = fs::remove_file(&obj_path);
+        Ok(())
+    }
 }
 
 impl CodegenModule for LlvmModule {}

@@ -196,3 +196,50 @@ fn cranelift_module_object_file_roundtrip() {
     assert_rhs_works(&compiler);
     let _ = std::fs::remove_file(object_path);
 }
+
+#[cfg(all(
+    feature = "cranelift",
+    not(target_arch = "wasm32"),
+    not(target_os = "macos")
+))]
+#[test]
+fn cranelift_multiple_to_object_calls_roundtrip() {
+    use diffsl::discretise::DiscreteModel;
+    use diffsl::execution::compiler::{CompilerMode, CompilerOptions};
+    use diffsl::execution::module::{CodegenModuleCompile, CodegenModuleEmit};
+    use diffsl::execution::scalar::RealType;
+    use diffsl::parser::parse_ds_string;
+    use diffsl::{Compiler, CraneliftObjectModule, ObjectModule};
+
+    let code = model_code();
+    let ast = parse_ds_string(code).expect("dsl should parse");
+    let model = DiscreteModel::build("cranelift_multiple_object_roundtrip", &ast)
+        .expect("discrete model should build");
+
+    let cranelift_module = <CraneliftObjectModule as CodegenModuleCompile>::from_discrete_model(
+        &model,
+        CompilerOptions::default(),
+        None,
+        RealType::F64,
+        Some(code),
+    )
+    .expect("cranelift module should compile");
+
+    let object_buffer_1 = cranelift_module
+        .to_object()
+        .expect("first object emission should succeed");
+    let object_buffer_2 = cranelift_module
+        .to_object()
+        .expect("second object emission should succeed");
+
+    assert!(!object_buffer_1.is_empty());
+    assert_eq!(object_buffer_1, object_buffer_2);
+
+    let compiler = Compiler::<ObjectModule, f64>::from_object_file(
+        object_buffer_2,
+        CompilerMode::SingleThreaded,
+    )
+    .expect("compiler should build from object file");
+
+    assert_rhs_works(&compiler);
+}

@@ -333,8 +333,8 @@ impl<'s> ModelInfo<'s> {
 
         let unallocated_state_vars: Vec<Rc<RefCell<Variable>>> = self
             .variables
-            .iter()
-            .filter_map(|(_name, v)| {
+            .values()
+            .filter_map(|v| {
                 if v.borrow().is_state() && !v.borrow().has_equation() {
                     Some(v.clone())
                 } else {

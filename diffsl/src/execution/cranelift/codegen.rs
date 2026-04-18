@@ -1208,10 +1208,8 @@ impl CodegenModuleEmit for CraneliftModule<ObjectModule> {
         }
 
         let mut module = self.module.lock().unwrap();
-        let module_to_emit = std::mem::replace(
-            &mut *module,
-            Self::new_object_backend(self.triple.clone())?,
-        );
+        let module_to_emit =
+            std::mem::replace(&mut *module, Self::new_object_backend(self.triple.clone())?);
         let buffer = module_to_emit.finish().emit().map_err(|e| anyhow!(e))?;
         *emitted_object = Some(buffer.clone());
         Ok(buffer)

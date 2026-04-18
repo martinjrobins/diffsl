@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use super::{
     mmap::{MappedSection, MmapOptions},
-    module::{CodegenModule, CodegenModuleJit, CodegenModuleLink},
+    module::{CodegenModule, CodegenModuleEmit, CodegenModuleJit, CodegenModuleLink},
     relocations::{
         handle_jump_entry, handle_relocation, is_jump_table_entry, relocation_target_section,
         symbol_offset, JumpTableEntry,
@@ -12,6 +12,7 @@ use super::{
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
 
 pub struct ObjectModule {
+    object_buffer: Vec<u8>,
     sections: HashMap<String, MappedSection>,
     symbols: HashMap<String, isize>,
     code_section_name: String,
@@ -163,10 +164,17 @@ impl CodegenModuleLink for ObjectModule {
         }
 
         Ok(Self {
+            object_buffer: buffer.to_vec(),
             sections: mapped_sections,
             symbols: symbol_map,
             code_section_name: text_sec_name.to_string(),
         })
+    }
+}
+
+impl CodegenModuleEmit for ObjectModule {
+    fn to_object(&self) -> Result<Vec<u8>> {
+        Ok(self.object_buffer.clone())
     }
 }
 

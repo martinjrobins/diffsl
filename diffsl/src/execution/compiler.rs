@@ -201,7 +201,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     pub fn module(&self) -> &M {
         &self._module
     }
-    
+
     pub fn to_module(self) -> M {
         self._module
     }

@@ -68,12 +68,17 @@ mod enzyme {
         dbg!(llvm_version);
 
         if let Some(prefix) = Path::new(&llvm_lib_dir).parent() {
-            let lld = prefix.join("bin").join("lld");
-            let lld_exe = prefix.join("bin").join("lld.exe");
-            if lld.exists() {
-                println!("cargo:rustc-env=DIFFSL_LLVM_LLD={}", lld.display());
-            } else if lld_exe.exists() {
-                println!("cargo:rustc-env=DIFFSL_LLVM_LLD={}", lld_exe.display());
+            let bin_dir = prefix.join("bin");
+            let linker_candidates = [
+                bin_dir.join("lld"),
+                bin_dir.join("lld.exe"),
+                bin_dir.join("ld64.lld"),
+                bin_dir.join("ld.lld"),
+                bin_dir.join("lld-link"),
+                bin_dir.join("lld-link.exe"),
+            ];
+            if let Some(linker) = linker_candidates.iter().find(|p| p.exists()) {
+                println!("cargo:rustc-env=DIFFSL_LLVM_LLD={}", linker.display());
             }
         }
 

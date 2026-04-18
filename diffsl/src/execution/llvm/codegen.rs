@@ -290,7 +290,18 @@ impl LlvmModule {
             command.arg(format!("/OUT:{}", output_path.display()));
             command.arg(&obj_path);
         } else if cfg!(target_os = "macos") {
-            command.arg("-flavor").arg("darwin");
+            if !lld.ends_with("ld64.lld") {
+                command.arg("-flavor").arg("darwin");
+            }
+            let arch = if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else if cfg!(target_arch = "x86_64") {
+                "x86_64"
+            } else {
+                return Err(anyhow!("Unsupported macOS architecture for lld invocation"));
+            };
+            command.arg("-arch");
+            command.arg(arch);
             command.arg("-dylib");
             command.arg("-o");
             command.arg(&output_path);

@@ -266,6 +266,56 @@ impl LlvmModule {
     fn codegen(&self) -> &CodeGen<'static> {
         self.inner.as_ref().get_ref().codegen.as_ref().unwrap()
     }
+
+    pub fn to_dynamic_library(self, output_path: impl Into<std::path::PathBuf>) -> Result<()> {
+        use std::fs;
+        use std::process::Command;
+
+        let output_path = output_path.into();
+        let object_buffer = self.to_object()?;
+
+        // Create a temporary object file.
+        let temp_dir = std::env::temp_dir();
+        let obj_path = temp_dir.join("diffsl_temp_object.o");
+        fs::write(&obj_path, object_buffer)
+            .map_err(|e| anyhow!("Failed to write temporary object file: {}", e))?;
+
+        let lld = option_env!("DIFFSL_LLVM_LLD")
+            .ok_or_else(|| anyhow!("DIFFSL_LLVM_LLD not set by build script"))?;
+
+        let mut command = Command::new(lld);
+        if cfg!(target_os = "windows") {
+            command.arg("-flavor").arg("link");
+            command.arg("/DLL");
+            command.arg(format!("/OUT:{}", output_path.display()));
+            command.arg(&obj_path);
+        } else if cfg!(target_os = "macos") {
+            command.arg("-flavor").arg("darwin");
+            command.arg("-dylib");
+            command.arg("-o");
+            command.arg(&output_path);
+            command.arg(&obj_path);
+        } else {
+            command.arg("-flavor").arg("gnu");
+            command.arg("-shared");
+            command.arg("-o");
+            command.arg(&output_path);
+            command.arg(&obj_path);
+        }
+
+        let status = command
+            .status()
+            .map_err(|e| anyhow!("Failed to invoke lld: {}", e))?;
+        if !status.success() {
+            return Err(anyhow!(
+                "Dynamic library link failed with status: {}",
+                status
+            ));
+        }
+
+        let _ = fs::remove_file(&obj_path);
+        Ok(())
+    }
 }
 
 impl CodegenModule for LlvmModule {}

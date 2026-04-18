@@ -1,7 +1,10 @@
 #[cfg(feature = "enzyme")]
 mod enzyme {
     use bindgen::{BindgenError, Bindings, Builder};
-    use std::{env, path::PathBuf};
+    use std::{
+        env,
+        path::{Path, PathBuf},
+    };
 
     fn compile_enzyme(llvm_lib_dir: String) -> (String, String) {
         let llvm_cmake_dir = format!("{llvm_lib_dir}/cmake/llvm");
@@ -63,6 +66,16 @@ mod enzyme {
         let llvm_env_key = llvm_dirs.first().unwrap().0.clone();
         let llvm_version = &llvm_env_key["DEP_LLVM_".len()..(llvm_env_key.len() - "_LIBDIR".len())];
         dbg!(llvm_version);
+
+        if let Some(prefix) = Path::new(&llvm_lib_dir).parent() {
+            let lld = prefix.join("bin").join("lld");
+            let lld_exe = prefix.join("bin").join("lld.exe");
+            if lld.exists() {
+                println!("cargo:rustc-env=DIFFSL_LLVM_LLD={}", lld.display());
+            } else if lld_exe.exists() {
+                println!("cargo:rustc-env=DIFFSL_LLVM_LLD={}", lld_exe.display());
+            }
+        }
 
         // replace last "lib" with "include"
         let llvm_inc_dir = llvm_lib_dir

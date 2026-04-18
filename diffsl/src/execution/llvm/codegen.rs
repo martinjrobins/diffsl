@@ -716,7 +716,7 @@ impl CodegenModuleCompile for LlvmModule {
 }
 
 impl CodegenModuleEmit for LlvmModule {
-    fn to_object(self) -> Result<Vec<u8>> {
+    fn to_object(&self) -> Result<Vec<u8>> {
         let module = self.codegen().module();
         //module.print_to_stderr();
         let buffer = self

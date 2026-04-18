@@ -29,5 +29,5 @@ pub trait CodegenModuleJit: CodegenModule {
 }
 
 pub trait CodegenModuleEmit: CodegenModule {
-    fn to_object(self) -> Result<Vec<u8>>;
+    fn to_object(&self) -> Result<Vec<u8>>;
 }

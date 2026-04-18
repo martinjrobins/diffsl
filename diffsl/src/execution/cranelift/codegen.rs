@@ -31,6 +31,8 @@ pub struct CraneliftModule<M: Module> {
     /// The module, with the object backend.
     module: Mutex<M>,
 
+    emitted_object: Mutex<Option<Vec<u8>>>,
+
     layout: DataLayout,
 
     indices_id: DataId,
@@ -38,7 +40,7 @@ pub struct CraneliftModule<M: Module> {
     model_index_id: DataId,
     thread_counter: Option<DataId>,
 
-    //triple: Triple,
+    triple: Triple,
     int_type: types::Type,
     real_type: types::Type,
     real_ptr_type: types::Type,
@@ -575,9 +577,11 @@ impl<M: Module> CraneliftModule<M> {
             builder_context: FunctionBuilderContext::new(),
             ctx: module.make_context(),
             module: Mutex::new(module),
+            emitted_object: Mutex::new(None),
             indices_id,
             constants_id,
             model_index_id,
+            triple,
             int_type,
             real_type: real_type_cranelift,
             real_ptr_type: ptr_type,
@@ -1094,6 +1098,20 @@ impl<M: Module> CraneliftModule<M> {
     }
 }
 
+impl CraneliftModule<ObjectModule> {
+    fn new_object_backend(triple: Triple) -> Result<ObjectModule> {
+        let mut flag_builder = settings::builder();
+        flag_builder.set("use_colocated_libcalls", "false").unwrap();
+        flag_builder.set("is_pic", "false").unwrap();
+        flag_builder.set("opt_level", "speed").unwrap();
+        let flags = settings::Flags::new(flag_builder);
+        let isa = isa::lookup(triple)?.finish(flags)?;
+        let builder =
+            ObjectBuilder::new(isa, "diffsol", cranelift_module::default_libcall_names())?;
+        Ok(ObjectModule::new(builder))
+    }
+}
+
 impl<M: Module + Send + 'static> CodegenModule for CraneliftModule<M> {}
 
 impl CodegenModuleCompile for CraneliftModule<ObjectModule> {
@@ -1108,16 +1126,7 @@ impl CodegenModuleCompile for CraneliftModule<ObjectModule> {
         let threaded = thread_dim > 1;
 
         let triple = triple.unwrap_or(Triple::host());
-        let mut flag_builder = settings::builder();
-        flag_builder.set("use_colocated_libcalls", "false").unwrap();
-        flag_builder.set("is_pic", "false").unwrap();
-        flag_builder.set("opt_level", "speed").unwrap();
-        let flags = settings::Flags::new(flag_builder);
-        let isa = isa::lookup(triple.clone())?.finish(flags)?;
-        let builder =
-            ObjectBuilder::new(isa, "diffsol", cranelift_module::default_libcall_names())?;
-
-        let module = ObjectModule::new(builder);
+        let module = Self::new_object_backend(triple.clone())?;
 
         Self::new(triple, model, threaded, module, real_type)
     }
@@ -1192,9 +1201,20 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
 }
 
 impl CodegenModuleEmit for CraneliftModule<ObjectModule> {
-    fn to_object(self) -> Result<Vec<u8>> {
-        let module = Mutex::into_inner(self.module).unwrap();
-        module.finish().emit().map_err(|e| anyhow!(e))
+    fn to_object(&self) -> Result<Vec<u8>> {
+        let mut emitted_object = self.emitted_object.lock().unwrap();
+        if let Some(buffer) = emitted_object.as_ref() {
+            return Ok(buffer.clone());
+        }
+
+        let mut module = self.module.lock().unwrap();
+        let module_to_emit = std::mem::replace(
+            &mut *module,
+            Self::new_object_backend(self.triple.clone())?,
+        );
+        let buffer = module_to_emit.finish().emit().map_err(|e| anyhow!(e))?;
+        *emitted_object = Some(buffer.clone());
+        Ok(buffer)
     }
 }
 

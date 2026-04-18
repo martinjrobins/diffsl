@@ -282,15 +282,27 @@ impl LlvmModule {
 
         let lld = option_env!("DIFFSL_LLVM_LLD")
             .ok_or_else(|| anyhow!("DIFFSL_LLVM_LLD not set by build script"))?;
+        let linker_name = std::path::Path::new(lld)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(lld);
+        let is_clang_driver = linker_name.starts_with("clang");
 
         let mut command = Command::new(lld);
         if cfg!(target_os = "windows") {
-            command.arg("-flavor").arg("link");
-            command.arg("/DLL");
-            command.arg(format!("/OUT:{}", output_path.display()));
-            command.arg(&obj_path);
+            if is_clang_driver {
+                command.arg("-shared");
+                command.arg("-o");
+                command.arg(&output_path);
+                command.arg(&obj_path);
+            } else {
+                command.arg("-flavor").arg("link");
+                command.arg("/DLL");
+                command.arg(format!("/OUT:{}", output_path.display()));
+                command.arg(&obj_path);
+            }
         } else if cfg!(target_os = "macos") {
-            if !lld.ends_with("ld64.lld") {
+            if !lld.ends_with("ld64.lld") && !is_clang_driver {
                 command.arg("-flavor").arg("darwin");
             }
             let arch = if cfg!(target_arch = "aarch64") {
@@ -302,22 +314,39 @@ impl LlvmModule {
             };
             let deployment_target =
                 std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| "11.0".to_string());
-            command.arg("-arch");
-            command.arg(arch);
-            command.arg("-platform_version");
-            command.arg("macos");
-            command.arg(&deployment_target);
-            command.arg(&deployment_target);
-            command.arg("-dylib");
-            command.arg("-o");
-            command.arg(&output_path);
-            command.arg(&obj_path);
+            if is_clang_driver {
+                command.arg("-dynamiclib");
+                command.arg("-arch");
+                command.arg(arch);
+                command.arg(format!("-mmacosx-version-min={deployment_target}"));
+                command.arg("-o");
+                command.arg(&output_path);
+                command.arg(&obj_path);
+            } else {
+                command.arg("-arch");
+                command.arg(arch);
+                command.arg("-platform_version");
+                command.arg("macos");
+                command.arg(&deployment_target);
+                command.arg(&deployment_target);
+                command.arg("-dylib");
+                command.arg("-o");
+                command.arg(&output_path);
+                command.arg(&obj_path);
+            }
         } else {
-            command.arg("-flavor").arg("gnu");
-            command.arg("-shared");
-            command.arg("-o");
-            command.arg(&output_path);
-            command.arg(&obj_path);
+            if is_clang_driver {
+                command.arg("-shared");
+                command.arg("-o");
+                command.arg(&output_path);
+                command.arg(&obj_path);
+            } else {
+                command.arg("-flavor").arg("gnu");
+                command.arg("-shared");
+                command.arg("-o");
+                command.arg(&output_path);
+                command.arg(&obj_path);
+            }
         }
 
         let status = command

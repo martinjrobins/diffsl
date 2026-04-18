@@ -69,13 +69,17 @@ mod enzyme {
 
         if let Some(prefix) = Path::new(&llvm_lib_dir).parent() {
             let bin_dir = prefix.join("bin");
-            let linker_candidates = [
+            let linker_candidates = vec![
                 bin_dir.join("lld"),
                 bin_dir.join("lld.exe"),
                 bin_dir.join("ld64.lld"),
                 bin_dir.join("ld.lld"),
                 bin_dir.join("lld-link"),
                 bin_dir.join("lld-link.exe"),
+                bin_dir.join(format!("clang-{llvm_version}")),
+                bin_dir.join(format!("clang-{llvm_version}.exe")),
+                bin_dir.join("clang"),
+                bin_dir.join("clang.exe"),
             ];
             if let Some(linker) = linker_candidates.iter().find(|p| p.exists()) {
                 println!("cargo:rustc-env=DIFFSL_LLVM_LLD={}", linker.display());

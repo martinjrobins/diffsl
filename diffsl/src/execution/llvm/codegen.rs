@@ -300,8 +300,14 @@ impl LlvmModule {
             } else {
                 return Err(anyhow!("Unsupported macOS architecture for lld invocation"));
             };
+            let deployment_target = std::env::var("MACOSX_DEPLOYMENT_TARGET")
+                .unwrap_or_else(|_| "11.0".to_string());
             command.arg("-arch");
             command.arg(arch);
+            command.arg("-platform_version");
+            command.arg("macos");
+            command.arg(&deployment_target);
+            command.arg(&deployment_target);
             command.arg("-dylib");
             command.arg("-o");
             command.arg(&output_path);

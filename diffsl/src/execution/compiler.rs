@@ -197,7 +197,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     pub fn supports_reverse_autodiff(&self) -> bool {
         self.jit_grad_r_functions.is_some()
     }
-    
+
     pub fn module(&self) -> &M {
         &self._module
     }

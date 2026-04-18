@@ -202,6 +202,10 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         &self._module
     }
 
+    pub fn to_module(self) -> M {
+        self._module
+    }
+
     pub fn get_tensors(&self) -> Vec<String> {
         self.jit_get_tensor_functions
             .data_map

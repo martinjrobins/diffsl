@@ -149,8 +149,24 @@ fn handle_relocation_generic_x86(rela: &Relocation, s: *const u8, p: *mut u8) ->
         }
     };
     match size {
-        16 => unsafe { (p as *mut i16).write_unaligned(i16::try_from(val).unwrap()) },
-        32 => unsafe { (p as *mut i32).write_unaligned(i32::try_from(val).unwrap()) },
+        16 => unsafe {
+            (p as *mut i16).write_unaligned(i16::try_from(val).map_err(|_| {
+                anyhow!(
+                    "x86 relocation overflow for {:?} {:?}-bit relocation: value {val:#x} does not fit in i16",
+                    rela.kind(),
+                    size
+                )
+            })?)
+        },
+        32 => unsafe {
+            (p as *mut i32).write_unaligned(i32::try_from(val).map_err(|_| {
+                anyhow!(
+                    "x86 relocation overflow for {:?} {:?}-bit relocation: value {val:#x} does not fit in i32",
+                    rela.kind(),
+                    size
+                )
+            })?)
+        },
         64 => unsafe { (p as *mut i64).write_unaligned(val) },
         _ => return Err(anyhow!("Unsupported relocation size {:?}", size)),
     }

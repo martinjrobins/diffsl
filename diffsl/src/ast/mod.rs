@@ -815,10 +815,13 @@ impl<'a> Ast<'a> {
             AstKind::Name(Name {
                 name: found_name,
                 indices,
-                indice: _,
+                indice,
                 is_tangent: _,
             }) => {
                 deps.insert((*found_name, indices.clone()));
+                if let Some(indice) = indice {
+                    indice.collect_deps(deps);
+                }
             }
             AstKind::NamedGradient(gradient) => {
                 gradient.gradient_of.collect_deps(deps);
@@ -837,6 +840,9 @@ impl<'a> Ast<'a> {
                 }
             }
             AstKind::TensorElmt(elmt) => {
+                if let Some(indices) = &elmt.indices {
+                    indices.collect_deps(deps);
+                }
                 elmt.expr.collect_deps(deps);
             }
             AstKind::DsModel(_m) => (),
@@ -850,8 +856,17 @@ impl<'a> Ast<'a> {
             AstKind::Domain(_) => (),
             AstKind::IntRange(_) => (),
             AstKind::Assignment(_) => (),
-            AstKind::Vector(_) => (),
-            AstKind::Indice(_) => (),
+            AstKind::Vector(vector) => {
+                for item in &vector.data {
+                    item.collect_deps(deps);
+                }
+            }
+            AstKind::Indice(indice) => {
+                indice.first.collect_deps(deps);
+                if let Some(last) = &indice.last {
+                    last.collect_deps(deps);
+                }
+            }
         }
     }
 
@@ -932,6 +947,48 @@ impl<'a> Ast<'a> {
             AstKind::Vector(_) => (),
             AstKind::Indice(_) => (),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Ast, AstKind, Name};
+
+    #[test]
+    fn test_get_dependents_includes_name_index_dependencies() {
+        let expr = Ast {
+            kind: AstKind::Name(Name {
+                name: "pace",
+                indices: vec!['i'],
+                indice: Some(Box::new(Ast {
+                    kind: AstKind::new_indice(
+                        Ast {
+                            kind: AstKind::new_binop(
+                                '%',
+                                Ast {
+                                    kind: AstKind::new_name("N"),
+                                    span: None,
+                                },
+                                Ast {
+                                    kind: AstKind::new_integer(2),
+                                    span: None,
+                                },
+                            ),
+                            span: None,
+                        },
+                        None,
+                        None,
+                    ),
+                    span: None,
+                })),
+                is_tangent: false,
+            }),
+            span: None,
+        };
+
+        let deps = expr.get_dependents();
+        assert!(deps.contains("pace"));
+        assert!(deps.contains("N"));
     }
 }
 

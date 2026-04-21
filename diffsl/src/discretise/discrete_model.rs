@@ -1436,7 +1436,7 @@ mod tests {
                 let model = parse_ds_string(model_text.as_str()).unwrap();
                 match DiscreteModel::build("$name", &model) {
                     Ok(model) => {
-                        let tensor = model.constant_defns().iter().chain(model.time_dep_defns.iter()).find(|t| t.name() == $tensor_name).unwrap();
+                        let tensor = model.constant_defns().iter().chain(model.input_dep_defns().iter()).chain(model.time_dep_defns().iter()).find(|t| t.name() == $tensor_name).unwrap();
                         let tensor_string = format!("{}", tensor).chars().filter(|c| !c.is_whitespace()).collect::<String>();
                         let tensor_check_string = $tensor_string.chars().filter(|c| !c.is_whitespace()).collect::<String>();
                         assert_eq!(tensor_string, tensor_check_string);

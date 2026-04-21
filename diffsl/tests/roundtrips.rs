@@ -8,8 +8,9 @@
 ))]
 fn model_code() -> &'static str {
     r#"
+        c_i { 1.0, 1.0 }
         u { y = 1 }
-        F { -y }
+        F { -y * c_i[N] }
         out { y }
     "#
 }

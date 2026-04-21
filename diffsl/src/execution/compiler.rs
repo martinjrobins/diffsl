@@ -1993,6 +1993,82 @@ mod tests {
         assert_relative_eq!(rr1[1], T::from_f64(19.0).unwrap());
     }
 
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_model_indexed_scalar_tensor_does_not_panic_llvm() {
+        let full_text = "
+        pace_i { 0, 10 }
+        rate { pace_i[N % 2] }
+        u { x = 1 }
+        F { rate - x }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let rate_expr = model
+            .tensors
+            .iter()
+            .find_map(|tensor| {
+                let tensor = tensor.kind.as_array()?;
+                if tensor.name() == "rate" {
+                    Some(
+                        tensor.elmts()[0]
+                            .kind
+                            .as_tensor_elmt()
+                            .unwrap()
+                            .expr
+                            .as_ref(),
+                    )
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert!(rate_expr.get_dependents().contains("N"));
+
+        let discrete_model =
+            DiscreteModel::build("test_model_indexed_scalar_tensor", &model).unwrap();
+
+        assert_eq!(
+            discrete_model
+                .constant_defns()
+                .iter()
+                .map(|tensor| tensor.name())
+                .collect::<Vec<_>>(),
+            ["pace"]
+        );
+        assert_eq!(
+            discrete_model
+                .input_dep_defns()
+                .iter()
+                .map(|tensor| tensor.name())
+                .collect::<Vec<_>>(),
+            ["rate"]
+        );
+
+        let compiler = Compiler::<crate::LlvmModule, f64>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
+
+        let mut u0 = vec![0.0; 1];
+        let mut rr0 = vec![0.0; 1];
+        let mut rr1 = vec![0.0; 1];
+        let mut data = compiler.get_new_data();
+
+        compiler.set_inputs(&[], data.as_mut_slice(), 0);
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        compiler.rhs(0.0, u0.as_slice(), data.as_mut_slice(), rr0.as_mut_slice());
+
+        compiler.set_inputs(&[], data.as_mut_slice(), 1);
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        compiler.rhs(0.0, u0.as_slice(), data.as_mut_slice(), rr1.as_mut_slice());
+
+        assert_relative_eq!(u0.as_slice(), vec![1.0].as_slice());
+        assert_relative_eq!(rr0.as_slice(), vec![-1.0].as_slice());
+        assert_relative_eq!(rr1.as_slice(), vec![9.0].as_slice());
+    }
+
     #[allow(dead_code)]
     fn test_out_depends_on_internal_tensor<
         M: CodegenModuleCompile + CodegenModuleJit,

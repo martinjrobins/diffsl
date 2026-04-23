@@ -22,7 +22,6 @@ The grammar below summarizes the currently implemented DiffSL parser (based on d
 
 main       = SOI model EOI
 model      = inputs? tensor*
-inputs     = "in" "=" "[" name? ("," name)* ","? "]"
 
 tensor     = name_ij "{" tensor_elmt? ("," tensor_elmt)* ","? "}"
 tensor_elmt = indices? (assignment | expression)

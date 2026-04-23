@@ -21,7 +21,7 @@ Grammar
 The grammar below summarizes the currently implemented DiffSL parser (based on ds_grammar.pest):
 
 main       = SOI model EOI
-model      = inputs? tensor*
+model      = tensor*
 
 tensor     = name_ij "{" tensor_elmt? ("," tensor_elmt)* ","? "}"
 tensor_elmt = indices? (assignment | expression)

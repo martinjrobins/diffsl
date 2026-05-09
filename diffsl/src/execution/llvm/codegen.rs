@@ -2863,14 +2863,18 @@ impl<'ctx> CodeGen<'ctx> {
                             };
                             let start_intval =
                                 self.jit_compile_integer_expr(indice.first.as_ref(), name)?;
-                            // if we are indexing a single element, the index may be out of bounds
-                            let index_pi = if pi >= index.len() {
-                                self.context.i32_type().const_int(0, false)
+                            let index_pi = if indice.last.is_some() {
+                                // range indexing: add loop index to start
+                                let index_pi = if pi >= index.len() {
+                                    self.context.i32_type().const_int(0, false)
+                                } else {
+                                    index[pi]
+                                };
+                                self.builder.build_int_add(index_pi, start_intval, name)?
                             } else {
-                                index[pi]
+                                // single-element indexing: constant lookup
+                                start_intval
                             };
-                            let index_pi =
-                                self.builder.build_int_add(index_pi, start_intval, name)?;
                             iname_index.push(index_pi);
                         } else {
                             let index_pi = if pi >= index.len() {

@@ -2039,7 +2039,7 @@ impl<'ctx> CodeGen<'ctx> {
         if a.rank() == 0
             && a.elmts()
                 .first()
-                .map_or(true, |b| b.expr_layout().rank() == 0)
+                .is_none_or(|b| b.expr_layout().rank() == 0)
         {
             return self.jit_compile_scalar(a, res_ptr_opt);
         }

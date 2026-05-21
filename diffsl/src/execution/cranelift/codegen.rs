@@ -1688,7 +1688,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         if a.rank() == 0
             && a.elmts()
                 .first()
-                .map_or(true, |b| b.expr_layout().rank() == 0)
+                .is_none_or(|b| b.expr_layout().rank() == 0)
         {
             // if threaded then only the first thread will evaluate the scalar
             let mut exit_block = None;

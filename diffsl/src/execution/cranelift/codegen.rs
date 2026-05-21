@@ -1685,7 +1685,11 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         }
 
         // treat scalar as a special case (only if not a contraction)
-        if a.rank() == 0 && a.elmts().first().map_or(true, |b| b.expr_layout().rank() == 0) {
+        if a.rank() == 0
+            && a.elmts()
+                .first()
+                .map_or(true, |b| b.expr_layout().rank() == 0)
+        {
             // if threaded then only the first thread will evaluate the scalar
             let mut exit_block = None;
             if self.threaded {
@@ -1883,9 +1887,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         if contract_by == expr_rank {
             if let Some(contract_sum) = contract_sum {
                 let fzero = self.fconst(0.0);
-                self.builder
-                    .ins()
-                    .stack_store(fzero, contract_sum, 0);
+                self.builder.ins().stack_store(fzero, contract_sum, 0);
             }
         }
 

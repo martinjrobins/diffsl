@@ -1461,7 +1461,6 @@ mod tests {
         error_index2: "A_i { (2): 1.0 } B_i { A_i[1:3] }" errors ["can only index dense 1D variables",],
         error_index3: "A_i { 0.0, 1.0, 2.0 } B_i { (0:1): A_i[1:3] }" errors ["cannot broadcast expression shape [2] to tensor element shape [1]",],
         error_index4: "A { 1.0 } B { A[0] }" errors ["can only index dense 1D variables",],
-        error_contract_1d_to_scalar: "A_i { 1.0, 2.0 } B { A_i }" errors ["contraction only supported from 2D to 1D tensors. Got 1D to 0D",],
         error_broadcast_vect_matrix: "A_ij { (0:3, 0:2): 1.0 } b_i { (0:2): 1.0 } c_ij { A_ij + b_i }" errors ["cannot broadcast shapes: [3, 2], [2]",],
         error_divide_by_zero: "a_i { (0): 1, (2): 2 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
         error_divide_by_zero2: "a_i { (0:3): 1 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],

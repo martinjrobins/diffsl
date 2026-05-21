@@ -94,7 +94,14 @@ v_i { A_ij }
 ```
 
 The above expression sums over the `j` index of the matrix `A`, resulting in a vector `v` where each element `v_i` is the sum of the elements in the `i`-th row of `A`.
-At the moment only 2d to 1d contractions are supported in order to enable matrix-vector multiplication, please comment on [this issue](https://github.com/martinjrobins/diffsl/issues/76) if you need more general contraction support.
+
+You can also use a contraction to reduce a vector to a scalar by summing over all elements. For example, the following defines a scalar \\( r \\) that is the sum of all elements in the vector \\( \mathbf{a} \\):
+
+```diffsl
+r { a_i }
+```
+
+Single-axis contractions are supported for any rank reduction (1D→0D, 2D→1D, 3D→2D, etc.).
 
 Using a contraction we can define the popular matrix-vector multiplication operation. The following will define a new vector \\( \mathbf{v} \\) that is
 the result of a matrix-vector multiplication of a matrix \\( A \\) and a vector \\( \mathbf{u} \\):

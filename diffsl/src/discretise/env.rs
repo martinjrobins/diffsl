@@ -594,18 +594,6 @@ impl Env {
             }
         }
 
-        // TODO: for now we will only support contractions from 2d to 1d
-        if new_indices.len() > indices.len() && (new_indices.len() != 2 || indices.len() != 1) {
-            self.errs.push(ValidationError::new(
-                format!(
-                    "contraction only supported from 2D to 1D tensors. Got {}D to {}D",
-                    new_indices.len(),
-                    indices.len()
-                ),
-                elmt.expr.span,
-            ));
-            return None;
-        }
         debug!(
             "calculating expr layout for tensor element with expr: {}",
             elmt.expr

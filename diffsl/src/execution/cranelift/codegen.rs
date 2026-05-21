@@ -1684,8 +1684,12 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             self.tensor_ptr = Some(res_ptr);
         }
 
-        // treat scalar as a special case
-        if a.rank() == 0 {
+        // treat scalar as a special case (only if not a contraction)
+        if a.rank() == 0
+            && a.elmts()
+                .first()
+                .is_none_or(|b| b.expr_layout().rank() == 0)
+        {
             // if threaded then only the first thread will evaluate the scalar
             let mut exit_block = None;
             if self.threaded {
@@ -1743,7 +1747,11 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             tensor.layout_ptr(),
         );
 
-        if elmt.expr_layout().is_dense() {
+        // Diagonal 1D->0D contraction produces DenseContraction (since contract_last_axis
+        // turns it into a Dense scalar); route to dense path for accumulation support.
+        if elmt.expr_layout().is_dense()
+            || matches!(translation.source, TranslationFrom::DenseContraction { .. })
+        {
             self.jit_compile_dense_block(name, elmt, &translation, is_tangent)
         } else if elmt.expr_layout().is_diagonal() {
             self.jit_compile_diagonal_block(name, elmt, &translation, is_tangent)
@@ -1846,7 +1854,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             {
                 let contract_rank = expr_rank - contract_by;
                 let mut contract_strides = vec![1i64; contract_rank];
-                for i in (0..contract_rank - 1).rev() {
+                for i in (0..contract_rank.saturating_sub(1)).rev() {
                     contract_strides[i] = contract_strides[i + 1] * expr_shape[i + 1];
                 }
                 let contract_strides = contract_strides
@@ -1875,6 +1883,14 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             (None, None, None)
         };
 
+        // if all axes are contracted, initialize the sum before the loops
+        if contract_by == expr_rank {
+            if let Some(contract_sum) = contract_sum {
+                let fzero = self.fconst(0.0);
+                self.builder.ins().stack_store(fzero, contract_sum, 0);
+            }
+        }
+
         for i in 0..expr_rank {
             let block = self.builder.create_block();
             let curr_index = self.builder.append_block_param(block, self.int_type);
@@ -1886,8 +1902,9 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             self.builder.ins().jump(block, &[curr_index_start.into()]);
             self.builder.switch_to_block(block);
 
+            let init_point = (expr_rank - contract_by).saturating_sub(1);
             #[allow(clippy::unnecessary_unwrap)]
-            if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
+            if i == init_point && contract_sum.is_some() && contract_by != expr_rank {
                 let fzero = self.fconst(0.0);
                 self.builder
                     .ins()
@@ -1957,8 +1974,9 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         // unwind the nested loops
         for i in (0..expr_rank).rev() {
             // update and store contract sum
+            let store_point = (expr_rank - contract_by).saturating_sub(1);
             #[allow(clippy::unnecessary_unwrap)]
-            if i == expr_rank - contract_by - 1 && contract_sum.is_some() {
+            if i == store_point && contract_sum.is_some() {
                 let contract_strides = contract_strides.as_ref().unwrap();
                 let elmt_index = indices
                     .iter()

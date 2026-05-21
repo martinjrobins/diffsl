@@ -91,12 +91,35 @@ impl TranslationFrom {
                 contract_len: source.shape().slice(s![neg_contract_by..]).iter().product(),
             }
         } else if source.is_diagonal() && is_contraction {
-            Self::DiagonalContraction { contract_by }
+            // special case for 1D->0D contraction, which is a dense constraction
+            if contract_by == source.rank() {
+                let contract_len = source.shape().iter().product();
+                Self::DenseContraction {
+                    contract_by,
+                    contract_len,
+                }
+            } else {
+                Self::DiagonalContraction { contract_by }
+            }
         } else if source.is_sparse() && is_contraction {
+            let non_contracted_axes = source.rank() - contract_by;
+            let monitor_axis = non_contracted_axes.saturating_sub(1);
+            let indices: Vec<Index> = source.indices().collect();
+
+            if non_contracted_axes == 0 {
+                let contract_start_indices = vec![0];
+                let contract_end_indices = vec![indices.len()];
+                assert!(contract_start_indices.len() == contract_end_indices.len());
+                assert!(contract_start_indices.len() == target.nnz());
+                return Self::SparseContraction {
+                    contract_by,
+                    contract_start_indices,
+                    contract_end_indices,
+                };
+            }
+
             let mut contract_start_indices = vec![0];
             let mut contract_end_indices = Vec::new();
-            let monitor_axis = source.rank() - contract_by - 1;
-            let indices: Vec<Index> = source.indices().collect();
             let mut current_monitor_axis_value = indices[0][monitor_axis];
             // the indices are held in row major order, so the last index is the fastest changing index
             (1..indices.len()).for_each(|i| {
@@ -142,7 +165,13 @@ impl TranslationFrom {
                 contract_by: _,
                 contract_len,
             } => layout.nnz() / contract_len,
-            TranslationFrom::DiagonalContraction { contract_by: _ } => layout.nnz(),
+            TranslationFrom::DiagonalContraction { contract_by } => {
+                if *contract_by == layout.rank() {
+                    1
+                } else {
+                    layout.nnz()
+                }
+            }
             TranslationFrom::SparseContraction {
                 contract_by: _,
                 contract_start_indices,
@@ -356,6 +385,9 @@ mod tests {
         sparse_contraction: "A_ij { (0, 0): 1, (1, 1): 2, (0, 1): 3 } b_i { 1, 2 } x_i { y = A_ij * b_j }" expect "y" = "Translation(SparseContraction(1, [0, 2], [2, 3]), Contiguous(0, 2))",
         dense_contraction: "A_ij { (0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 2 } b_i { 1, 2 } x_i { y = A_ij * b_j }" expect "y" = "Translation(DenseContraction(1, 2), Contiguous(0, 2))",
         diagonal_contraction: "A_ij { (0..2, 0..2): 1 } b_i { 1, 2 } x_i { y = A_ij * b_j }" expect "y" = "Translation(DiagonalContraction(1), Contiguous(0, 2))",
+        contraction_1d_to_scalar: "a_i { (0:3): 1 } r { y = a_i }" expect "y" = "Translation(DenseContraction(1, 3), Contiguous(0, 1))",
+        contraction_1d_to_scalar_diag: "a_i { (0..3): 1 } r { y = a_i }" expect "y" = "Translation(DenseContraction(1, 3), Contiguous(0, 1))",
+        contraction_1d_to_scalar_sparse: "a_i { (0): 1, (2): 3 } r { y = a_i }" expect "y" = "Translation(SparseContraction(1, [0], [2]), Contiguous(0, 1))",
         bidiagonal1: "A_ij { (0..3, 0..3): y = 1, (1..3, 0..2): 2 }" expect "y" = "Translation(Broadcast(2, 3), Sparse[0, 2, 4])",
         bidiagonal2: "A_ij { (0..3, 0..3): 1, (1..3, 0..2): y = 2 }" expect "y" = "Translation(Broadcast(2, 2), Sparse[1, 3])",
     }

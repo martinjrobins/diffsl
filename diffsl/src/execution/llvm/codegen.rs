@@ -2035,8 +2035,12 @@ impl<'ctx> CodeGen<'ctx> {
         res_ptr_opt: Option<PointerValue<'ctx>>,
         code: Option<&str>,
     ) -> Result<PointerValue<'ctx>> {
-        // treat scalar as a special case
-        if a.rank() == 0 {
+        // treat scalar as a special case (only if not a contraction)
+        if a.rank() == 0
+            && a.elmts()
+                .first()
+                .is_none_or(|b| b.expr_layout().rank() == 0)
+        {
             return self.jit_compile_scalar(a, res_ptr_opt);
         }
 
@@ -2097,7 +2101,11 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder.set_current_debug_location(loc);
         }
 
-        if elmt.expr_layout().is_dense() {
+        // Diagonal 1D->0D contraction produces DenseContraction (since contract_last_axis
+        // turns it into a Dense scalar); route to dense path for accumulation support.
+        if elmt.expr_layout().is_dense()
+            || matches!(translation.source, TranslationFrom::DenseContraction { .. })
+        {
             self.jit_compile_dense_block(name, elmt, &translation)
         } else if elmt.expr_layout().is_diagonal() {
             self.jit_compile_diagonal_block(name, elmt, &translation)
@@ -2157,7 +2165,7 @@ impl<'ctx> CodeGen<'ctx> {
             {
                 let contract_rank = expr_rank - contract_by;
                 let mut contract_strides = vec![1; contract_rank];
-                for i in (0..contract_rank - 1).rev() {
+                for i in (0..contract_rank.saturating_sub(1)).rev() {
                     contract_strides[i] =
                         contract_strides[i + 1] * elmt.expr_layout().shape()[i + 1];
                 }
@@ -2184,6 +2192,14 @@ impl<'ctx> CodeGen<'ctx> {
             (None, None, None, None)
         };
 
+        // if all axes are contracted, initialize the sum before the loops
+        if contract_by == expr_rank {
+            if let Some(contract_sum) = contract_sum {
+                self.builder
+                    .build_store(contract_sum, self.real_type.const_zero())?;
+            }
+        }
+
         for i in 0..expr_rank {
             let block = self.context.append_basic_block(self.fn_value(), name);
             self.builder.build_unconditional_branch(block)?;
@@ -2198,7 +2214,8 @@ impl<'ctx> CodeGen<'ctx> {
             let curr_index = self.builder.build_phi(int_type, format!["i{i}"].as_str())?;
             curr_index.add_incoming(&[(&start_index, preblock)]);
 
-            if i == expr_rank - contract_by - 1 {
+            let init_point = (expr_rank - contract_by).saturating_sub(1);
+            if i == init_point && contract_by != expr_rank {
                 if let Some(contract_sum) = contract_sum {
                     self.builder
                         .build_store(contract_sum, self.real_type.const_zero())?;
@@ -2261,7 +2278,8 @@ impl<'ctx> CodeGen<'ctx> {
             // increment index
             let next_index = self.builder.build_int_add(indices_int[i], one, name)?;
             indices[i].add_incoming(&[(&next_index, postblock)]);
-            if i == expr_rank - contract_by - 1 {
+            let store_point = (expr_rank - contract_by).saturating_sub(1);
+            if i == store_point {
                 if let Some(contract_sum) = contract_sum {
                     let contract_sum_value = self
                         .build_load(self.real_type, contract_sum, "contract_sum")?

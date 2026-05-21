@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e97ea9e3.js";
+            window.path_to_searchindex_js = "searchindex-b43fc8b6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-edacbe1f.js"></script>
@@ -372,8 +372,11 @@ The rule used is that any indices that do not appear in the output tensor will b
 <p>For example, the following defines a new vector \( \mathbf{v} \) that is the sum of each individual row of matrix \( A \) (i.e. the sum is taken over the <code>j</code> index of <code>A</code>):</p>
 <pre><code class="language-diffsl">v_i { A_ij }
 </code></pre>
-<p>The above expression sums over the <code>j</code> index of the matrix <code>A</code>, resulting in a vector <code>v</code> where each element <code>v_i</code> is the sum of the elements in the <code>i</code>-th row of <code>A</code>.
-At the moment only 2d to 1d contractions are supported in order to enable matrix-vector multiplication, please comment on <a href="https://github.com/martinjrobins/diffsl/issues/76">this issue</a> if you need more general contraction support.</p>
+<p>The above expression sums over the <code>j</code> index of the matrix <code>A</code>, resulting in a vector <code>v</code> where each element <code>v_i</code> is the sum of the elements in the <code>i</code>-th row of <code>A</code>.</p>
+<p>You can also use a contraction to reduce a vector to a scalar by summing over all elements. For example, the following defines a scalar \( r \) that is the sum of all elements in the vector \( \mathbf{a} \):</p>
+<pre><code class="language-diffsl">r { a_i }
+</code></pre>
+<p>Single-axis contractions are supported for any rank reduction (1D→0D, 2D→1D, 3D→2D, etc.).</p>
 <p>Using a contraction we can define the popular matrix-vector multiplication operation. The following will define a new vector \( \mathbf{v} \) that is
 the result of a matrix-vector multiplication of a matrix \( A \) and a vector \( \mathbf{u} \):</p>
 <pre><code class="language-diffsl">v_i { A_ij * u_j }

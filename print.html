@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b43fc8b6.js";
+            window.path_to_searchindex_js = "searchindex-15440fbd.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-edacbe1f.js"></script>
@@ -291,6 +291,12 @@ sparse matrices if the last row or column is zero. For example, to define a 3x3 
 </code></pre>
 <p>Without the zero element, the compiler would infer that this is a 2x3 matrix, but with the zero element it will infer that this is a 3x3 matrix with the last row set to zero.
 The sparsity of the matrix will be preserved in the internal representation, so the zero elements will not take up any memory or computational resources.</p>
+<p>Large sparse tensors can also be imported from a FROSTT <code>.tns</code> file at compile time:</p>
+<pre><code class="language-diffsl">C_ij {
+ (0:120, 0:120): read('c_tensor.tns'),
+}
+</code></pre>
+<p>The <code>read</code> form is only valid as the complete right-hand side of a constant tensor element. The explicit <code>:</code> ranges define the expected tensor shape, and the file is loaded relative to the process current working directory unless an absolute path is used. FROSTT coordinates are 1-based on disk and are converted to DiffSL’s 0-based indices when the model is compiled. Lines may contain comments beginning with <code>#</code>; malformed rows, duplicate coordinates, unsupported file extensions, and out-of-range coordinates are rejected. See the <a href="https://frostt.io/tensors/file-formats.html">FROSTT file format documentation</a> for the source format.</p>
 <p>As well as specifying a sparse matrix, we can also define a diagonal matrix by specifying the diagonal elements:</p>
 <pre><code class="language-diffsl">D_ij {
  (0, 0): 1.0,

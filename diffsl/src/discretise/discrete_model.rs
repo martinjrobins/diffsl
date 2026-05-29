@@ -160,6 +160,7 @@ impl<'s> DiscreteModel<'s> {
         }
         let mut elmts = Vec::new();
         let mut start = Index::zeros(rank);
+        let mut has_sparse_import = false;
         let nerrs = env.errs().len();
         if rank == 0 && array.elmts().len() > 1 {
             env.errs_mut().push(ValidationError::new(
@@ -171,9 +172,8 @@ impl<'s> DiscreteModel<'s> {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
                     if te.expr.kind.as_sparse_import().is_some() {
-                        if let Some(block) =
-                            Self::build_sparse_import_block(array, te, a.span, env, tensor_type)
-                        {
+                        has_sparse_import = true;
+                        if let Some(block) = Self::build_sparse_import_block(array, te, env) {
                             elmts.push(block);
                         }
                         continue;
@@ -281,6 +281,20 @@ impl<'s> DiscreteModel<'s> {
                     assert_eq!(tensor.rank(), tensor.indices().len());
                     if nerrs == env.errs().len() {
                         env.push_var(&tensor);
+                        if has_sparse_import {
+                            if let Some(env_entry) = env.get(tensor.name()) {
+                                if !env_entry.is_constant() {
+                                    let span = env.current_span();
+                                    env.errs_mut().push(ValidationError::new(
+                                        format!(
+                                            "read(...) imports can only define compile-time constant tensors, but '{}' is not constant",
+                                            tensor.name()
+                                        ),
+                                        span,
+                                    ));
+                                }
+                            }
+                        }
                         for block in tensor.elmts().iter() {
                             if let Some(_name) = block.name() {
                                 env.push_var_blk(&tensor, block);
@@ -303,24 +317,8 @@ impl<'s> DiscreteModel<'s> {
     fn build_sparse_import_block(
         array: &ast::Tensor<'s>,
         elmt: &ast::TensorElmt<'s>,
-        span: Option<StringSpan>,
         env: &mut Env,
-        tensor_type: TensorType,
     ) -> Option<TensorBlock<'s>> {
-        let reserved_import_tensors = ["u", "dudt", "in", "F", "M", "out", "reset", "stop"];
-        if !matches!(tensor_type, TensorType::Other)
-            || reserved_import_tensors.contains(&array.name())
-        {
-            env.errs_mut().push(ValidationError::new(
-                format!(
-                    "read(...) imports can only define compile-time constant tensors, not '{}'",
-                    array.name()
-                ),
-                span,
-            ));
-            return None;
-        }
-
         let import = elmt.expr.kind.as_sparse_import().unwrap();
         let Some(elmt_indices) = elmt.indices.as_ref() else {
             env.errs_mut().push(ValidationError::new(
@@ -2045,6 +2043,7 @@ mod tests {
         let bad_value = write_temp_tns("sparse_import_bad_value", "1 1 nope");
         let out_of_range = write_temp_tns("sparse_import_out_of_range", "1 3 2.0");
         let zero_coord = write_temp_tns("sparse_import_zero_coord", "0 1 2.0");
+        let valid_vector = write_temp_tns("sparse_import_valid_vector", "1 2.0");
         let missing = std::env::temp_dir()
             .join(format!(
                 "diffsl_sparse_import_missing_{}.tns",
@@ -2097,7 +2096,7 @@ mod tests {
                 "explicit ':' ranges",
             ),
             (
-                "u_ij { (0:2, 0:2): read('missing.tns') } F_i { 1, 1 }".to_string(),
+                format!("u_i {{ (0:2): read('{valid_vector}') }} F_i {{ 1, 1 }}"),
                 "compile-time constant tensors",
             ),
         ];
@@ -2109,6 +2108,44 @@ mod tests {
                 err.has_error_contains(expected),
                 "expected '{expected}' in '{}'",
                 err.as_error_message(&text)
+            );
+        }
+    }
+
+    #[test]
+    fn test_frostt_sparse_import_requires_constant_tensor() {
+        let valid_vector = write_temp_tns("sparse_import_constant_check", "1 2.0");
+        let cases = [
+            (
+                format!(
+                    "A_i {{ (0:2): read('{valid_vector}'), (2): t }} u_i {{ 1, 1, 1 }} F_i {{ u_i }}"
+                ),
+                "time dependent",
+            ),
+            (
+                format!(
+                    "in {{ p = 1 }} A_i {{ (0:2): read('{valid_vector}'), (2): p }} u_i {{ 1, 1, 1 }} F_i {{ u_i }}"
+                ),
+                "input dependent",
+            ),
+            (
+                format!(
+                    "A_i {{ (0:2): read('{valid_vector}'), (2): N }} u_i {{ 1, 1, 1 }} F_i {{ u_i }}"
+                ),
+                "model dependent",
+            ),
+        ];
+
+        for (text, dependency) in cases {
+            let ast = parse_ds_string(&text).unwrap();
+            let err =
+                DiscreteModel::build("test_frostt_sparse_import_constant_check", &ast).unwrap_err();
+            let message = err.as_error_message(&text);
+            assert!(
+                err.has_error_contains(
+                    "read(...) imports can only define compile-time constant tensors"
+                ) && err.has_error_contains("but 'A' is not constant"),
+                "expected sparse import constness error for {dependency} tensor in '{message}'"
             );
         }
     }

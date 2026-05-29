@@ -48,6 +48,10 @@ impl EnvVar {
         self.is_model_dependent
     }
 
+    pub fn is_constant(&self) -> bool {
+        !self.is_time_dependent && !self.is_input_dependent && !self.is_model_dependent
+    }
+
     pub fn layout(&self) -> &Layout {
         self.layout.as_ref()
     }

@@ -40,11 +40,14 @@ pub type NonZero = (Index, usize);
 /// For sparse layouts, the indices field contains the list of non-zero indices, excluding the dense axes.
 /// For diagonal layouts, the indices field is empty, as the non-zero indices are implicit.
 /// For dense layouts, the indices field is empty, as all indices are non-zero.
+/// The optional values field stores compile-time imported tensor values when this layout was built from a file.
+/// When present, values are ordered to match the layout's data order as returned by indices().
 ///
 /// Each layout contains a vector of state and input dependencies, which are pairs of (index, state/input_j), indicating that the non-zero at index depends on state/input j.
 #[derive(Debug, Clone)]
 pub struct Layout {
     indices: Vec<Index>,
+    values: Option<Vec<f64>>,
     state_deps: Vec<NonZero>,
     input_deps: Vec<NonZero>,
     shape: Shape,
@@ -312,6 +315,7 @@ impl Layout {
 
         let mut new_layout = Layout {
             indices: new_indices,
+            values: None,
             state_deps: Vec::new(),
             input_deps: Vec::new(),
             shape: new_shape,
@@ -391,6 +395,7 @@ impl Layout {
 
         let mut new_layout = Layout {
             indices: new_indices,
+            values: None,
             state_deps: Vec::new(),
             input_deps: Vec::new(),
             shape: new_shape,
@@ -467,6 +472,7 @@ impl Layout {
         if ret.is_sparse_yet_dense() {
             let new_layout = Layout {
                 indices: Vec::new(),
+                values: None,
                 state_deps: ret.state_deps,
                 input_deps: ret.input_deps,
                 n_dense_axes: ret.shape.len(),
@@ -480,6 +486,7 @@ impl Layout {
         if ret.is_sparse_yet_diagonal() {
             let new_layout = Layout {
                 indices: Vec::new(),
+                values: None,
                 state_deps: ret.state_deps,
                 input_deps: ret.input_deps,
                 n_dense_axes: ret.n_dense_axes,
@@ -525,6 +532,7 @@ impl Layout {
             return;
         }
         self.indices = Vec::new();
+        self.values = None;
         self.kind = LayoutKind::Dense;
         self.n_dense_axes = self.shape.len();
     }
@@ -551,12 +559,14 @@ impl Layout {
             }
         }
         self.indices = new_indices;
+        self.values = None;
         self.kind = LayoutKind::Sparse;
     }
 
     pub fn new_empty(rank: usize) -> Self {
         Layout {
             indices: vec![],
+            values: None,
             state_deps: vec![],
             input_deps: vec![],
             shape: Shape::zeros(rank),
@@ -568,6 +578,7 @@ impl Layout {
     pub fn new_scalar() -> Self {
         Layout {
             indices: vec![],
+            values: None,
             state_deps: vec![],
             input_deps: vec![],
             shape: Shape::zeros(0),
@@ -580,6 +591,7 @@ impl Layout {
         let n_dense_axes = shape.len();
         Layout {
             indices: vec![],
+            values: None,
             state_deps: vec![],
             input_deps: vec![],
             shape,
@@ -591,6 +603,7 @@ impl Layout {
     pub fn new_diagonal(shape: Shape) -> Self {
         Layout {
             indices: vec![],
+            values: None,
             state_deps: vec![],
             input_deps: vec![],
             shape,
@@ -628,6 +641,7 @@ impl Layout {
             }
             return Some(Layout {
                 indices: vec![],
+                values: None,
                 state_deps,
                 input_deps,
                 shape,
@@ -652,6 +666,7 @@ impl Layout {
             .collect::<Vec<_>>();
         Some(Layout {
             indices: vec![],
+            values: None,
             state_deps,
             input_deps,
             shape,
@@ -824,6 +839,7 @@ impl Layout {
                 result_layout = Self {
                     shape: new_shape,
                     indices: Vec::new(),
+                    values: None,
                     state_deps: Vec::new(),
                     input_deps: Vec::new(),
                     kind: LayoutKind::Diagonal,
@@ -844,6 +860,7 @@ impl Layout {
                 // any other combination we convert all to sparse and concatenate
                 let mut new_layout = Layout {
                     indices: Vec::new(),
+                    values: None,
                     state_deps: Vec::new(),
                     input_deps: Vec::new(),
                     shape: max_extent,
@@ -917,6 +934,7 @@ impl Layout {
         let n_dense_axes = shape.len();
         Self {
             indices: Vec::new(),
+            values: None,
             state_deps: Vec::new(),
             input_deps: Vec::new(),
             shape,
@@ -932,16 +950,69 @@ impl Layout {
             shape,
             kind: LayoutKind::Diagonal,
             n_dense_axes: 0,
+            values: None,
         }
     }
     pub fn sparse(indices: Vec<Index>, shape: Shape) -> Self {
         Self {
             indices,
+            values: None,
             state_deps: Vec::new(),
             input_deps: Vec::new(),
             shape,
             kind: LayoutKind::Sparse,
             n_dense_axes: 0,
+        }
+    }
+
+    pub fn from_sparse_values(mut entries: Vec<(Index, f64)>, shape: Shape) -> Self {
+        entries.sort_by(|(left, _), (right, _)| Self::cmp_index(left, right));
+        let (indices, values): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
+
+        if indices.len() == shape.product() {
+            return Self {
+                indices: Vec::new(),
+                values: Some(values),
+                state_deps: Vec::new(),
+                input_deps: Vec::new(),
+                shape: shape.clone(),
+                kind: LayoutKind::Dense,
+                n_dense_axes: shape.len(),
+            };
+        }
+
+        let is_diagonal =
+            if shape.len() <= 1 || indices.len() != shape.first().copied().unwrap_or(0) {
+                false
+            } else {
+                let all_dims_equal = shape.iter().all(|&dim| dim == shape[0]);
+                let all_diagonal = indices.iter().enumerate().all(|(i, index)| {
+                    let expected = i64::try_from(i).unwrap();
+                    index.iter().all(|&axis_index| axis_index == expected)
+                });
+                all_dims_equal && all_diagonal
+            };
+
+        if is_diagonal {
+            Self {
+                indices: Vec::new(),
+                values: Some(values),
+                state_deps: Vec::new(),
+                input_deps: Vec::new(),
+                shape,
+                kind: LayoutKind::Diagonal,
+                n_dense_axes: 0,
+            }
+        } else {
+            Self {
+                indices,
+                values: Some(values),
+                state_deps: Vec::new(),
+                input_deps: Vec::new(),
+                shape,
+                kind: LayoutKind::Sparse,
+                n_dense_axes: 0,
+            }
         }
     }
 
@@ -971,6 +1042,10 @@ impl Layout {
 
     pub fn take_input_dependencies(&mut self) -> Vec<(Index, usize)> {
         std::mem::take(&mut self.input_deps)
+    }
+
+    pub fn values(&self) -> Option<&[f64]> {
+        self.values.as_deref()
     }
 
     /// return the non-zero indices of the layout as an iterator, corresponding to the order of the data entries
@@ -1131,6 +1206,7 @@ impl Layout {
         if self.rank() == shape.len() {
             Self {
                 indices,
+                values: None,
                 state_deps,
                 input_deps,
                 shape: shape.clone(),
@@ -1142,6 +1218,7 @@ impl Layout {
             let n_dense_axes = self.n_dense_axes + new_ranks;
             Self {
                 indices,
+                values: None,
                 state_deps,
                 input_deps,
                 shape: shape.clone(),
@@ -1153,6 +1230,7 @@ impl Layout {
             let n_dense_axes = self.n_dense_axes - (self.rank() - shape.len());
             Self {
                 indices,
+                values: None,
                 state_deps,
                 input_deps,
                 shape: shape.clone(),
@@ -1255,6 +1333,7 @@ impl Layout {
 
         let mut new_layout = Layout {
             indices: new_indices,
+            values: None,
             state_deps: Vec::new(),
             input_deps: Vec::new(),
             shape: self.shape.clone(),
@@ -1290,6 +1369,7 @@ impl Layout {
         // result is always dense
         Layout {
             indices: Vec::new(),
+            values: None,
             state_deps,
             input_deps,
             shape: self.shape.clone(),
@@ -1413,6 +1493,7 @@ impl Layout {
                 Layout::filter_deps(sparse_layout.rank(), input_deps, sparse_layout.indices());
             return Layout {
                 indices: sparse_layout.indices.clone(),
+                values: None,
                 state_deps,
                 input_deps,
                 shape: sparse_layout.shape.clone(),
@@ -1437,6 +1518,7 @@ impl Layout {
             let n_dense_axes = sparse_layout.n_dense_axes;
             let ret = Layout {
                 indices: Vec::new(),
+                values: None,
                 state_deps,
                 input_deps,
                 shape: sparse_layout.shape.clone(),
@@ -1481,6 +1563,7 @@ impl Layout {
 
         let mut ret = Layout {
             indices: new_indices,
+            values: None,
             state_deps: Vec::new(),
             input_deps: Vec::new(),
             shape: sparse_layout.shape.clone(),

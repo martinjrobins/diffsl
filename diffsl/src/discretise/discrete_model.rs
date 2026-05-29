@@ -369,8 +369,8 @@ impl<'s> DiscreteModel<'s> {
         }
 
         let shape = Shape::from_vec(shape);
-        let sparse_import = match read_sparse_tensor(import.path, &shape) {
-            Ok(data) => data,
+        let layout = match read_sparse_tensor(import.path, &shape) {
+            Ok(layout) => layout,
             Err(e) => {
                 env.errs_mut().push(ValidationError::new(
                     format!("failed to import sparse tensor '{}': {e}", import.path),
@@ -379,14 +379,14 @@ impl<'s> DiscreteModel<'s> {
                 return None;
             }
         };
-        let layout = Layout::sparse(sparse_import.indices().to_vec(), shape);
-        let layout = env.new_layout_ptr(layout);
+        // Do not intern imported layouts: two files can share a sparsity pattern but carry
+        // different values.
+        let layout = super::ArcLayout::new(layout);
         Some(TensorBlock::new_sparse_import(
             Index::from_vec(start),
             array.indices().to_vec(),
             layout,
             *elmt.expr.clone(),
-            sparse_import,
         ))
     }
 
@@ -2024,7 +2024,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["[0, 0]", "[1, 2]"]
         );
-        assert!(c.elmts()[0].is_sparse_import());
+        assert!(c.elmts()[0].has_values());
 
         let layout = DataLayout::new(&model);
         assert_eq!(layout.get_tensor_constants("C").unwrap(), &[2.0, 5.0]);

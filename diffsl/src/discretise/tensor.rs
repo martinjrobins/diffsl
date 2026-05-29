@@ -4,7 +4,7 @@ use ndarray::Array1;
 
 use crate::ast::Ast;
 
-use super::{ArcLayout, Layout, Shape, SparseImportData};
+use super::{ArcLayout, Layout, Shape};
 
 pub type Index = Array1<i64>;
 
@@ -18,7 +18,6 @@ pub struct TensorBlock<'s> {
     expr_layout: ArcLayout,
     expr: Ast<'s>,
     tangent_expr: Ast<'s>,
-    sparse_import: Option<SparseImportData>,
 }
 
 impl<'s> TensorBlock<'s> {
@@ -38,7 +37,6 @@ impl<'s> TensorBlock<'s> {
             expr_layout,
             tangent_expr: expr.tangent(),
             expr,
-            sparse_import: None,
         }
     }
     pub fn new_sparse_import(
@@ -46,7 +44,6 @@ impl<'s> TensorBlock<'s> {
         indices: Vec<char>,
         layout: ArcLayout,
         expr: Ast<'s>,
-        sparse_import: SparseImportData,
     ) -> Self {
         Self {
             name: None,
@@ -56,7 +53,6 @@ impl<'s> TensorBlock<'s> {
             layout,
             tangent_expr: expr.tangent(),
             expr,
-            sparse_import: Some(sparse_import),
         }
     }
     pub fn new_dense_vector(name: Option<String>, start: i64, shape: usize, expr: Ast<'s>) -> Self {
@@ -69,7 +65,6 @@ impl<'s> TensorBlock<'s> {
             tangent_expr: expr.tangent(),
             expr,
             indices: Vec::new(),
-            sparse_import: None,
         }
     }
 
@@ -124,12 +119,8 @@ impl<'s> TensorBlock<'s> {
         }
     }
 
-    pub fn sparse_import(&self) -> Option<&SparseImportData> {
-        self.sparse_import.as_ref()
-    }
-
-    pub fn is_sparse_import(&self) -> bool {
-        self.sparse_import.is_some()
+    pub fn has_values(&self) -> bool {
+        self.layout.values().is_some()
     }
 
     pub fn indices(&self) -> &[char] {

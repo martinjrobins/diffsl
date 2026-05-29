@@ -156,7 +156,7 @@ impl DataLayout {
                 }
             }
 
-            if in_constants && tensor.elmts().iter().any(|blk| blk.is_sparse_import()) {
+            if in_constants && tensor.elmts().iter().any(|blk| blk.has_values()) {
                 let tensor_start = data_index_map[tensor.name()];
                 let tensor_index_map = tensor
                     .layout()
@@ -165,11 +165,12 @@ impl DataLayout {
                     .map(|(offset, index)| (index.to_vec(), offset))
                     .collect::<HashMap<_, _>>();
                 for blk in tensor.elmts() {
-                    let Some(import) = blk.sparse_import() else {
+                    if blk.layout().values().is_none() {
                         continue;
-                    };
+                    }
+                    let values = blk.layout().values().unwrap();
                     for (relative_index, value) in
-                        blk.layout().indices().zip(import.values().iter().copied())
+                        blk.layout().indices().zip(values.iter().copied())
                     {
                         let mut absolute_index = relative_index.to_vec();
                         for (axis, start) in blk.start().iter().enumerate() {

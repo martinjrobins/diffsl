@@ -14,7 +14,7 @@ pub mod shape;
 pub use shape::{broadcast_shapes, can_broadcast_to, Shape};
 
 pub mod sparse_import;
-pub use sparse_import::{read_sparse_tensor, SparseImportData, SparseImportFormat};
+pub use sparse_import::{read_sparse_tensor, SparseImportFormat};
 
 pub mod tensor;
 pub use tensor::{Index, Tensor, TensorBlock};

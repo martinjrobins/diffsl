@@ -2062,7 +2062,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.tensor_ptr_opt = Some(res_ptr);
 
         for (i, blk) in a.elmts().iter().enumerate() {
-            if blk.is_sparse_import() {
+            if blk.has_values() {
                 continue;
             }
             let default = format!("{}-{}", a.name(), i);

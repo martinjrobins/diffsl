@@ -4,8 +4,9 @@ inputs     = { "in" ~ "=" ~ "[" ~ name? ~ (DELIM ~ name)* ~ DELIM? ~ "]" }
 tensor     = { name_ij ~ "{" ~ tensor_elmt? ~ (DELIM ~ tensor_elmt)* ~ DELIM? ~ "}" }
 indices   = { "(" ~ indice ~ ("," ~ indice)* ~ ")" ~ ":" }
 indice      = { integer ~ ( range_sep ~ integer )? }
-tensor_elmt = { indices? ~ (assignment | expression) }
+tensor_elmt = { indices? ~ (assignment | sparse_read | expression) }
 assignment = { name ~ "=" ~ expression }
+sparse_read = { "read" ~ "(" ~ string ~ ")" }
 expression = { term ~ (term_op ~ term)* }
 term       = { factor ~ (factor_op ~ factor)* }
 factor     = { sign? ~ ( call | real | integer | name_ij_index | name_ij | "(" ~ expression ~ ")" ) }
@@ -24,6 +25,7 @@ factor_op  = @{ "*"|"/" }
 integer_factor_op  = @{ "*"|"/"|"%" }
 integer_name = @{ "N" }
 name       = @{ ( 'a'..'z' | 'A'..'Z' ) ~ ('a'..'z' | 'A'..'Z' | '0'..'9' )* }
+string     = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 integer    = @{ ('0'..'9')+ }
 real       = @{ ('0'..'9')+ ~ ( "." ~ ('0'..'9')* )? ~ ( "e" ~ sign? ~ integer )? }
 DELIM      = _{ "," }

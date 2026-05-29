@@ -39,6 +39,22 @@ impl<'s> TensorBlock<'s> {
             expr,
         }
     }
+    pub fn new_sparse_import(
+        start: Index,
+        indices: Vec<char>,
+        layout: ArcLayout,
+        expr: Ast<'s>,
+    ) -> Self {
+        Self {
+            name: None,
+            start,
+            indices,
+            expr_layout: layout.clone(),
+            layout,
+            tangent_expr: expr.tangent(),
+            expr,
+        }
+    }
     pub fn new_dense_vector(name: Option<String>, start: i64, shape: usize, expr: Ast<'s>) -> Self {
         let layout = ArcLayout::new(Layout::dense(Shape::from_vec(vec![shape])));
         Self {
@@ -101,6 +117,10 @@ impl<'s> TensorBlock<'s> {
             Some(name) => Some(name.as_str()),
             None => None,
         }
+    }
+
+    pub fn has_values(&self) -> bool {
+        self.layout.values().is_some()
     }
 
     pub fn indices(&self) -> &[char] {

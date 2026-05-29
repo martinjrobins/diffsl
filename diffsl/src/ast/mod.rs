@@ -148,6 +148,11 @@ pub struct CallArg<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct SparseImport<'a> {
+    pub path: &'a str,
+}
+
+#[derive(Debug, Clone)]
 pub struct Model<'a> {
     pub name: &'a str,
     pub unknowns: Vec<Box<Ast<'a>>>,
@@ -300,6 +305,7 @@ pub enum AstKind<'a> {
     Monop(Monop<'a>),
     Call(Call<'a>),
     CallArg(CallArg<'a>),
+    SparseImport(SparseImport<'a>),
     Index(Index<'a>),
     Slice(Slice<'a>),
     Name(Name<'a>),
@@ -354,6 +360,12 @@ impl<'a> AstKind<'a> {
     pub fn as_call_arg(&self) -> Option<&CallArg<'_>> {
         match self {
             AstKind::CallArg(m) => Some(m),
+            _ => None,
+        }
+    }
+    pub fn as_sparse_import(&self) -> Option<&SparseImport<'_>> {
+        match self {
+            AstKind::SparseImport(m) => Some(m),
             _ => None,
         }
     }
@@ -508,6 +520,9 @@ impl<'a> AstKind<'a> {
     pub fn new_tensor_elmt(expr: Ast<'a>, indices: Option<Ast<'a>>) -> Self {
         AstKind::TensorElmt(TensorElmt::new(Box::new(expr), indices.map(Box::new)))
     }
+    pub fn new_sparse_import(path: &'a str) -> Self {
+        AstKind::SparseImport(SparseImport { path })
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -579,6 +594,7 @@ impl<'a> Ast<'a> {
                 Self::new_call(call.fn_name, args, true)
             }
             AstKind::CallArg(arg) => Self::new_call_arg(arg.name, arg.expression.tangent()),
+            AstKind::SparseImport(_) => Self::new_number(0.0),
             AstKind::Name(name) => {
                 if name.name == "t" || name.name == "N" {
                     Self::new_number(0.0)
@@ -725,6 +741,7 @@ impl<'a> Ast<'a> {
                 name: arg.name,
                 expression: Box::new(arg.expression.clone_and_subst(replacements)),
             }),
+            AstKind::SparseImport(import) => AstKind::SparseImport(import.clone()),
             AstKind::Number(num) => AstKind::Number(*num),
             AstKind::Integer(num) => AstKind::Integer(*num),
             AstKind::Name(name) => {
@@ -812,6 +829,7 @@ impl<'a> Ast<'a> {
             AstKind::CallArg(arg) => {
                 arg.expression.collect_deps(deps);
             }
+            AstKind::SparseImport(_) => (),
             AstKind::Name(Name {
                 name: found_name,
                 indices,
@@ -903,6 +921,7 @@ impl<'a> Ast<'a> {
             AstKind::CallArg(arg) => {
                 arg.expression.collect_indices(indices);
             }
+            AstKind::SparseImport(_) => (),
             AstKind::Name(found_name) => {
                 // if the name is indexed by a single indice, don't add that index to the list
                 if let Some(indice) = &found_name.indice {
@@ -1062,6 +1081,7 @@ impl fmt::Display for Ast<'_> {
                 Some(name) => write!(f, "{} = {}", name, arg.expression),
                 None => write!(f, "{}", arg.expression),
             },
+            AstKind::SparseImport(import) => write!(f, "read('{}')", import.path),
             AstKind::Definition(dfn) => {
                 write!(f, "{} = {}", dfn.name, dfn.rhs,)
             }

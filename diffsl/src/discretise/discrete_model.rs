@@ -17,9 +17,11 @@ use crate::continuous::ModelInfo;
 use crate::continuous::Variable;
 use crate::discretise::layout::NonZero;
 
+use super::read_sparse_tensor;
 use super::Env;
 use super::Index;
 use super::Layout;
+use super::Shape;
 use super::Tensor;
 use super::TensorBlock;
 use super::TensorType;
@@ -158,6 +160,7 @@ impl<'s> DiscreteModel<'s> {
         }
         let mut elmts = Vec::new();
         let mut start = Index::zeros(rank);
+        let mut has_sparse_import = false;
         let nerrs = env.errs().len();
         if rank == 0 && array.elmts().len() > 1 {
             env.errs_mut().push(ValidationError::new(
@@ -168,6 +171,13 @@ impl<'s> DiscreteModel<'s> {
         for a in array.elmts() {
             match &a.kind {
                 AstKind::TensorElmt(te) => {
+                    if te.expr.kind.as_sparse_import().is_some() {
+                        has_sparse_import = true;
+                        if let Some(block) = Self::build_sparse_import_block(array, te, env) {
+                            elmts.push(block);
+                        }
+                        continue;
+                    }
                     if let Some((expr_layout, mut elmt_layout)) =
                         env.get_layout_tensor_elmt(te, array.indices())
                     {
@@ -271,6 +281,20 @@ impl<'s> DiscreteModel<'s> {
                     assert_eq!(tensor.rank(), tensor.indices().len());
                     if nerrs == env.errs().len() {
                         env.push_var(&tensor);
+                        if has_sparse_import {
+                            if let Some(env_entry) = env.get(tensor.name()) {
+                                if !env_entry.is_constant() {
+                                    let span = env.current_span();
+                                    env.errs_mut().push(ValidationError::new(
+                                        format!(
+                                            "read(...) imports can only define compile-time constant tensors, but '{}' is not constant",
+                                            tensor.name()
+                                        ),
+                                        span,
+                                    ));
+                                }
+                            }
+                        }
                         for block in tensor.elmts().iter() {
                             if let Some(_name) = block.name() {
                                 env.push_var_blk(&tensor, block);
@@ -288,6 +312,82 @@ impl<'s> DiscreteModel<'s> {
                 }
             }
         }
+    }
+
+    fn build_sparse_import_block(
+        array: &ast::Tensor<'s>,
+        elmt: &ast::TensorElmt<'s>,
+        env: &mut Env,
+    ) -> Option<TensorBlock<'s>> {
+        let import = elmt.expr.kind.as_sparse_import().unwrap();
+        let Some(elmt_indices) = elmt.indices.as_ref() else {
+            env.errs_mut().push(ValidationError::new(
+                "read(...) imports require explicit ':' ranges on every tensor axis".to_string(),
+                elmt.expr.span,
+            ));
+            return None;
+        };
+        let given_indices_ast = &elmt_indices.kind.as_vector().unwrap().data;
+        let given_indices: Vec<&Indice> = given_indices_ast
+            .iter()
+            .map(|i| i.kind.as_indice().unwrap())
+            .collect();
+        if given_indices.len() != array.indices().len() {
+            env.errs_mut().push(ValidationError::new(
+                format!(
+                    "number of dimensions of tensor element ({}) does not match number of dimensions of tensor ({})",
+                    given_indices.len(),
+                    array.indices().len()
+                ),
+                elmt_indices.span,
+            ));
+            return None;
+        }
+
+        let mut start = Vec::with_capacity(given_indices.len());
+        let mut shape = Vec::with_capacity(given_indices.len());
+        for (axis, indice) in given_indices.iter().enumerate() {
+            if indice.sep != Some(":") || indice.last.is_none() {
+                env.errs_mut().push(ValidationError::new(
+                    "read(...) imports require explicit ':' ranges on every tensor axis"
+                        .to_string(),
+                    given_indices_ast[axis].span,
+                ));
+                return None;
+            }
+            let first = indice.first.kind.as_integer().unwrap();
+            let last = indice.last.as_ref().unwrap().kind.as_integer().unwrap();
+            if last <= first {
+                env.errs_mut().push(ValidationError::new(
+                    "read(...) range end must be greater than range start".to_string(),
+                    given_indices_ast[axis].span,
+                ));
+                return None;
+            }
+            start.push(first);
+            shape.push(usize::try_from(last - first).unwrap());
+        }
+
+        let shape = Shape::from_vec(shape);
+        let layout = match read_sparse_tensor(import.path, &shape) {
+            Ok(layout) => layout,
+            Err(e) => {
+                env.errs_mut().push(ValidationError::new(
+                    format!("failed to import sparse tensor '{}': {e}", import.path),
+                    elmt.expr.span,
+                ));
+                return None;
+            }
+        };
+        // Do not intern imported layouts: two files can share a sparsity pattern but carry
+        // different values.
+        let layout = super::ArcLayout::new(layout);
+        Some(TensorBlock::new_sparse_import(
+            Index::from_vec(start),
+            array.indices().to_vec(),
+            layout,
+            *elmt.expr.clone(),
+        ))
     }
 
     fn check_match(tensor1: &Tensor, tensor2: &Tensor, span: Option<StringSpan>, env: &mut Env) {
@@ -992,9 +1092,20 @@ mod tests {
     use crate::{
         continuous::ModelInfo,
         discretise::DiscreteModel,
-        execution::Translation,
+        execution::{DataLayout, Translation},
         parser::{parse_ds_string, parse_ms_string},
     };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_temp_tns(name: &str, contents: &str) -> String {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("diffsl_{name}_{unique}.tns"));
+        std::fs::write(&path, contents).unwrap();
+        path.to_string_lossy().into_owned()
+    }
 
     #[test]
     fn test_circuit_model() {
@@ -1879,5 +1990,163 @@ mod tests {
             r.layout_ptr(),
         );
         assert_eq!(translation.to_data_layout(), vec![1, 3]);
+    }
+
+    #[test]
+    fn test_frostt_sparse_import_layout_and_constants() {
+        let path = write_temp_tns(
+            "sparse_import",
+            "
+            # 1-based FROSTT coordinates
+            2 3 5.0
+            1 1 2.0
+            ",
+        );
+        let text = format!(
+            "
+            C_ij {{ (0:3, 0:3): read('{path}') }}
+            zeros_i {{ (0:3): 0 }}
+            u_i {{ 1, 1, 1 }}
+            F_i {{ C_ij * u_j + zeros_i }}
+            "
+        );
+        let ast = parse_ds_string(&text).unwrap();
+        let model = DiscreteModel::build("test_frostt_sparse_import", &ast).unwrap();
+        let c = model
+            .constant_defns()
+            .iter()
+            .find(|t| t.name() == "C")
+            .unwrap();
+        assert_eq!(
+            c.layout()
+                .indices()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>(),
+            vec!["[0, 0]", "[1, 2]"]
+        );
+        assert!(c.elmts()[0].has_values());
+
+        let layout = DataLayout::new(&model);
+        assert_eq!(layout.get_tensor_constants("C").unwrap(), &[2.0, 5.0]);
+    }
+
+    #[test]
+    fn test_frostt_sparse_import_validation_errors() {
+        let duplicate = write_temp_tns(
+            "sparse_import_duplicate",
+            "
+            1 1 2.0
+            1 1 3.0
+            ",
+        );
+        let bad_row = write_temp_tns("sparse_import_bad_row", "1 1 2 3.0");
+        let bad_value = write_temp_tns("sparse_import_bad_value", "1 1 nope");
+        let out_of_range = write_temp_tns("sparse_import_out_of_range", "1 3 2.0");
+        let zero_coord = write_temp_tns("sparse_import_zero_coord", "0 1 2.0");
+        let valid_vector = write_temp_tns("sparse_import_valid_vector", "1 2.0");
+        let missing = std::env::temp_dir()
+            .join(format!(
+                "diffsl_sparse_import_missing_{}.tns",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let unsupported = std::env::temp_dir().join("diffsl_sparse_import_bad.mm");
+        std::fs::write(&unsupported, "1 1 2.0").unwrap();
+
+        let cases = [
+            (
+                format!("C_ij {{ (0:2, 0:2): read('{duplicate}') }} u_i {{ 1, 1 }} F_i {{ u_i }}"),
+                "duplicate FROSTT coordinate",
+            ),
+            (
+                format!("C_ij {{ (0:2, 0:2): read('{bad_row}') }} u_i {{ 1, 1 }} F_i {{ u_i }}"),
+                "expected 3 fields",
+            ),
+            (
+                format!("C_ij {{ (0:2, 0:2): read('{bad_value}') }} u_i {{ 1, 1 }} F_i {{ u_i }}"),
+                "invalid FROSTT value",
+            ),
+            (
+                format!(
+                    "C_ij {{ (0:2, 0:2): read('{out_of_range}') }} u_i {{ 1, 1 }} F_i {{ u_i }}"
+                ),
+                "outside axis",
+            ),
+            (
+                format!("C_ij {{ (0:2, 0:2): read('{zero_coord}') }} u_i {{ 1, 1 }} F_i {{ u_i }}"),
+                "coordinates are 1-based",
+            ),
+            (
+                format!(
+                    "C_ij {{ (0:2, 0:2): read('{}') }} u_i {{ 1, 1 }} F_i {{ u_i }}",
+                    unsupported.to_string_lossy()
+                ),
+                "unsupported sparse tensor file extension",
+            ),
+            (
+                format!("C_ij {{ (0:2, 0:2): read('{missing}') }} u_i {{ 1, 1 }} F_i {{ u_i }}"),
+                "failed to read sparse tensor file",
+            ),
+            (
+                "C_ij { (0..2, 0..2): read('missing.tns') } u_i { 1, 1 } F_i { u_i }".to_string(),
+                "explicit ':' ranges",
+            ),
+            (
+                format!("u_i {{ (0:2): read('{valid_vector}') }} F_i {{ 1, 1 }}"),
+                "compile-time constant tensors",
+            ),
+        ];
+
+        for (text, expected) in cases {
+            let ast = parse_ds_string(&text).unwrap();
+            let err = DiscreteModel::build("test_frostt_sparse_import_errors", &ast).unwrap_err();
+            assert!(
+                err.has_error_contains(expected),
+                "expected '{expected}' in '{}'",
+                err.as_error_message(&text)
+            );
+        }
+    }
+
+    #[test]
+    fn test_frostt_sparse_import_requires_constant_tensor() {
+        let valid_vector = write_temp_tns("sparse_import_constant_check", "1 2.0");
+        let cases = [
+            (
+                format!(
+                    "A_i {{ (0:2): read('{valid_vector}'), (2): t }} u_i {{ 1, 1, 1 }} F_i {{ u_i }}"
+                ),
+                "time dependent",
+            ),
+            (
+                format!(
+                    "in {{ p = 1 }} A_i {{ (0:2): read('{valid_vector}'), (2): p }} u_i {{ 1, 1, 1 }} F_i {{ u_i }}"
+                ),
+                "input dependent",
+            ),
+            (
+                format!(
+                    "A_i {{ (0:2): read('{valid_vector}'), (2): N }} u_i {{ 1, 1, 1 }} F_i {{ u_i }}"
+                ),
+                "model dependent",
+            ),
+        ];
+
+        for (text, dependency) in cases {
+            let ast = parse_ds_string(&text).unwrap();
+            let err =
+                DiscreteModel::build("test_frostt_sparse_import_constant_check", &ast).unwrap_err();
+            let message = err.as_error_message(&text);
+            assert!(
+                err.has_error_contains(
+                    "read(...) imports can only define compile-time constant tensors"
+                ) && err.has_error_contains("but 'A' is not constant"),
+                "expected sparse import constness error for {dependency} tensor in '{message}'"
+            );
+        }
     }
 }

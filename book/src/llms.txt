@@ -15,7 +15,7 @@ Core language ideas:
 - Variables are tensors (scalar, vector, matrix, higher-rank) identified by a name with optional index suffix (example: u_i, A_ij).
 - Tensor elements can be direct expressions or named assignments (example: x = 1.0).
 - Expressions support arithmetic, function calls, broadcasting-by-index, and selected contractions.
-- Ranges and sparse/diagonal element patterns are used to define tensor structure concisely.
+- Ranges, sparse/diagonal element patterns, and compile-time FROSTT `.tns` imports are used to define tensor structure concisely.
 
 Grammar
 The grammar below summarizes the currently implemented DiffSL parser (based on ds_grammar.pest):
@@ -24,8 +24,9 @@ main       = SOI model EOI
 model      = tensor*
 
 tensor     = name_ij "{" tensor_elmt? ("," tensor_elmt)* ","? "}"
-tensor_elmt = indices? (assignment | expression)
+tensor_elmt = indices? (assignment | sparse_read | expression)
 assignment = name "=" expression
+sparse_read = "read" "(" string ")"
 
 indices    = "(" indice ("," indice)* ")" ":"
 indice     = integer (range_sep integer)?
@@ -47,6 +48,7 @@ integer_factor     = sign? (integer | integer_name | "(" integer_expression ")")
 integer_name       = "N"
 
 name       = letter (letter | digit)*
+string     = "'" any-non-quote* "'"
 integer    = digit+
 real       = digit+ ("." digit*)? ("e" sign? integer)?
 
@@ -54,6 +56,7 @@ Notes:
 - The special integer symbol N is available for model-indexed expressions.
 - name_ij supports an optional suffix after '_' (for example i, ij, abc).
 - name_ij_index supports single index and slice-like forms via index_indice.
+- `read('path.tns')` is valid only as a complete constant tensor element RHS with explicit `:` ranges on every axis. It imports FROSTT sparse tensor files at compile time; file coordinates are 1-based and become 0-based DiffSL indices.
 
 mdBook Index
 Each page in the public docs with a one-line description:

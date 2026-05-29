@@ -31,6 +31,11 @@ fn parse_name(pair: Pair<'_, Rule>) -> &str {
     pair.as_str()
 }
 
+fn parse_string_literal(pair: Pair<'_, Rule>) -> &str {
+    let raw = pair.as_str();
+    &raw[1..raw.len() - 1]
+}
+
 fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
     let span = Some(StringSpan {
         pos_start: pair.as_span().start(),
@@ -82,6 +87,14 @@ fn parse_value(pair: Pair<'_, Rule>) -> Ast<'_> {
                     args: inner.map(parse_value).map(Box::new).collect(),
                     is_tangent: false,
                 }),
+                span,
+            }
+        }
+
+        Rule::sparse_read => {
+            let mut inner = pair.into_inner();
+            Ast {
+                kind: AstKind::new_sparse_import(parse_string_literal(inner.next().unwrap())),
                 span,
             }
         }
@@ -492,6 +505,29 @@ mod tests {
             .unwrap();
         assert_eq!(assignment.name, "y");
         assert_eq!(assignment.expr.to_string(), "3");
+    }
+
+    #[test]
+    fn sparse_import_parses_as_tensor_element() {
+        const TEXT: &str = "
+            C_ij { (0:2, 0:2): read('c_tensor.tns') }
+        ";
+        let model = parse_string(TEXT).unwrap();
+        let tensor = model.tensors[0].kind.as_tensor().unwrap();
+        let elmt = tensor.elmts()[0].kind.as_tensor_elmt().unwrap();
+        assert_eq!(
+            elmt.expr.kind.as_sparse_import().unwrap().path,
+            "c_tensor.tns"
+        );
+        assert_eq!(elmt.expr.to_string(), "read('c_tensor.tns')");
+    }
+
+    #[test]
+    fn sparse_import_does_not_parse_inside_expression() {
+        const TEXT: &str = "
+            C_ij { (0:2, 0:2): 2 * read('c_tensor.tns') }
+        ";
+        assert!(parse_string(TEXT).is_err());
     }
 
     #[test]

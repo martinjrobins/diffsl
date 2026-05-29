@@ -1211,7 +1211,11 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, thread};
+    use std::{
+        sync::Arc,
+        thread,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::CompilerMode;
     use crate::{
@@ -1227,6 +1231,16 @@ mod tests {
     use approx::{assert_relative_eq, RelativeEq};
     use num_traits::ToPrimitive;
     use paste::paste;
+
+    fn write_temp_tns(name: &str, contents: &str) -> String {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("diffsl_{name}_{unique}.tns"));
+        std::fs::write(&path, contents).unwrap();
+        path.to_string_lossy().into_owned()
+    }
 
     /// Macro to generate test functions for all combinations of backend (cranelift/llvm) and scalar type (f32/f64)
     ///
@@ -1302,6 +1316,57 @@ mod tests {
         let a2 = compiler.get_tensor_data("a2", &data).unwrap();
         assert_relative_eq!(a[0], T::one());
         assert_relative_eq!(a2[0], T::one());
+    }
+
+    generate_tests!(test_frostt_sparse_import_constants);
+
+    #[allow(dead_code)]
+    fn test_frostt_sparse_import_constants<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq,
+    >() {
+        let path = write_temp_tns(
+            "compiler_sparse_import",
+            "
+            # intentionally out of order
+            2 3 5.0
+            1 1 2.0
+            ",
+        );
+        let full_text = format!(
+            "
+            C_ij {{ (0:3, 0:3): read('{path}') }}
+            zeros_i {{ (0:3): 0 }}
+            u_i {{ 1, 2, 3 }}
+            F_i {{ C_ij * u_j + zeros_i }}
+            "
+        );
+        let model = parse_ds_string(&full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(&full_text),
+        )
+        .unwrap();
+
+        let c = compiler.get_constants_data("C").unwrap();
+        assert_relative_eq!(c[0], T::from_f64(2.0).unwrap());
+        assert_relative_eq!(c[1], T::from_f64(5.0).unwrap());
+
+        let mut data = compiler.get_new_data();
+        let mut u0 = vec![T::zero(); 3];
+        let mut res = vec![T::zero(); 3];
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        compiler.rhs(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            res.as_mut_slice(),
+        );
+        assert_relative_eq!(res[0], T::from_f64(2.0).unwrap());
+        assert_relative_eq!(res[1], T::from_f64(15.0).unwrap());
+        assert_relative_eq!(res[2], T::zero());
     }
 
     generate_tests!(test_from_discrete_str_common);

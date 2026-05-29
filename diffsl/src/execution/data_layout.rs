@@ -155,6 +155,37 @@ impl DataLayout {
                     indices.extend(translation.to_data_layout());
                 }
             }
+
+            if in_constants && tensor.elmts().iter().any(|blk| blk.is_sparse_import()) {
+                let tensor_start = data_index_map[tensor.name()];
+                let tensor_index_map = tensor
+                    .layout()
+                    .indices()
+                    .enumerate()
+                    .map(|(offset, index)| (index.to_vec(), offset))
+                    .collect::<HashMap<_, _>>();
+                for blk in tensor.elmts() {
+                    let Some(import) = blk.sparse_import() else {
+                        continue;
+                    };
+                    for (relative_index, value) in
+                        blk.layout().indices().zip(import.values().iter().copied())
+                    {
+                        let mut absolute_index = relative_index.to_vec();
+                        for (axis, start) in blk.start().iter().enumerate() {
+                            absolute_index[axis] += *start;
+                        }
+                        let Some(offset) = tensor_index_map.get(&absolute_index) else {
+                            panic!(
+                                "imported sparse tensor index {:?} not found in tensor {} layout",
+                                absolute_index,
+                                tensor.name()
+                            );
+                        };
+                        constants[tensor_start + *offset] = value;
+                    }
+                }
+            }
         };
 
         model
@@ -283,6 +314,14 @@ impl DataLayout {
         let index = self.get_data_index(name)?;
         let nnz = self.get_data_length(name)?;
         Some(&self.data()[index..index + nnz])
+    }
+    pub fn get_tensor_constants(&self, name: &str) -> Option<&[f64]> {
+        if !self.is_constant(name) {
+            return None;
+        }
+        let index = self.get_data_index(name)?;
+        let nnz = self.get_data_length(name)?;
+        Some(&self.constants()[index..index + nnz])
     }
     pub fn get_tensor_data_mut(&mut self, name: &str) -> Option<&mut [f64]> {
         let index = self.get_data_index(name)?;

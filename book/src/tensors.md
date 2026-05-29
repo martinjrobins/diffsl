@@ -125,6 +125,16 @@ C_ij {
 Without the zero element, the compiler would infer that this is a 2x3 matrix, but with the zero element it will infer that this is a 3x3 matrix with the last row set to zero.
 The sparsity of the matrix will be preserved in the internal representation, so the zero elements will not take up any memory or computational resources.
 
+Large sparse tensors can also be imported from a FROSTT `.tns` file at compile time:
+
+```diffsl
+C_ij {
+ (0:120, 0:120): read('c_tensor.tns'),
+}
+```
+
+The `read` form is only valid as the complete right-hand side of a constant tensor element. The explicit `:` ranges define the expected tensor shape, and the file is loaded relative to the process current working directory unless an absolute path is used. FROSTT coordinates are 1-based on disk and are converted to DiffSL's 0-based indices when the model is compiled. Lines may contain comments beginning with `#`; malformed rows, duplicate coordinates, unsupported file extensions, and out-of-range coordinates are rejected. See the [FROSTT file format documentation](https://frostt.io/tensors/file-formats.html) for the source format.
+
 As well as specifying a sparse matrix, we can also define a diagonal matrix by specifying the diagonal elements:
 
 ```diffsl

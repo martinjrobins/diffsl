@@ -544,6 +544,16 @@ impl Env {
             AstKind::Monop(monop) => self.get_layout(monop.child.as_ref(), indices),
             AstKind::Call(call) => self.get_layout_call(call, ast, indices),
             AstKind::CallArg(arg) => self.get_layout(arg.expression.as_ref(), indices),
+            AstKind::SparseImport(import) => {
+                self.errs.push(ValidationError::new(
+                    format!(
+                        "read('{}') can only be used as a whole tensor element expression",
+                        import.path
+                    ),
+                    ast.span,
+                ));
+                None
+            }
             AstKind::Number(_) => Some(Layout::new_scalar()),
             AstKind::Integer(_) => Some(Layout::new_scalar()),
             AstKind::Domain(d) => Some(Layout::new_dense(Shape::zeros(1) + d.dim)),

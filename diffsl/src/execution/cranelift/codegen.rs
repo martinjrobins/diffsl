@@ -524,9 +524,29 @@ impl<M: Module> CraneliftModule<M> {
             RealType::F32 => types::F32,
             RealType::F64 => types::F64,
         };
+        let mut constants_bytes = Vec::new();
+        for value in layout.constants() {
+            match real_type_cranelift {
+                types::F32 => {
+                    let value = *value as f32;
+                    let bytes = match triple.endianness().unwrap() {
+                        Endianness::Little => value.to_le_bytes(),
+                        Endianness::Big => value.to_be_bytes(),
+                    };
+                    constants_bytes.extend(bytes);
+                }
+                types::F64 => {
+                    let bytes = match triple.endianness().unwrap() {
+                        Endianness::Little => value.to_le_bytes(),
+                        Endianness::Big => value.to_be_bytes(),
+                    };
+                    constants_bytes.extend(bytes);
+                }
+                _ => panic!("unexpected real type"),
+            }
+        }
         let mut data_description = DataDescription::new();
-        data_description
-            .define_zeroinit(layout.constants().len() * (real_type_cranelift.bytes() as usize));
+        data_description.define(constants_bytes.into_boxed_slice());
         let constants_id = module.declare_data("constants", Linkage::Local, true, false)?;
         module.define_data(constants_id, &data_description)?;
 
@@ -1724,6 +1744,9 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             }
         } else {
             for (i, blk) in a.elmts().iter().enumerate() {
+                if blk.is_sparse_import() {
+                    continue;
+                }
                 let default = format!("{}-{}", a.name(), i);
                 let name = blk.name().unwrap_or(default.as_str());
                 self.jit_compile_block(name, a, blk, is_tangent)?;

@@ -800,7 +800,13 @@ impl<'ctx> Globals<'ctx> {
             );
             constants.set_visibility(GlobalVisibility::Hidden);
             constants.set_constant(false);
-            constants.set_initializer(&constants_array_type.const_zero());
+            let constants_array_values = layout
+                .constants()
+                .iter()
+                .map(|&value| real_type.const_float(value))
+                .collect::<Vec<_>>();
+            let constants_value = real_type.const_array(constants_array_values.as_slice());
+            constants.set_initializer(&constants_value);
             Some(constants)
         };
         let indices = if layout.indices().is_empty() {
@@ -2056,6 +2062,9 @@ impl<'ctx> CodeGen<'ctx> {
         self.tensor_ptr_opt = Some(res_ptr);
 
         for (i, blk) in a.elmts().iter().enumerate() {
+            if blk.is_sparse_import() {
+                continue;
+            }
             let default = format!("{}-{}", a.name(), i);
             let name = blk.name().unwrap_or(default.as_str());
             self.jit_compile_block(name, a, blk, code)?;

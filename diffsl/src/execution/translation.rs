@@ -66,7 +66,7 @@ impl fmt::Display for TranslationFrom {
 
 impl TranslationFrom {
     // traslate from source layout (an expression) via an intermediary target layout (a tensor block)
-    fn new(source: &Layout, target: &Layout) -> Self {
+    pub(crate) fn new(source: &Layout, target: &Layout) -> Self {
         let broadcast_by = if target.rank() >= source.rank() {
             if target.is_dense() {
                 target.rank() - source.rank()

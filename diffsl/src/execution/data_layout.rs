@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::{cmp::min, collections::HashMap};
 
 use log::debug;
 
-use crate::discretise::{ArcLayout, DiscreteModel, Layout, Tensor, TensorBlock};
+use crate::{
+    ast::{Ast, AstKind, Name},
+    discretise::{ArcLayout, DiscreteModel, Index, Layout, Tensor, TensorBlock},
+};
 
-use super::Translation;
+use super::{Translation, TranslationFrom};
 
 // there are three different layouts:
 // 1. the data layout is a mapping from tensors to the index of the first element in the data or constants array.
@@ -26,6 +29,7 @@ pub struct DataLayout {
     constants: Vec<f64>,
     indices: Vec<i32>,
     layout_map: HashMap<String, ArcLayout>,
+    named_data_index_map: HashMap<String, usize>,
 }
 
 impl DataLayout {
@@ -40,6 +44,7 @@ impl DataLayout {
         let mut indices = Vec::new();
         let mut layout_map = HashMap::new();
         let mut binary_layout_index_map = HashMap::new();
+        let mut named_data_index_map = HashMap::new();
 
         // add layout info for "t"
         let t_layout = ArcLayout::new(Layout::new_scalar());
@@ -84,6 +89,17 @@ impl DataLayout {
                 if let Some(name) = blk.name() {
                     layout_map.insert(name.to_string(), blk.layout().clone());
                     is_constant_map.insert(name.to_string(), in_constants);
+                    if in_data || in_constants {
+                        let mut block_start = Index::zeros(tensor.rank());
+                        for (axis, start) in blk.start().iter().enumerate().take(tensor.rank()) {
+                            block_start[axis] = *start;
+                        }
+                        let block_offset = tensor.layout().find_nnz_index(&block_start).unwrap();
+                        named_data_index_map.insert(
+                            name.to_string(),
+                            data_index_map[tensor.name()] + block_offset,
+                        );
+                    }
                 }
 
                 // insert the layout info for each tensor expression
@@ -155,38 +171,6 @@ impl DataLayout {
                     indices.extend(translation.to_data_layout());
                 }
             }
-
-            if in_constants && tensor.elmts().iter().any(|blk| blk.has_values()) {
-                let tensor_start = data_index_map[tensor.name()];
-                let tensor_index_map = tensor
-                    .layout()
-                    .indices()
-                    .enumerate()
-                    .map(|(offset, index)| (index.to_vec(), offset))
-                    .collect::<HashMap<_, _>>();
-                for blk in tensor.elmts() {
-                    if blk.layout().values().is_none() {
-                        continue;
-                    }
-                    let values = blk.layout().values().unwrap();
-                    for (relative_index, value) in
-                        blk.layout().indices().zip(values.iter().copied())
-                    {
-                        let mut absolute_index = relative_index.to_vec();
-                        for (axis, start) in blk.start().iter().enumerate() {
-                            absolute_index[axis] += *start;
-                        }
-                        let Some(offset) = tensor_index_map.get(&absolute_index) else {
-                            panic!(
-                                "imported sparse tensor index {:?} not found in tensor {} layout",
-                                absolute_index,
-                                tensor.name()
-                            );
-                        };
-                        constants[tensor_start + *offset] = value;
-                    }
-                }
-            }
         };
 
         model
@@ -226,9 +210,7 @@ impl DataLayout {
             add_tensor(out, false, false);
         }
 
-        // todo: could we just calculate constants now?
-
-        Self {
+        let mut ret = Self {
             is_constant_map,
             data_index_map,
             layout_index_map,
@@ -239,6 +221,341 @@ impl DataLayout {
             data_length_map,
             constants,
             binary_layout_index_map,
+            named_data_index_map,
+        };
+
+        for tensor in model.constant_defns() {
+            for blk in tensor.elmts() {
+                ret.evaluate_constant_block(tensor, blk);
+            }
+        }
+
+        ret
+    }
+
+    fn evaluate_constant_block(&mut self, tensor: &Tensor, blk: &TensorBlock) {
+        let expr_values = if blk.layout().values().is_some() {
+            blk.layout().values().unwrap().to_vec()
+        } else {
+            blk.expr_layout()
+                .indices()
+                .enumerate()
+                .map(|(expr_index, index)| {
+                    self.evaluate_constant_expr(blk.expr(), blk, expr_index, &index)
+                })
+                .collect::<Vec<_>>()
+        };
+        let block_values =
+            Self::translate_constant_values(blk.expr_layout(), blk.layout(), &expr_values);
+        assert_eq!(
+            block_values.len(),
+            blk.layout().nnz(),
+            "constant block {} evaluated to {} values, but block layout has {} non-zeros",
+            blk.name().unwrap_or("<unnamed>"),
+            block_values.len(),
+            blk.layout().nnz()
+        );
+
+        let tensor_start = self.data_index_map[tensor.name()];
+        for (relative_index, value) in blk.layout().indices().zip(block_values.iter().copied()) {
+            let mut absolute_index = Index::zeros(tensor.rank());
+            for axis in 0..min(relative_index.len(), absolute_index.len()) {
+                absolute_index[axis] = relative_index[axis];
+            }
+            for (axis, start) in blk.start().iter().enumerate().take(absolute_index.len()) {
+                absolute_index[axis] += *start;
+            }
+            let Some(offset) = tensor.layout().find_nnz_index(&absolute_index) else {
+                panic!(
+                    "constant block index {:?} not found in tensor {} layout",
+                    absolute_index,
+                    tensor.name()
+                );
+            };
+            self.constants[tensor_start + offset] = value;
+        }
+    }
+
+    fn translate_constant_values(
+        source_layout: &ArcLayout,
+        block_layout: &ArcLayout,
+        values: &[f64],
+    ) -> Vec<f64> {
+        let translation = TranslationFrom::new(source_layout, block_layout);
+        match translation {
+            TranslationFrom::ElementWise => values.to_vec(),
+            TranslationFrom::Broadcast {
+                broadcast_by: _,
+                broadcast_len,
+            } => values
+                .iter()
+                .flat_map(|value| std::iter::repeat_n(*value, broadcast_len))
+                .collect(),
+            TranslationFrom::DenseContraction {
+                contract_by: _,
+                contract_len,
+            } => values
+                .chunks(contract_len)
+                .map(|chunk| chunk.iter().sum())
+                .collect(),
+            TranslationFrom::DiagonalContraction { contract_by: _ } => values.to_vec(),
+            TranslationFrom::SparseContraction {
+                contract_by: _,
+                contract_start_indices,
+                contract_end_indices,
+            } => contract_start_indices
+                .iter()
+                .zip(contract_end_indices.iter())
+                .map(|(start, end)| values[*start..*end].iter().sum())
+                .collect(),
+        }
+    }
+
+    fn evaluate_constant_expr(
+        &self,
+        expr: &Ast,
+        blk: &TensorBlock,
+        expr_index: usize,
+        index: &Index,
+    ) -> f64 {
+        match &expr.kind {
+            AstKind::Assignment(assignment) => {
+                self.evaluate_constant_expr(assignment.expr.as_ref(), blk, expr_index, index)
+            }
+            AstKind::Binop(binop) => {
+                let left = self.evaluate_constant_expr(binop.left.as_ref(), blk, expr_index, index);
+                let right =
+                    self.evaluate_constant_expr(binop.right.as_ref(), blk, expr_index, index);
+                match binop.op {
+                    '+' => left + right,
+                    '-' => left - right,
+                    '*' => left * right,
+                    '/' => left / right,
+                    unknown => panic!("unknown constant binary op '{unknown}'"),
+                }
+            }
+            AstKind::Monop(monop) => {
+                let child =
+                    self.evaluate_constant_expr(monop.child.as_ref(), blk, expr_index, index);
+                match monop.op {
+                    '+' => child,
+                    '-' => -child,
+                    unknown => panic!("unknown constant unary op '{unknown}'"),
+                }
+            }
+            AstKind::Call(call) => {
+                let args = call
+                    .args
+                    .iter()
+                    .map(|arg| self.evaluate_constant_expr(arg.as_ref(), blk, expr_index, index))
+                    .collect::<Vec<_>>();
+                Self::evaluate_constant_call(call.fn_name, &args)
+            }
+            AstKind::CallArg(arg) => {
+                self.evaluate_constant_expr(arg.expression.as_ref(), blk, expr_index, index)
+            }
+            AstKind::SparseImport(import) => {
+                panic!(
+                    "read('{}') constant import should be evaluated from layout values",
+                    import.path
+                )
+            }
+            AstKind::Name(name) => self.evaluate_constant_name(name, blk, expr_index, index),
+            AstKind::Number(value) => *value,
+            AstKind::Integer(value) => *value as f64,
+            AstKind::NamedGradient(name) => {
+                panic!("named gradient {name} is not a constant expression")
+            }
+            AstKind::Index(_) => panic!("index AST nodes are not supported in constant values"),
+            AstKind::Slice(_) => panic!("slice AST nodes are not supported in constant values"),
+            other => panic!("unexpected AST node in constant expression: {other:?}"),
+        }
+    }
+
+    fn evaluate_constant_call(name: &str, args: &[f64]) -> f64 {
+        match (name, args) {
+            ("sin", [x]) => x.sin(),
+            ("cos", [x]) => x.cos(),
+            ("tan", [x]) => x.tan(),
+            ("sinh", [x]) => x.sinh(),
+            ("cosh", [x]) => x.cosh(),
+            ("tanh", [x]) => x.tanh(),
+            ("exp", [x]) => x.exp(),
+            ("log", [x]) => x.ln(),
+            ("log10", [x]) => x.log10(),
+            ("sqrt", [x]) => x.sqrt(),
+            ("abs", [x]) => x.abs(),
+            ("sigmoid", [x]) => 1.0 / (1.0 + (-x).exp()),
+            ("arcsinh", [x]) => x.asinh(),
+            ("arccosh", [x]) => x.acosh(),
+            ("heaviside", [x]) => {
+                if *x >= 0.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            ("copysign", [x, y]) => x.copysign(*y),
+            ("pow", [x, y]) => x.powf(*y),
+            ("min", [x, y]) => x.min(*y),
+            ("max", [x, y]) => x.max(*y),
+            _ => panic!(
+                "unknown constant function call '{}' with {} args",
+                name,
+                args.len()
+            ),
+        }
+    }
+
+    fn evaluate_constant_name(
+        &self,
+        name: &Name,
+        blk: &TensorBlock,
+        expr_index: usize,
+        index: &Index,
+    ) -> f64 {
+        if name.name == "t" || name.name == "N" {
+            panic!("{} is not a constant expression", name.name);
+        }
+
+        let Some(is_constant) = self.is_constant_map.get(name.name) else {
+            panic!("cannot find variable {}", name.name);
+        };
+        if !is_constant {
+            panic!("{} is not a constant expression", name.name);
+        }
+        if name.is_tangent {
+            return 0.0;
+        }
+
+        let layout = self.layout_map.get(name.name).unwrap_or_else(|| {
+            panic!("cannot find layout for constant variable {}", name.name);
+        });
+        let tensor_start = self
+            .data_index_map
+            .get(name.name)
+            .copied()
+            .or_else(|| self.named_data_index_map.get(name.name).copied())
+            .unwrap_or_else(|| panic!("cannot find data for constant variable {}", name.name));
+        let elmt_index = if layout.is_dense() {
+            self.evaluate_dense_constant_name_index(name, blk, index, layout)
+        } else if layout.is_sparse() || layout.is_diagonal() {
+            if blk.expr_layout() != layout {
+                let permutation = Self::permutation(blk, name.indices.as_slice(), layout);
+                let binary_layout = layout.to_binary_data_layout(blk.expr_layout(), &permutation);
+                if binary_layout.is_empty() {
+                    Some(expr_index)
+                } else {
+                    let mapped_index = binary_layout[expr_index];
+                    if mapped_index < 0 {
+                        None
+                    } else {
+                        Some(usize::try_from(mapped_index).unwrap())
+                    }
+                }
+            } else {
+                Some(expr_index)
+            }
+        } else {
+            panic!("unexpected layout for constant variable {}", name.name);
+        };
+
+        elmt_index.map_or(0.0, |offset| self.constants[tensor_start + offset])
+    }
+
+    fn evaluate_dense_constant_name_index(
+        &self,
+        name: &Name,
+        blk: &TensorBlock,
+        index: &Index,
+        layout: &ArcLayout,
+    ) -> Option<usize> {
+        let mut name_index = Vec::new();
+        for (axis, c) in name.indices.iter().enumerate() {
+            let pi = blk
+                .indices()
+                .iter()
+                .position(|idx| idx == c)
+                .unwrap_or(blk.indices().len());
+            let value = if let Some(indice_ast) = name.indice.as_ref() {
+                let Some(indice) = indice_ast.kind.as_indice() else {
+                    panic!("invalid index expression '{}'", indice_ast);
+                };
+                let start = Self::evaluate_constant_integer_expr(indice.first.as_ref());
+                if indice.last.is_some() {
+                    index.get(pi).copied().unwrap_or(0) + start
+                } else {
+                    start
+                }
+            } else {
+                index.get(pi).copied().unwrap_or(0)
+            };
+            if layout.shape()[axis] == 1 {
+                name_index.push(0);
+            } else {
+                name_index.push(value);
+            }
+        }
+
+        for (axis, value) in name_index
+            .iter()
+            .enumerate()
+            .take(min(name_index.len(), layout.rank()))
+        {
+            if *value < 0 || *value >= layout.shape()[axis] as i64 {
+                return None;
+            }
+        }
+
+        if name_index.is_empty() {
+            Some(0)
+        } else {
+            Some(Layout::ravel_index(
+                &Index::from_vec(name_index),
+                layout.shape(),
+            ))
+        }
+    }
+
+    fn evaluate_constant_integer_expr(expr: &Ast) -> i64 {
+        match &expr.kind {
+            AstKind::Integer(value) => *value,
+            AstKind::Number(value) => {
+                if value.fract() != 0.0 {
+                    panic!("non-integer value '{}' in integer expression", value);
+                }
+                *value as i64
+            }
+            AstKind::Name(name) => {
+                if name.name == "N" {
+                    panic!("N is not allowed in a constant integer expression");
+                }
+                panic!(
+                    "unsupported name '{}' in constant integer expression",
+                    name.name
+                );
+            }
+            AstKind::Monop(monop) => {
+                let child = Self::evaluate_constant_integer_expr(monop.child.as_ref());
+                match monop.op {
+                    '+' => child,
+                    '-' => -child,
+                    unknown => panic!("unknown integer unary op '{unknown}'"),
+                }
+            }
+            AstKind::Binop(binop) => {
+                let left = Self::evaluate_constant_integer_expr(binop.left.as_ref());
+                let right = Self::evaluate_constant_integer_expr(binop.right.as_ref());
+                match binop.op {
+                    '+' => left + right,
+                    '-' => left - right,
+                    '*' => left * right,
+                    '/' => left / right,
+                    '%' => left % right,
+                    unknown => panic!("unknown integer binary op '{unknown}'"),
+                }
+            }
+            other => panic!("unexpected integer expression: {other:?}"),
         }
     }
 
@@ -373,5 +690,185 @@ impl DataLayout {
 
     pub fn indices(&self) -> &[i32] {
         self.indices.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use approx::assert_relative_eq;
+
+    use super::DataLayout;
+    use crate::{discretise::DiscreteModel, parser::parse_ds_string};
+
+    macro_rules! constant_layout_test {
+        ($($name:ident: $text:literal expect $tensor_name:literal = $expected_value:expr,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let full_text = format!("
+                    {}
+                    u_i {{
+                        y = 1,
+                    }}
+                    F_i {{
+                        y,
+                    }}
+                    out_i {{
+                        y,
+                    }}
+                ", $text);
+
+                let model = parse_ds_string(full_text.as_str()).unwrap();
+                let discrete_model = match DiscreteModel::build("$name", &model) {
+                    Ok(model) => model,
+                    Err(e) => panic!("{}", e.as_error_message(full_text.as_str())),
+                };
+                let layout = DataLayout::new(&discrete_model);
+                let expected: Vec<f64> = $expected_value;
+                assert_relative_eq!(
+                    layout.get_tensor_constants($tensor_name).unwrap(),
+                    expected.as_slice(),
+                    epsilon = 1e-12
+                );
+            }
+        )*
+        }
+    }
+
+    macro_rules! constant_layout_new_panic_test {
+        ($($name:ident: $text:literal,)*) => {
+        $(
+            #[test]
+            #[should_panic]
+            fn $name() {
+                let full_text = format!("
+                    {}
+                    u_i {{
+                        y = 1,
+                    }}
+                    F_i {{
+                        y,
+                    }}
+                    out_i {{
+                        y,
+                    }}
+                ", $text);
+
+                let model = parse_ds_string(full_text.as_str()).unwrap();
+                let discrete_model = match DiscreteModel::build("$name", &model) {
+                    Ok(model) => model,
+                    Err(e) => panic!("{}", e.as_error_message(full_text.as_str())),
+                };
+                let _layout = DataLayout::new(&discrete_model);
+            }
+        )*
+        }
+    }
+
+    macro_rules! constant_layout_eval_panic_test {
+        ($($name:ident: $text:literal select $getter:ident,)*) => {
+        $(
+            #[test]
+            #[should_panic]
+            fn $name() {
+                let full_text = format!("
+                    {}
+                    u_i {{
+                        y = 1,
+                    }}
+                    F_i {{
+                        y,
+                    }}
+                    out_i {{
+                        y,
+                    }}
+                ", $text);
+
+                let model = parse_ds_string(full_text.as_str()).unwrap();
+                let discrete_model = match DiscreteModel::build("$name", &model) {
+                    Ok(model) => model,
+                    Err(e) => panic!("{}", e.as_error_message(full_text.as_str())),
+                };
+                let mut layout = DataLayout::new(&discrete_model);
+                let tensor = &discrete_model.$getter()[0];
+                let blk = &tensor.elmts()[0];
+                layout.evaluate_constant_block(tensor, blk);
+            }
+        )*
+        }
+    }
+
+    constant_layout_test! {
+        constant_dense_and_derived: "r_i { 2, 3 } k_i { 2 * r_i }" expect "k" = vec![4.0, 6.0],
+        constant_sparse: "A_ij { (0, 1): 2, (1, 0): 3 }" expect "A" = vec![2.0, 3.0],
+        constant_diagonal: "I_ij { (0..3, 0..3): 2 }" expect "I" = vec![2.0, 2.0, 2.0],
+        constant_sparse_dense_add: "a_i { (0): 1, (2): 2 } b_i { (0:3): 3 } r_i { a_i + b_i }" expect "r" = vec![4.0, 3.0, 5.0],
+        constant_sparse_dense_mul: "a_i { (0): 1, (2): 2 } b_i { (0:3): 3 } r_i { a_i * b_i }" expect "r" = vec![3.0, 6.0],
+        constant_permuted_sparse_add: "A_ij { (0, 0): 1, (1, 1): 2 } B_ij { (0, 1): 3, (1, 1): 4 } R_ij { A_ij + B_ji }" expect "R" = vec![1.0, 3.0, 6.0],
+        constant_dense_contraction: "a_ij { (0:2, 0:3): 2 } r_i { a_ij }" expect "r" = vec![6.0, 6.0],
+        constant_sparse_contraction: "a_ijk { (0, 0, 0): 1, (1, 2, 3): 2 } r_ij { a_ijk }" expect "r" = vec![1.0, 2.0],
+        constant_diagonal_contraction: "a_ijk { (0..3, 0..3, 0..3): 2 } r_ij { a_ijk }" expect "r" = vec![2.0, 2.0, 2.0],
+        constant_broadcast_sparse_to_sparse: "A_i { (1): 2 } B_ij { (0:2, 0:2): A_i }" expect "B" = vec![2.0],
+        constant_functions: "r_i { max(2, 3), pow(4, 0.5), arcsinh(1), heaviside(-0.1), sigmoid(0) }" expect "r" = vec![3.0, 2.0, 1.0_f64.asinh(), 0.0, 0.5],
+    }
+
+    constant_layout_new_panic_test! {
+        constant_unknown_function_panics: "bad { definitely_not_a_function(1) }",
+    }
+
+    constant_layout_eval_panic_test! {
+        constant_time_reference_panics: "bad { t }" select time_dep_defns,
+        constant_input_reference_panics: "in { p = 1 } bad { p }" select input_dep_defns,
+        constant_state_reference_panics: "bad_i { u_i }" select state_dep_defns,
+    }
+
+    fn write_temp_tns(name: &str, contents: &str) -> String {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("diffsl_data_layout_{name}_{unique}.tns"));
+        std::fs::write(&path, contents).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn constant_sparse_import() {
+        let path = write_temp_tns(
+            "constant_sparse_import",
+            "
+            2 3 5.0
+            1 1 2.0
+            ",
+        );
+        let full_text = format!(
+            "
+            C_ij {{ (0:3, 0:3): read('{}') }}
+            u_i {{
+                y = 1,
+            }}
+            F_i {{
+                y,
+            }}
+            out_i {{
+                y,
+            }}
+            ",
+            path
+        );
+
+        let model = parse_ds_string(full_text.as_str()).unwrap();
+        let discrete_model = match DiscreteModel::build("constant_sparse_import", &model) {
+            Ok(model) => model,
+            Err(e) => panic!("{}", e.as_error_message(full_text.as_str())),
+        };
+        let layout = DataLayout::new(&discrete_model);
+        assert_relative_eq!(
+            layout.get_tensor_constants("C").unwrap(),
+            &[2.0, 5.0][..],
+            epsilon = 1e-12
+        );
     }
 }

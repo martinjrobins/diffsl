@@ -84,6 +84,7 @@ impl LlvmModule {
         threaded: bool,
         real_type: RealType,
         debug: bool,
+        constants_use_jit: bool,
     ) -> Result<Self> {
         let initialization_config = &InitializationConfig::default();
         Target::initialize_all(initialization_config);
@@ -154,6 +155,7 @@ impl LlvmModule {
             real_size_bits,
             int_size_bits,
             debug,
+            constants_use_jit,
         )?;
         let codegen = unsafe { std::mem::transmute::<CodeGen<'_>, CodeGen<'static>>(codegen) };
         unsafe { pinned.inner.as_mut().get_unchecked_mut().codegen = Some(codegen) };
@@ -382,7 +384,15 @@ impl CodegenModuleCompile for LlvmModule {
             ));
         }
 
-        let mut module = Self::new(triple, model, threaded, real_type, options.debug)?;
+        let constants_use_jit = options.constants_use_jit;
+        let mut module = Self::new(
+            triple,
+            model,
+            threaded,
+            real_type,
+            options.debug,
+            constants_use_jit,
+        )?;
 
         let set_u0 = module.codegen_mut().compile_set_u0(model, code)?;
         let calc_stop = module.codegen_mut().compile_calc_stop(model, false, code)?;
@@ -398,7 +408,10 @@ impl CodegenModuleCompile for LlvmModule {
         let _get_dims = module.codegen_mut().compile_get_dims(model)?;
         let set_inputs = module.codegen_mut().compile_inputs(model, false)?;
         let _get_inputs = module.codegen_mut().compile_inputs(model, true)?;
-        let _set_constants = module.codegen_mut().compile_set_constants(model, code)?;
+        let _set_constants =
+            module
+                .codegen_mut()
+                .compile_set_constants(model, code, constants_use_jit)?;
         let tensor_info = module
             .codegen()
             .layout
@@ -768,6 +781,7 @@ impl<'ctx> Globals<'ctx> {
         int_type: IntType<'ctx>,
         real_type: FloatType<'ctx>,
         threaded: bool,
+        constants_use_jit: bool,
     ) -> Self {
         let thread_counter = if threaded {
             let tc = module.add_global(
@@ -799,7 +813,7 @@ impl<'ctx> Globals<'ctx> {
                 "enzyme_const_constants",
             );
             constants.set_visibility(GlobalVisibility::Hidden);
-            constants.set_constant(false);
+            constants.set_constant(!constants_use_jit);
             let constants_array_values = layout
                 .constants()
                 .iter()
@@ -946,6 +960,7 @@ impl<'ctx> CodeGen<'ctx> {
         real_size_bits: u64,
         int_size_bits: u64,
         debug: bool,
+        constants_use_jit: bool,
     ) -> Result<Self> {
         let builder = context.create_builder();
         let layout = DataLayout::new(model);
@@ -972,7 +987,14 @@ impl<'ctx> CodeGen<'ctx> {
         } else {
             (None, None)
         };
-        let globals = Globals::new(&layout, &module, int_type, real_type, threaded);
+        let globals = Globals::new(
+            &layout,
+            &module,
+            int_type,
+            real_type,
+            threaded,
+            constants_use_jit,
+        );
         let real_ptr_type = Self::pointer_type(context, real_type.into());
         let int_ptr_type = Self::pointer_type(context, int_type.into());
         let mut ret = Self {
@@ -1150,6 +1172,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         model: &DiscreteModel,
         code: Option<&str>,
+        constants_use_jit: bool,
     ) -> Result<FunctionValue<'ctx>> {
         self.clear();
         let fn_arg_names = &["thread_id", "thread_dim"];
@@ -1171,15 +1194,17 @@ impl<'ctx> CodeGen<'ctx> {
         self.insert_indices();
         self.insert_constants(model);
 
-        let mut nbarriers = 0;
-        let total_barriers = (model.constant_defns().len()) as u64;
-        let total_barriers_val = self.int_type.const_int(total_barriers, false);
-        #[allow(clippy::explicit_counter_loop)]
-        for a in model.constant_defns() {
-            self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
-            let barrier_num = self.int_type.const_int(nbarriers + 1, false);
-            self.jit_compile_call_barrier(barrier_num, total_barriers_val);
-            nbarriers += 1;
+        if constants_use_jit {
+            let mut nbarriers = 0;
+            let total_barriers = (model.constant_defns().len()) as u64;
+            let total_barriers_val = self.int_type.const_int(total_barriers, false);
+            #[allow(clippy::explicit_counter_loop)]
+            for a in model.constant_defns() {
+                self.jit_compile_tensor(a, Some(*self.get_var(a)), code)?;
+                let barrier_num = self.int_type.const_int(nbarriers + 1, false);
+                self.jit_compile_call_barrier(barrier_num, total_barriers_val);
+                nbarriers += 1;
+            }
         }
 
         self.builder.build_return(None)?;

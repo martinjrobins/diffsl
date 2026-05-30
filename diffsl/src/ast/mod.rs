@@ -969,48 +969,6 @@ impl<'a> Ast<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Ast, AstKind, Name};
-
-    #[test]
-    fn test_get_dependents_includes_name_index_dependencies() {
-        let expr = Ast {
-            kind: AstKind::Name(Name {
-                name: "pace",
-                indices: vec!['i'],
-                indice: Some(Box::new(Ast {
-                    kind: AstKind::new_indice(
-                        Ast {
-                            kind: AstKind::new_binop(
-                                '%',
-                                Ast {
-                                    kind: AstKind::new_name("N"),
-                                    span: None,
-                                },
-                                Ast {
-                                    kind: AstKind::new_integer(2),
-                                    span: None,
-                                },
-                            ),
-                            span: None,
-                        },
-                        None,
-                        None,
-                    ),
-                    span: None,
-                })),
-                is_tangent: false,
-            }),
-            span: None,
-        };
-
-        let deps = expr.get_dependents();
-        assert!(deps.contains("pace"));
-        assert!(deps.contains("N"));
-    }
-}
-
 impl fmt::Display for Ast<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self.kind {
@@ -1108,5 +1066,47 @@ impl fmt::Display for Ast<'_> {
             AstKind::Indice(i) => write!(f, "{i}"),
             AstKind::NamedGradient(gradient) => write!(f, "{gradient}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Ast, AstKind, Name};
+
+    #[test]
+    fn test_get_dependents_includes_name_index_dependencies() {
+        let expr = Ast {
+            kind: AstKind::Name(Name {
+                name: "pace",
+                indices: vec!['i'],
+                indice: Some(Box::new(Ast {
+                    kind: AstKind::new_indice(
+                        Ast {
+                            kind: AstKind::new_binop(
+                                '%',
+                                Ast {
+                                    kind: AstKind::new_name("N"),
+                                    span: None,
+                                },
+                                Ast {
+                                    kind: AstKind::new_integer(2),
+                                    span: None,
+                                },
+                            ),
+                            span: None,
+                        },
+                        None,
+                        None,
+                    ),
+                    span: None,
+                })),
+                is_tangent: false,
+            }),
+            span: None,
+        };
+
+        let deps = expr.get_dependents();
+        assert!(deps.contains("pace"));
+        assert!(deps.contains("N"));
     }
 }

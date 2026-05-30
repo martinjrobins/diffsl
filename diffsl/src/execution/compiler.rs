@@ -74,6 +74,7 @@ impl CompilerMode {
 pub struct CompilerOptions {
     pub mode: CompilerMode,
     pub debug: bool,
+    pub constants_use_jit: bool,
 }
 
 impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
@@ -81,6 +82,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         module: M,
         symbol_map: HashMap<String, *const u8>,
         mode: CompilerMode,
+        constants_use_jit: bool,
     ) -> Result<Self> {
         let jit_functions = JitFunctions::<T>::new(&symbol_map)?;
         let jit_grad_functions = JitGradFunctions::<T>::new(&symbol_map)?;
@@ -146,8 +148,10 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         ret.thread_pool = thread_pool;
         ret.thread_lock = thread_lock;
 
-        // all done, can set constants now
-        ret.set_constants();
+        // all done, can set constants now, if requested
+        if constants_use_jit {
+            ret.set_constants();
+        }
         Ok(ret)
     }
 
@@ -156,7 +160,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         M: CodegenModuleJit,
     {
         let symbol_map = module.jit()?;
-        Self::new(module, symbol_map, mode)
+        Self::new(module, symbol_map, mode, true)
     }
 
     pub fn from_object_file(buffer: Vec<u8>, mode: CompilerMode) -> Result<Self>
@@ -165,7 +169,7 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
     {
         let mut module = M::from_object(buffer.as_slice())?;
         let symbol_map = module.jit()?;
-        Self::new(module, symbol_map, mode)
+        Self::new(module, symbol_map, mode, true)
     }
 
     pub fn from_discrete_str(code: &str, options: CompilerOptions) -> Result<Self>
@@ -189,9 +193,10 @@ impl<M: CodegenModule, T: Scalar> Compiler<M, T> {
         M: CodegenModuleCompile + CodegenModuleJit,
     {
         let mode = options.mode;
+        let constants_use_jit = options.constants_use_jit;
         let mut module = M::from_discrete_model(model, options, None, T::as_real_type(), code)?;
         let symbol_map = module.jit()?;
-        Self::new(module, symbol_map, mode)
+        Self::new(module, symbol_map, mode, constants_use_jit)
     }
 
     pub fn supports_reverse_autodiff(&self) -> bool {
@@ -2235,13 +2240,48 @@ mod tests {
         tensor_name: &str,
         mode: CompilerMode,
     ) -> Vec<Vec<f64>> {
+        let jit_results = tensor_test_common_impl::<M, T>(discrete_model, tensor_name, mode, true);
+        let precomputed_results =
+            tensor_test_common_impl::<M, T>(discrete_model, tensor_name, mode, false);
+
+        assert_eq!(jit_results.len(), precomputed_results.len());
+        let constants_path_epsilon = if std::mem::size_of::<T>() == std::mem::size_of::<f32>() {
+            1e-6
+        } else {
+            1e-12
+        };
+        for (jit_result, precomputed_result) in jit_results.iter().zip(precomputed_results.iter()) {
+            assert_relative_eq!(
+                jit_result.as_slice(),
+                precomputed_result.as_slice(),
+                epsilon = constants_path_epsilon
+            );
+        }
+
+        jit_results
+    }
+
+    #[allow(dead_code)]
+    fn tensor_test_common_impl<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq + ToPrimitive,
+    >(
+        discrete_model: &DiscreteModel,
+        tensor_name: &str,
+        mode: CompilerMode,
+        constants_use_jit: bool,
+    ) -> Vec<Vec<f64>> {
         let compiler = Compiler::<M, T>::from_discrete_model(
             discrete_model,
-            CompilerOptions { mode, debug: false },
+            CompilerOptions {
+                mode,
+                debug: false,
+                constants_use_jit,
+            },
             None,
         )
         .unwrap();
-        tensor_test_common_impl(compiler, tensor_name)
+        tensor_test_common_with_compiler(compiler, tensor_name)
             .into_iter()
             .map(|v| {
                 v.into_iter()
@@ -2252,7 +2292,7 @@ mod tests {
     }
 
     #[allow(dead_code)]
-    fn tensor_test_common_impl<M: CodegenModule, T: Scalar + RelativeEq>(
+    fn tensor_test_common_with_compiler<M: CodegenModule, T: Scalar + RelativeEq>(
         compiler: Compiler<M, T>,
         tensor_name: &str,
     ) -> Vec<Vec<T>> {
@@ -3382,5 +3422,102 @@ mod tests {
             Some(&full_text),
         )
         .unwrap();
+    }
+
+    generate_tests!(test_input_times_constant_tensor);
+
+    // Regression test for issue #1: multiplying a runtime input by a *constant* tensor
+    // inside F (e.g. `F_i { b * sows_i }`) used to crash the LLVM/Enzyme backend with a
+    // SIGSEGV while compiling the reverse-mode gradient. Reverse-differentiating the
+    // multiply reloads the constant from the `enzyme_const_constants` global, and Enzyme
+    // tagged that load with `!invariant.group`, which made LLVM's ADCE pass null-deref.
+    // The cranelift backend (which uses a different AD path) was always fine. This checks
+    // that the model compiles on every backend and that the primal value and the
+    // forward-mode derivative `dF/db = sows` are correct.
+    #[allow(dead_code)]
+    fn test_input_times_constant_tensor<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq,
+    >() {
+        let full_text = "
+        in_i { b = 0.0685 }
+        sows_i { 100.0, 50.0, 25.0 }
+        u_i { 0.0, 0.0, 0.0 }
+        F_i { b * sows_i }
+        out_i { u_i }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        // compiling the reverse-mode gradient is where the SIGSEGV used to happen
+        let compiler = Compiler::<M, T>::from_discrete_model(
+            &discrete_model,
+            Default::default(),
+            Some(full_text),
+        )
+        .unwrap();
+
+        let (n_states, n_inputs, _n_out, _nd, _ns, _hm, _hr) = compiler.get_dims();
+        let mut data = compiler.get_new_data();
+        let inputs = vec![T::from_f64(0.0685).unwrap(); n_inputs];
+        compiler.set_inputs(inputs.as_slice(), data.as_mut_slice(), 0);
+        let mut u0 = vec![T::zero(); n_states];
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+
+        // primal F = b * sows
+        let mut rr = vec![T::zero(); n_states];
+        compiler.rhs(
+            T::zero(),
+            u0.as_slice(),
+            data.as_mut_slice(),
+            rr.as_mut_slice(),
+        );
+        assert_relative_eq!(rr[0], T::from_f64(6.85).unwrap());
+        assert_relative_eq!(rr[1], T::from_f64(3.425).unwrap());
+        assert_relative_eq!(rr[2], T::from_f64(1.7125).unwrap());
+
+        // forward-mode derivative wrt the input b: dF/db = sows
+        let mut ddata = compiler.get_new_data();
+        let dinputs = vec![T::one(); n_inputs];
+        compiler.set_inputs_grad(
+            inputs.as_slice(),
+            dinputs.as_slice(),
+            data.as_mut_slice(),
+            ddata.as_mut_slice(),
+            0,
+        );
+        let du0 = vec![T::zero(); n_states];
+        let mut drr = vec![T::zero(); n_states];
+        compiler.rhs_grad(
+            T::zero(),
+            u0.as_slice(),
+            du0.as_slice(),
+            data.as_mut_slice(),
+            ddata.as_mut_slice(),
+            rr.as_mut_slice(),
+            drr.as_mut_slice(),
+        );
+        assert_relative_eq!(drr[0], T::from_f64(100.0).unwrap());
+        assert_relative_eq!(drr[1], T::from_f64(50.0).unwrap());
+        assert_relative_eq!(drr[2], T::from_f64(25.0).unwrap());
+
+        // reverse-mode gradient must also compile and run without crashing; F has no
+        // dependence on u, so the adjoint wrt u is zero.
+        if compiler.supports_reverse_autodiff() {
+            let mut ddata_r = compiler.get_new_data();
+            let mut du = vec![T::zero(); n_states];
+            let mut drr_r = vec![T::one(); n_states];
+            compiler.rhs_rgrad(
+                T::zero(),
+                u0.as_slice(),
+                du.as_mut_slice(),
+                data.as_mut_slice(),
+                ddata_r.as_mut_slice(),
+                rr.as_mut_slice(),
+                drr_r.as_mut_slice(),
+            );
+            for v in du.iter() {
+                assert_relative_eq!(*v, T::zero());
+            }
+        }
     }
 }

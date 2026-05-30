@@ -447,18 +447,24 @@ impl<M: Module> CraneliftModule<M> {
         self.declare_function("set_inputs_grad")
     }
 
-    fn compile_set_constants(&mut self, model: &DiscreteModel) -> Result<FuncId> {
+    fn compile_set_constants(
+        &mut self,
+        model: &DiscreteModel,
+        constants_use_jit: bool,
+    ) -> Result<FuncId> {
         let arg_types = &[self.int_type, self.int_type];
         let arg_names = &["threadId", "threadDim"];
         {
             let mut codegen = CraneliftCodeGen::new(self, model, arg_names, arg_types);
 
-            let mut nbarrier = 0;
-            #[allow(clippy::explicit_counter_loop)]
-            for a in model.constant_defns() {
-                codegen.jit_compile_tensor(a, None, false)?;
-                codegen.jit_compile_call_barrier(nbarrier);
-                nbarrier += 1;
+            if constants_use_jit {
+                let mut nbarrier = 0;
+                #[allow(clippy::explicit_counter_loop)]
+                for a in model.constant_defns() {
+                    codegen.jit_compile_tensor(a, None, false)?;
+                    codegen.jit_compile_call_barrier(nbarrier);
+                    nbarrier += 1;
+                }
             }
             // Emit the return instruction.
             codegen.builder.ins().return_(&[]);
@@ -509,6 +515,7 @@ impl<M: Module> CraneliftModule<M> {
         threaded: bool,
         mut module: M,
         real_type: RealType,
+        constants_use_jit: bool,
     ) -> Result<Self> {
         let ptr_type = match triple.pointer_width().unwrap() {
             PointerWidth::U16 => types::I16,
@@ -547,7 +554,8 @@ impl<M: Module> CraneliftModule<M> {
         }
         let mut data_description = DataDescription::new();
         data_description.define(constants_bytes.into_boxed_slice());
-        let constants_id = module.declare_data("constants", Linkage::Local, true, false)?;
+        let constants_id =
+            module.declare_data("constants", Linkage::Local, constants_use_jit, false)?;
         module.define_data(constants_id, &data_description)?;
 
         // write indices data as a global data object
@@ -625,7 +633,7 @@ impl<M: Module> CraneliftModule<M> {
         let _get_dims = ret.compile_get_dims(model)?;
         let set_inputs = ret.compile_set_inputs(model)?;
         let _get_inputs = ret.compile_get_inputs(model)?;
-        let _set_constants = ret.compile_set_constants(model)?;
+        let _set_constants = ret.compile_set_constants(model, constants_use_jit)?;
         let tensor_info = ret
             .layout
             .tensors()
@@ -1148,7 +1156,14 @@ impl CodegenModuleCompile for CraneliftModule<ObjectModule> {
         let triple = triple.unwrap_or(Triple::host());
         let module = Self::new_object_backend(triple.clone())?;
 
-        Self::new(triple, model, threaded, module, real_type)
+        Self::new(
+            triple,
+            model,
+            threaded,
+            module,
+            real_type,
+            options.constants_use_jit,
+        )
     }
 }
 
@@ -1216,7 +1231,14 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
         }
 
         let module = JITModule::new(builder);
-        Self::new(triple, model, threaded, module, real_type)
+        Self::new(
+            triple,
+            model,
+            threaded,
+            module,
+            real_type,
+            options.constants_use_jit,
+        )
     }
 }
 

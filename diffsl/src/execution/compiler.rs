@@ -2875,7 +2875,7 @@ mod tests {
         state_and_const_grad2: "r_i { 3 * y, 2 * y }" expect "r" vec![3., 2.] ; vec![5.] ;  vec![0., 0.] ; vec![0.],
         state_and_const_grad3: "r_i { 2 * p, 3 }" expect "r" vec![2., 0.] ; vec![2.] ;  vec![2., 0.] ; vec![2.],
         state_and_const_grad4: "r_i { 3 * p, 2 * p }" expect "r" vec![3., 2.] ; vec![5.] ;  vec![3., 2.] ; vec![5.],
-
+        pow_zero_grad: "r { pow(y - p, p) }" expect "r" vec![0.] ; vec![0.] ; vec![-1.] ; vec![-1.],
     }
 
     macro_rules! tensor_test_big_state {

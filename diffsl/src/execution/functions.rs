@@ -315,7 +315,12 @@ extern "C" fn pow_f64(x: f64, y: f64) -> f64 {
     x.powf(y)
 }
 extern "C" fn dpow_f64(x: f64, dx: f64, y: f64, dy: f64) -> f64 {
-    x.powf(y - 1.0) * (y * dx + x * dx.ln() * dy)
+    let d_dy = if x == 0.0 {
+        0.0 // lim x→0+ x^y * ln(x) = 0 for y > 0, avoids NaN from 0 * (-inf)
+    } else {
+        x * x.ln() * dy
+    };
+    x.powf(y - 1.0) * (y * dx + d_dy)
 }
 
 extern "C" fn min_f64(x: f64, y: f64) -> f64 {
@@ -465,7 +470,12 @@ extern "C" fn pow_f32(x: f32, y: f32) -> f32 {
     x.powf(y)
 }
 extern "C" fn dpow_f32(x: f32, dx: f32, y: f32, dy: f32) -> f32 {
-    x.powf(y - 1.0) * (y * dx + x * dx.ln() * dy)
+    let d_dy = if x == 0.0 {
+        0.0 // lim x→0+ x^y * ln(x) = 0 for y > 0, avoids NaN from 0 * (-inf)
+    } else {
+        x * x.ln() * dy
+    };
+    x.powf(y - 1.0) * (y * dx + d_dy)
 }
 
 extern "C" fn min_f32(x: f32, y: f32) -> f32 {

@@ -7,7 +7,6 @@ use inkwell::builder::Builder;
 use inkwell::context::{AsContextRef, Context};
 use inkwell::debug_info::AsDIScope;
 use inkwell::debug_info::{DICompileUnit, DIFlags, DIFlagsConstants, DebugInfoBuilder};
-use inkwell::execution_engine::ExecutionEngine;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
@@ -21,7 +20,6 @@ use inkwell::values::{
 };
 use inkwell::{
     AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, GlobalVisibility, IntPredicate,
-    OptimizationLevel,
 };
 use llvm_sys::core::{
     LLVMBuildCall2, LLVMGetArgOperand, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
@@ -49,8 +47,9 @@ use crate::enzyme::{
 };
 use crate::execution::compiler::CompilerOptions;
 use crate::execution::module::{
-    CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit,
+    CodegenModule, CodegenModuleCompile, CodegenModuleEmit, CodegenModuleJit, CodegenModuleLink,
 };
+use crate::execution::object::ObjectModule;
 use crate::execution::scalar::RealType;
 use crate::execution::{DataLayout, Translation, TranslationFrom, TranslationTo};
 use lazy_static::lazy_static;
@@ -72,6 +71,7 @@ struct ImmovableLlvmModule {
 pub struct LlvmModule {
     inner: Pin<Box<ImmovableLlvmModule>>,
     machine: TargetMachine,
+    jit_module: Option<ObjectModule>,
 }
 
 unsafe impl Send for LlvmModule {}
@@ -124,6 +124,7 @@ impl LlvmModule {
                 _pin: std::marker::PhantomPinned,
             }),
             machine,
+            jit_module: None,
         };
 
         let context_ref = pinned.inner.context.as_ref();
@@ -743,26 +744,10 @@ impl CodegenModuleEmit for LlvmModule {
 }
 impl CodegenModuleJit for LlvmModule {
     fn jit(&mut self) -> Result<HashMap<String, *const u8>> {
-        let ee = self
-            .codegen()
-            .module()
-            .create_jit_execution_engine(OptimizationLevel::Default)
-            .map_err(|e| anyhow!("Failed to create JIT execution engine: {:?}", e))?;
-
-        //let path = "jit_module.ll";
-        //self.codegen()
-        //    .module()
-        //    .print_to_file(path)
-        //    .map_err(|e| anyhow!("Failed to print module to file: {:?}", e))?;
-        let module = self.codegen().module();
-        let mut symbols = HashMap::new();
-        for function in module.get_functions() {
-            let name = function.get_name().to_str().unwrap();
-            let address = ee.get_function_address(name);
-            if let Ok(address) = address {
-                symbols.insert(name.to_string(), address as *const u8);
-            }
-        }
+        let object = self.to_object()?;
+        let mut jit_module = ObjectModule::from_object(&object)?;
+        let symbols = jit_module.jit()?;
+        self.jit_module = Some(jit_module);
         Ok(symbols)
     }
 }
@@ -895,7 +880,6 @@ pub struct CodeGen<'ctx> {
     layout: DataLayout,
     globals: Globals<'ctx>,
     threaded: bool,
-    _ee: Option<ExecutionEngine<'ctx>>,
 }
 
 unsafe extern "C" fn fwd_handler(
@@ -1018,7 +1002,6 @@ impl<'ctx> CodeGen<'ctx> {
             ptr_size_bits,
             real_size_bits,
             int_size_bits,
-            _ee: None,
         };
         if threaded {
             ret.compile_barrier_init()?;

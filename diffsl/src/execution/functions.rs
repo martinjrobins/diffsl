@@ -171,14 +171,21 @@ pub fn function_resolver(name: &str) -> Option<*const u8> {
 /// Apache License 2.0, see https://github.com/bytecodealliance/wasmtime/blob/ee275a899a47adb14031aebc660580378cc2dc06/LICENSE#L1
 #[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32"),))]
 fn lookup_with_dlsym(name: &str) -> Option<*const u8> {
-    let c_str = std::ffi::CString::new(name).unwrap();
-    let c_str_ptr = c_str.as_ptr();
-    let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_str_ptr) };
-    if sym.is_null() {
-        None
-    } else {
-        Some(sym as *const u8)
-    }
+    let dlsym = |name: &str| -> Option<*const u8> {
+        let c_str = std::ffi::CString::new(name).unwrap();
+        let c_str_ptr = c_str.as_ptr();
+        let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_str_ptr) };
+        if sym.is_null() {
+            None
+        } else {
+            Some(sym as *const u8)
+        }
+    };
+
+    // On Mach-O (macOS) C symbol names carry a leading underscore (e.g. `_logf`),
+    // but `dlsym` expects the name without it. Try the name as-is first, then retry
+    // with a single leading underscore stripped.
+    dlsym(name).or_else(|| name.strip_prefix('_').and_then(dlsym))
 }
 
 #[cfg(target_arch = "wasm32")]

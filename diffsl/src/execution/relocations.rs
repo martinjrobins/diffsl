@@ -125,10 +125,16 @@ pub(crate) fn relocation_target_section<'file, 'data>(
 }
 
 pub(crate) fn is_jump_table_entry(file: &File<'_>, rela: &Relocation) -> bool {
-    // any relocation that is not a local symbol and with a size smaller than the
+    // any relocation for an external symbol (no section) with a size smaller than the
     // architecture's pointer size is a jump table entry
-    relocation_target_section(file, rela).is_none()
-        && (rela.size() < u8::try_from(std::mem::size_of::<usize>() * 8).unwrap())
+    match rela.target() {
+        RelocationTarget::Symbol(symbol_index) => {
+            let symbol = file.symbol_by_index(symbol_index).unwrap();
+            symbol.section_index().is_none()
+                && (rela.size() < u8::try_from(std::mem::size_of::<usize>() * 8).unwrap())
+        }
+        _ => false,
+    }
 }
 
 fn handle_relocation_generic_x86(rela: &Relocation, s: *const u8, p: *mut u8) -> Result<()> {
@@ -398,29 +404,35 @@ pub(crate) fn handle_relocation(
     p: *mut u8,
     mapped_sections: &HashMap<String, MappedSection>,
 ) -> Result<()> {
-    let symbol_index = match rela.target() {
-        RelocationTarget::Symbol(s) => s,
-        _ => Err(anyhow!(
-            "Only relocation targets that are symbols are supported"
-        ))?,
-    };
-    let symbol = file.symbol_by_index(symbol_index).unwrap();
-    let s = match symbol.section_index() {
-        Some(section_index) => {
+    let s = match rela.target() {
+        RelocationTarget::Symbol(symbol_index) => {
+            let symbol = file.symbol_by_index(symbol_index).unwrap();
+            match symbol.section_index() {
+                Some(section_index) => {
+                    let section = file.section_by_index(section_index).unwrap();
+                    let section_name = section.name().expect("Could not get section name");
+                    let section_ptr = mapped_sections[section_name].as_ptr();
+                    let offset = symbol_offset(file, &symbol, &section)?;
+                    unsafe { section_ptr.offset(offset) }
+                }
+                None => {
+                    // must be an external function call generate the jump table entry
+                    // return an Err if the function is not found
+                    function_resolver(symbol.name().unwrap()).ok_or(anyhow!(
+                        "Could not resolve function {}",
+                        symbol.name().unwrap()
+                    ))?
+                }
+            }
+        }
+        RelocationTarget::Section(section_index) => {
             let section = file.section_by_index(section_index).unwrap();
-            let section_name = section.name().expect("Could not get section name");
-            let section_ptr = mapped_sections[section_name].as_ptr();
-            let offset = symbol_offset(file, &symbol, &section)?;
-            unsafe { section_ptr.offset(offset) }
+            let section_name = section.name().unwrap();
+            mapped_sections[section_name].as_ptr()
         }
-        None => {
-            // must be an external function call generate the jump table entry
-            // return an Err if the function is not found
-            function_resolver(symbol.name().unwrap()).ok_or(anyhow!(
-                "Could not resolve function {}",
-                symbol.name().unwrap()
-            ))?
-        }
+        _ => Err(anyhow!(
+            "Only relocation targets that are symbols or sections are supported"
+        ))?,
     };
     relocation(rela, s, p)
 }

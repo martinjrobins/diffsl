@@ -180,6 +180,13 @@ jobs:
     - name: Setup tmate session
       uses: mxschmitt/action-tmate@v3
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+    - name: Workaround missing libcurses.tbd on macOS
+      if : matrix.os == 'macos-latest' && matrix.llvm != ''
+      run: |
+        SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
+        if [ ! -f "$SDK_PATH/usr/lib/libcurses.tbd" ] && [ -f "$SDK_PATH/usr/lib/libncurses.tbd" ]; then
+          sudo ln -sf libncurses.tbd "$SDK_PATH/usr/lib/libcurses.tbd"
+        fi
     - name: Run tests (LLVM)
       if : matrix.tests && matrix.llvm != ''
       run: cargo test --verbose --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"

@@ -1054,6 +1054,37 @@ impl<'s> DiscreteModel<'s> {
         self.reset.as_ref()
     }
 
+    pub fn all_tensors(&self) -> Vec<&Tensor<'_>> {
+        let mut tensors = Vec::new();
+        tensors.extend(self.constant_defns.iter());
+        tensors.extend(self.input_dep_defns.iter());
+        tensors.extend(self.time_dep_defns.iter());
+        tensors.extend(self.state_dep_defns.iter());
+        tensors.extend(self.state_dep_post_f_defns.iter());
+        tensors.extend(self.dstate_dep_defns.iter());
+        tensors.push(&self.state);
+        if let Some(sd) = &self.state_dot {
+            tensors.push(sd);
+        }
+        if let Some(inp) = &self.input {
+            tensors.push(inp);
+        }
+        if let Some(lhs) = &self.lhs {
+            tensors.push(lhs);
+        }
+        tensors.push(&self.rhs);
+        if let Some(out) = &self.out {
+            tensors.push(out);
+        }
+        if let Some(reset) = &self.reset {
+            tensors.push(reset);
+        }
+        if let Some(stop) = &self.stop {
+            tensors.push(stop);
+        }
+        tensors
+    }
+
     pub fn take_state0_input_deps(&mut self) -> Vec<(usize, usize)> {
         std::mem::take(&mut self.state0_input_deps)
     }
@@ -2026,7 +2057,7 @@ mod tests {
         );
         assert!(c.elmts()[0].has_values());
 
-        let layout = DataLayout::new(&model);
+        let layout = DataLayout::new(&model).unwrap();
         assert_eq!(layout.get_tensor_constants("C").unwrap(), &[2.0, 5.0]);
     }
 
@@ -2148,5 +2179,85 @@ mod tests {
                 "expected sparse import constness error for {dependency} tensor in '{message}'"
             );
         }
+    }
+
+    #[test]
+    fn test_interp1d_basic() {
+        let text = "
+            xs_i { 0.0, 10.0, 20.0 }
+            ys_i { 1.0, 5.0, 15.0 }
+            u_i { z = 1 }
+            F_i { interp1d(xs_i, ys_i, 5.0) }
+        ";
+        let model = parse_ds_string(text).unwrap();
+        let discrete = DiscreteModel::build("$name", &model).unwrap();
+        assert_eq!(discrete.constant_defns().len(), 2); // xs and ys are constants
+        assert_eq!(discrete.rhs.elmts().len(), 1);
+    }
+
+    #[test]
+    fn test_interp1d_batched() {
+        let text = "
+            xs_i { 0.0, 10.0, 20.0 }
+            ys_i { 1.0, 5.0, 15.0 }
+            q_j { 0.0, 15.0 }
+            u_j { z = 1, w = 1 }
+            F_j { interp1d(xs_i, ys_i, q_j) }
+        ";
+        let model = parse_ds_string(text).unwrap();
+        let discrete = DiscreteModel::build("$name", &model).unwrap();
+        assert_eq!(discrete.rhs.elmts().len(), 1);
+        assert_eq!(discrete.state.elmts().len(), 2);
+    }
+
+    #[test]
+    fn test_interp1d_sortedness_error() {
+        let text = "
+            xs_i { 10.0, 0.0, 20.0 }
+            ys_i { 1.0, 5.0, 15.0 }
+            u_i { z = 1 }
+            F_i { interp1d(xs_i, ys_i, 5.0) }
+        ";
+        let model = parse_ds_string(text).unwrap();
+        let discrete = DiscreteModel::build("$name", &model).unwrap();
+        let err = DataLayout::new(&discrete).unwrap_err();
+        assert!(
+            err.has_error_contains("strictly increasing"),
+            "expected sortedness error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_interp1d_nonconstant_x() {
+        let text = "
+            in { a = 1 }
+            u_i { z = 1 }
+            F_i { interp1d(u_i, u_i, 5.0) }
+        ";
+        let model = parse_ds_string(text).unwrap();
+        let err = DiscreteModel::build("$name", &model).unwrap_err();
+        assert!(
+            err.has_error_contains("compile-time constant"),
+            "expected constant error in: {}",
+            err.as_error_message(text)
+        );
+    }
+
+    #[test]
+    fn test_interp1d_shape_mismatch() {
+        let text = "
+            xs_i { 0.0, 10.0, 20.0 }
+            ys_j { 1.0, 5.0 }
+            u_i { z = 1 }
+            F_i { interp1d(xs_i, ys_j, 5.0) }
+        ";
+        let model = parse_ds_string(text).unwrap();
+        let err = DiscreteModel::build("$name", &model).unwrap_err();
+        assert!(
+            err.has_error_contains("cannot find index j"),
+            "expected index mismatch error in: {}",
+            err.as_error_message(text)
+        );
     }
 }

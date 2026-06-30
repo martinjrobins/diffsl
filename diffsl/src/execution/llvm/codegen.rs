@@ -35,7 +35,7 @@ use std::iter::zip;
 use std::pin::Pin;
 use target_lexicon::Triple;
 
-use crate::ast::{Ast, AstKind};
+use crate::ast::{Ast, AstKind, StringSpan};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
 use crate::enzyme::{
     CConcreteType_DT_Anything, CConcreteType_DT_Double, CConcreteType_DT_Float,
@@ -963,7 +963,7 @@ impl<'ctx> CodeGen<'ctx> {
         constants_use_jit: bool,
     ) -> Result<Self> {
         let builder = context.create_builder();
-        let layout = DataLayout::new(model);
+        let layout = DataLayout::new(model)?;
         let module = context.create_module(model.name());
         let (dibuilder, compile_unit) = if debug {
             let (dib, dic) = module.create_debug_info_builder(
@@ -1962,6 +1962,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.builder.build_return(Some(&result)).ok();
                 Some(fn_val)
             }
+            "interp1d_impl" => self.compile_interp1d_impl(name).ok()?,
             _ => None,
         }?;
 
@@ -1978,6 +1979,157 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.functions.insert(name.to_owned(), function);
         Some(function)
+    }
+
+    /// Compile a shared helper for piecewise-linear interpolation on arbitrary
+    /// (non-uniform) x/y data.  One caller per query point; takes the base
+    /// pointer into the constants array, the element offsets of x and y, the
+    /// number of entries, and the query value `q`.
+    ///
+    /// The generated function body performs a classic binary search:
+    ///
+    /// * Clamp `q` to `[x[0], x[n-1]]`.
+    /// * Loop block with `lo`/`hi` phis (initial `(0, n-1)`):
+    ///     mid = (lo + hi + 1) // 2
+    ///     if x[mid] <= q → lo = mid  else  hi = mid - 1
+    /// * Exit block: clamp index, load `x[k], x[k+1], y[k], y[k+1]`, blend.
+    ///
+    /// Enzyme can auto-diff through the generated branches and arithmetic.
+    fn compile_interp1d_impl(&mut self, name: &str) -> Result<FunctionValue<'ctx>> {
+        let ret_type = self.real_type;
+        let args_types = vec![
+            self.real_ptr_type.into(), // constants ptr
+            self.int_type.into(),      // x_off
+            self.int_type.into(),      // y_off
+            self.int_type.into(),      // n
+            ret_type.into(),           // q
+        ];
+        let fn_val = self.add_function(
+            name,
+            &["constants", "x_off", "y_off", "n", "q"],
+            &args_types,
+            None,
+            true,
+        );
+
+        let entry = self.start_function(fn_val, None);
+        let constants_ptr = fn_val.get_nth_param(0)?.into_pointer_value();
+        let x_off = fn_val.get_nth_param(1)?.into_int_value();
+        let y_off = fn_val.get_nth_param(2)?.into_int_value();
+        let n_val = fn_val.get_nth_param(3)?.into_int_value();
+        let q = fn_val.get_nth_param(4)?.into_float_value();
+
+        // --- clamp q to [x[0], x[n-1]] ---
+        let x0_ptr = self.build_gep(self.real_type, constants_ptr, &[x_off], "x0_ptr")?;
+        let x0 = self
+            .build_load(self.real_type, x0_ptr, "x0")?
+            .into_float_value();
+        let one = self.int_type.const_int(1, false);
+        let nm1 = self.builder.build_int_sub(n_val, one, "nm1")?;
+        let xn_off = self.builder.build_int_add(x_off, nm1, "xn_off")?;
+        let xn_ptr = self.build_gep(self.real_type, constants_ptr, &[xn_off], "xn_ptr")?;
+        let xn = self
+            .build_load(self.real_type, xn_ptr, "xn")?
+            .into_float_value();
+        let q = self.builder.build_float_min(q, xn, "q_min")?;
+        let q = self.builder.build_float_max(q, x0, "q_max")?;
+
+        // --- binary search loop: while lo < hi ---
+        let loop_block = self.context.append_basic_block(fn_val, "loop");
+        let exit_block = self.context.append_basic_block(fn_val, "exit");
+        self.builder.build_unconditional_branch(loop_block)?;
+        self.builder.position_at_end(loop_block);
+
+        let lo = self.builder.build_phi(self.int_type, "lo")?;
+        let hi = self.builder.build_phi(self.int_type, "hi")?;
+        let zero = self.int_type.const_zero();
+        let nm2 = self
+            .builder
+            .build_int_sub(n_val, self.int_type.const_int(2, false), "nm2")?;
+        lo.add_incoming(&[(&zero, entry)]);
+        hi.add_incoming(&[(&nm1, entry)]);
+
+        let lo_v = lo.as_basic_value().into_int_value();
+        let hi_v = hi.as_basic_value().into_int_value();
+        let cmp = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, lo_v, hi_v, "cmp")?;
+        let body_block = self.context.append_basic_block(fn_val, "body");
+        self.builder
+            .build_conditional_branch(cmp, body_block, exit_block)?;
+
+        // body: mid = (lo + hi + 1) // 2, compare x[mid] with q
+        self.builder.position_at_end(body_block);
+        let sum = self.builder.build_int_add(lo_v, hi_v, "sum")?;
+        let sum1 = self.builder.build_int_add(sum, one, "sum1")?;
+        let two = self.int_type.const_int(2, false);
+        let mid = self.builder.build_int_unsigned_div(sum1, two, "mid")?;
+        let x_mid_off = self.builder.build_int_add(x_off, mid, "x_mid_off")?;
+        let x_mid_ptr = self.build_gep(self.real_type, constants_ptr, &[x_mid_off], "x_mid_ptr")?;
+        let x_mid = self
+            .build_load(self.real_type, x_mid_ptr, "x_mid")?
+            .into_float_value();
+        let x_le_q = self
+            .builder
+            .build_float_compare(FloatPredicate::OLE, x_mid, q, "x_le_q")?;
+        let mid_m1 = self.builder.build_int_sub(mid, one, "mid_m1")?;
+        let new_lo = self
+            .builder
+            .build_select(x_le_q, mid, lo_v, "new_lo")?
+            .into_int_value();
+        let new_hi = self
+            .builder
+            .build_select(x_le_q, hi_v, mid_m1, "new_hi")?
+            .into_int_value();
+
+        // branch back to loop with updated lo/hi
+        self.builder.build_unconditional_branch(loop_block)?;
+        lo.add_incoming(&[(&new_lo, body_block)]);
+        hi.add_incoming(&[(&new_hi, body_block)]);
+
+        // --- exit: clamp k, load bracket values, blend ---
+        self.builder.position_at_end(exit_block);
+        let k_raw = lo.as_basic_value().into_int_value();
+        let k_gt = self
+            .builder
+            .build_int_compare(IntPredicate::SGT, k_raw, nm2, "k_gt")?;
+        let k = self
+            .builder
+            .build_select(k_gt, nm2, k_raw, "k")?
+            .into_int_value();
+        let kp1 = self.builder.build_int_add(k, one, "kp1")?;
+
+        let xk_off = self.builder.build_int_add(x_off, k, "xk_off")?;
+        let xk1_off = self.builder.build_int_add(x_off, kp1, "xk1_off")?;
+        let yk_off = self.builder.build_int_add(y_off, k, "yk_off")?;
+        let yk1_off = self.builder.build_int_add(y_off, kp1, "yk1_off")?;
+
+        let xk_ptr = self.build_gep(self.real_type, constants_ptr, &[xk_off], "xk_ptr")?;
+        let xk = self
+            .build_load(self.real_type, xk_ptr, "xk")?
+            .into_float_value();
+        let xk1_ptr = self.build_gep(self.real_type, constants_ptr, &[xk1_off], "xk1_ptr")?;
+        let xk1 = self
+            .build_load(self.real_type, xk1_ptr, "xk1")?
+            .into_float_value();
+        let yk_ptr = self.build_gep(self.real_type, constants_ptr, &[yk_off], "yk_ptr")?;
+        let yk = self
+            .build_load(self.real_type, yk_ptr, "yk")?
+            .into_float_value();
+        let yk1_ptr = self.build_gep(self.real_type, constants_ptr, &[yk1_off], "yk1_ptr")?;
+        let yk1 = self
+            .build_load(self.real_type, yk1_ptr, "yk1")?
+            .into_float_value();
+
+        let dx = self.builder.build_float_sub(xk1, xk, "dx")?;
+        let dq = self.builder.build_float_sub(q, xk, "dq")?;
+        let t = self.builder.build_float_div(dq, dx, "t")?;
+        let dy = self.builder.build_float_sub(yk1, yk, "dy")?;
+        let tdy = self.builder.build_float_mul(t, dy, "tdy")?;
+        let result = self.builder.build_float_add(yk, tdy, name)?;
+
+        self.builder.build_return(Some(&result)).ok();
+        Ok(fn_val)
     }
 
     /// Returns the `FunctionValue` representing the function being compiled.
@@ -2857,6 +3009,9 @@ impl<'ctx> CodeGen<'ctx> {
                     unknown => Err(anyhow!("unknown monop op '{}'", unknown)),
                 }
             }
+            AstKind::Call(call) if call.fn_name == "interp1d" => {
+                self.jit_compile_interp1d(name, call, index, elmt, expr_index, expr.span)
+            }
             AstKind::Call(call) => match self.get_function(call.fn_name) {
                 Some(function) => {
                     let mut args: Vec<BasicMetadataValueEnum> = Vec::new();
@@ -3086,6 +3241,134 @@ impl<'ctx> CodeGen<'ctx> {
             AstKind::Integer(_) => todo!(),
             _ => panic!("unexprected astkind"),
         }
+    }
+
+    fn jit_compile_interp1d(
+        &mut self,
+        name: &str,
+        call: &crate::ast::Call,
+        index: &[IntValue<'ctx>],
+        elmt: &TensorBlock,
+        expr_index: IntValue<'ctx>,
+        span: Option<StringSpan>,
+    ) -> Result<FloatValue<'ctx>> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if call.is_tangent {
+            // tangent has doubled args: take original (x, y, q) at indices 0, 2, 4
+            std::hash::Hash::hash(&format!("{:?}", &call.args[0]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", &call.args[2]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", &call.args[4]), &mut hasher);
+        } else {
+            std::hash::Hash::hash(&format!("{:?}", &call.args[0]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", &call.args[1]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", &call.args[2]), &mut hasher);
+        }
+        let hash_key = std::hash::Hasher::finish(&hasher);
+        let info = self
+            .layout
+            .get_interp1d_info(span.as_ref(), hash_key)
+            .ok_or_else(|| anyhow!("interp1d: no precomputed data for this call"))?;
+
+        let n = info.n;
+
+        let q = self.jit_compile_expr(name, &call.args[2], index, elmt, expr_index)?;
+
+        if let Some(dx) = info.dx {
+            // --- uniform path: O(1) per element ---
+            let constants_slice = self.layout.constants();
+            let x_first = self.real_type.const_float(constants_slice[info.x_offset]);
+            let x_last = self
+                .real_type
+                .const_float(constants_slice[info.x_offset + n - 1]);
+            let q = self.builder.build_float_min(q, x_last, "q_min")?;
+            let q = self.builder.build_float_max(q, x_first, "q_max")?;
+
+            let dx_const = self.real_type.const_float(dx);
+            let q_minus_x0 = self.builder.build_float_sub(q, x_first, "dq")?;
+            let k_float = self.builder.build_float_div(q_minus_x0, dx_const, "kf")?;
+            let k = self
+                .builder
+                .build_float_to_signed_int(k_float, self.int_type, "k")?;
+
+            let zero = self.int_type.const_zero();
+            let nm2 = self.int_type.const_int((n - 2) as u64, false);
+            let k_lt_0 = self
+                .builder
+                .build_int_compare(IntPredicate::SLT, k, zero, "k_lt_0")?;
+            let k = self
+                .builder
+                .build_select(k_lt_0, zero, k, "k_clamp_lo")?
+                .into_int_value();
+            let k_gt = self
+                .builder
+                .build_int_compare(IntPredicate::SGT, k, nm2, "k_gt")?;
+            let k = self
+                .builder
+                .build_select(k_gt, nm2, k, "k_clamp_hi")?
+                .into_int_value();
+
+            let constants_ptr = if let Some(g) = self.globals.constants {
+                self.builder.build_pointer_cast(
+                    g.as_pointer_value(),
+                    self.real_ptr_type,
+                    "constants_ptr",
+                )?
+            } else {
+                return Err(anyhow!("constants global not available"));
+            };
+
+            let y_off = self.int_type.const_int(info.y_offset as u64, false);
+            let one = self.int_type.const_int(1, false);
+            let yk_off = self.builder.build_int_add(y_off, k, "yk_off")?;
+            let yk1_off = self.builder.build_int_add(yk_off, one, "yk1_off")?;
+
+            let yk_ptr = self.build_gep(self.real_type, constants_ptr, &[yk_off], "yk_ptr")?;
+            let yk = self
+                .build_load(self.real_type, yk_ptr, "yk")?
+                .into_float_value();
+            let yk1_ptr = self.build_gep(self.real_type, constants_ptr, &[yk1_off], "yk1_ptr")?;
+            let yk1 = self
+                .build_load(self.real_type, yk1_ptr, "yk1")?
+                .into_float_value();
+
+            let k_float2 = self
+                .builder
+                .build_signed_int_to_float(k, self.real_type, "kf2")?;
+            let t = self.builder.build_float_sub(k_float, k_float2, "t")?;
+            let dy = self.builder.build_float_sub(yk1, yk, "dy")?;
+            let tdy = self.builder.build_float_mul(t, dy, "tdy")?;
+            return Ok(self.builder.build_float_add(yk, tdy, "r")?);
+        }
+
+        // --- non-uniform path: call shared interp1d_impl helper ---
+        let function = self
+            .get_function("interp1d_impl")
+            .ok_or_else(|| anyhow!("interp1d_impl not compiled"))?;
+
+        let constants_ptr = if let Some(g) = self.globals.constants {
+            self.builder.build_pointer_cast(
+                g.as_pointer_value(),
+                self.real_ptr_type,
+                "constants_ptr",
+            )?
+        } else {
+            return Err(anyhow!("constants global not available"));
+        };
+
+        let args: Vec<BasicMetadataValueEnum> = vec![
+            constants_ptr.into(),
+            self.int_type.const_int(info.x_offset as u64, false).into(),
+            self.int_type.const_int(info.y_offset as u64, false).into(),
+            self.int_type.const_int(info.n as u64, false).into(),
+            q.into(),
+        ];
+        let ret = self
+            .builder
+            .build_call(function, &args, name)?
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_float_value();
+        Ok(ret)
     }
 
     fn jit_compile_integer_expr(&mut self, expr: &Ast, name: &str) -> Result<IntValue<'ctx>> {

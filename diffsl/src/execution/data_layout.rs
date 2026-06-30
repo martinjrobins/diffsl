@@ -1,10 +1,15 @@
-use std::{cmp::min, collections::HashMap};
+use std::cmp::min;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use log::debug;
 
 use crate::{
-    ast::{Ast, AstKind, Name},
-    discretise::{ArcLayout, DiscreteModel, Index, Layout, Tensor, TensorBlock},
+    ast::{Ast, AstKind, Name, StringSpan},
+    discretise::{
+        ArcLayout, DiscreteModel, Index, Layout, Tensor, TensorBlock, ValidationError,
+        ValidationErrors,
+    },
 };
 
 use super::{Translation, TranslationFrom};
@@ -17,6 +22,19 @@ use super::{Translation, TranslationFrom};
 // 3. the translation layout is a mapping from layout from-to pairs to the index of the first element in the indices array.
 //    Each contraction pair is an array of nnz-from elements, each representing the indices of the "to" tensor that will be summed into.
 // We also store a mapping from tensor names to their layout, so that we can easily look up the layout of a tensor
+
+/// Metadata for a single interp1d call, populated after constant evaluation.
+#[derive(Debug, Clone)]
+pub struct Interp1dInfo {
+    pub x_offset: usize,
+    pub y_offset: usize,
+    pub n: usize,
+    /// If the x values are uniformly spaced, this is the increment.
+    pub dx: Option<f64>,
+    /// Hash of the Call AST for fallback lookup when span is unavailable.
+    pub hash_key: u64,
+}
+
 #[derive(Debug)]
 pub struct DataLayout {
     is_constant_map: HashMap<String, bool>,
@@ -30,10 +48,12 @@ pub struct DataLayout {
     indices: Vec<i32>,
     layout_map: HashMap<String, ArcLayout>,
     named_data_index_map: HashMap<String, usize>,
+    interp1d_map: HashMap<StringSpan, Interp1dInfo>,
+    interp1d_hash_map: HashMap<u64, Interp1dInfo>,
 }
 
 impl DataLayout {
-    pub fn new(model: &DiscreteModel) -> Self {
+    pub fn new(model: &DiscreteModel) -> Result<Self, ValidationErrors> {
         let mut is_constant_map = HashMap::new();
         let mut data_index_map = HashMap::new();
         let mut data_length_map = HashMap::new();
@@ -222,6 +242,8 @@ impl DataLayout {
             constants,
             binary_layout_index_map,
             named_data_index_map,
+            interp1d_map: HashMap::new(),
+            interp1d_hash_map: HashMap::new(),
         };
 
         for tensor in model.constant_defns() {
@@ -230,7 +252,141 @@ impl DataLayout {
             }
         }
 
-        ret
+        let errors = ret.verify_interp1d_sortedness(model);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        Ok(ret)
+    }
+
+    fn find_interp1d_calls<'a>(
+        expr: &'a Ast,
+        f: &mut impl FnMut(&'a crate::ast::Call<'a>, Option<StringSpan>),
+    ) {
+        match &expr.kind {
+            AstKind::Call(call) => {
+                if call.fn_name == "interp1d" {
+                    f(call, expr.span);
+                }
+                for arg in &call.args {
+                    Self::find_interp1d_calls(arg, f);
+                }
+            }
+            AstKind::CallArg(arg) => Self::find_interp1d_calls(&arg.expression, f),
+            AstKind::Binop(binop) => {
+                Self::find_interp1d_calls(&binop.left, f);
+                Self::find_interp1d_calls(&binop.right, f);
+            }
+            AstKind::Monop(monop) => Self::find_interp1d_calls(&monop.child, f),
+            AstKind::Assignment(a) => Self::find_interp1d_calls(&a.expr, f),
+            _ => {}
+        }
+    }
+
+    fn evaluate_interp1d_arg(&self, arg: &Ast) -> Vec<f64> {
+        // determine the length n from the expression's dependent constant tensors
+        let deps = arg.get_dependents();
+        let n = deps
+            .iter()
+            .find_map(|name| self.data_length_map.get(*name).copied())
+            .unwrap_or_else(|| panic!("interp1d: cannot determine length of arg"));
+
+        // clone the arg so we can own it in a TensorBlock
+        let expr = arg.clone();
+        let blk = TensorBlock::new_dense_vector(None, 0, n, expr);
+
+        blk.expr_layout()
+            .indices()
+            .enumerate()
+            .map(|(expr_index, index)| {
+                self.evaluate_constant_expr(blk.expr(), &blk, expr_index, &index)
+            })
+            .collect()
+    }
+
+    fn verify_interp1d_sortedness(&mut self, model: &DiscreteModel) -> ValidationErrors {
+        let mut errors = ValidationErrors::default();
+
+        for tensor in model.all_tensors() {
+            for blk in tensor.elmts() {
+                Self::find_interp1d_calls(blk.expr(), &mut |call, span| {
+                    let x_vals = self.evaluate_interp1d_arg(&call.args[0]);
+                    let y_vals = self.evaluate_interp1d_arg(&call.args[1]);
+
+                    if x_vals.len() != y_vals.len() {
+                        errors.push(ValidationError::new(
+                            "interp1d: x and y must have the same length".to_string(),
+                            span,
+                        ));
+                        return;
+                    }
+                    if let Some(w) = x_vals.windows(2).find(|w| w[0] >= w[1]) {
+                        errors.push(ValidationError::new(
+                            format!(
+                                "interp1d: x must be strictly increasing, found non-increasing pair ({}, {})",
+                                w[0], w[1]
+                            ),
+                            span,
+                        ));
+                        return;
+                    }
+
+                    let dx = if x_vals.len() >= 2 {
+                        let d = x_vals[1] - x_vals[0];
+                        let tol = 1e-12 * d.abs().max(1.0);
+                        if x_vals.windows(2).all(|w| (w[1] - w[0] - d).abs() < tol) {
+                            Some(d)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let n = x_vals.len();
+                    let x_offset = self.constants.len();
+                    self.constants.extend_from_slice(&x_vals);
+                    let y_offset = self.constants.len();
+                    self.constants.extend_from_slice(&y_vals);
+
+                    // deterministic hash from the call args (x, y, q)
+                    // — must match codegen; only hash base args, never the full Call
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    format!("{:?}", &call.args[0]).hash(&mut hasher);
+                    format!("{:?}", &call.args[1]).hash(&mut hasher);
+                    format!("{:?}", &call.args[2]).hash(&mut hasher);
+                    let hash_key = hasher.finish();
+
+                    let info = Interp1dInfo {
+                        x_offset,
+                        y_offset,
+                        n,
+                        dx,
+                        hash_key,
+                    };
+                    if let Some(s) = span {
+                        self.interp1d_map.insert(s, info.clone());
+                    }
+                    self.interp1d_hash_map.insert(hash_key, info);
+                });
+            }
+        }
+
+        errors
+    }
+
+    pub fn get_interp1d_info(
+        &self,
+        span: Option<&StringSpan>,
+        hash_key: u64,
+    ) -> Option<&Interp1dInfo> {
+        if let Some(s) = span {
+            if let Some(info) = self.interp1d_map.get(s) {
+                return Some(info);
+            }
+        }
+        self.interp1d_hash_map.get(&hash_key)
     }
 
     fn evaluate_constant_block(&mut self, tensor: &Tensor, blk: &TensorBlock) {
@@ -342,6 +498,26 @@ impl DataLayout {
                     '-' => -child,
                     unknown => panic!("unknown constant unary op '{unknown}'"),
                 }
+            }
+            AstKind::Call(call) if call.fn_name == "interp1d" => {
+                let q = self.evaluate_constant_expr(&call.args[2], blk, expr_index, index);
+                let x_vals = self.evaluate_interp1d_arg(&call.args[0]);
+                let y_vals = self.evaluate_interp1d_arg(&call.args[1]);
+                let n = x_vals.len();
+                let qc = q.clamp(x_vals[0], x_vals[n - 1]);
+                let mut lo = 0usize;
+                let mut hi = n - 1;
+                while lo < hi {
+                    let mid = (lo + hi + 1) / 2;
+                    if x_vals[mid] <= qc {
+                        lo = mid;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+                let k = lo.min(n - 2);
+                let t = (qc - x_vals[k]) / (x_vals[k + 1] - x_vals[k]);
+                y_vals[k] + t * (y_vals[k + 1] - y_vals[k])
             }
             AstKind::Call(call) => {
                 let args = call
@@ -725,7 +901,7 @@ mod tests {
                     Ok(model) => model,
                     Err(e) => panic!("{}", e.as_error_message(full_text.as_str())),
                 };
-                let layout = DataLayout::new(&discrete_model);
+                let layout = DataLayout::new(&discrete_model).unwrap();
                 let expected: Vec<f64> = $expected_value;
                 assert_relative_eq!(
                     layout.get_tensor_constants($tensor_name).unwrap(),
@@ -761,7 +937,7 @@ mod tests {
                     Ok(model) => model,
                     Err(e) => panic!("{}", e.as_error_message(full_text.as_str())),
                 };
-                let _layout = DataLayout::new(&discrete_model);
+                let _layout = DataLayout::new(&discrete_model).unwrap();
             }
         )*
         }
@@ -791,7 +967,7 @@ mod tests {
                     Ok(model) => model,
                     Err(e) => panic!("{}", e.as_error_message(full_text.as_str())),
                 };
-                let mut layout = DataLayout::new(&discrete_model);
+                let mut layout = DataLayout::new(&discrete_model).unwrap();
                 let tensor = &discrete_model.$getter()[0];
                 let blk = &tensor.elmts()[0];
                 layout.evaluate_constant_block(tensor, blk);
@@ -864,11 +1040,50 @@ mod tests {
             Ok(model) => model,
             Err(e) => panic!("{}", e.as_error_message(full_text.as_str())),
         };
-        let layout = DataLayout::new(&discrete_model);
+        let layout = DataLayout::new(&discrete_model).unwrap();
         assert_relative_eq!(
             layout.get_tensor_constants("C").unwrap(),
             &[2.0, 5.0][..],
             epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn test_interp1d_sorted_x() {
+        let full_text = "
+            xs_i { 0.0, 10.0, 20.0 }
+            ys_i { 1.0, 5.0, 15.0 }
+            u_i { z = 1 }
+            F_i { z }
+            r { interp1d(xs_i, ys_i, t) }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = match DiscreteModel::build("$name", &model) {
+            Ok(model) => model,
+            Err(e) => panic!("{}", e.as_error_message(full_text)),
+        };
+        DataLayout::new(&discrete_model).unwrap();
+    }
+
+    #[test]
+    fn test_interp1d_unsorted_x_error() {
+        let full_text = "
+            xs_i { 10.0, 0.0, 20.0 }
+            ys_i { 1.0, 5.0, 15.0 }
+            u_i { z = 1 }
+            F_i { z }
+            r { interp1d(xs_i, ys_i, t) }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let discrete_model = match DiscreteModel::build("$name", &model) {
+            Ok(model) => model,
+            Err(e) => panic!("{}", e.as_error_message(full_text)),
+        };
+        let err = DataLayout::new(&discrete_model).unwrap_err();
+        assert!(
+            err.has_error_contains("strictly increasing"),
+            "expected sortedness error, got: {}",
+            err
         );
     }
 }

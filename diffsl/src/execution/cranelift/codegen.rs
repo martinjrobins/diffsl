@@ -9,7 +9,7 @@ use std::iter::zip;
 use std::sync::{Mutex, MutexGuard};
 use target_lexicon::{Endianness, PointerWidth, Triple};
 
-use crate::ast::{Ast, AstKind};
+use crate::ast::{Ast, AstKind, StringSpan};
 use crate::discretise::{DiscreteModel, Tensor, TensorBlock};
 use crate::execution::compiler::CompilerOptions;
 use crate::execution::module::{
@@ -523,7 +523,7 @@ impl<M: Module> CraneliftModule<M> {
             PointerWidth::U64 => types::I64,
         };
 
-        let layout = DataLayout::new(model);
+        let layout = DataLayout::new(model)?;
 
         // define constant global data
         let int_type = types::I32;
@@ -1229,6 +1229,25 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
                 df_ptr,
             );
         }
+        for i in 0..crate::execution::functions::INTERP1D_FUNCTIONS.len() {
+            let (f_name, f_ptr, df_ptr) = match real_type {
+                RealType::F32 => (
+                    crate::execution::functions::INTERP1D_FUNCTIONS_F32[i].0,
+                    crate::execution::functions::INTERP1D_FUNCTIONS_F32[i].1 as *const u8,
+                    crate::execution::functions::INTERP1D_FUNCTIONS_F32[i].2 as *const u8,
+                ),
+                RealType::F64 => (
+                    crate::execution::functions::INTERP1D_FUNCTIONS_F64[i].0,
+                    crate::execution::functions::INTERP1D_FUNCTIONS_F64[i].1 as *const u8,
+                    crate::execution::functions::INTERP1D_FUNCTIONS_F64[i].2 as *const u8,
+                ),
+            };
+            builder.symbol(f_name, f_ptr);
+            builder.symbol(
+                CraneliftCodeGen::<JITModule>::get_function_name(f_name, true),
+                df_ptr,
+            );
+        }
 
         let module = JITModule::new(builder);
         Self::new(
@@ -1365,6 +1384,9 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                     '-' => Ok(self.builder.ins().fneg(child)),
                     unknown => Err(anyhow!("unknown monop op '{}'", unknown)),
                 }
+            }
+            AstKind::Call(call) if call.fn_name == "interp1d" => {
+                self.jit_compile_interp1d(name, call, index, elmt, expr_index, expr.span)
             }
             AstKind::Call(call) => match self.get_function(call.fn_name, call.is_tangent) {
                 Some(function) => {
@@ -1608,6 +1630,128 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         }
     }
 
+    fn jit_compile_interp1d(
+        &mut self,
+        name: &str,
+        call: &crate::ast::Call,
+        index: &[Value],
+        elmt: &TensorBlock,
+        expr_index: Value,
+        span: Option<StringSpan>,
+    ) -> Result<Value> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if call.is_tangent {
+            std::hash::Hash::hash(&format!("{:?}", &call.args[0]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", &call.args[2]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", &call.args[4]), &mut hasher);
+        } else {
+            std::hash::Hash::hash(&format!("{:?}", &call.args[0]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", &call.args[1]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", &call.args[2]), &mut hasher);
+        }
+        let hash_key = std::hash::Hasher::finish(&hasher);
+        let info = self
+            .layout
+            .get_interp1d_info(span.as_ref(), hash_key)
+            .ok_or_else(|| anyhow!("interp1d: no precomputed data for this call"))?;
+
+        let n = info.n;
+
+        let is_tangent = call.is_tangent;
+        let (q_idx, dq_idx) = if is_tangent { (4, 5) } else { (2, usize::MAX) };
+
+        let q = self.jit_compile_expr(name, &call.args[q_idx], index, elmt, expr_index)?;
+
+        if let Some(dx) = info.dx {
+            // --- uniform path ---
+            let constants_slice = self.layout.constants();
+            let x_first = self.fconst(constants_slice[info.x_offset]);
+            let x_last = self.fconst(constants_slice[info.x_offset + n - 1]);
+            let q = self.builder.ins().fmin(q, x_last);
+            let q = self.builder.ins().fmax(q, x_first);
+
+            let dx_val = self.fconst(dx);
+            let slope_uniform = self
+                .fconst((constants_slice[info.y_offset + 1] - constants_slice[info.y_offset]) / dx);
+
+            let q_minus_x0 = self.builder.ins().fsub(q, x_first);
+            let k_float = self.builder.ins().fdiv(q_minus_x0, dx_val);
+            let k = self.builder.ins().fcvt_to_sint_sat(self.int_type, k_float);
+
+            let zero = self.builder.ins().iconst(self.int_type, 0);
+            let nm2 = self.builder.ins().iconst(self.int_type, (n - 2) as i64);
+            let cond_lt = self.builder.ins().icmp(IntCC::SignedLessThan, k, zero);
+            let k = self.builder.ins().select(cond_lt, zero, k);
+            let cond_gt = self.builder.ins().icmp(IntCC::SignedGreaterThan, k, nm2);
+            let k = self.builder.ins().select(cond_gt, nm2, k);
+
+            if is_tangent {
+                let dq =
+                    self.jit_compile_expr(name, &call.args[dq_idx], index, elmt, expr_index)?;
+                return Ok(self.builder.ins().fmul(dq, slope_uniform));
+            }
+
+            let constants_ptr = self
+                .builder
+                .ins()
+                .global_value(self.real_ptr_type, self.constants);
+            let y_off = self
+                .builder
+                .ins()
+                .iconst(self.int_type, info.y_offset as i64);
+            let yk_off = self.builder.ins().iadd(y_off, k);
+            let one = self.builder.ins().iconst(self.int_type, 1);
+            let yk1_off = self.builder.ins().iadd(yk_off, one);
+
+            let yk_ptr = self.ptr_add_offset(self.real_type, constants_ptr, yk_off);
+            let yk1_ptr = self.ptr_add_offset(self.real_type, constants_ptr, yk1_off);
+            let yk = self
+                .builder
+                .ins()
+                .load(self.real_type, self.mem_flags, yk_ptr, 0);
+            let yk1 = self
+                .builder
+                .ins()
+                .load(self.real_type, self.mem_flags, yk1_ptr, 0);
+
+            let k_float2 = self.builder.ins().fcvt_from_sint(self.real_type, k);
+            let t = self.builder.ins().fsub(k_float, k_float2);
+            let dy = self.builder.ins().fsub(yk1, yk);
+            let tdy = self.builder.ins().fmul(t, dy);
+            return Ok(self.builder.ins().fadd(yk, tdy));
+        }
+
+        // --- non-uniform path: call interp1d_impl ---
+        let function = self
+            .get_function("interp1d_impl", is_tangent)
+            .ok_or_else(|| anyhow!("interp1d_impl not found"))?;
+
+        let constants_ptr = self
+            .builder
+            .ins()
+            .global_value(self.real_ptr_type, self.constants);
+
+        let x_off = self
+            .builder
+            .ins()
+            .iconst(self.int_type, info.x_offset as i64);
+        let y_off = self
+            .builder
+            .ins()
+            .iconst(self.int_type, info.y_offset as i64);
+        let n_val = self.builder.ins().iconst(self.int_type, info.n as i64);
+
+        let mut args = vec![constants_ptr, x_off, y_off, n_val, q];
+        if is_tangent {
+            let dq = self.jit_compile_expr(name, &call.args[dq_idx], index, elmt, expr_index)?;
+            args.push(dq);
+        }
+
+        let call_inst = self.builder.ins().call(function, &args);
+        let ret_value = self.builder.inst_results(call_inst)[0];
+        Ok(ret_value)
+    }
+
     fn jit_compile_integer_expr(&mut self, expr: &Ast) -> Result<Value> {
         match &expr.kind {
             AstKind::Integer(value) => Ok(self.builder.ins().iconst(self.int_type, *value)),
@@ -1674,8 +1818,19 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                 match crate::execution::functions::function_num_args(base_name, is_tangent) {
                     Some(num_args) => {
                         let mut sig = self.module.make_signature();
-                        for _ in 0..num_args {
+                        if base_name == "interp1d_impl" {
+                            sig.params.push(AbiParam::new(self.real_ptr_type));
+                            sig.params.push(AbiParam::new(self.int_type));
+                            sig.params.push(AbiParam::new(self.int_type));
+                            sig.params.push(AbiParam::new(self.int_type));
                             sig.params.push(AbiParam::new(self.real_type));
+                            if is_tangent {
+                                sig.params.push(AbiParam::new(self.real_type));
+                            }
+                        } else {
+                            for _ in 0..num_args {
+                                sig.params.push(AbiParam::new(self.real_type));
+                            }
                         }
                         sig.returns.push(AbiParam::new(self.real_type));
                         let callee = self

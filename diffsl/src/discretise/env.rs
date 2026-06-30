@@ -524,6 +524,9 @@ impl Env {
         ast: &Ast,
         indices: &Vec<char>,
     ) -> Option<Layout> {
+        if call.fn_name == "interp1d" {
+            return self.get_layout_interp1d(call, ast, indices);
+        }
         let layouts = call
             .args
             .iter()
@@ -537,6 +540,94 @@ impl Env {
                 None
             }
         }
+    }
+
+    fn get_layout_interp1d(
+        &mut self,
+        call: &ast::Call,
+        ast: &Ast,
+        indices: &Vec<char>,
+    ) -> Option<Layout> {
+        if call.args.len() != 3 {
+            self.errs.push(ValidationError::new(
+                format!(
+                    "interp1d requires 3 arguments (x_i, y_i, q), got {}",
+                    call.args.len()
+                ),
+                ast.span,
+            ));
+            return None;
+        }
+
+        for (i, arg) in [&call.args[0], &call.args[1]].iter().enumerate() {
+            let deps = arg.get_dependents();
+            for name in &deps {
+                if self.get(name).map_or(true, |v| !v.is_constant()) {
+                    self.errs.push(ValidationError::new(
+                        format!(
+                            "interp1d argument {} depends on '{}' which is not compile-time constant",
+                            i + 1,
+                            name
+                        ),
+                        ast.span,
+                    ));
+                    return None;
+                }
+            }
+        }
+
+        let shared_index = call.args[0]
+            .get_indices()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                // No index found — the expression is scalar, which will fail the rank check below.
+                // Use a dummy index so get_layout can give a meaningful error.
+                ' '
+            });
+        let ctx = vec![shared_index];
+        let x_layout = self.get_layout(&call.args[0], &ctx)?;
+        let y_layout = self.get_layout(&call.args[1], &ctx)?;
+
+        if x_layout.rank() != 1 {
+            self.errs.push(ValidationError::new(
+                format!(
+                    "interp1d first argument must be 1D, got rank {}",
+                    x_layout.rank()
+                ),
+                ast.span,
+            ));
+            return None;
+        }
+        if !x_layout.is_dense() {
+            self.errs.push(ValidationError::new(
+                "interp1d first argument must be a dense vector".to_string(),
+                ast.span,
+            ));
+            return None;
+        }
+        if !y_layout.is_dense() {
+            self.errs.push(ValidationError::new(
+                "interp1d second argument must be a dense vector".to_string(),
+                ast.span,
+            ));
+            return None;
+        }
+        if y_layout.shape() != x_layout.shape() {
+            self.errs.push(ValidationError::new(
+                format!(
+                    "interp1d: x and y must have the same shape, got {} and {}",
+                    x_layout.shape(),
+                    y_layout.shape()
+                ),
+                ast.span,
+            ));
+            return None;
+        }
+
+        let mut q_layout = self.get_layout(&call.args[2], indices)?;
+        q_layout.to_dense();
+        Some(q_layout)
     }
 
     pub fn get_layout(&mut self, ast: &Ast, indices: &Vec<char>) -> Option<Layout> {

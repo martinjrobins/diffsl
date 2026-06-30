@@ -9,6 +9,10 @@ type BinaryFnF64 = extern "C" fn(f64, f64) -> f64;
 type BinaryFnF32 = extern "C" fn(f32, f32) -> f32;
 type BinaryGradFnF64 = extern "C" fn(f64, f64, f64, f64) -> f64;
 type BinaryGradFnF32 = extern "C" fn(f32, f32, f32, f32) -> f32;
+type Interp1dFnF64 = extern "C" fn(*const f64, usize, usize, usize, f64) -> f64;
+type Interp1dFnF32 = extern "C" fn(*const f32, usize, usize, usize, f32) -> f32;
+type Interp1dGradFnF64 = extern "C" fn(*const f64, usize, usize, usize, f64, f64) -> f64;
+type Interp1dGradFnF32 = extern "C" fn(*const f32, usize, usize, usize, f32, f32) -> f32;
 
 pub fn function_symbol_name(base_name: &str, real_type: RealType, is_tangent: bool) -> String {
     let suffix = real_type.as_str();
@@ -61,6 +65,18 @@ fn resolve_by_real_type(name: &str, is_tangent: bool, real_type: &RealType) -> O
                             *f as *const u8
                         }
                     })
+            })
+            .or_else(|| {
+                INTERP1D_FUNCTIONS_F64
+                    .iter()
+                    .find(|(n, _, _)| *n == name)
+                    .map(|(_, f, df)| {
+                        if is_tangent {
+                            *df as *const u8
+                        } else {
+                            *f as *const u8
+                        }
+                    })
             }),
         RealType::F32 => FUNCTIONS_F32
             .iter()
@@ -74,6 +90,18 @@ fn resolve_by_real_type(name: &str, is_tangent: bool, real_type: &RealType) -> O
             })
             .or_else(|| {
                 TWO_ARG_FUNCTIONS_F32
+                    .iter()
+                    .find(|(n, _, _)| *n == name)
+                    .map(|(_, f, df)| {
+                        if is_tangent {
+                            *df as *const u8
+                        } else {
+                            *f as *const u8
+                        }
+                    })
+            })
+            .or_else(|| {
+                INTERP1D_FUNCTIONS_F32
                     .iter()
                     .find(|(n, _, _)| *n == name)
                     .map(|(_, f, df)| {
@@ -142,6 +170,14 @@ pub const TWO_ARG_FUNCTIONS_F32: &[(&str, BinaryFnF32, BinaryGradFnF32)] = &[
 
 // backward compatibility for existing callers expecting the old names
 pub const TWO_ARG_FUNCTIONS: &[(&str, BinaryFnF64, BinaryGradFnF64)] = TWO_ARG_FUNCTIONS_F64;
+
+pub const INTERP1D_FUNCTIONS_F64: &[(&str, Interp1dFnF64, Interp1dGradFnF64)] =
+    &[("interp1d_impl", interp1d_impl_f64, dinterp1d_impl_f64)];
+
+pub const INTERP1D_FUNCTIONS_F32: &[(&str, Interp1dFnF32, Interp1dGradFnF32)] =
+    &[("interp1d_impl", interp1d_impl_f32, dinterp1d_impl_f32)];
+
+pub const INTERP1D_FUNCTIONS: &[(&str, Interp1dFnF64, Interp1dGradFnF64)] = INTERP1D_FUNCTIONS_F64;
 
 pub fn function_resolver(name: &str) -> Option<*const u8> {
     let (base_name, is_tangent, real_type) = parse_function_name(name);
@@ -238,6 +274,16 @@ pub fn function_num_args(name: &str, is_tangent: bool) -> Option<usize> {
             .any(|(n, _, _)| n == &base_name)
     {
         return Some(2 * multiplier);
+    }
+
+    if INTERP1D_FUNCTIONS_F64
+        .iter()
+        .any(|(n, _, _)| n == &base_name)
+        || INTERP1D_FUNCTIONS_F32
+            .iter()
+            .any(|(n, _, _)| n == &base_name)
+    {
+        return Some(5 * multiplier);
     }
 
     None
@@ -551,4 +597,120 @@ extern "C" fn cosh_f32(x: f32) -> f32 {
 }
 extern "C" fn dcosh_f32(x: f32, dx: f32) -> f32 {
     dx * x.sinh()
+}
+
+extern "C" fn interp1d_impl_f64(
+    constants: *const f64,
+    x_off: usize,
+    y_off: usize,
+    n: usize,
+    q: f64,
+) -> f64 {
+    unsafe {
+        let x_vals = std::slice::from_raw_parts(constants.add(x_off), n);
+        let y_vals = std::slice::from_raw_parts(constants.add(y_off), n);
+
+        let q = q.clamp(x_vals[0], x_vals[n - 1]);
+
+        let mut lo = 0usize;
+        let mut hi = n - 1;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if x_vals[mid] <= q {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let k = lo.min(n - 2);
+        let t = (q - x_vals[k]) / (x_vals[k + 1] - x_vals[k]);
+        y_vals[k] + t * (y_vals[k + 1] - y_vals[k])
+    }
+}
+
+extern "C" fn dinterp1d_impl_f64(
+    constants: *const f64,
+    x_off: usize,
+    _y_off: usize,
+    n: usize,
+    q: f64,
+    dq: f64,
+) -> f64 {
+    unsafe {
+        let x_vals = std::slice::from_raw_parts(constants.add(x_off), n);
+        let y_vals = std::slice::from_raw_parts(constants.add(_y_off), n);
+
+        let q = q.clamp(x_vals[0], x_vals[n - 1]);
+        let mut lo = 0usize;
+        let mut hi = n - 1;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if x_vals[mid] <= q {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let k = lo.min(n - 2);
+        let slope = (y_vals[k + 1] - y_vals[k]) / (x_vals[k + 1] - x_vals[k]);
+        dq * slope
+    }
+}
+
+extern "C" fn interp1d_impl_f32(
+    constants: *const f32,
+    x_off: usize,
+    y_off: usize,
+    n: usize,
+    q: f32,
+) -> f32 {
+    unsafe {
+        let x_vals = std::slice::from_raw_parts(constants.add(x_off), n);
+        let y_vals = std::slice::from_raw_parts(constants.add(y_off), n);
+
+        let q = q.clamp(x_vals[0], x_vals[n - 1]);
+
+        let mut lo = 0usize;
+        let mut hi = n - 1;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if x_vals[mid] <= q {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let k = lo.min(n - 2);
+        let t = (q - x_vals[k]) / (x_vals[k + 1] - x_vals[k]);
+        y_vals[k] + t * (y_vals[k + 1] - y_vals[k])
+    }
+}
+
+extern "C" fn dinterp1d_impl_f32(
+    constants: *const f32,
+    x_off: usize,
+    _y_off: usize,
+    n: usize,
+    q: f32,
+    dq: f32,
+) -> f32 {
+    unsafe {
+        let x_vals = std::slice::from_raw_parts(constants.add(x_off), n);
+        let y_vals = std::slice::from_raw_parts(constants.add(_y_off), n);
+
+        let q = q.clamp(x_vals[0], x_vals[n - 1]);
+        let mut lo = 0usize;
+        let mut hi = n - 1;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if x_vals[mid] <= q {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let k = lo.min(n - 2);
+        let slope = (y_vals[k + 1] - y_vals[k]) / (x_vals[k + 1] - x_vals[k]);
+        dq * slope
+    }
 }

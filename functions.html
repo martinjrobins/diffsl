@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-15440fbd.js";
+            window.path_to_searchindex_js = "searchindex-1fc93d26.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-edacbe1f.js"></script>
@@ -196,10 +196,32 @@
 <li><code>abs(x)</code> - absolute value of x</li>
 <li><code>sigmoid(x)</code> - sigmoid function of x</li>
 <li><code>heaviside(x)</code> - Heaviside step function of x</li>
+<li><code>interp1d(x_i, y_i, q)</code> - 1D piecewise linear interpolation</li>
 </ul>
 <p>You can use these functions as part of an expression in the DSL. For example, to define a variable <code>a</code> that is the sine of another variable <code>b</code>, you can write:</p>
 <pre><code class="language-diffsl">b { 1.0 }
 a { sin(b) }
+</code></pre>
+<h3 id="interp1dx_i-y_i-q"><a class="header" href="#interp1dx_i-y_i-q"><code>interp1d(x_i, y_i, q)</code></a></h3>
+<p>The <code>interp1d</code> function performs 1D piecewise linear interpolation. <code>x_i</code> and <code>y_i</code>
+must be compile-time constant 1D dense tensors of equal length. The query point
+<code>q</code> can be a scalar or a tensor. Out-of-range queries are clamped to the
+endpoints.</p>
+<p><code>x_i</code> must be <strong>strictly increasing</strong>; an error is reported at compile time if
+it is not.</p>
+<p>If <code>x_i</code> is uniformly spaced (constant increment <code>dx</code> between consecutive values),
+the interpolation runs in <strong>O(1)</strong> per query point.  For non-uniform <code>x_i</code>, a
+binary search is used, giving <strong>O(log n)</strong> cost per query point.</p>
+<pre><code class="language-diffsl">xs_i { 0.0, 10.0, 20.0 }
+ys_i { 1.0,  5.0, 15.0 }
+r { interp1d(xs_i, ys_i, 5.0) }     # =&gt; 3.0
+
+# batched queries
+q_j { 0.0, 5.0, 10.0, 15.0, 20.0 }
+r_j { interp1d(xs_i, ys_i, q_j) }   # =&gt; [1.0, 3.0, 5.0, 10.0, 15.0]
+
+# the first two arguments may be any constant 1D dense expression
+r { interp1d(xs_i * 2.0, ys_i + 1.0, 5.0) }
 </code></pre>
 <h2 id="pre-defined-variables"><a class="header" href="#pre-defined-variables">Pre-defined variables</a></h2>
 <p>There are two predefined variables in DiffSL. The first is the scalar <code>t</code> which is the current time, this allows the equations to be written as functions of time. For example</p>

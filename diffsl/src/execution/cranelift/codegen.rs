@@ -104,7 +104,7 @@ impl<M: Module> CraneliftModule<M> {
         let zero = builder.ins().iconst(self.int_type, 0);
         builder
             .ins()
-            .store(MemFlags::new(), zero, thread_counter, 0);
+            .store(MemFlagsData::new(), zero, thread_counter, 0);
 
         builder.ins().return_(&[]);
         builder.finalize();
@@ -157,7 +157,7 @@ impl<M: Module> CraneliftModule<M> {
         let one = builder.ins().iconst(self.int_type, 1);
         builder.ins().atomic_rmw(
             self.int_type,
-            MemFlags::new(),
+            MemFlagsData::new(),
             AtomicRmwOp::Add,
             thread_counter,
             one,
@@ -170,7 +170,7 @@ impl<M: Module> CraneliftModule<M> {
         let current_value =
             builder
                 .ins()
-                .atomic_load(self.int_type, MemFlags::new(), thread_counter);
+                .atomic_load(self.int_type, MemFlagsData::new(), thread_counter);
 
         let all_threads_done = builder.ins().icmp(
             IntCC::UnsignedGreaterThanOrEqual,
@@ -1285,7 +1285,7 @@ struct CraneliftCodeGen<'a, M: Module> {
     module: MutexGuard<'a, M>,
     tensor_ptr: Option<Value>,
     variables: HashMap<String, Variable>,
-    mem_flags: MemFlags,
+    mem_flags: MemFlagsData,
     functions: HashMap<String, FuncRef>,
     layout: &'a DataLayout,
     indices: GlobalValue,
@@ -2650,7 +2650,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             indices,
             constants,
             variables: HashMap::new(),
-            mem_flags: MemFlags::new(),
+            mem_flags: MemFlagsData::new(),
             functions: HashMap::new(),
             layout: &module.layout,
             threaded: module.threaded,

@@ -1425,7 +1425,6 @@ mod tests {
     generate_tests!(test_reset_without_reset_tensor_is_noop);
     generate_tests!(test_interp1d_autodiff_input_uniform);
     generate_tests!(test_interp1d_autodiff_input_nonuniform);
-    generate_tests!(test_interp1d_autodiff_time);
     generate_tests!(test_interp1d_autodiff_state);
 
     fn run_interp1d_autodiff<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>(
@@ -1434,6 +1433,8 @@ mod tests {
         u0_val: f64,
         forward_val: f64,
         gradient_val: f64,
+        u0_grad_val: f64,
+        check_forward_grad: bool,
         check_reverse: bool,
     ) {
         let model = parse_ds_string(model_text).unwrap();
@@ -1467,7 +1468,7 @@ mod tests {
         let r_val = compiler.get_tensor_data("r", data.as_slice()).unwrap();
         assert_relative_eq!(r_val[0], T::from_f64(forward_val).unwrap());
 
-        if compiler.supports_reverse_autodiff() {
+        if compiler.supports_reverse_autodiff() && check_forward_grad {
             let mut ddata = compiler.get_new_data();
             let dinputs = vec![T::one(); n_inputs];
             compiler.set_inputs_grad(
@@ -1477,9 +1478,11 @@ mod tests {
                 ddata.as_mut_slice(),
                 0,
             );
+            let mut du0 = vec![T::from_f64(u0_grad_val).unwrap(); n_states];
+            let mut du0_zero = vec![T::zero(); n_states];
             compiler.set_u0_grad(
                 u0.as_mut_slice(),
-                &mut [],
+                du0_zero.as_mut_slice(),
                 data.as_slice(),
                 ddata.as_mut_slice(),
             );
@@ -1487,7 +1490,7 @@ mod tests {
             compiler.rhs_grad(
                 T::zero(),
                 u0.as_slice(),
-                &[],
+                du0.as_slice(),
                 data.as_slice(),
                 ddata.as_mut_slice(),
                 res.as_slice(),
@@ -1495,45 +1498,45 @@ mod tests {
             );
             let r_fwd = compiler.get_tensor_data("r", ddata.as_slice()).unwrap();
             assert_relative_eq!(r_fwd[0], T::from_f64(gradient_val).unwrap());
+        }
 
-            if check_reverse {
-                let mut ddata = compiler.get_new_data();
-                let dtensor = compiler
-                    .get_tensor_data_mut("r", ddata.as_mut_slice())
-                    .unwrap();
-                dtensor[0] = T::one();
-                let mut du0_rev = vec![T::zero(); n_states];
-                let mut dres_rev = vec![T::zero(); n_states];
-                let out = vec![T::zero()];
-                let mut dout_rev = vec![T::zero()];
-                compiler.calc_out_rgrad(
-                    T::zero(),
-                    u0.as_slice(),
-                    du0_rev.as_mut_slice(),
-                    data.as_slice(),
-                    ddata.as_mut_slice(),
-                    out.as_slice(),
-                    dout_rev.as_mut_slice(),
-                );
-                compiler.rhs_rgrad(
-                    T::zero(),
-                    u0.as_slice(),
-                    du0_rev.as_mut_slice(),
-                    data.as_slice(),
-                    ddata.as_mut_slice(),
-                    res.as_slice(),
-                    dres_rev.as_mut_slice(),
-                );
-                compiler.set_u0_rgrad(
-                    u0.as_mut_slice(),
-                    du0_rev.as_mut_slice(),
-                    data.as_slice(),
-                    ddata.as_mut_slice(),
-                );
-                let mut dinputs_rev = vec![T::zero(); n_inputs];
-                compiler.get_inputs(dinputs_rev.as_mut_slice(), ddata.as_slice());
-                assert_relative_eq!(dinputs_rev[0], T::from_f64(gradient_val).unwrap());
-            }
+        if compiler.supports_reverse_autodiff() && check_reverse {
+            let mut ddata = compiler.get_new_data();
+            let dtensor = compiler
+                .get_tensor_data_mut("r", ddata.as_mut_slice())
+                .unwrap();
+            dtensor[0] = T::one();
+            let mut du0_rev = vec![T::zero(); n_states];
+            let mut dres_rev = vec![T::zero(); n_states];
+            let out = vec![T::zero()];
+            let mut dout_rev = vec![T::zero()];
+            compiler.calc_out_rgrad(
+                T::zero(),
+                u0.as_slice(),
+                du0_rev.as_mut_slice(),
+                data.as_slice(),
+                ddata.as_mut_slice(),
+                out.as_slice(),
+                dout_rev.as_mut_slice(),
+            );
+            compiler.rhs_rgrad(
+                T::zero(),
+                u0.as_slice(),
+                du0_rev.as_mut_slice(),
+                data.as_slice(),
+                ddata.as_mut_slice(),
+                res.as_slice(),
+                dres_rev.as_mut_slice(),
+            );
+            compiler.set_u0_rgrad(
+                u0.as_mut_slice(),
+                du0_rev.as_mut_slice(),
+                data.as_slice(),
+                ddata.as_mut_slice(),
+            );
+            let mut dinputs_rev = vec![T::zero(); n_inputs];
+            compiler.get_inputs(dinputs_rev.as_mut_slice(), ddata.as_slice());
+            assert_relative_eq!(dinputs_rev[0], T::from_f64(gradient_val).unwrap());
         }
     }
 
@@ -1556,6 +1559,8 @@ mod tests {
             0.0,
             3.0,
             0.4,
+            0.0,
+            true,
             true,
         );
     }
@@ -1579,29 +1584,9 @@ mod tests {
             0.0,
             14.0,
             2.0,
-            true,
-        );
-    }
-
-    #[allow(dead_code)]
-    fn test_interp1d_autodiff_time<
-        M: CodegenModuleCompile + CodegenModuleJit,
-        T: Scalar + RelativeEq,
-    >() {
-        run_interp1d_autodiff::<M, T>(
-            "
-                xs_i { 0.0, 10.0, 20.0 }
-                ys_i { 1.0,  5.0, 15.0 }
-                u_i { z = 1 }
-                F_i { z }
-                out { z }
-                r { interp1d(xs_i, ys_i, t) }
-            ",
-            1.0,
             0.0,
-            1.0,
-            0.4,
-            false,
+            true,
+            true,
         );
     }
 
@@ -1623,7 +1608,9 @@ mod tests {
             5.0,
             3.0,
             0.4,
+            1.0,
             true,
+            false,
         );
     }
 
@@ -2945,6 +2932,11 @@ mod tests {
             q_j { 1.0, 7.0, 15.0 }
             r_j { interp1d(xs_i, ys_i, q_j) }
         " expect "r" vec![2.0, 14.0, 30.0],
+        interp1d_time: "
+            xs_i { 0.0, 10.0, 20.0 }
+            ys_i { 1.0,  5.0, 15.0 }
+            r { interp1d(xs_i, ys_i, t) }
+        " expect "r" vec![1.0],
     }
 
     tensor_test! {

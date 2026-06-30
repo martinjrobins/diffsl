@@ -1962,7 +1962,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.builder.build_return(Some(&result)).ok();
                 Some(fn_val)
             }
-            "interp1d_impl" => self.compile_interp1d_impl(name).ok()?,
+            "interp1d_impl" => self.compile_interp1d_impl(name).ok(),
             _ => None,
         }?;
 
@@ -2013,11 +2013,26 @@ impl<'ctx> CodeGen<'ctx> {
         );
 
         let entry = self.start_function(fn_val, None);
-        let constants_ptr = fn_val.get_nth_param(0)?.into_pointer_value();
-        let x_off = fn_val.get_nth_param(1)?.into_int_value();
-        let y_off = fn_val.get_nth_param(2)?.into_int_value();
-        let n_val = fn_val.get_nth_param(3)?.into_int_value();
-        let q = fn_val.get_nth_param(4)?.into_float_value();
+        let constants_ptr = fn_val
+            .get_nth_param(0)
+            .ok_or_else(|| anyhow!("missing param 0"))?
+            .into_pointer_value();
+        let x_off = fn_val
+            .get_nth_param(1)
+            .ok_or_else(|| anyhow!("missing param 1"))?
+            .into_int_value();
+        let y_off = fn_val
+            .get_nth_param(2)
+            .ok_or_else(|| anyhow!("missing param 2"))?
+            .into_int_value();
+        let n_val = fn_val
+            .get_nth_param(3)
+            .ok_or_else(|| anyhow!("missing param 3"))?
+            .into_int_value();
+        let q = fn_val
+            .get_nth_param(4)
+            .ok_or_else(|| anyhow!("missing param 4"))?
+            .into_float_value();
 
         // --- clamp q to [x[0], x[n-1]] ---
         let x0_ptr = self.build_gep(self.real_type, constants_ptr, &[x_off], "x0_ptr")?;
@@ -2031,8 +2046,20 @@ impl<'ctx> CodeGen<'ctx> {
         let xn = self
             .build_load(self.real_type, xn_ptr, "xn")?
             .into_float_value();
-        let q = self.builder.build_float_min(q, xn, "q_min")?;
-        let q = self.builder.build_float_max(q, x0, "q_max")?;
+        let q_lt_xn = self
+            .builder
+            .build_float_compare(FloatPredicate::OLT, q, xn, "q_lt_xn")?;
+        let q = self
+            .builder
+            .build_select(q_lt_xn, q, xn, "q_min")?
+            .into_float_value();
+        let q_gt_x0 = self
+            .builder
+            .build_float_compare(FloatPredicate::OGT, q, x0, "q_gt_x0")?;
+        let q = self
+            .builder
+            .build_select(q_gt_x0, q, x0, "q_max")?
+            .into_float_value();
 
         // --- binary search loop: while lo < hi ---
         let loop_block = self.context.append_basic_block(fn_val, "loop");
@@ -3270,18 +3297,33 @@ impl<'ctx> CodeGen<'ctx> {
             .ok_or_else(|| anyhow!("interp1d: no precomputed data for this call"))?;
 
         let n = info.n;
+        let x_offset = info.x_offset;
+        let y_offset = info.y_offset;
+        let dx_opt = info.dx;
 
         let q = self.jit_compile_expr(name, &call.args[2], index, elmt, expr_index)?;
 
-        if let Some(dx) = info.dx {
+        if let Some(dx) = dx_opt {
             // --- uniform path: O(1) per element ---
             let constants_slice = self.layout.constants();
-            let x_first = self.real_type.const_float(constants_slice[info.x_offset]);
+            let x_first = self.real_type.const_float(constants_slice[x_offset]);
             let x_last = self
                 .real_type
-                .const_float(constants_slice[info.x_offset + n - 1]);
-            let q = self.builder.build_float_min(q, x_last, "q_min")?;
-            let q = self.builder.build_float_max(q, x_first, "q_max")?;
+                .const_float(constants_slice[x_offset + n - 1]);
+            let q_lt_last =
+                self.builder
+                    .build_float_compare(FloatPredicate::OLT, q, x_last, "q_lt_last")?;
+            let q = self
+                .builder
+                .build_select(q_lt_last, q, x_last, "q_min")?
+                .into_float_value();
+            let q_gt_first =
+                self.builder
+                    .build_float_compare(FloatPredicate::OGT, q, x_first, "q_gt_first")?;
+            let q = self
+                .builder
+                .build_select(q_gt_first, q, x_first, "q_max")?
+                .into_float_value();
 
             let dx_const = self.real_type.const_float(dx);
             let q_minus_x0 = self.builder.build_float_sub(q, x_first, "dq")?;
@@ -3317,7 +3359,7 @@ impl<'ctx> CodeGen<'ctx> {
                 return Err(anyhow!("constants global not available"));
             };
 
-            let y_off = self.int_type.const_int(info.y_offset as u64, false);
+            let y_off = self.int_type.const_int(y_offset as u64, false);
             let one = self.int_type.const_int(1, false);
             let yk_off = self.builder.build_int_add(y_off, k, "yk_off")?;
             let yk1_off = self.builder.build_int_add(yk_off, one, "yk1_off")?;
@@ -3357,9 +3399,9 @@ impl<'ctx> CodeGen<'ctx> {
 
         let args: Vec<BasicMetadataValueEnum> = vec![
             constants_ptr.into(),
-            self.int_type.const_int(info.x_offset as u64, false).into(),
-            self.int_type.const_int(info.y_offset as u64, false).into(),
-            self.int_type.const_int(info.n as u64, false).into(),
+            self.int_type.const_int(x_offset as u64, false).into(),
+            self.int_type.const_int(y_offset as u64, false).into(),
+            self.int_type.const_int(n as u64, false).into(),
             q.into(),
         ];
         let ret = self

@@ -12,7 +12,11 @@ llvm15-0 = ["diffsl/llvm15-0"]
 llvm16-0 = ["diffsl/llvm16-0"]
 llvm17-0 = ["diffsl/llvm17-0"]
 llvm18-1 = ["diffsl/llvm18-1"]
+llvm19-1 = ["diffsl/llvm19-1"]
+llvm20-1 = ["diffsl/llvm20-1"]
+llvm21-1 = ["diffsl/llvm21-1"]
+llvm22-1 = ["diffsl/llvm22-1"]
 
 [dependencies]
-axum = "0.8.6"
+axum = "0.8.9"
 diffsl = { path = "../diffsl", features = [] }

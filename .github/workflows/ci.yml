@@ -178,20 +178,6 @@ jobs:
         sudo apt update
         wget http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
         sudo apt install ./libtinfo5_6.3-2ubuntu0.1_amd64.deb
-    - name: Workaround missing libcurses.tbd on macOS
-      if : matrix.os == 'macos-latest' && matrix.llvm != ''
-      run: |
-        SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
-        if [ ! -f "$SDK_PATH/usr/lib/libcurses.tbd" ] && [ -f "$SDK_PATH/usr/lib/libncurses.tbd" ]; then
-          # Create a libcurses.tbd -> libncurses.tbd symlink in a temp dir
-          # and add it to library/cmake search paths so both cmake and the
-          # linker can resolve the missing libcurses dependency.
-          CURSES_DIR=$(mktemp -d)
-          mkdir -p "$CURSES_DIR/usr/lib"
-          ln -s "$SDK_PATH/usr/lib/libncurses.tbd" "$CURSES_DIR/usr/lib/libcurses.tbd"
-          echo "CMAKE_PREFIX_PATH=$CURSES_DIR" >> "$GITHUB_ENV"
-          echo "LIBRARY_PATH=$CURSES_DIR/usr/lib:${LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-        fi
     - name: Setup tmate session
       uses: mxschmitt/action-tmate@v3
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}

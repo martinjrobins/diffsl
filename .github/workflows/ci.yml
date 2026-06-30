@@ -180,6 +180,26 @@ jobs:
     - name: Setup tmate session
       uses: mxschmitt/action-tmate@v3
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+    - name: Workaround missing libcurses.tbd on macOS
+      if : matrix.os == 'macos-latest' && matrix.llvm != ''
+      run: |
+        SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
+        if [ ! -f "$SDK_PATH/usr/lib/libcurses.tbd" ] && [ -f "$SDK_PATH/usr/lib/libncurses.tbd" ]; then
+          # 1. Patch hardcoded libcurses.tbd paths in LLVM cmake config files
+          LLVM_PREFIX="${LLVM_PATH:-$GITHUB_WORKSPACE/llvm}"
+          LLVM_CMAKE_DIR="$LLVM_PREFIX/lib/cmake/llvm"
+          if [ -d "$LLVM_CMAKE_DIR" ]; then
+            grep -rl 'libcurses\.tbd' "$LLVM_CMAKE_DIR" 2>/dev/null | while IFS= read -r f; do
+              sed -i '' 's|/usr/lib/libcurses\.tbd|/usr/lib/libncurses.tbd|g' "$f"
+            done
+          fi
+          # 2. Provide a symlink via CMAKE_PREFIX_PATH so find_library(curses)
+          #    can resolve to libncurses when the path is resolved dynamically
+          TMP_CURSES_DIR=$(mktemp -d)
+          mkdir -p "$TMP_CURSES_DIR/lib"
+          ln -s "$SDK_PATH/usr/lib/libncurses.tbd" "$TMP_CURSES_DIR/lib/libcurses.tbd"
+          echo "CMAKE_PREFIX_PATH=$TMP_CURSES_DIR" >> "$GITHUB_ENV"
+        fi
     - name: Run tests (LLVM)
       if : matrix.tests && matrix.llvm != ''
       run: cargo test --verbose --features llvm${{ matrix.llvm[1] }} --features "${{ matrix.features }}"

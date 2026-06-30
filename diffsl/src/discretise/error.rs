@@ -82,3 +82,5 @@ impl fmt::Display for ValidationErrors {
         Ok(())
     }
 }
+
+impl std::error::Error for ValidationErrors {}

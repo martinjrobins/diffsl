@@ -534,13 +534,18 @@ impl<'s> ModelInfo<'s> {
             }
             AstKind::Call(call) => {
                 // check name in allowed functions
-                let functions = ["sin", "cos", "tan", "pow", "exp", "log", "sqrt", "abs"];
+                let functions = [
+                    "sin", "cos", "tan", "pow", "exp", "log", "sqrt", "abs", "interp1d",
+                ];
                 if functions.contains(&call.fn_name) {
-                    // built in functions all have 1 arg
-                    // built in functions should have no keyword args
-                    if call.args.len() != 1 {
+                    let expected_nargs = match call.fn_name {
+                        "interp1d" => 3,
+                        "pow" => 2,
+                        _ => 1,
+                    };
+                    if call.args.len() != expected_nargs {
                         self.errors.push(Output::new(
-                            format!("incorrect number of given arguments ({} instead of {}) for function {}", call.args.len(), 1, call.fn_name),
+                            format!("incorrect number of given arguments ({} instead of {}) for function {}", call.args.len(), expected_nargs, call.fn_name),
                             expr.span,
                         ));
                     }

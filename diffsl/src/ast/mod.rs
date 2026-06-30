@@ -525,7 +525,7 @@ impl<'a> AstKind<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct StringSpan {
     pub pos_start: usize,
     pub pos_end: usize,
@@ -914,8 +914,14 @@ impl<'a> Ast<'a> {
                 monop.child.collect_indices(indices);
             }
             AstKind::Call(call) => {
-                for c in &call.args {
-                    c.collect_indices(indices);
+                if call.fn_name == "interp1d" {
+                    if let Some(q) = call.args.get(2) {
+                        q.collect_indices(indices);
+                    }
+                } else {
+                    for c in &call.args {
+                        c.collect_indices(indices);
+                    }
                 }
             }
             AstKind::CallArg(arg) => {

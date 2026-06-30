@@ -6,8 +6,32 @@ mod enzyme {
         path::{Path, PathBuf},
     };
 
+    fn patch_libcurses(dir: &Path) {
+        if !dir.is_dir() {
+            return;
+        }
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                Self::patch_libcurses(&path);
+            } else if path.extension().is_some_and(|ext| ext == "cmake") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if content.contains("libcurses.tbd") {
+                        let new_content = content.replace("libcurses.tbd", "libncurses.tbd");
+                        let _ = std::fs::write(&path, new_content);
+                    }
+                }
+            }
+        }
+    }
+
     fn compile_enzyme(llvm_lib_dir: String) -> (String, String) {
         let llvm_cmake_dir = format!("{llvm_lib_dir}/cmake/llvm");
+        // macOS 26 SDK dropped libcurses.tbd; replace with libncurses in LLVM cmake exports
+        if cfg!(target_os = "macos") {
+            let cmake_root = Path::new(&llvm_lib_dir).join("cmake");
+            Self::patch_libcurses(&cmake_root);
+        }
         let mut config = cmake::Config::new("Enzyme/enzyme");
         config
             .define("ENZYME_STATIC_LIB", "ON")

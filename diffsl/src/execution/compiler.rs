@@ -1427,6 +1427,7 @@ mod tests {
     generate_tests!(test_interp1d_autodiff_input_nonuniform);
     generate_tests!(test_interp1d_autodiff_state);
 
+    #[allow(clippy::too_many_arguments)]
     fn run_interp1d_autodiff<M: CodegenModuleCompile + CodegenModuleJit, T: Scalar + RelativeEq>(
         model_text: &str,
         input_val: f64,
@@ -1478,7 +1479,7 @@ mod tests {
                 ddata.as_mut_slice(),
                 0,
             );
-            let mut du0 = vec![T::from_f64(u0_grad_val).unwrap(); n_states];
+            let du0 = vec![T::from_f64(u0_grad_val).unwrap(); n_states];
             let mut du0_zero = vec![T::zero(); n_states];
             compiler.set_u0_grad(
                 u0.as_mut_slice(),

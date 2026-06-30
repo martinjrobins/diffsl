@@ -1990,8 +1990,8 @@ impl<'ctx> CodeGen<'ctx> {
     ///
     /// * Clamp `q` to `[x[0], x[n-1]]`.
     /// * Loop block with `lo`/`hi` phis (initial `(0, n-1)`):
-    ///     mid = (lo + hi + 1) // 2
-    ///     if x[mid] <= q → lo = mid  else  hi = mid - 1
+    ///   mid = (lo + hi + 1) // 2
+    ///   if x[mid] <= q → lo = mid  else  hi = mid - 1
     /// * Exit block: clamp index, load `x[k], x[k+1], y[k], y[k+1]`, blend.
     ///
     /// Enzyme can auto-diff through the generated branches and arithmetic.

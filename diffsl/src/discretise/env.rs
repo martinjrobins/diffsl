@@ -562,7 +562,7 @@ impl Env {
         for (i, arg) in [&call.args[0], &call.args[1]].iter().enumerate() {
             let deps = arg.get_dependents();
             for name in &deps {
-                if self.get(name).map_or(true, |v| !v.is_constant()) {
+                if self.get(name).is_none_or(|v| !v.is_constant()) {
                     self.errs.push(ValidationError::new(
                         format!(
                             "interp1d argument {} depends on '{}' which is not compile-time constant",
@@ -576,15 +576,11 @@ impl Env {
             }
         }
 
-        let shared_index = call.args[0]
-            .get_indices()
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| {
-                // No index found — the expression is scalar, which will fail the rank check below.
-                // Use a dummy index so get_layout can give a meaningful error.
-                ' '
-            });
+        let shared_index = call.args[0].get_indices().into_iter().next().unwrap_or({
+            // No index found — the expression is scalar, which will fail the rank check below.
+            // Use a dummy index so get_layout can give a meaningful error.
+            ' '
+        });
         let ctx = vec![shared_index];
         let x_layout = self.get_layout(&call.args[0], &ctx)?;
         let y_layout = self.get_layout(&call.args[1], &ctx)?;

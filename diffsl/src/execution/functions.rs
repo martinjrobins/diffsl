@@ -615,7 +615,7 @@ extern "C" fn interp1d_impl_f64(
         let mut lo = 0usize;
         let mut hi = n - 1;
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             if x_vals[mid] <= q {
                 lo = mid;
             } else {
@@ -644,7 +644,7 @@ extern "C" fn dinterp1d_impl_f64(
         let mut lo = 0usize;
         let mut hi = n - 1;
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             if x_vals[mid] <= q {
                 lo = mid;
             } else {
@@ -673,7 +673,7 @@ extern "C" fn interp1d_impl_f32(
         let mut lo = 0usize;
         let mut hi = n - 1;
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             if x_vals[mid] <= q {
                 lo = mid;
             } else {
@@ -702,7 +702,7 @@ extern "C" fn dinterp1d_impl_f32(
         let mut lo = 0usize;
         let mut hi = n - 1;
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             if x_vals[mid] <= q {
                 lo = mid;
             } else {

@@ -508,7 +508,7 @@ impl DataLayout {
                 let mut lo = 0usize;
                 let mut hi = n - 1;
                 while lo < hi {
-                    let mid = (lo + hi + 1) / 2;
+                    let mid = (lo + hi).div_ceil(2);
                     if x_vals[mid] <= qc {
                         lo = mid;
                     } else {

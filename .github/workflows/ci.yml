@@ -183,20 +183,14 @@ jobs:
       run: |
         SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
         if [ ! -f "$SDK_PATH/usr/lib/libcurses.tbd" ] && [ -f "$SDK_PATH/usr/lib/libncurses.tbd" ]; then
-          # Patch hardcoded libcurses.tbd paths in LLVM cmake config files
-          # (build.rs also does this, but patch here for extra safety)
-          LLVM_PREFIX="${LLVM_PATH:-$GITHUB_WORKSPACE/llvm}"
-          LLVM_CMAKE_DIR="$LLVM_PREFIX/lib/cmake/llvm"
-          if [ -d "$LLVM_CMAKE_DIR" ]; then
-            grep -rl 'libcurses\.tbd' "$LLVM_CMAKE_DIR" 2>/dev/null | while IFS= read -r f; do
-              sed -i '' 's|libcurses\.tbd|libncurses.tbd|g' "$f"
-            done
-          fi
-          # Provide a symlink for cmake find_library(curses) fallback
-          TMP_CURSES_DIR=$(mktemp -d)
-          mkdir -p "$TMP_CURSES_DIR/lib"
-          ln -s "$SDK_PATH/usr/lib/libncurses.tbd" "$TMP_CURSES_DIR/lib/libcurses.tbd"
-          echo "CMAKE_PREFIX_PATH=$TMP_CURSES_DIR" >> "$GITHUB_ENV"
+          # Create a libcurses.tbd -> libncurses.tbd symlink in a temp dir
+          # and add it to library/cmake search paths so both cmake and the
+          # linker can resolve the missing libcurses dependency.
+          CURSES_DIR=$(mktemp -d)
+          mkdir -p "$CURSES_DIR/usr/lib"
+          ln -s "$SDK_PATH/usr/lib/libncurses.tbd" "$CURSES_DIR/usr/lib/libcurses.tbd"
+          echo "CMAKE_PREFIX_PATH=$CURSES_DIR" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$CURSES_DIR/usr/lib:${LIBRARY_PATH:-}" >> "$GITHUB_ENV"
         fi
     - name: Setup tmate session
       uses: mxschmitt/action-tmate@v3

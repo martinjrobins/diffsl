@@ -191,7 +191,7 @@ jobs:
           LLVM_CMAKE_DIR="$LLVM_PREFIX/lib/cmake/llvm"
           if [ -d "$LLVM_CMAKE_DIR" ]; then
             grep -rl 'libcurses\.tbd' "$LLVM_CMAKE_DIR" 2>/dev/null | while IFS= read -r f; do
-              sed -i '' 's|/usr/lib/libcurses\.tbd|/usr/lib/libncurses.tbd|g' "$f"
+              sed -i '' 's|libcurses\.tbd|libncurses.tbd|g' "$f"
             done
           fi
           # 2. Provide a symlink via CMAKE_PREFIX_PATH so find_library(curses)

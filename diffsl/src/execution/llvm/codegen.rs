@@ -200,7 +200,7 @@ impl LlvmModule {
         let (codegen, machine) = self.codegen_and_machine_mut();
         codegen
             .module()
-            .run_passes(passes, machine, pass_options)
+            .run_passes(&passes, machine, pass_options)
             .map_err(|e| anyhow!("Failed to run passes: {:?}", e))
 
         //let path = "jit_module_after_pre_autodiff_opt.ll";

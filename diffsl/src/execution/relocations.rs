@@ -141,19 +141,14 @@ fn handle_section_relocation(rela: &Relocation, section_ptr: *const u8, p: *mut 
     let a = rela.addend();
     let size = rela.size();
     let val = match rela.kind() {
-        // Absolute / Got / GotBaseOffset: addend is the offset within the section.
+        // Absolute: addend is the offset within the section.
         // S + A where S = section_ptr
-        RelocationKind::Absolute | RelocationKind::Got | RelocationKind::GotBaseOffset => {
-            i64::try_from(section_ptr as usize).unwrap() + a
-        }
-        // Relative / PltRelative / GotRelative / GotBaseRelative: the addend is
-        // already the PC-relative displacement in file space. Since all sections
-        // are mapped contiguously in a single mmap, the relative positions are
+        RelocationKind::Absolute => i64::try_from(section_ptr as usize).unwrap() + a,
+        // Relative / PltRelative: the addend is already the PC-relative
+        // displacement in file space. Since all sections are mapped
+        // contiguously in a single mmap, the relative positions are
         // preserved, and no adjustment is needed.
-        RelocationKind::Relative
-        | RelocationKind::PltRelative
-        | RelocationKind::GotRelative
-        | RelocationKind::GotBaseRelative => a,
+        RelocationKind::Relative | RelocationKind::PltRelative => a,
         _ => {
             return Err(anyhow!(
                 "Unsupported relocation type {:?} for section-based x86 relocation",
@@ -191,16 +186,9 @@ fn handle_relocation_generic_x86(rela: &Relocation, s: *const u8, p: *mut u8) ->
     let size = rela.size();
     let val = match rela.kind() {
         // S + A
-        RelocationKind::Absolute
-        | RelocationKind::Got
-        | RelocationKind::GotBaseOffset => {
-            i64::try_from(s as usize).unwrap() + a
-        }
+        RelocationKind::Absolute => i64::try_from(s as usize).unwrap() + a,
         // S + A - P
-        RelocationKind::Relative
-        | RelocationKind::PltRelative
-        | RelocationKind::GotRelative
-        | RelocationKind::GotBaseRelative => {
+        RelocationKind::Relative | RelocationKind::PltRelative => {
             i64::try_from(s as usize).unwrap() + a - i64::try_from(p as usize).unwrap()
         }
         _ => {

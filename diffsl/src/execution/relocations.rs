@@ -487,6 +487,8 @@ pub(crate) fn handle_jump_entry(
     rela: &Relocation,
     p: *mut u8,
     jumptable_entry: &mut JumpTableEntry,
+    mapped_sections: &HashMap<String, MappedSection>,
+    text_sec: &Section<'_, '_>,
 ) -> Result<()> {
     let symbol_index = match rela.target() {
         RelocationTarget::Symbol(s) => s,
@@ -501,5 +503,26 @@ pub(crate) fn handle_jump_entry(
         .ok_or(anyhow!("Could not resolve function {}", symbol_name))?;
     *jumptable_entry = JumpTableEntry::new(addr);
     let s = jumptable_entry.jump_ptr();
-    relocation(rela, s, p)
+    match file.format() {
+        BinaryFormat::MachO => {
+            // For MachO x86_64, the addend A already contains the file-space
+            // PC-relative displacement: target_file - (p_file + instr_len).
+            // Since target_file = 0 for external symbols, A = -(p_file + instr_len).
+            // The correct runtime displacement is: s - (p_runtime + instr_len).
+            // This equals: A + (s - mmap_base), where mmap_base = text_runtime - text_file.
+            let text_runtime = mapped_sections[text_sec.name().unwrap()].as_ptr();
+            let mmap_base = text_runtime as i64 - text_sec.address() as i64;
+            let a = rela.addend();
+            let val = a + (s as i64 - mmap_base);
+            let size = rela.size();
+            match size {
+                32 => unsafe { (p as *mut i32).write_unaligned(i32::try_from(val).map_err(|_| {
+                    anyhow!("x86 jump entry relocation overflow: val {val:#x} does not fit in i32")
+                })?) },
+                _ => return Err(anyhow!("Unsupported relocation size {:?} for jump entry", size)),
+            }
+        }
+        _ => relocation(rela, s, p),
+    }
+    Ok(())
 }

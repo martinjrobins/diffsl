@@ -530,8 +530,8 @@ pub(crate) fn handle_jump_entry(
                     ))
                 }
             }
+            Ok(())
         }
         _ => relocation(rela, s, p),
     }
-    Ok(())
 }

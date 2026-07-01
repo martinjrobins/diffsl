@@ -511,8 +511,8 @@ pub(crate) fn handle_jump_entry(
         .ok_or(anyhow!("Could not resolve function {}", symbol_name))?;
     *jumptable_entry = JumpTableEntry::new(addr);
     let s = jumptable_entry.jump_ptr();
-    match file.format() {
-        BinaryFormat::MachO => {
+    match (file.format(), ARCH) {
+        (BinaryFormat::MachO, "x86_64") | (BinaryFormat::MachO, "x86") => {
             // For MachO x86_64, the addend A already contains the file-space
             // PC-relative displacement: target_file - (p_file + instr_len).
             // Since target_file = 0 for external symbols, A = -(p_file + instr_len).

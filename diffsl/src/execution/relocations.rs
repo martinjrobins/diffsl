@@ -428,7 +428,17 @@ pub(crate) fn handle_relocation(
         RelocationTarget::Section(section_index) => {
             let section = file.section_by_index(section_index).unwrap();
             let section_name = section.name().unwrap();
-            mapped_sections[section_name].as_ptr()
+            let s = mapped_sections[section_name].as_ptr();
+            eprintln!(
+                "section reloc: target={}, kind={:?}, addend={:#x}, size={}, s={:p}, p={:p}",
+                section_name,
+                rela.kind(),
+                rela.addend(),
+                rela.size(),
+                s,
+                p
+            );
+            s
         }
         _ => Err(anyhow!(
             "Only relocation targets that are symbols or sections are supported"

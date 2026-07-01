@@ -125,10 +125,68 @@ pub(crate) fn relocation_target_section<'file, 'data>(
 }
 
 pub(crate) fn is_jump_table_entry(file: &File<'_>, rela: &Relocation) -> bool {
-    // any relocation that is not a local symbol and with a size smaller than the
+    // any relocation for an external symbol (no section) with a size smaller than the
     // architecture's pointer size is a jump table entry
-    relocation_target_section(file, rela).is_none()
-        && (rela.size() < u8::try_from(std::mem::size_of::<usize>() * 8).unwrap())
+    match rela.target() {
+        RelocationTarget::Symbol(symbol_index) => {
+            let symbol = file.symbol_by_index(symbol_index).unwrap();
+            symbol.section_index().is_none()
+                && (rela.size() < u8::try_from(std::mem::size_of::<usize>() * 8).unwrap())
+        }
+        _ => false,
+    }
+}
+
+fn handle_section_relocation(
+    rela: &Relocation,
+    section_ptr: *const u8,
+    section_file_addr: u64,
+    p: *mut u8,
+) -> Result<()> {
+    let a = rela.addend();
+    let size = rela.size();
+    let val = match rela.kind() {
+        // Absolute: the addend is the file-absolute address of the target.
+        // The correct runtime address is: addend + (section_runtime - section_file_addr)
+        RelocationKind::Absolute => {
+            let section_runtime = i64::try_from(section_ptr as usize).unwrap();
+            a + (section_runtime - section_file_addr as i64)
+        }
+        // Relative / PltRelative: the addend is already the PC-relative
+        // displacement in file space. Since all sections are mapped
+        // contiguously in a single mmap, the relative positions are
+        // preserved, and no adjustment is needed.
+        RelocationKind::Relative | RelocationKind::PltRelative => a,
+        _ => {
+            return Err(anyhow!(
+                "Unsupported relocation type {:?} for section-based x86 relocation",
+                rela.kind()
+            ))
+        }
+    };
+    match size {
+        16 => unsafe {
+            (p as *mut i16).write_unaligned(i16::try_from(val).map_err(|_| {
+                anyhow!(
+                    "x86 section relocation overflow for {:?} {:?}-bit relocation: value {val:#x} does not fit in i16",
+                    rela.kind(),
+                    size
+                )
+            })?)
+        },
+        32 => unsafe {
+            (p as *mut i32).write_unaligned(i32::try_from(val).map_err(|_| {
+                anyhow!(
+                    "x86 section relocation overflow for {:?} {:?}-bit relocation: value {val:#x} does not fit in i32",
+                    rela.kind(),
+                    size
+                )
+            })?)
+        },
+        64 => unsafe { (p as *mut i64).write_unaligned(val) },
+        _ => return Err(anyhow!("Unsupported relocation size {:?}", size)),
+    }
+    Ok(())
 }
 
 fn handle_relocation_generic_x86(rela: &Relocation, s: *const u8, p: *mut u8) -> Result<()> {
@@ -359,9 +417,7 @@ fn relocation(rela: &Relocation, s: *const u8, p: *mut u8) -> Result<()> {
             r_pcrel,
             r_length,
         } => match ARCH {
-            // TODO: require x86_64 for intel macOS
-            //"x86" => handle_relocation_generic_x86(rela, s, p),
-            //"x86_64" => handle_relocation_generic_x86(rela, s, p),
+            "x86" | "x86_64" => handle_relocation_generic_x86(rela, s, p),
             "aarch64" => handle_relocation_macho_aarch64(s, a, p, r_type, r_pcrel, r_length),
             _ => Err(anyhow!(
                 "Unsupported architecture {} for MachO relocations",
@@ -400,29 +456,36 @@ pub(crate) fn handle_relocation(
     p: *mut u8,
     mapped_sections: &HashMap<String, MappedSection>,
 ) -> Result<()> {
-    let symbol_index = match rela.target() {
-        RelocationTarget::Symbol(s) => s,
-        _ => Err(anyhow!(
-            "Only relocation targets that are symbols are supported"
-        ))?,
-    };
-    let symbol = file.symbol_by_index(symbol_index).unwrap();
-    let s = match symbol.section_index() {
-        Some(section_index) => {
+    let s = match rela.target() {
+        RelocationTarget::Symbol(symbol_index) => {
+            let symbol = file.symbol_by_index(symbol_index).unwrap();
+            match symbol.section_index() {
+                Some(section_index) => {
+                    let section = file.section_by_index(section_index).unwrap();
+                    let section_name = section.name().expect("Could not get section name");
+                    let section_ptr = mapped_sections[section_name].as_ptr();
+                    let offset = symbol_offset(file, &symbol, &section)?;
+                    unsafe { section_ptr.offset(offset) }
+                }
+                None => {
+                    // must be an external function call generate the jump table entry
+                    // return an Err if the function is not found
+                    function_resolver(symbol.name().unwrap()).ok_or(anyhow!(
+                        "Could not resolve function {}",
+                        symbol.name().unwrap()
+                    ))?
+                }
+            }
+        }
+        RelocationTarget::Section(section_index) => {
             let section = file.section_by_index(section_index).unwrap();
-            let section_name = section.name().expect("Could not get section name");
+            let section_name = section.name().unwrap();
             let section_ptr = mapped_sections[section_name].as_ptr();
-            let offset = symbol_offset(file, &symbol, &section)?;
-            unsafe { section_ptr.offset(offset) }
+            return handle_section_relocation(rela, section_ptr, section.address(), p);
         }
-        None => {
-            // must be an external function call generate the jump table entry
-            // return an Err if the function is not found
-            function_resolver(symbol.name().unwrap()).ok_or(anyhow!(
-                "Could not resolve function {}",
-                symbol.name().unwrap()
-            ))?
-        }
+        _ => Err(anyhow!(
+            "Only relocation targets that are symbols or sections are supported"
+        ))?,
     };
     relocation(rela, s, p)
 }
@@ -432,6 +495,8 @@ pub(crate) fn handle_jump_entry(
     rela: &Relocation,
     p: *mut u8,
     jumptable_entry: &mut JumpTableEntry,
+    mapped_sections: &HashMap<String, MappedSection>,
+    text_sec: &Section<'_, '_>,
 ) -> Result<()> {
     let symbol_index = match rela.target() {
         RelocationTarget::Symbol(s) => s,
@@ -446,5 +511,35 @@ pub(crate) fn handle_jump_entry(
         .ok_or(anyhow!("Could not resolve function {}", symbol_name))?;
     *jumptable_entry = JumpTableEntry::new(addr);
     let s = jumptable_entry.jump_ptr();
-    relocation(rela, s, p)
+    match (file.format(), ARCH) {
+        (BinaryFormat::MachO, "x86_64") | (BinaryFormat::MachO, "x86") => {
+            // For MachO x86_64, the addend A already contains the file-space
+            // PC-relative displacement: target_file - (p_file + instr_len).
+            // Since target_file = 0 for external symbols, A = -(p_file + instr_len).
+            // The correct runtime displacement is: s - (p_runtime + instr_len).
+            // This equals: A + (s - mmap_base), where mmap_base = text_runtime - text_file.
+            let text_runtime = mapped_sections[text_sec.name().unwrap()].as_ptr();
+            let mmap_base = text_runtime as i64 - text_sec.address() as i64;
+            let a = rela.addend();
+            let val = a + (s as i64 - mmap_base);
+            let size = rela.size();
+            match size {
+                32 => unsafe {
+                    (p as *mut i32).write_unaligned(i32::try_from(val).map_err(|_| {
+                        anyhow!(
+                            "x86 jump entry relocation overflow: val {val:#x} does not fit in i32"
+                        )
+                    })?)
+                },
+                _ => {
+                    return Err(anyhow!(
+                        "Unsupported relocation size {:?} for jump entry",
+                        size
+                    ))
+                }
+            }
+            Ok(())
+        }
+        _ => relocation(rela, s, p),
+    }
 }

@@ -50,6 +50,7 @@ jobs:
           os:
             - ubuntu-latest
             - macos-latest
+            - macos-15-intel
           features:
             - "rayon cranelift external_f64 external_f32"
           experimental: 
@@ -140,9 +141,9 @@ jobs:
     - name: Rust version
       run: rustc -Vv
     - name: Install LLVM and Clang (LLVM >= 19.1 & macos)
-      if : matrix.llvm != '' && matrix.os == 'macos-latest' && (matrix.llvm[0] >= '19.1')
+      if : matrix.llvm != '' && (matrix.os == 'macos-latest' || matrix.os == 'macos-15-intel') && (matrix.llvm[0] >= '19.1')
       run: |
-        brew install llvm@${{ matrix.llvm[3] }}
+        brew install llvm@${{ matrix.llvm[3] }} || true
         echo "LLVM_PATH=$(brew --prefix llvm@${{ matrix.llvm[3] }})" >> $GITHUB_ENV
     - name: Install LLVM and Clang (LLVM >= 19.1 & ubuntu)
       if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest'|| matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] >= '19.1')
@@ -164,6 +165,12 @@ jobs:
       if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] < '19.1')
       with:
         version: ${{ matrix.llvm[0] }}
+    - name: Install LLVM and Clang (macos-15-intel, LLVM < 19.1)
+      if : matrix.llvm != '' && matrix.os == 'macos-15-intel' && (matrix.llvm[0] < '19.1')
+      run: |
+        LLVM_MAJOR=$(echo '${{ matrix.llvm[0] }}' | cut -d. -f1)
+        brew install llvm@${LLVM_MAJOR} || true
+        echo "LLVM_PATH=$(brew --prefix llvm@${LLVM_MAJOR})" >> $GITHUB_ENV
     - name: Set LLVM_SYS_XXX_DIR and CC, CXX environment variables
       if : matrix.llvm != ''
       run: |
@@ -182,7 +189,7 @@ jobs:
       uses: mxschmitt/action-tmate@v3
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
     - name: Workaround missing libcurses.tbd on macOS
-      if : matrix.os == 'macos-latest' && matrix.llvm != ''
+      if : (matrix.os == 'macos-latest' || matrix.os == 'macos-15-intel') && matrix.llvm != ''
       run: |
         SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
         if [ ! -f "$SDK_PATH/usr/lib/libcurses.tbd" ] && [ -f "$SDK_PATH/usr/lib/libncurses.tbd" ]; then

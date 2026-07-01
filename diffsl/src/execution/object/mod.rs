@@ -9,7 +9,7 @@ use super::{
         symbol_offset, JumpTableEntry,
     },
 };
-use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
+use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind};
 
 pub struct ObjectModule {
     object_buffer: Vec<u8>,
@@ -55,6 +55,14 @@ impl CodegenModuleLink for ObjectModule {
                         return acc;
                     }
                     let section_name = section.name().expect("Could not get section name");
+                    acc.insert(section_name, section.index());
+                } else if let RelocationTarget::Section(section_index) = rela.target() {
+                    // on x86_64 MachO, some relocations target sections directly
+                    let section = file.section_by_index(section_index).unwrap();
+                    if section.index() == text_sec.index() {
+                        return acc;
+                    }
+                    let section_name = section.name().unwrap();
                     acc.insert(section_name, section.index());
                 }
                 if is_jump_table_entry(&file, &rela) {
@@ -124,7 +132,14 @@ impl CodegenModuleLink for ObjectModule {
             let patch_ptr = unsafe { text_ptr.offset(offset as isize) };
             if is_jump_table_entry(&file, &rela) {
                 let jumptable_entry = &mut jumptable.as_mut().unwrap()[jumptable_idx];
-                handle_jump_entry(&file, &rela, patch_ptr, jumptable_entry)?;
+                handle_jump_entry(
+                    &file,
+                    &rela,
+                    patch_ptr,
+                    jumptable_entry,
+                    &mapped_sections,
+                    &text_sec,
+                )?;
                 jumptable_idx += 1;
             } else {
                 handle_relocation(&file, &rela, patch_ptr, &mapped_sections)?;

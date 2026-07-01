@@ -132,7 +132,14 @@ impl CodegenModuleLink for ObjectModule {
             let patch_ptr = unsafe { text_ptr.offset(offset as isize) };
             if is_jump_table_entry(&file, &rela) {
                 let jumptable_entry = &mut jumptable.as_mut().unwrap()[jumptable_idx];
-                handle_jump_entry(&file, &rela, patch_ptr, jumptable_entry, &mapped_sections, &text_sec)?;
+                handle_jump_entry(
+                    &file,
+                    &rela,
+                    patch_ptr,
+                    jumptable_entry,
+                    &mapped_sections,
+                    &text_sec,
+                )?;
                 jumptable_idx += 1;
             } else {
                 handle_relocation(&file, &rela, patch_ptr, &mapped_sections)?;

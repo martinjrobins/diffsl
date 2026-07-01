@@ -516,10 +516,19 @@ pub(crate) fn handle_jump_entry(
             let val = a + (s as i64 - mmap_base);
             let size = rela.size();
             match size {
-                32 => unsafe { (p as *mut i32).write_unaligned(i32::try_from(val).map_err(|_| {
-                    anyhow!("x86 jump entry relocation overflow: val {val:#x} does not fit in i32")
-                })?) },
-                _ => return Err(anyhow!("Unsupported relocation size {:?} for jump entry", size)),
+                32 => unsafe {
+                    (p as *mut i32).write_unaligned(i32::try_from(val).map_err(|_| {
+                        anyhow!(
+                            "x86 jump entry relocation overflow: val {val:#x} does not fit in i32"
+                        )
+                    })?)
+                },
+                _ => {
+                    return Err(anyhow!(
+                        "Unsupported relocation size {:?} for jump entry",
+                        size
+                    ))
+                }
             }
         }
         _ => relocation(rela, s, p),

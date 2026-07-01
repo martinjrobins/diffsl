@@ -137,13 +137,21 @@ pub(crate) fn is_jump_table_entry(file: &File<'_>, rela: &Relocation) -> bool {
     }
 }
 
-fn handle_section_relocation(rela: &Relocation, section_ptr: *const u8, p: *mut u8) -> Result<()> {
+fn handle_section_relocation(
+    rela: &Relocation,
+    section_ptr: *const u8,
+    section_file_addr: u64,
+    p: *mut u8,
+) -> Result<()> {
     let a = rela.addend();
     let size = rela.size();
     let val = match rela.kind() {
-        // Absolute: addend is the offset within the section.
-        // S + A where S = section_ptr
-        RelocationKind::Absolute => i64::try_from(section_ptr as usize).unwrap() + a,
+        // Absolute: the addend is the file-absolute address of the target.
+        // The correct runtime address is: addend + (section_runtime - section_file_addr)
+        RelocationKind::Absolute => {
+            let section_runtime = i64::try_from(section_ptr as usize).unwrap();
+            a + (section_runtime - section_file_addr as i64)
+        }
         // Relative / PltRelative: the addend is already the PC-relative
         // displacement in file space. Since all sections are mapped
         // contiguously in a single mmap, the relative positions are
@@ -473,7 +481,7 @@ pub(crate) fn handle_relocation(
             let section = file.section_by_index(section_index).unwrap();
             let section_name = section.name().unwrap();
             let section_ptr = mapped_sections[section_name].as_ptr();
-            return handle_section_relocation(rela, section_ptr, p);
+            return handle_section_relocation(rela, section_ptr, section.address(), p);
         }
         _ => Err(anyhow!(
             "Only relocation targets that are symbols or sections are supported"

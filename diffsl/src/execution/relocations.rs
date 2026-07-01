@@ -137,6 +137,50 @@ pub(crate) fn is_jump_table_entry(file: &File<'_>, rela: &Relocation) -> bool {
     }
 }
 
+fn handle_section_relocation(rela: &Relocation, section_ptr: *const u8, p: *mut u8) -> Result<()> {
+    let a = rela.addend();
+    let size = rela.size();
+    let val = match rela.kind() {
+        // Absolute: addend is the offset within the section.
+        // S + A where S = section_ptr
+        RelocationKind::Absolute => i64::try_from(section_ptr as usize).unwrap() + a,
+        // Relative / PltRelative: the addend is already the PC-relative
+        // displacement in file space. Since all sections are mapped
+        // contiguously in a single mmap, the relative positions are
+        // preserved, and no adjustment is needed.
+        RelocationKind::Relative | RelocationKind::PltRelative => a,
+        _ => {
+            return Err(anyhow!(
+                "Unsupported relocation type {:?} for section-based x86 relocation",
+                rela.kind()
+            ))
+        }
+    };
+    match size {
+        16 => unsafe {
+            (p as *mut i16).write_unaligned(i16::try_from(val).map_err(|_| {
+                anyhow!(
+                    "x86 section relocation overflow for {:?} {:?}-bit relocation: value {val:#x} does not fit in i16",
+                    rela.kind(),
+                    size
+                )
+            })?)
+        },
+        32 => unsafe {
+            (p as *mut i32).write_unaligned(i32::try_from(val).map_err(|_| {
+                anyhow!(
+                    "x86 section relocation overflow for {:?} {:?}-bit relocation: value {val:#x} does not fit in i32",
+                    rela.kind(),
+                    size
+                )
+            })?)
+        },
+        64 => unsafe { (p as *mut i64).write_unaligned(val) },
+        _ => return Err(anyhow!("Unsupported relocation size {:?}", size)),
+    }
+    Ok(())
+}
+
 fn handle_relocation_generic_x86(rela: &Relocation, s: *const u8, p: *mut u8) -> Result<()> {
     let a = rela.addend();
     let size = rela.size();
@@ -428,17 +472,8 @@ pub(crate) fn handle_relocation(
         RelocationTarget::Section(section_index) => {
             let section = file.section_by_index(section_index).unwrap();
             let section_name = section.name().unwrap();
-            let s = mapped_sections[section_name].as_ptr();
-            eprintln!(
-                "section reloc: target={}, kind={:?}, addend={:#x}, size={}, s={:p}, p={:p}",
-                section_name,
-                rela.kind(),
-                rela.addend(),
-                rela.size(),
-                s,
-                p
-            );
-            s
+            let section_ptr = mapped_sections[section_name].as_ptr();
+            return handle_section_relocation(rela, section_ptr, p);
         }
         _ => Err(anyhow!(
             "Only relocation targets that are symbols or sections are supported"

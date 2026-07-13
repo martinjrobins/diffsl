@@ -353,9 +353,9 @@ impl DataLayout {
                     // deterministic hash from the call args (x, y, q)
                     // — must match codegen; only hash base args, never the full Call
                     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    format!("{:?}", &call.args[0]).hash(&mut hasher);
-                    format!("{:?}", &call.args[1]).hash(&mut hasher);
-                    format!("{:?}", &call.args[2]).hash(&mut hasher);
+                    format!("{:?}", call.args[0]).hash(&mut hasher);
+                    format!("{:?}", call.args[1]).hash(&mut hasher);
+                    format!("{:?}", call.args[2]).hash(&mut hasher);
                     let hash_key = hasher.finish();
 
                     let info = Interp1dInfo {

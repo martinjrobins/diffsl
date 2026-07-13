@@ -1642,13 +1642,13 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
     ) -> Result<Value> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         if call.is_tangent {
-            std::hash::Hash::hash(&format!("{:?}", &call.args[0]), &mut hasher);
-            std::hash::Hash::hash(&format!("{:?}", &call.args[2]), &mut hasher);
-            std::hash::Hash::hash(&format!("{:?}", &call.args[4]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", call.args[0]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", call.args[2]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", call.args[4]), &mut hasher);
         } else {
-            std::hash::Hash::hash(&format!("{:?}", &call.args[0]), &mut hasher);
-            std::hash::Hash::hash(&format!("{:?}", &call.args[1]), &mut hasher);
-            std::hash::Hash::hash(&format!("{:?}", &call.args[2]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", call.args[0]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", call.args[1]), &mut hasher);
+            std::hash::Hash::hash(&format!("{:?}", call.args[2]), &mut hasher);
         }
         let hash_key = std::hash::Hasher::finish(&hasher);
         let info = self

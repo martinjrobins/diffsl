@@ -371,7 +371,7 @@ impl<'s> ModelInfo<'s> {
             }
         }
 
-        for (_, v_cell) in self.variables.iter() {
+        for v_cell in self.variables.values() {
             // check all non-algebraic state variables have an initial condition
             let v = v_cell.borrow();
             if v.is_state() && v.has_equation() {

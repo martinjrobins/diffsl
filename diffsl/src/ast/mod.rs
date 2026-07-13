@@ -583,6 +583,7 @@ impl<'a> Ast<'a> {
             },
             AstKind::Monop(monop) => match monop.op {
                 '-' => Self::new_monop('-', monop.child.tangent()),
+                '+' => monop.child.tangent(),
                 _ => panic!("Tangent not implemented for operator {}", monop.op),
             },
             AstKind::Call(call) => {

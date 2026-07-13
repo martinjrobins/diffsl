@@ -3021,6 +3021,7 @@ impl<'ctx> CodeGen<'ctx> {
                     self.jit_compile_expr(name, monop.child.as_ref(), index, elmt, expr_index)?;
                 match monop.op {
                     '-' => Ok(self.builder.build_float_neg(child, name)?),
+                    '+' => Ok(child),
                     unknown => Err(anyhow!("unknown monop op '{}'", unknown)),
                 }
             }

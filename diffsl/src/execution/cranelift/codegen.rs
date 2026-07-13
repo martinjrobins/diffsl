@@ -1382,6 +1382,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                     self.jit_compile_expr(name, monop.child.as_ref(), index, elmt, expr_index)?;
                 match monop.op {
                     '-' => Ok(self.builder.ins().fneg(child)),
+                    '+' => Ok(child),
                     unknown => Err(anyhow!("unknown monop op '{}'", unknown)),
                 }
             }

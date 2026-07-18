@@ -536,18 +536,31 @@ impl<'s> ModelInfo<'s> {
                 // check name in allowed functions
                 let functions = [
                     "sin", "cos", "tan", "pow", "exp", "log", "sqrt", "abs", "interp1d",
+                    "piecewise",
                 ];
                 if functions.contains(&call.fn_name) {
-                    let expected_nargs = match call.fn_name {
-                        "interp1d" => 3,
-                        "pow" => 2,
-                        _ => 1,
-                    };
-                    if call.args.len() != expected_nargs {
-                        self.errors.push(Output::new(
-                            format!("incorrect number of given arguments ({} instead of {}) for function {}", call.args.len(), expected_nargs, call.fn_name),
-                            expr.span,
-                        ));
+                    if call.fn_name == "piecewise" {
+                        if call.args.len() < 3 || call.args.len() % 2 == 0 {
+                            self.errors.push(Output::new(
+                                format!(
+                                    "piecewise requires an odd number of arguments >= 3, got {}",
+                                    call.args.len()
+                                ),
+                                expr.span,
+                            ));
+                        }
+                    } else {
+                        let expected_nargs = match call.fn_name {
+                            "interp1d" => 3,
+                            "pow" => 2,
+                            _ => 1,
+                        };
+                        if call.args.len() != expected_nargs {
+                            self.errors.push(Output::new(
+                                format!("incorrect number of given arguments ({} instead of {}) for function {}", call.args.len(), expected_nargs, call.fn_name),
+                                expr.span,
+                            ));
+                        }
                     }
                     for arg in call.args.iter() {
                         if let AstKind::CallArg(call_arg) = &arg.kind {

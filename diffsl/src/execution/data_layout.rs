@@ -575,6 +575,15 @@ impl DataLayout {
             ("pow", [x, y]) => x.powf(*y),
             ("min", [x, y]) => x.min(*y),
             ("max", [x, y]) => x.max(*y),
+            ("piecewise", args) => {
+                let num_branches = (args.len() - 1) / 2;
+                for i in 0..num_branches {
+                    if args[2 * i] >= 0.0 {
+                        return args[2 * i + 1];
+                    }
+                }
+                args[args.len() - 1]
+            }
             _ => panic!(
                 "unknown constant function call '{}' with {} args",
                 name,

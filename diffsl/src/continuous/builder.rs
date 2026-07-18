@@ -3,6 +3,7 @@ use crate::ast::Ast;
 use crate::ast::AstKind;
 use crate::ast::Model;
 use crate::ast::StringSpan;
+use crate::execution::functions::check_function_args;
 use pest::Span;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -533,22 +534,24 @@ impl<'s> ModelInfo<'s> {
                 self.check_expr(&monop.child);
             }
             AstKind::Call(call) => {
-                // check name in allowed functions
-                let functions = [
-                    "sin", "cos", "tan", "pow", "exp", "log", "sqrt", "abs", "interp1d",
+                // validate arg count for builtin functions
+                if let Err(msg) = check_function_args(call.fn_name, call.args.len()) {
+                    self.errors.push(Output::new(msg, expr.span));
+                }
+                // keyword arg check for builtins
+                let builtin = [
+                    "sin",
+                    "cos",
+                    "tan",
+                    "pow",
+                    "exp",
+                    "log",
+                    "sqrt",
+                    "abs",
+                    "interp1d",
+                    "piecewise",
                 ];
-                if functions.contains(&call.fn_name) {
-                    let expected_nargs = match call.fn_name {
-                        "interp1d" => 3,
-                        "pow" => 2,
-                        _ => 1,
-                    };
-                    if call.args.len() != expected_nargs {
-                        self.errors.push(Output::new(
-                            format!("incorrect number of given arguments ({} instead of {}) for function {}", call.args.len(), expected_nargs, call.fn_name),
-                            expr.span,
-                        ));
-                    }
+                if builtin.contains(&call.fn_name) {
                     for arg in call.args.iter() {
                         if let AstKind::CallArg(call_arg) = &arg.kind {
                             if call_arg.name.is_some() {

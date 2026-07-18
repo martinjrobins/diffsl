@@ -13,6 +13,8 @@ type Interp1dFnF64 = extern "C" fn(*const f64, usize, usize, usize, f64) -> f64;
 type Interp1dFnF32 = extern "C" fn(*const f32, usize, usize, usize, f32) -> f32;
 type Interp1dGradFnF64 = extern "C" fn(*const f64, usize, usize, usize, f64, f64) -> f64;
 type Interp1dGradFnF32 = extern "C" fn(*const f32, usize, usize, usize, f32, f32) -> f32;
+type PiecewiseFnF64 = extern "C" fn(*const f64, usize) -> f64;
+type PiecewiseFnF32 = extern "C" fn(*const f32, usize) -> f32;
 
 pub fn function_symbol_name(base_name: &str, real_type: RealType, is_tangent: bool) -> String {
     let suffix = real_type.as_str();
@@ -77,6 +79,18 @@ fn resolve_by_real_type(name: &str, is_tangent: bool, real_type: &RealType) -> O
                             *f as *const u8
                         }
                     })
+            })
+            .or_else(|| {
+                PIECEWISE_FUNCTIONS_F64
+                    .iter()
+                    .find(|(n, _, _)| *n == name)
+                    .map(|(_, f, df)| {
+                        if is_tangent {
+                            *df as *const u8
+                        } else {
+                            *f as *const u8
+                        }
+                    })
             }),
         RealType::F32 => FUNCTIONS_F32
             .iter()
@@ -102,6 +116,18 @@ fn resolve_by_real_type(name: &str, is_tangent: bool, real_type: &RealType) -> O
             })
             .or_else(|| {
                 INTERP1D_FUNCTIONS_F32
+                    .iter()
+                    .find(|(n, _, _)| *n == name)
+                    .map(|(_, f, df)| {
+                        if is_tangent {
+                            *df as *const u8
+                        } else {
+                            *f as *const u8
+                        }
+                    })
+            })
+            .or_else(|| {
+                PIECEWISE_FUNCTIONS_F32
                     .iter()
                     .find(|(n, _, _)| *n == name)
                     .map(|(_, f, df)| {
@@ -178,6 +204,14 @@ pub const INTERP1D_FUNCTIONS_F32: &[(&str, Interp1dFnF32, Interp1dGradFnF32)] =
     &[("interp1d_impl", interp1d_impl_f32, dinterp1d_impl_f32)];
 
 pub const INTERP1D_FUNCTIONS: &[(&str, Interp1dFnF64, Interp1dGradFnF64)] = INTERP1D_FUNCTIONS_F64;
+
+pub const PIECEWISE_FUNCTIONS_F64: &[(&str, PiecewiseFnF64, PiecewiseFnF64)] =
+    &[("piecewise_impl", piecewise_impl_f64, dpiecewise_impl_f64)];
+
+pub const PIECEWISE_FUNCTIONS_F32: &[(&str, PiecewiseFnF32, PiecewiseFnF32)] =
+    &[("piecewise_impl", piecewise_impl_f32, dpiecewise_impl_f32)];
+
+pub const PIECEWISE_FUNCTIONS: &[(&str, PiecewiseFnF64, PiecewiseFnF64)] = PIECEWISE_FUNCTIONS_F64;
 
 pub fn function_resolver(name: &str) -> Option<*const u8> {
     let (base_name, is_tangent, real_type) = parse_function_name(name);
@@ -293,7 +327,65 @@ pub fn function_num_args(name: &str, is_tangent: bool) -> Option<usize> {
         return Some(5 * multiplier);
     }
 
+    if PIECEWISE_FUNCTIONS_F64
+        .iter()
+        .any(|(n, _, _)| n == &base_name)
+        || PIECEWISE_FUNCTIONS_F32
+            .iter()
+            .any(|(n, _, _)| n == &base_name)
+    {
+        return Some(2 * multiplier);
+    }
+
     None
+}
+
+pub fn check_function_args(name: &str, n_args: usize) -> Result<(), String> {
+    if FUNCTIONS_F64.iter().any(|(n, _, _)| n == &name)
+        || FUNCTIONS_F32.iter().any(|(n, _, _)| n == &name)
+    {
+        if n_args != 1 {
+            return Err(format!(
+                "function '{}' expects 1 argument, got {}",
+                name, n_args
+            ));
+        }
+        return Ok(());
+    }
+
+    if TWO_ARG_FUNCTIONS_F64.iter().any(|(n, _, _)| n == &name)
+        || TWO_ARG_FUNCTIONS_F32.iter().any(|(n, _, _)| n == &name)
+    {
+        if n_args != 2 {
+            return Err(format!(
+                "function '{}' expects 2 arguments, got {}",
+                name, n_args
+            ));
+        }
+        return Ok(());
+    }
+
+    if name == "interp1d" {
+        if n_args != 3 {
+            return Err(format!(
+                "function 'interp1d' expects 3 arguments, got {}",
+                n_args
+            ));
+        }
+        return Ok(());
+    }
+
+    if name == "piecewise" {
+        if n_args < 3 || n_args.is_multiple_of(2) {
+            return Err(format!(
+                "function 'piecewise' requires an odd number of arguments >= 3, got {}",
+                n_args
+            ));
+        }
+        return Ok(());
+    }
+
+    Ok(())
 }
 
 // Explicit f64 versions
@@ -719,5 +811,59 @@ extern "C" fn dinterp1d_impl_f32(
         let k = lo.min(n - 2);
         let slope = (y_vals[k + 1] - y_vals[k]) / (x_vals[k + 1] - x_vals[k]);
         dq * slope
+    }
+}
+
+extern "C" fn piecewise_impl_f64(args: *const f64, n: usize) -> f64 {
+    unsafe {
+        let args = std::slice::from_raw_parts(args, n);
+        let num_branches = (n - 1) / 2;
+        for i in 0..num_branches {
+            if args[2 * i] >= 0.0 {
+                return args[2 * i + 1];
+            }
+        }
+        args[n - 1]
+    }
+}
+
+extern "C" fn dpiecewise_impl_f64(args: *const f64, n: usize) -> f64 {
+    unsafe {
+        let args = std::slice::from_raw_parts(args, n);
+        let total_primal = n / 2;
+        let num_branches = (total_primal - 1) / 2;
+        for i in 0..num_branches {
+            if args[4 * i] >= 0.0 {
+                return args[4 * i + 3];
+            }
+        }
+        args[n - 1]
+    }
+}
+
+extern "C" fn piecewise_impl_f32(args: *const f32, n: usize) -> f32 {
+    unsafe {
+        let args = std::slice::from_raw_parts(args, n);
+        let num_branches = (n - 1) / 2;
+        for i in 0..num_branches {
+            if args[2 * i] >= 0.0 {
+                return args[2 * i + 1];
+            }
+        }
+        args[n - 1]
+    }
+}
+
+extern "C" fn dpiecewise_impl_f32(args: *const f32, n: usize) -> f32 {
+    unsafe {
+        let args = std::slice::from_raw_parts(args, n);
+        let total_primal = n / 2;
+        let num_branches = (total_primal - 1) / 2;
+        for i in 0..num_branches {
+            if args[4 * i] >= 0.0 {
+                return args[4 * i + 3];
+            }
+        }
+        args[n - 1]
     }
 }

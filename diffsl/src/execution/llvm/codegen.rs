@@ -3028,6 +3028,9 @@ impl<'ctx> CodeGen<'ctx> {
             AstKind::Call(call) if call.fn_name == "interp1d" => {
                 self.jit_compile_interp1d(name, call, index, elmt, expr_index, expr.span)
             }
+            AstKind::Call(call) if call.fn_name == "piecewise" => {
+                self.jit_compile_piecewise(name, call, index, elmt, expr_index)
+            }
             AstKind::Call(call) => match self.get_function(call.fn_name) {
                 Some(function) => {
                     let mut args: Vec<BasicMetadataValueEnum> = Vec::new();
@@ -3400,6 +3403,36 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap_basic()
             .into_float_value();
         Ok(ret)
+    }
+
+    fn jit_compile_piecewise(
+        &mut self,
+        name: &str,
+        call: &crate::ast::Call,
+        index: &[IntValue<'ctx>],
+        elmt: &TensorBlock,
+        expr_index: IntValue<'ctx>,
+    ) -> Result<FloatValue<'ctx>> {
+        let n = call.args.len();
+        let num_branches = (n - 1) / 2;
+
+        let fallback = self.jit_compile_expr(name, &call.args[n - 1], index, elmt, expr_index)?;
+
+        let mut result = fallback;
+        for i in (0..num_branches).rev() {
+            let check = self.jit_compile_expr(name, &call.args[2 * i], index, elmt, expr_index)?;
+            let value =
+                self.jit_compile_expr(name, &call.args[2 * i + 1], index, elmt, expr_index)?;
+            let zero = self.real_type.const_float(0.0);
+            let cond = self
+                .builder
+                .build_float_compare(FloatPredicate::OGE, check, zero, name)?;
+            result = self
+                .builder
+                .build_select(cond, value, result, name)?
+                .into_float_value();
+        }
+        Ok(result)
     }
 
     fn jit_compile_integer_expr(&mut self, expr: &Ast, name: &str) -> Result<IntValue<'ctx>> {

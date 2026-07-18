@@ -21,12 +21,28 @@ The DiffSL supports the following mathematical functions that can be used in an 
 * `sigmoid(x)` - sigmoid function of x
 * `heaviside(x)` - Heaviside step function of x
 * `interp1d(x_i, y_i, q)` - 1D piecewise linear interpolation
+* `piecewise(c0, v0, c1, v1, ..., fallback)` - piecewise conditional function
 
 You can use these functions as part of an expression in the DSL. For example, to define a variable `a` that is the sine of another variable `b`, you can write:
 
 ```diffsl
 b { 1.0 }
 a { sin(b) }
+```
+
+### `piecewise(c0, v0, c1, v1, ..., fallback)`
+
+The `piecewise` function takes an odd number of arguments (minimum 3) and evaluates
+to a piecewise mathematical function. Arguments are grouped in pairs `(check, value)`,
+with a final `fallback`. For each pair, if `check >= 0`, the function returns
+`value`. If no check passes, it returns `fallback`. For example, to represent
+the piecewise function `f(x) = x^2 for x >= 0, -x for x < 0`:`
+
+```diffsl
+# 
+x { 0.5 }
+r { piecewise(x, x * x, -x) }
+# x = 0.5 >= 0 → return x * x = 0.25
 ```
 
 ### `interp1d(x_i, y_i, q)`

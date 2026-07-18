@@ -1248,6 +1248,25 @@ impl CodegenModuleCompile for CraneliftModule<JITModule> {
                 df_ptr,
             );
         }
+        for i in 0..crate::execution::functions::PIECEWISE_FUNCTIONS.len() {
+            let (f_name, f_ptr, df_ptr) = match real_type {
+                RealType::F32 => (
+                    crate::execution::functions::PIECEWISE_FUNCTIONS_F32[i].0,
+                    crate::execution::functions::PIECEWISE_FUNCTIONS_F32[i].1 as *const u8,
+                    crate::execution::functions::PIECEWISE_FUNCTIONS_F32[i].2 as *const u8,
+                ),
+                RealType::F64 => (
+                    crate::execution::functions::PIECEWISE_FUNCTIONS_F64[i].0,
+                    crate::execution::functions::PIECEWISE_FUNCTIONS_F64[i].1 as *const u8,
+                    crate::execution::functions::PIECEWISE_FUNCTIONS_F64[i].2 as *const u8,
+                ),
+            };
+            builder.symbol(f_name, f_ptr);
+            builder.symbol(
+                CraneliftCodeGen::<JITModule>::get_function_name(f_name, true),
+                df_ptr,
+            );
+        }
 
         let module = JITModule::new(builder);
         Self::new(
@@ -1388,6 +1407,9 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             }
             AstKind::Call(call) if call.fn_name == "interp1d" => {
                 self.jit_compile_interp1d(name, call, index, elmt, expr_index, expr.span)
+            }
+            AstKind::Call(call) if call.fn_name == "piecewise" => {
+                self.jit_compile_piecewise(name, call, index, elmt, expr_index)
             }
             AstKind::Call(call) => match self.get_function(call.fn_name, call.is_tangent) {
                 Some(function) => {
@@ -1753,6 +1775,45 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
         Ok(ret_value)
     }
 
+    fn jit_compile_piecewise(
+        &mut self,
+        name: &str,
+        call: &crate::ast::Call,
+        index: &[Value],
+        elmt: &TensorBlock,
+        expr_index: Value,
+    ) -> Result<Value> {
+        let is_tangent = call.is_tangent;
+        let n = call.args.len();
+
+        let mut args = Vec::new();
+        for arg in call.args.iter() {
+            let arg_val = self.jit_compile_expr(name, arg.as_ref(), index, elmt, expr_index)?;
+            args.push(arg_val);
+        }
+
+        let arg_size = (n as u32) * self.real_type.bytes();
+        let ss_data = StackSlotData::new(StackSlotKind::ExplicitSlot, arg_size, 0);
+        let ss = self.builder.create_sized_stack_slot(ss_data);
+
+        let byte_size = self.real_type.bytes() as i32;
+        for (i, arg) in args.iter().enumerate() {
+            self.builder
+                .ins()
+                .stack_store(*arg, ss, (i as i32) * byte_size);
+        }
+
+        let ptr = self.builder.ins().stack_addr(self.real_ptr_type, ss, 0);
+        let count = self.builder.ins().iconst(self.int_type, n as i64);
+
+        let function = self
+            .get_function("piecewise_impl", is_tangent)
+            .ok_or_else(|| anyhow!("piecewise_impl not found"))?;
+
+        let call_inst = self.builder.ins().call(function, &[ptr, count]);
+        Ok(self.builder.inst_results(call_inst)[0])
+    }
+
     fn jit_compile_integer_expr(&mut self, expr: &Ast) -> Result<Value> {
         match &expr.kind {
             AstKind::Integer(value) => Ok(self.builder.ins().iconst(self.int_type, *value)),
@@ -1828,6 +1889,9 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
                             if is_tangent {
                                 sig.params.push(AbiParam::new(self.real_type));
                             }
+                        } else if base_name == "piecewise_impl" {
+                            sig.params.push(AbiParam::new(self.real_ptr_type));
+                            sig.params.push(AbiParam::new(self.int_type));
                         } else {
                             for _ in 0..num_args {
                                 sig.params.push(AbiParam::new(self.real_type));

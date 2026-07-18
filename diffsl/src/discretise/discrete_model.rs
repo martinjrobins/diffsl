@@ -408,6 +408,29 @@ impl<'s> DiscreteModel<'s> {
         }
     }
 
+    fn check_function_args_in_expr(expr: &Ast, env: &mut Env) {
+        match &expr.kind {
+            AstKind::Call(call) => {
+                if let Err(msg) =
+                    crate::execution::functions::check_function_args(call.fn_name, call.args.len())
+                {
+                    env.errs_mut().push(ValidationError::new(msg, expr.span));
+                }
+                for arg in &call.args {
+                    Self::check_function_args_in_expr(arg, env);
+                }
+            }
+            AstKind::CallArg(arg) => Self::check_function_args_in_expr(&arg.expression, env),
+            AstKind::Binop(binop) => {
+                Self::check_function_args_in_expr(&binop.left, env);
+                Self::check_function_args_in_expr(&binop.right, env);
+            }
+            AstKind::Monop(monop) => Self::check_function_args_in_expr(&monop.child, env),
+            AstKind::Assignment(a) => Self::check_function_args_in_expr(&a.expr, env),
+            _ => {}
+        }
+    }
+
     pub fn build(name: &'s str, model: &'s ast::DsModel) -> Result<Self, ValidationErrors> {
         let mut env = Env::new();
         if model.has_inputs {
@@ -753,6 +776,13 @@ impl<'s> DiscreteModel<'s> {
         } else {
             Vec::new()
         };
+
+        // validate function arg counts across all tensors
+        for tensor in ret.all_tensors() {
+            for blk in tensor.elmts() {
+                Self::check_function_args_in_expr(blk.expr(), &mut env);
+            }
+        }
 
         if env.errs().is_empty() {
             Ok(ret)
@@ -1607,6 +1637,8 @@ mod tests {
         error_divide_by_zero: "a_i { (0): 1, (2): 2 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
         error_divide_by_zero2: "a_i { (0:3): 1 } b_i { (2): 1 } c_i { a_i / b_i }" errors ["divide-by-zero",],
         slice_sparse_vec: "A_i { (0): 1, (2): 3 } B_i { A_i[0:1] }" errors ["can only index dense 1D variables",],
+        piecewise_even_args: "r { piecewise(0.0, 1.0) }" errors ["requires an odd number of arguments >= 3",],
+        piecewise_one_arg: "r { piecewise(0.0) }" errors ["requires an odd number of arguments >= 3",],
     );
 
     tensor_tests!(

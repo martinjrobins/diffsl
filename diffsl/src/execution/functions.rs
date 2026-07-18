@@ -341,6 +341,54 @@ pub fn function_num_args(name: &str, is_tangent: bool) -> Option<usize> {
     None
 }
 
+pub fn check_function_args(name: &str, n_args: usize) -> Result<(), String> {
+    if FUNCTIONS_F64.iter().any(|(n, _, _)| n == &name)
+        || FUNCTIONS_F32.iter().any(|(n, _, _)| n == &name)
+    {
+        if n_args != 1 {
+            return Err(format!(
+                "function '{}' expects 1 argument, got {}",
+                name, n_args
+            ));
+        }
+        return Ok(());
+    }
+
+    if TWO_ARG_FUNCTIONS_F64.iter().any(|(n, _, _)| n == &name)
+        || TWO_ARG_FUNCTIONS_F32.iter().any(|(n, _, _)| n == &name)
+    {
+        if n_args != 2 {
+            return Err(format!(
+                "function '{}' expects 2 arguments, got {}",
+                name, n_args
+            ));
+        }
+        return Ok(());
+    }
+
+    if name == "interp1d" {
+        if n_args != 3 {
+            return Err(format!(
+                "function 'interp1d' expects 3 arguments, got {}",
+                n_args
+            ));
+        }
+        return Ok(());
+    }
+
+    if name == "piecewise" {
+        if n_args < 3 || n_args % 2 == 0 {
+            return Err(format!(
+                "function 'piecewise' requires an odd number of arguments >= 3, got {}",
+                n_args
+            ));
+        }
+        return Ok(());
+    }
+
+    Ok(())
+}
+
 // Explicit f64 versions
 extern "C" fn sin_f64(x: f64) -> f64 {
     x.sin()

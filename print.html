@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f5a48e98.js";
+            window.path_to_searchindex_js = "searchindex-7d32e0d1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-edacbe1f.js"></script>
@@ -589,10 +589,22 @@ out { x + y + z }
 <li><code>sigmoid(x)</code> - sigmoid function of x</li>
 <li><code>heaviside(x)</code> - Heaviside step function of x</li>
 <li><code>interp1d(x_i, y_i, q)</code> - 1D piecewise linear interpolation</li>
+<li><code>piecewise(c0, v0, c1, v1, ..., fallback)</code> - piecewise conditional function</li>
 </ul>
 <p>You can use these functions as part of an expression in the DSL. For example, to define a variable <code>a</code> that is the sine of another variable <code>b</code>, you can write:</p>
 <pre><code class="language-diffsl">b { 1.0 }
 a { sin(b) }
+</code></pre>
+<h3 id="piecewisec0-v0-c1-v1--fallback"><a class="header" href="#piecewisec0-v0-c1-v1--fallback"><code>piecewise(c0, v0, c1, v1, ..., fallback)</code></a></h3>
+<p>The <code>piecewise</code> function takes an odd number of arguments (minimum 3) and evaluates
+to a piecewise mathematical function. Arguments are grouped in pairs <code>(check, value)</code>,
+with a final <code>fallback</code>. For each pair, if <code>check &gt;= 0</code>, the function returns
+<code>value</code>. If no check passes, it returns <code>fallback</code>. For example, to represent
+the piecewise function <code>f(x) = x^2 for x &gt;= 0, -x for x &lt; 0</code>:`</p>
+<pre><code class="language-diffsl"># 
+x { 0.5 }
+r { piecewise(x, x * x, -x) }
+# x = 0.5 &gt;= 0 → return x * x = 0.25
 </code></pre>
 <h3 id="interp1dx_i-y_i-q"><a class="header" href="#interp1dx_i-y_i-q"><code>interp1d(x_i, y_i, q)</code></a></h3>
 <p>The <code>interp1d</code> function performs 1D piecewise linear interpolation. <code>x_i</code> and <code>y_i</code>

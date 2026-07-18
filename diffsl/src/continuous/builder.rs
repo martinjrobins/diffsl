@@ -540,7 +540,15 @@ impl<'s> ModelInfo<'s> {
                 }
                 // keyword arg check for builtins
                 let builtin = [
-                    "sin", "cos", "tan", "pow", "exp", "log", "sqrt", "abs", "interp1d",
+                    "sin",
+                    "cos",
+                    "tan",
+                    "pow",
+                    "exp",
+                    "log",
+                    "sqrt",
+                    "abs",
+                    "interp1d",
                     "piecewise",
                 ];
                 if builtin.contains(&call.fn_name) {

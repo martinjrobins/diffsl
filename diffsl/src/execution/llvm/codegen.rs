@@ -3416,13 +3416,11 @@ impl<'ctx> CodeGen<'ctx> {
         let n = call.args.len();
         let num_branches = (n - 1) / 2;
 
-        let fallback =
-            self.jit_compile_expr(name, &call.args[n - 1], index, elmt, expr_index)?;
+        let fallback = self.jit_compile_expr(name, &call.args[n - 1], index, elmt, expr_index)?;
 
         let mut result = fallback;
         for i in (0..num_branches).rev() {
-            let check =
-                self.jit_compile_expr(name, &call.args[2 * i], index, elmt, expr_index)?;
+            let check = self.jit_compile_expr(name, &call.args[2 * i], index, elmt, expr_index)?;
             let value =
                 self.jit_compile_expr(name, &call.args[2 * i + 1], index, elmt, expr_index)?;
             let zero = self.real_type.const_float(0.0);

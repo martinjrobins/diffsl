@@ -211,8 +211,7 @@ pub const PIECEWISE_FUNCTIONS_F64: &[(&str, PiecewiseFnF64, PiecewiseFnF64)] =
 pub const PIECEWISE_FUNCTIONS_F32: &[(&str, PiecewiseFnF32, PiecewiseFnF32)] =
     &[("piecewise_impl", piecewise_impl_f32, dpiecewise_impl_f32)];
 
-pub const PIECEWISE_FUNCTIONS: &[(&str, PiecewiseFnF64, PiecewiseFnF64)] =
-    PIECEWISE_FUNCTIONS_F64;
+pub const PIECEWISE_FUNCTIONS: &[(&str, PiecewiseFnF64, PiecewiseFnF64)] = PIECEWISE_FUNCTIONS_F64;
 
 pub fn function_resolver(name: &str) -> Option<*const u8> {
     let (base_name, is_tangent, real_type) = parse_function_name(name);
@@ -377,7 +376,7 @@ pub fn check_function_args(name: &str, n_args: usize) -> Result<(), String> {
     }
 
     if name == "piecewise" {
-        if n_args < 3 || n_args % 2 == 0 {
+        if n_args < 3 || n_args.is_multiple_of(2) {
             return Err(format!(
                 "function 'piecewise' requires an odd number of arguments >= 3, got {}",
                 n_args

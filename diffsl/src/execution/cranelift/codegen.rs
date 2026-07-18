@@ -1788,8 +1788,7 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
 
         let mut args = Vec::new();
         for arg in call.args.iter() {
-            let arg_val =
-                self.jit_compile_expr(name, arg.as_ref(), index, elmt, expr_index)?;
+            let arg_val = self.jit_compile_expr(name, arg.as_ref(), index, elmt, expr_index)?;
             args.push(arg_val);
         }
 

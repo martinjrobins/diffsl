@@ -210,6 +210,15 @@ impl Layout {
             }
             TensorType::Other => Vec::new(),
         };
+        // the input dependencies of a state block are indices into the block, so offset them by
+        // the block start to get indices into the whole state vector
+        let input_deps = match tensor_type {
+            TensorType::State | TensorType::StateDot => mem::take(&mut self.input_deps)
+                .into_iter()
+                .map(|(index, j)| (Index::from(vec![*index.get(0).unwrap_or(&0) + start]), j))
+                .collect(),
+            TensorType::Input | TensorType::Other => Vec::new(),
+        };
         match tensor_type {
             TensorType::State => {
                 assert!(
@@ -218,7 +227,8 @@ impl Layout {
                 );
                 self.state_deps = indices;
                 // store the state0 input dependencies in the env since we don't want to propagate them further
-                env.state0_input_deps = mem::take(&mut self.input_deps);
+                env.state0_input_deps =
+                    Self::merge_deps(mem::take(&mut env.state0_input_deps), input_deps);
             }
             TensorType::StateDot => {
                 assert!(
@@ -227,7 +237,8 @@ impl Layout {
                 );
                 self.state_deps = indices;
                 // store the dstate0 input dependencies in the env since we don't want to propagate them further
-                env.dstate0_input_deps = mem::take(&mut self.input_deps);
+                env.dstate0_input_deps =
+                    Self::merge_deps(mem::take(&mut env.dstate0_input_deps), input_deps);
             }
             TensorType::Input => {
                 assert! {

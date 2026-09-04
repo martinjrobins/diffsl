@@ -1695,6 +1695,80 @@ mod tests {
     );
 
     #[test]
+    fn multi_block_state0_input_deps_test() {
+        // each case is (u_i definition, expected state0_input_deps), see issue #147
+        let cases: Vec<(&str, &str, Vec<(usize, usize)>)> = vec![
+            ("y0 = 1.0", "x = 1.0, y = y0", vec![(1, 0)]),
+            ("y0 = 1.0", "x = y0, y = y0", vec![(0, 0), (1, 0)]),
+            ("k = 0.1, y0 = 1.0", "x = k, y = y0", vec![(0, 0), (1, 1)]),
+            (
+                "k = 0.1, y0 = 1.0",
+                "x = k, y = 1.0, z = y0",
+                vec![(0, 0), (2, 1)],
+            ),
+            (
+                "k = 0.1, y0 = 1.0",
+                "x = y0, y = 1.0, z = k",
+                vec![(0, 1), (2, 0)],
+            ),
+        ];
+        for (inputs, states, expected) in cases {
+            let full_text = format!(
+                "
+                in_i {{ {inputs} }}
+                u_i {{ {states} }}
+                F_i {{ -u_i }}
+                out_i {{ u_i }}
+            "
+            );
+            let model = parse_ds_string(full_text.as_str()).unwrap();
+            let mut discrete_model =
+                match DiscreteModel::build("multi_block_state0_input_deps_test", &model) {
+                    Ok(model) => model,
+                    Err(e) => panic!("{}", e.as_error_message(full_text.as_str())),
+                };
+            assert_eq!(
+                discrete_model.take_state0_input_deps(),
+                expected,
+                "failed state0_input_deps for u_i {{ {states} }}"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_block_dstate0_input_deps_test() {
+        let full_text = "
+            in_i { k = 0.1, y0 = 1.0 }
+            u_i { x = 1.0, y = 1.0 }
+            dudt_i { dxdt = 0.0, dydt = y0 }
+            M_i { dxdt, dydt }
+            F_i { -u_i }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let mut discrete_model =
+            DiscreteModel::build("multi_block_dstate0_input_deps_test", &model).unwrap();
+        assert_eq!(discrete_model.take_dstate0_input_deps(), vec![(1, 1)]);
+        assert_eq!(discrete_model.take_state0_input_deps(), vec![]);
+    }
+
+    #[test]
+    fn named_state_block_does_not_leak_input_deps_test() {
+        let full_text = "
+            in_i { y0 = 1.0 }
+            u_i { x = 1.0, y = y0 }
+            F_i { -y, -x }
+            out_i { u_i }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let mut discrete_model =
+            DiscreteModel::build("named_state_block_does_not_leak_input_deps_test", &model)
+                .unwrap();
+        assert_eq!(discrete_model.take_state0_input_deps(), vec![(1, 0)]);
+        assert_eq!(discrete_model.take_rhs_input_deps(), vec![]);
+        assert_eq!(discrete_model.take_rhs_state_deps(), vec![(0, 1), (1, 0)]);
+    }
+
+    #[test]
     fn tensor_state_input_dep_mass_test() {
         let full_text = "
             in_i { (0:2): p = 1 }

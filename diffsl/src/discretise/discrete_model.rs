@@ -55,6 +55,10 @@ pub struct DiscreteModel<'s> {
     out_state_deps: Vec<(usize, usize)>,
     mass_state_deps: Vec<(usize, usize)>,
     mass_input_deps: Vec<(usize, usize)>,
+    reset_state_deps: Vec<(usize, usize)>,
+    reset_input_deps: Vec<(usize, usize)>,
+    stop_state_deps: Vec<(usize, usize)>,
+    stop_input_deps: Vec<(usize, usize)>,
 }
 
 impl fmt::Display for DiscreteModel<'_> {
@@ -127,6 +131,10 @@ impl<'s> DiscreteModel<'s> {
             out_state_deps: Vec::new(),
             mass_state_deps: Vec::new(),
             mass_input_deps: Vec::new(),
+            reset_state_deps: Vec::new(),
+            reset_input_deps: Vec::new(),
+            stop_state_deps: Vec::new(),
+            stop_input_deps: Vec::new(),
         }
     }
 
@@ -776,6 +784,26 @@ impl<'s> DiscreteModel<'s> {
         } else {
             Vec::new()
         };
+        ret.reset_state_deps = ret
+            .reset
+            .as_ref()
+            .map(|t| map_dep(t.layout().state_dependencies()))
+            .unwrap_or_default();
+        ret.reset_input_deps = ret
+            .reset
+            .as_ref()
+            .map(|t| map_dep(t.layout().input_dependencies()))
+            .unwrap_or_default();
+        ret.stop_state_deps = ret
+            .stop
+            .as_ref()
+            .map(|t| map_dep(t.layout().state_dependencies()))
+            .unwrap_or_default();
+        ret.stop_input_deps = ret
+            .stop
+            .as_ref()
+            .map(|t| map_dep(t.layout().input_dependencies()))
+            .unwrap_or_default();
 
         // validate function arg counts across all tensors
         for tensor in ret.all_tensors() {
@@ -1019,6 +1047,10 @@ impl<'s> DiscreteModel<'s> {
             out_state_deps: Vec::new(),
             mass_state_deps: Vec::new(),
             mass_input_deps: Vec::new(),
+            reset_state_deps: Vec::new(),
+            reset_input_deps: Vec::new(),
+            stop_state_deps: Vec::new(),
+            stop_input_deps: Vec::new(),
         }
     }
 
@@ -1145,6 +1177,22 @@ impl<'s> DiscreteModel<'s> {
 
     pub fn take_mass_input_deps(&mut self) -> Vec<(usize, usize)> {
         std::mem::take(&mut self.mass_input_deps)
+    }
+
+    pub fn take_reset_state_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.reset_state_deps)
+    }
+
+    pub fn take_reset_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.reset_input_deps)
+    }
+
+    pub fn take_stop_state_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.stop_state_deps)
+    }
+
+    pub fn take_stop_input_deps(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.stop_input_deps)
     }
 }
 
@@ -1803,6 +1851,29 @@ mod tests {
         assert_eq!(discrete_model.take_out_input_deps(), vec![]);
         assert_eq!(discrete_model.take_mass_state_deps(), vec![(0, 1), (1, 0)]);
         assert_eq!(discrete_model.take_mass_input_deps(), vec![(0, 0), (1, 1)]);
+        assert_eq!(discrete_model.take_reset_state_deps(), vec![]);
+        assert_eq!(discrete_model.take_reset_input_deps(), vec![]);
+        assert_eq!(discrete_model.take_stop_state_deps(), vec![]);
+        assert_eq!(discrete_model.take_stop_input_deps(), vec![]);
+    }
+
+    #[test]
+    fn tensor_reset_stop_deps_test() {
+        let full_text = "
+            in_i { k = 0.1, y0 = 1.0 }
+            u_i { x = y0, y = y0 }
+            F_i { -k * u_i }
+            stop_i { x - k }
+            reset_i { 2.0 * x, k * y }
+            out_i { u_i }
+        ";
+        let model = parse_ds_string(full_text).unwrap();
+        let mut discrete_model =
+            DiscreteModel::build("tensor_reset_stop_deps_test", &model).unwrap();
+        assert_eq!(discrete_model.take_stop_state_deps(), vec![(0, 0)]);
+        assert_eq!(discrete_model.take_stop_input_deps(), vec![(0, 0)]);
+        assert_eq!(discrete_model.take_reset_state_deps(), vec![(0, 0), (1, 1)]);
+        assert_eq!(discrete_model.take_reset_input_deps(), vec![(1, 0)]);
     }
 
     #[test]

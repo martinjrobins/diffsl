@@ -20,6 +20,58 @@ llvm19-1 = ["inkwell-191", "llvm-sys-191", "llvm", "enzyme"]
 llvm20-1 = ["inkwell-201", "llvm-sys-201", "llvm", "enzyme"]
 llvm21-1 = ["inkwell-211", "llvm-sys-211", "llvm", "enzyme"]
 llvm22-1 = ["inkwell-221", "llvm-sys-221", "llvm", "enzyme"]
+# The same as the features above, but link LLVM as a shared library (libLLVM) if it is
+# available, not as static libraries.
+llvm15-0-prefer-dynamic = [
+  "llvm15-0",
+  "llvm-prefer-dynamic",
+  "inkwell-150/llvm15-0-prefer-dynamic",
+  "llvm-sys-150/prefer-dynamic",
+]
+llvm16-0-prefer-dynamic = [
+  "llvm16-0",
+  "llvm-prefer-dynamic",
+  "inkwell-160/llvm16-0-prefer-dynamic",
+  "llvm-sys-160/prefer-dynamic",
+]
+llvm17-0-prefer-dynamic = [
+  "llvm17-0",
+  "llvm-prefer-dynamic",
+  "inkwell-170/llvm17-0-prefer-dynamic",
+  "llvm-sys-170/prefer-dynamic",
+]
+llvm18-1-prefer-dynamic = [
+  "llvm18-1",
+  "llvm-prefer-dynamic",
+  "inkwell-181/llvm18-1-prefer-dynamic",
+  "llvm-sys-181/prefer-dynamic",
+]
+llvm19-1-prefer-dynamic = [
+  "llvm19-1",
+  "llvm-prefer-dynamic",
+  "inkwell-191/llvm19-1-prefer-dynamic",
+  "llvm-sys-191/prefer-dynamic",
+]
+llvm20-1-prefer-dynamic = [
+  "llvm20-1",
+  "llvm-prefer-dynamic",
+  "inkwell-201/llvm20-1-prefer-dynamic",
+  "llvm-sys-201/prefer-dynamic",
+]
+llvm21-1-prefer-dynamic = [
+  "llvm21-1",
+  "llvm-prefer-dynamic",
+  "inkwell-211/llvm21-1-prefer-dynamic",
+  "llvm-sys-211/prefer-dynamic",
+]
+llvm22-1-prefer-dynamic = [
+  "llvm22-1",
+  "llvm-prefer-dynamic",
+  "inkwell-221/llvm22-1-prefer-dynamic",
+  "llvm-sys-221/prefer-dynamic",
+]
+# set by each `llvm*-prefer-dynamic` feature
+llvm-prefer-dynamic = []
 enzyme = ["bindgen", "cmake"]
 llvm = []
 external_f64 = ["external"]

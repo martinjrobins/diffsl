@@ -91,6 +91,8 @@ You can install DiffSL using cargo. By default the cranelift backend will be use
 cargo add diffsl --features llvm16-0
 ```
 
-Other versions of llvm are also supported given by the features `llvm15-0`, `llvm16-0`, `llvm17-0`, `llvm18-0`.
+Other versions of llvm are also supported given by the features `llvm15-0`, `llvm16-0`, `llvm17-0`, `llvm18-1`, `llvm19-1`, `llvm20-1`, `llvm21-1` and `llvm22-1`.
+
+By default LLVM is linked statically. To link the shared LLVM library instead (for example the LLVM package of a Linux distribution), use the feature with the suffix `-prefer-dynamic`, for example `llvm19-1-prefer-dynamic`. If the shared library is not found, LLVM is linked statically.
 
 

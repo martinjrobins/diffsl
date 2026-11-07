@@ -48,7 +48,7 @@ jobs:
           toolchain:
             - stable
           os:
-            - ubuntu-latest
+            - ubuntu-24.04
             - macos-latest
           features:
             - "rayon cranelift external_f64 external_f32"
@@ -75,7 +75,7 @@ jobs:
               basename: Tests
 
             - toolchain: beta
-              os: ubuntu-latest
+              os: ubuntu-24.04
               llvm: ["16.0", "16-0", "160"]
               features: "rayon cranelift external_f64"
               tests: true
@@ -85,7 +85,7 @@ jobs:
               basename: Beta
 
             - toolchain: nightly
-              os: ubuntu-latest
+              os: ubuntu-24.04
               llvm: ["16.0", "16-0", "160"]
               features: "rayon cranelift external_f64"
               tests: true
@@ -95,7 +95,7 @@ jobs:
               basename: Nightly
 
             - toolchain: stable
-              os: ubuntu-latest
+              os: ubuntu-24.04
               llvm: ""
               features: ""
               tests: true
@@ -105,7 +105,7 @@ jobs:
               basename: Tests
 
             - toolchain: stable
-              os: ubuntu-latest
+              os: ubuntu-24.04
               llvm: ["16.0", "16-0", "160"]
               features: "rayon cranelift external_f64"
               tests: false
@@ -115,7 +115,7 @@ jobs:
               basename: Clippy
 
             - toolchain: nightly 
-              os: ubuntu-latest
+              os: ubuntu-24.04
               llvm: ["16.0", "16-0", "160"]
               features: "rayon cranelift external_f64"
               tests: false
@@ -145,7 +145,7 @@ jobs:
         brew install llvm@${{ matrix.llvm[3] }}
         echo "LLVM_PATH=$(brew --prefix llvm@${{ matrix.llvm[3] }})" >> $GITHUB_ENV
     - name: Install LLVM and Clang (LLVM >= 19.1 & ubuntu)
-      if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest'|| matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] >= '19.1')
+      if : matrix.llvm != '' && (matrix.os == 'ubuntu-24.04'|| matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] >= '19.1')
       run: |
         sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
         wget https://apt.llvm.org/llvm.sh
@@ -161,7 +161,7 @@ jobs:
         echo "LLVM_PATH=/usr/lib/llvm-${{ matrix.llvm[3] }}" >> $GITHUB_ENV
     - name: Install LLVM and Clang (LLVM < 19.1)
       uses: KyleMayes/install-llvm-action@v2
-      if : matrix.llvm != '' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] < '19.1')
+      if : matrix.llvm != '' && (matrix.os == 'ubuntu-24.04' || matrix.os == 'macos-latest' || matrix.os == 'ubuntu-24.04-arm') && (matrix.llvm[0] < '19.1')
       with:
         version: ${{ matrix.llvm[0] }}
     - name: Set LLVM_SYS_XXX_DIR and CC, CXX environment variables
@@ -172,8 +172,8 @@ jobs:
       if : matrix.os == 'macos-13'
       run: 
         brew install llvm@16
-    - name: Install dependencies (for ubuntu-latest and LLVM 18.1)
-      if : matrix.llvm[0] == '18.1' && matrix.os == 'ubuntu-latest'
+    - name: Install dependencies (for ubuntu-24.04 and LLVM 18.1)
+      if : matrix.llvm[0] == '18.1' && matrix.os == 'ubuntu-24.04'
       run: |
         sudo apt update
         wget http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb

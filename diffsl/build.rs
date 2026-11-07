@@ -117,7 +117,10 @@ mod enzyme {
         for libname in libnames.iter() {
             println!("cargo:rustc-link-lib={libname}");
         }
-        println!("cargo:rustc-link-lib=LLVMDemangle");
+        // a shared LLVM library (the `llvm*-prefer-dynamic` features) contains the demangler
+        if env::var_os("CARGO_FEATURE_LLVM_PREFER_DYNAMIC").is_none() {
+            println!("cargo:rustc-link-lib=LLVMDemangle");
+        }
         println!("cargo:rerun-if-changed=wrapper.h");
     }
 }

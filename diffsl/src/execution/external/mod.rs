@@ -372,6 +372,11 @@ where
 macro_rules! impl_extern_symbols {
     ($ty:ty, $sym:path) => {
         impl ExternSymbols for $ty {
+            // `#[inline]` makes sure that rustc generates this function only in the crate that
+            // calls it (the crate that supplies the external symbols), not in the diffsl rlib.
+            // If not, the rlib refers to the external symbols, and linkers such as MSVC
+            // `link.exe` fail on test binaries that do not supply them.
+            #[inline]
             fn insert_symbols(symbols: &mut HashMap<String, *const u8>) {
                 crate::execution::external_interface::insert_external_symbols!(symbols, $sym);
             }

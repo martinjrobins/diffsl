@@ -122,6 +122,8 @@ mod enzyme {
             println!("cargo:rustc-link-lib=LLVMDemangle");
         }
         println!("cargo:rerun-if-changed=wrapper.h");
+        // build Enzyme again when its source changes, for example after a submodule update
+        println!("cargo:rerun-if-changed=Enzyme/enzyme");
     }
 }
 

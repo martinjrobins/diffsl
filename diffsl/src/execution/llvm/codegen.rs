@@ -2412,7 +2412,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.int_type.const_zero()
             };
 
-            let curr_index = self.builder.build_phi(int_type, format!["i{i}"].as_str())?;
+            let curr_index = self.builder.build_phi(int_type, format!("i{i}").as_str())?;
             curr_index.add_incoming(&[(&start_index, preblock)]);
 
             let init_point = (expr_rank - contract_by).saturating_sub(1);
